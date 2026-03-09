@@ -1,96 +1,142 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import date, timedelta
 
-st.set_page_config(page_title="Anchor Portal | BGEngg", layout="wide")
+st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_icon="⚓")
 
-# --- DATABASE CONNECTION ---
+# --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
 def get_projects():
+    # Fetch data from Supabase
     res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
-    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    
+    # Define the "Expected" columns to match our pre-production logic
+    expected_columns = [
+        'id', 'status', 'anchor_person', 'client_name', 'project_description', 
+        'drawing_status', 'drawing_ref', 'purchase_trigger', 'critical_materials',
+        'estimated_value', 'special_notes'
+    ]
+    
+    # If no data exists yet, return an empty dataframe with these headers
+    if not res.data:
+        return pd.DataFrame(columns=expected_columns)
+    
+    df_result = pd.DataFrame(res.data)
+    
+    # Safety Check: If Supabase table is missing a column, add it as empty to prevent KeyErrors
+    for col in expected_columns:
+        if col not in df_result.columns:
+            df_result[col] = None
+            
+    return df_result
 
+# Load the data
 df = get_projects()
 
-# --- HEADER & ROLE ---
-st.title("⚓ Anchor Management Portal")
-st.sidebar.title("Configuration")
-anchor_filter = st.sidebar.selectbox("Filter by Lead:", ["All", "Ammu", "Kishore"])
+# --- 2. SIDEBAR CONFIGURATION ---
+st.sidebar.title("🎯 Anchor Filter")
+anchor_choice = st.sidebar.selectbox("Lead Person", ["All", "Ammu", "Kishore"])
 
-# --- KPIS / TOP METRICS ---
-if not df.empty:
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Enquiries", len(df))
-    m2.metric("In Estimation", len(df[df['status'] == 'Estimation']))
-    m3.metric("Purchase Alerts", len(df[df['purchase_trigger'] == True]))
-    m4.metric("Conversion Rate", f"{(len(df[df['status'] == 'Won']) / len(df) * 100):.1f}%")
+# Filter the dataframe based on selection
+if anchor_choice != "All":
+    df_display = df[df['anchor_person'] == anchor_choice]
+else:
+    df_display = df
 
-tabs = st.tabs(["📋 Sales & Enquiries", "📐 Drawings & Technical", "🛒 Purchase Integration", "📊 Analytics"])
+# --- 3. MAIN INTERFACE ---
+st.title(f"⚓ Anchor Portal: {anchor_choice}")
+st.markdown("---")
 
-# --- TAB 1: SALES & ENQUIRIES (Ammu/Kishore Lead) ---
+# Quick Metrics
+if not df_display.empty:
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Active Enquiries", len(df_display[df_display['status'] == 'Enquiry']))
+    c2.metric("Pending Drawings", len(df_display[df_display['drawing_status'] != 'Approved']))
+    c3.metric("Purchase Alerts", len(df_display[df_display['purchase_trigger'] == True]))
+
+tabs = st.tabs(["📝 New Entry", "📂 Project Pipeline", "📐 Technical & Drawings", "🛒 Purchase Link"])
+
+# --- TAB 1: NEW ENTRY (Sales/Marketing) ---
 with tabs[0]:
-    with st.expander("➕ Register New Project Enquiry"):
-        with st.form("enquiry_form", clear_on_submit=True):
-            c1, c2, c3 = st.columns(3)
-            client = c1.text_input("Client Name")
-            proj_name = c2.text_input("Project Name/Part")
-            lead = c3.selectbox("Lead Anchor", ["Ammu", "Kishore"])
-            
-            c4, c5, c6 = st.columns(3)
-            val = c4.number_input("Estimated Value (₹)", min_value=0)
-            target_date = c5.date_input("Required Delivery Date")
-            notes = c6.text_area("Initial Project Notes")
-            
-            if st.form_submit_button("Submit to Pipeline"):
+    st.subheader("Register New Project Enquiry")
+    with st.form("new_project_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        u_client = col1.text_input("Client Name")
+        u_proj = col2.text_input("Project Description")
+        
+        col3, col4, col5 = st.columns(3)
+        u_anchor = col3.selectbox("Lead Anchor", ["Ammu", "Kishore"])
+        u_val = col4.number_input("Est. Value (₹)", min_value=0)
+        u_notes = col5.text_area("Special Notes / Remarks")
+        
+        if st.form_submit_button("Add to Pipeline"):
+            if u_client and u_proj:
                 conn.table("anchor_projects").insert({
-                    "anchor_person": lead, "client_name": client, "project_description": proj_name,
-                    "estimated_value": val, "status": "Enquiry", "special_notes": notes
-                }).execute(); st.rerun()
+                    "client_name": u_client,
+                    "project_description": u_proj,
+                    "anchor_person": u_anchor,
+                    "estimated_value": u_val,
+                    "special_notes": u_notes,
+                    "status": "Enquiry",
+                    "drawing_status": "Pending"
+                }).execute()
+                st.success(f"Project for {u_client} added!"); st.rerun()
+            else:
+                st.error("Client Name and Project Description are required.")
 
-    # Active Pipeline View
-    st.subheader("Current Sales Pipeline")
-    display_df = df if anchor_filter == "All" else df[df['anchor_person'] == anchor_filter]
-    if not display_df.empty:
-        st.dataframe(display_df[["client_name", "project_description", "status", "estimated_value", "anchor_person"]], 
-                     use_container_width=True, hide_index=True)
-    else:
-        st.info("No active enquiries in pipeline.")
-
-# --- TAB 2: DRAWINGS & TECHNICAL (The "API/ZLD Anchor" Role) ---
+# --- TAB 2: PROJECT PIPELINE ---
 with tabs[1]:
-    st.subheader("Technical & Design Approval")
-    technical_df = df[df['status'].isin(['Enquiry', 'Estimation'])]
-    
-    for _, row in technical_df.iterrows():
-        with st.expander(f"🛠️ {row['client_name']} - {row['project_description']}"):
-            col1, col2 = st.columns(2)
-            d_ref = col1.text_input("Drawing Ref #", value=row['drawing_ref'] or "", key=f"dr_{row['id']}")
-            d_status = col2.selectbox("Approval Status", ["Pending", "Drafting", "Client Review", "Approved"], 
-                                      index=["Pending", "Drafting", "Client Review", "Approved"].index(row['drawing_status'] or "Pending"),
-                                      key=f"ds_{row['id']}")
-            
-            if st.button("Update Technical Specs", key=f"up_tech_{row['id']}"):
-                conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_status}).eq("id", row['id']).execute(); st.rerun()
+    st.subheader("Sales Lifecycle Management")
+    if not df_display.empty:
+        for index, row in df_display.iterrows():
+            with st.expander(f"💼 {row['client_name']} | {row['project_description']} | Status: {row['status']}"):
+                c1, c2 = st.columns(2)
+                new_status = c1.selectbox("Update Stage", 
+                                        ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"], 
+                                        index=["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"].index(row['status']) if row['status'] in ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"] else 0,
+                                        key=f"stat_{row['id']}")
+                
+                if c1.button("Update Stage", key=f"btn_stat_{row['id']}"):
+                    conn.table("anchor_projects").update({"status": new_status}).eq("id", row['id']).execute(); st.rerun()
+                
+                c2.info(f"**Notes:** {row['special_notes']}")
+    else:
+        st.info("No active projects found.")
 
-# --- TAB 3: PURCHASE INTEGRATION (Critical Material Trigger) ---
+# --- TAB 3: TECHNICAL & DRAWINGS ---
 with tabs[2]:
-    st.subheader("🚩 Purchase & Procurement Link")
-    st.markdown("Flag materials here that need to be ordered **before** production starts.")
-    
-    for _, row in df[df['status'] != 'Won'].iterrows():
-        with st.container():
-            c1, c2, c3 = st.columns([2, 3, 1])
-            c1.write(f"**{row['client_name']}**")
-            mat_req = c2.text_area("Identify Critical Materials (e.g. ZLD Pumps, SS316 Sheets)", 
-                                   value=row['critical_materials'] or "", key=f"mat_{row['id']}")
-            
-            is_triggered = c3.checkbox("Trigger Purchase", value=row['purchase_trigger'], key=f"trig_{row['id']}")
-            
-            if st.button("Update Procurement Request", key=f"p_btn_{row['id']}"):
-                conn.table("anchor_projects").update({
-                    "critical_materials": mat_req,
-                    "purchase_trigger": is_triggered
-                }).eq("id", row['id']).execute(); st.rerun()
-            st.divider()
+    st.subheader("Drawing & Design Control")
+    if not df_display.empty:
+        for index, row in df_display.iterrows():
+            with st.expander(f"📐 {row['client_name']} | Drawing: {row['drawing_status']}"):
+                c1, c2 = st.columns(2)
+                d_ref = c1.text_input("Drawing Ref No.", value=row['drawing_ref'] or "", key=f"dref_{row['id']}")
+                d_stat = c2.selectbox("Drawing Approval", 
+                                     ["Pending", "Drafting", "Client Review", "Approved"],
+                                     index=["Pending", "Drafting", "Client Review", "Approved"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Client Review", "Approved"] else 0,
+                                     key=f"dstat_{row['id']}")
+                
+                if st.button("Save Technical Details", key=f"tbtn_{row['id']}"):
+                    conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat}).eq("id", row['id']).execute(); st.rerun()
+    else:
+        st.info("No data available.")
+
+# --- TAB 4: PURCHASE LINK ---
+with tabs[3]:
+    st.subheader("Critical Material Procurement Triggers")
+    st.warning("Flag items here to alert the Purchase Team before production begins.")
+    if not df_display.empty:
+        for index, row in df_display.iterrows():
+            with st.container():
+                col1, col2, col3 = st.columns([1, 2, 1])
+                col1.write(f"**{row['client_name']}**")
+                mats = col2.text_area("Critical Materials Needed", value=row['critical_materials'] or "", key=f"mat_{row['id']}", height=70)
+                is_trig = col3.checkbox("Trigger Purchase", value=row['purchase_trigger'], key=f"trig_{row['id']}")
+                
+                if st.button("Sync with Purchase Dept", key=f"pbtn_{row['id']}"):
+                    conn.table("anchor_projects").update({
+                        "critical_materials": mats,
+                        "purchase_trigger": is_trig
+                    }).eq("id", row['id']).execute(); st.rerun()
+                st.divider()
