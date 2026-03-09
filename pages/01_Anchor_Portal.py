@@ -122,19 +122,31 @@ with tabs[2]:
     else:
         st.info("No data available.")
 
-# --- TAB 4: PURCHASE LINK ---
+# --- TAB 4: PURCHASE LINK (Updated with Reply Visibility) ---
 with tabs[3]:
     st.subheader("Critical Material Procurement Triggers")
-    st.warning("Flag items here to alert the Purchase Team before production begins.")
     if not df_display.empty:
         for index, row in df_display.iterrows():
             with st.container():
                 col1, col2, col3 = st.columns([1, 2, 1])
-                col1.write(f"**{row['client_name']}**")
-                mats = col2.text_area("Critical Materials Needed", value=row['critical_materials'] or "", key=f"mat_{row['id']}", height=70)
-                is_trig = col3.checkbox("Trigger Purchase", value=row['purchase_trigger'], key=f"trig_{row['id']}")
                 
-                if st.button("Sync with Purchase Dept", key=f"pbtn_{row['id']}"):
+                with col1:
+                    st.write(f"**{row['client_name']}**")
+                    is_trig = st.checkbox("Trigger Purchase", value=row['purchase_trigger'], key=f"trig_{row['id']}")
+                
+                with col2:
+                    mats = st.text_area("Critical Materials Needed", value=row['critical_materials'] or "", key=f"mat_{row['id']}")
+                
+                with col3:
+                    # SHOW PURCHASE TEAM'S REPLY HERE
+                    st.markdown("**Purchase Status:**")
+                    status_color = "green" if row['purchase_status'] == "Received" else "orange"
+                    st.markdown(f":{status_color}[{row['purchase_status'] or 'Not Seen Yet'}]")
+                    
+                    if row['purchase_remarks']:
+                        st.caption(f"💬 Reply: {row['purchase_remarks']}")
+
+                if st.button("Sync Data", key=f"pbtn_{row['id']}"):
                     conn.table("anchor_projects").update({
                         "critical_materials": mats,
                         "purchase_trigger": is_trig
