@@ -33,6 +33,20 @@ def get_projects():
 
 # Load the data
 df = get_projects()
+# --- ANCHOR EXECUTIVE SUMMARY ---
+st.subheader("📊 Projects Summary")
+if not df.empty:
+    # Grouping data for the summary table
+    summary_df = df.groupby('anchor_person').agg(
+        Total_Projects=('id', 'count'),
+        Enquiries=('status', lambda x: (x == 'Enquiry').sum()),
+        Approved_Drawings=('drawing_status', lambda x: (x == 'Approved').sum()),
+        Purchase_Triggers=('purchase_trigger', lambda x: x.sum())
+    ).reset_index()
+
+    st.table(summary_df) # Using st.table for a clean, static look
+else:
+    st.info("No data available for summary.")
 
 # --- 2. SIDEBAR CONFIGURATION ---
 st.sidebar.title("🎯 Anchor Filter")
