@@ -10,7 +10,9 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 def get_all_data():
     res = conn.table("anchor_projects").select("*").execute()
-    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    if not res.data:
+        return pd.DataFrame()
+    return pd.DataFrame(res.data)
 
 df_all = get_all_data()
 
@@ -18,7 +20,20 @@ st.title("📈 Founder's Strategic Dashboard")
 st.markdown("---")
 
 if not df_all.empty:
-    # --- 2. EXECUTIVE KPIs ---
+    # --- 2. DATA PRE-PROCESSING (Calculations for Efficiency) ---
+    # Ensure all date columns are in datetime format
+    df_all['enquiry_date'] = pd.to_datetime(df_all['enquiry_date'])
+    df_all['quote_date'] = pd.to_datetime(df_all['quote_date'])
+    df_all['drawing_submit_date'] = pd.to_datetime(df_all['drawing_submit_date'])
+
+    # Calculate Time Taken (Days)
+    # Quote Time: From Enquiry Date to Date Quote was sent
+    df_all['quote_time'] = (df_all['quote_date'] - df_all['enquiry_date']).dt.days
+    
+    # Drawing Time: From Enquiry Date to Date Drawing was Approved/Submitted
+    df_all['drawing_time'] = (df_all['drawing_submit_date'] - df_all['enquiry_date']).dt.days
+
+    # --- 3. EXECUTIVE KPIs ---
     total_value = df_all['estimated_value'].sum()
     won_projects = df_all[df_all['status'] == 'Won']
     conversion_rate = (len(won_projects) / len(df_all)) * 100
@@ -27,26 +42,31 @@ if not df_all.empty:
     m1.metric("Total Pipeline Value", f"₹{total_value:,.0f}")
     m2.metric("Orders Won", len(won_projects))
     m3.metric("Conversion Rate", f"{conversion_rate:.1f}%")
-    m4.metric("Active Purchase Triggers", len(df_all[df_all['purchase_trigger'] == True]))
+    m4.metric("Avg. Quote Lead Time", f"{df_all['quote_time'].mean():.1f} Days")
 
     st.divider()
 
-    # --- 3. FOUNDER'S MASTER SUMMARY TABLE ---
-    st.subheader("👥 Anchor Performance & Workflow Summary")
+    # --- 4. FOUNDER'S MASTER SUMMARY TABLE ---
+    st.subheader("👥 Anchor Performance & Efficiency Summary")
     
-    # Aggregating data per Anchor for the Founder's Table
+    # Aggregating data per Anchor including the new time calculations
     founder_summary = df_all.groupby('anchor_person').agg(
         Total_Enquiries=('id', 'count'),
         Won_Orders=('status', lambda x: (x == 'Won').sum()),
         Total_Value=('estimated_value', 'sum'),
-        Pending_Drawings=('drawing_status', lambda x: (x != 'Approved').sum()),
+        Avg_Days_to_Quote=('quote_time', 'mean'),
+        Avg_Days_to_Drawing=('drawing_time', 'mean'),
         Material_Triggers=('purchase_trigger', 'sum')
     ).reset_index()
 
-    # Calculate Value per Anchor
+    # Format the numbers for cleaner display
+    founder_summary['Avg_Days_to_Quote'] = founder_summary['Avg_Days_to_Quote'].round(1)
+    founder_summary['Avg_Days_to_Drawing'] = founder_summary['Avg_Days_to_Drawing'].round(1)
+    founder_summary['Total_Value'] = founder_summary['Total_Value'].apply(lambda x: f"₹{x:,.0f}")
+
     st.table(founder_summary)
 
-    # --- 4. VISUAL ANALYTICS ---
+    # --- 5. VISUAL ANALYTICS ---
     col_left, col_right = st.columns(2)
 
     with col_left:
@@ -66,12 +86,13 @@ if not df_all.empty:
         else:
             st.info("No active purchase data to visualize.")
 
-    # --- 5. TOP CRITICAL ITEMS (URGENT VIEW) ---
+    # --- 6. TOP CRITICAL ITEMS (URGENT VIEW) ---
     st.divider()
     st.subheader("🚨 Priority Procurement List")
     critical_df = df_all[(df_all['purchase_trigger'] == True) & (df_all['purchase_status'] != 'Received')]
     if not critical_df.empty:
-        st.dataframe(critical_df[['client_name', 'anchor_person', 'critical_materials', 'purchase_status', 'purchase_remarks']], 
+        # Displaying with Job No for clear shop floor identification
+        st.dataframe(critical_df[['job_no', 'client_name', 'anchor_person', 'critical_materials', 'purchase_status']], 
                      use_container_width=True, hide_index=True)
     else:
         st.success("No pending critical materials. All clear!")
