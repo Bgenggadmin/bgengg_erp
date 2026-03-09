@@ -3,8 +3,9 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="Founder Analytics | BGEngg", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Founder Analytics | BGEngg ERP", layout="wide", page_icon="📈")
 
+# --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
 def get_all_data():
@@ -13,48 +14,67 @@ def get_all_data():
 
 df_all = get_all_data()
 
-st.title("📈 Founder's Strategic Analytics")
+st.title("📈 Founder's Strategic Dashboard")
 st.markdown("---")
 
 if not df_all.empty:
-    # --- ROW 1: REVENUE & PIPELINE HEALTH ---
-    col1, col2, col3 = st.columns(3)
-    total_val = df_all['estimated_value'].sum()
-    won_val = df_all[df_all['status'] == 'Won']['estimated_value'].sum()
+    # --- 2. EXECUTIVE KPIs ---
+    total_value = df_all['estimated_value'].sum()
+    won_projects = df_all[df_all['status'] == 'Won']
+    conversion_rate = (len(won_projects) / len(df_all)) * 100
     
-    col1.metric("Total Pipeline Value", f"₹{total_val:,.0f}")
-    col2.metric("Orders Secured", f"₹{won_val:,.0f}")
-    col3.metric("Conversion Efficiency", f"{(won_val/total_val*100 if total_val > 0 else 0):.1f}%")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total Pipeline Value", f"₹{total_value:,.0f}")
+    m2.metric("Orders Won", len(won_projects))
+    m3.metric("Conversion Rate", f"{conversion_rate:.1f}%")
+    m4.metric("Active Purchase Triggers", len(df_all[df_all['purchase_trigger'] == True]))
 
     st.divider()
 
-    # --- ROW 2: ANCHOR COMPARISON ---
-    st.subheader("Anchor Performance (Ammu vs Kishore)")
-    left, right = st.columns(2)
+    # --- 3. FOUNDER'S MASTER SUMMARY TABLE ---
+    st.subheader("👥 Anchor Performance & Workflow Summary")
     
-    # Projects by Anchor
-    fig_count = px.bar(df_all.groupby('anchor_person').size().reset_index(name='count'), 
-                       x='anchor_person', y='count', title="Volume of Projects",
-                       color='anchor_person', color_discrete_sequence=px.colors.qualitative.Pastel)
-    left.plotly_chart(fig_count, use_container_width=True)
+    # Aggregating data per Anchor for the Founder's Table
+    founder_summary = df_all.groupby('anchor_person').agg(
+        Total_Enquiries=('id', 'count'),
+        Won_Orders=('status', lambda x: (x == 'Won').sum()),
+        Total_Value=('estimated_value', 'sum'),
+        Pending_Drawings=('drawing_status', lambda x: (x != 'Approved').sum()),
+        Material_Triggers=('purchase_trigger', 'sum')
+    ).reset_index()
 
-    # Conversion by Anchor
-    conv_data = df_all.groupby(['anchor_person', 'status']).size().reset_index(name='count')
-    fig_status = px.bar(conv_data, x='anchor_person', y='count', color='status', 
-                        title="Project Stage Breakdown", barmode='stack')
-    right.plotly_chart(fig_status, use_container_width=True)
+    # Calculate Value per Anchor
+    st.table(founder_summary)
 
-    # --- ROW 3: PURCHASE DEPARTMENT EFFICIENCY ---
+    # --- 4. VISUAL ANALYTICS ---
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.subheader("Revenue Contribution")
+        fig_rev = px.pie(df_all, values='estimated_value', names='anchor_person', 
+                         title="Value Share by Anchor", hole=0.4,
+                         color_discrete_sequence=px.colors.qualitative.Pastel)
+        st.plotly_chart(fig_rev, use_container_width=True)
+
+    with col_right:
+        st.subheader("Purchase Bottlenecks")
+        p_data = df_all[df_all['purchase_trigger'] == True]
+        if not p_data.empty:
+            fig_p = px.bar(p_data, x='purchase_status', color='anchor_person',
+                           title="Procurement Load by Status", barmode='group')
+            st.plotly_chart(fig_p, use_container_width=True)
+        else:
+            st.info("No active purchase data to visualize.")
+
+    # --- 5. TOP CRITICAL ITEMS (URGENT VIEW) ---
     st.divider()
-    st.subheader("🛒 Purchase Department Response Time")
-    
-    p_data = df_all[df_all['purchase_trigger'] == True]
-    if not p_data.empty:
-        fig_p = px.pie(p_data, names='purchase_status', title="Procurement Status (Overall)",
-                       hole=0.4, color_discrete_sequence=px.colors.sequential.RdBu)
-        st.plotly_chart(fig_p, use_container_width=True)
+    st.subheader("🚨 Priority Procurement List")
+    critical_df = df_all[(df_all['purchase_trigger'] == True) & (df_all['purchase_status'] != 'Received')]
+    if not critical_df.empty:
+        st.dataframe(critical_df[['client_name', 'anchor_person', 'critical_materials', 'purchase_status', 'purchase_remarks']], 
+                     use_container_width=True, hide_index=True)
     else:
-        st.info("No purchase data available for analytics yet.")
+        st.success("No pending critical materials. All clear!")
 
 else:
-    st.warning("No data found in Supabase to generate analytics.")
+    st.warning("No project data found. Ask Ammu and Kishore to log their enquiries.")
