@@ -15,7 +15,26 @@ df_p = get_purchase_tasks()
 
 st.title("🛒 Purchase Integration Console")
 st.info("Items listed below have been flagged as **Critical** by Project Anchors.")
-
+# --- PURCHASE WORKLOAD SUMMARY ---
+st.subheader("📦 Procurement Overview")
+if not df_p.empty:
+    # Summary of items by status (Ordered, Sourcing, Received, etc.)
+    p_summary = df_p.groupby('purchase_status').agg(
+        Count=('id', 'count'),
+        Projects=('client_name', lambda x: ", ".join(x.unique()))
+    ).reset_index()
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.dataframe(p_summary, hide_index=True)
+    with col2:
+        # Visual breakdown of the workload
+        import plotly.express as px
+        fig = px.pie(p_summary, values='Count', names='purchase_status', title="Items by Status", hole=0.4)
+        fig.update_layout(margin=dict(t=30, b=0, l=0, r=0), height=200)
+        st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("No active purchase requests to summarize.")
 if not df_p.empty:
     for index, row in df_p.iterrows():
         with st.expander(f"📦 {row['client_name']} | Item: {row['project_description']} | Status: {row['purchase_status']}"):
