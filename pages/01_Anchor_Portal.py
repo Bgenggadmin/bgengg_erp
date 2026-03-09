@@ -37,10 +37,7 @@ if not df_display.empty:
     st.subheader("🚀 Live Action Summary")
     
     # Filter specific buckets
-    # 1. Enquiries/Estimation on hand (Pending Quotes)
     pend_quotes = df_display[df_display['status'].isin(['Enquiry', 'Estimation'])]
-    
-    # 2. Pending Drawings (Not yet Approved)
     pend_drawings = df_display[(df_display['drawing_status'] != 'Approved') & (df_display['status'] != 'Lost')]
 
     col1, col2 = st.columns(2)
@@ -51,7 +48,6 @@ if not df_display.empty:
             summary_q = pend_quotes[['client_name', 'project_description', 'aging_days']].rename(
                 columns={'aging_days': 'Days Pending'}
             )
-            # Apply basic warning style for older items
             st.dataframe(summary_q, hide_index=True, use_container_width=True)
         else:
             st.success("All quotes submitted!")
@@ -96,7 +92,7 @@ with tabs[0]:
                 }).execute()
                 st.success("Enquiry Logged!"); st.rerun()
 
-# --- TAB 2: PROJECT PIPELINE (SALES) ---
+# --- TAB 2: PROJECT PIPELINE (SALES & DELETE) ---
 with tabs[1]:
     st.subheader("Sales Lifecycle & Quotation")
     if not df_display.empty:
@@ -112,11 +108,22 @@ with tabs[1]:
                 
                 rev_notes = st.text_area("Revision Notes", value=row['revision_notes'] or "", key=f"rev_{row['id']}")
                 
-                if st.button("Update Sales Info", key=f"up_{row['id']}"):
-                    conn.table("anchor_projects").update({
-                        "estimated_value": u_val, "quote_ref": u_qref, "quote_date": str(u_qdate),
-                        "status": new_status, "revision_notes": rev_notes
-                    }).eq("id", row['id']).execute(); st.rerun()
+                # --- UPDATE & DELETE BUTTONS ---
+                act_col1, act_col2 = st.columns([1, 1])
+                with act_col1:
+                    if st.button("Update Sales Info", key=f"up_{row['id']}", use_container_width=True):
+                        conn.table("anchor_projects").update({
+                            "estimated_value": u_val, "quote_ref": u_qref, "quote_date": str(u_qdate),
+                            "status": new_status, "revision_notes": rev_notes
+                        }).eq("id", row['id']).execute(); st.rerun()
+                
+                with act_col2:
+                    # DELETE LOGIC WITH SAFETY CHECK
+                    confirm_del = st.checkbox("Confirm deletion?", key=f"confirm_{row['id']}")
+                    if st.button("🗑️ Delete Record", key=f"del_{row['id']}", type="primary", disabled=not confirm_del, use_container_width=True):
+                        conn.table("anchor_projects").delete().eq("id", row['id']).execute()
+                        st.warning(f"Record for {row['client_name']} deleted.")
+                        st.rerun()
 
 # --- TAB 3: DRAWINGS ---
 with tabs[2]:
@@ -154,8 +161,6 @@ with tabs[3]:
                 
                 if st.button("Sync Purchase", key=f"p_{row['id']}"):
                     conn.table("anchor_projects").update({
-                        "job_no": u_job, 
-                        "purchase_trigger": is_trig, 
-                        "critical_materials": mats
+                        "job_no": u_job, "purchase_trigger": is_trig, "critical_materials": mats
                     }).eq("id", row['id']).execute(); st.rerun()
                 st.divider()
