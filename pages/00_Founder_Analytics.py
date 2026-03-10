@@ -81,19 +81,24 @@ if not df_all.empty:
     # MASTER SUMMARY TABLE
     st.subheader("👥 Anchor Performance & Efficiency Summary")
     
+    # --- REVISED SUMMARY LOGIC ---
     founder_summary = df_all.groupby('anchor_person').agg(
         Total_Enquiries=('id', 'count'),
         Won_Orders=('status', lambda x: (x == 'Won').sum()),
-        Total_Value=('estimated_value', 'sum'),
+        # This shows everything quoted:
+        Quoted_Value=('estimated_value', 'sum'),
+        # This calculates only the value of WON orders:
+        Won_Value=('estimated_value', lambda x: df_all.loc[x.index[df_all.loc[x.index, 'status'] == 'Won'], 'estimated_value'].sum()),
         Avg_Days_to_Quote=('quote_lead_time', 'mean'),
-        Avg_Days_to_Drawing=('drawing_lead_time', 'mean'),
         Current_Avg_Aging=('aging_days', 'mean')
     ).reset_index()
 
-    founder_summary['Avg_Days_to_Quote'] = founder_summary['Avg_Days_to_Quote'].fillna(0).round(1)
-    founder_summary['Avg_Days_to_Drawing'] = founder_summary['Avg_Days_to_Drawing'].fillna(0).round(1)
-    founder_summary['Current_Avg_Aging'] = founder_summary['Current_Avg_Aging'].fillna(0).round(1)
-    founder_summary['Total_Value'] = founder_summary['Total_Value'].apply(lambda x: f"₹{x:,.0f}")
+# Calculate Conversion Efficiency by Value
+founder_summary['Value_Win_Rate_%'] = (founder_summary['Won_Value'] / founder_summary['Quoted_Value'] * 100).round(1)
+
+# Formatting for the table
+founder_summary['Quoted_Value'] = founder_summary['Quoted_Value'].apply(lambda x: f"₹{x:,.0f}")
+founder_summary['Won_Value'] = founder_summary['Won_Value'].apply(lambda x: f"₹{x:,.0f}")
 
     st.table(founder_summary)
 
