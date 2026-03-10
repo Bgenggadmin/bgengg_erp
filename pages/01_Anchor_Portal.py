@@ -124,20 +124,60 @@ with tabs[1]:
                     if st.button("🗑️ Delete Record", key=f"del_{row['id']}", disabled=not confirm_del, use_container_width=True):
                         conn.table("anchor_projects").delete().eq("id", row['id']).execute(); st.rerun()
 
+# --- 3. LIVE ACTION SUMMARY (AGING) ---
+if not df_display.empty:
+    today = pd.to_datetime(datetime.now().date())
+    # Ensure date conversion
+    df_display['enquiry_date'] = pd.to_datetime(df_display['enquiry_date']).dt.tz_localize(None)
+    df_display['aging_days'] = (today - df_display['enquiry_date']).dt.days
+
+    st.subheader("🚀 Live Action Summary")
+    pend_quotes = df_display[df_display['status'].isin(['Enquiry', 'Estimation'])]
+    
+    # RECTIFIED LOGIC: Drawings are only "Pending" if the project is WON and drawing isn't Approved
+    pend_drawings = df_display[(df_display['status'] == 'Won') & (df_display['drawing_status'] != 'Approved')]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"📋 **Pending Quotations ({len(pend_quotes)})**")
+        if not pend_quotes.empty:
+            st.dataframe(pend_quotes[['client_name', 'project_description', 'aging_days']].rename(columns={'aging_days': 'Days Pending'}), hide_index=True, use_container_width=True)
+    with col2:
+        st.warning(f"📐 **Pending Drawings ({len(pend_drawings)})**")
+        if not pend_drawings.empty:
+            st.dataframe(pend_drawings[['client_name', 'drawing_status', 'aging_days']].rename(columns={'aging_days': 'Days Since Won'}), hide_index=True, use_container_width=True)
+        else:
+            st.write("No drawings required for currently won projects.")
+    st.markdown("---")
+
+# ... [Tabs 1 & 2 remain unchanged] ...
+
 # --- TAB 3: DRAWINGS ---
 with tabs[2]:
     st.subheader("Drawing Control")
     if not df_display.empty:
-        for index, row in df_display.iterrows():
-            with st.expander(f"📐 {row['client_name']} - {row['drawing_status']}"):
+        # Separate projects that are won from those still in quotation
+        won_projects = df_display[df_display['status'] == 'Won']
+        other_projects = df_display[df_display['status'] != 'Won']
+
+        if won_projects.empty:
+            st.info("No projects currently marked as 'Won'. Drawings will appear here once the status is updated in the Pipeline.")
+        
+        for index, row in won_projects.iterrows():
+            with st.expander(f"✅ WON: {row['client_name']} - {row['drawing_status']}", expanded=True):
                 c1, c2 = st.columns(2)
                 d_ref = c1.text_input("Drawing Ref No.", value=row['drawing_ref'] or "", key=f"dr_{row['id']}")
                 d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved"], 
                                      index=["Pending", "Drafting", "Approved"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved"] else 0, key=f"ds_{row['id']}")
                 d_notes = st.text_area("Drawing Notes", value=row['drawing_notes'] or "", key=f"dn_{row['id']}")
-                if st.button("Save Drawing Info", key=f"dbtn_{row['id']}"):
-                    conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat, "drawing_notes": d_notes}).eq("id", row['id']).execute(); st.rerun()
+                if st.button("Save Drawing Info", key=f"dbtn_{row['id']}", type="primary"):
+                    conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat, "drawing_notes": d_notes}).eq("id", row['id']).execute()
+                    st.rerun()
 
+        if not other_projects.empty:
+            with st.expander("⏳ Projects in Quotation/Estimation (Drawing not started)"):
+                st.write("Drawings for these projects will trigger only after the status is changed to **Won**.")
+                st.dataframe(other_projects[['client_name', 'project_description', 'status']], hide_index=True, use_container_width=True)
 # --- TAB 4: PURCHASE STATUS (REMARKS FEEDBACK) ---
 with tabs[3]:
     st.subheader("Detailed Purchase Feedback")
