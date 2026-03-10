@@ -71,7 +71,7 @@ with tabs[0]:
                 }).execute()
                 st.success("Enquiry Logged!"); st.rerun()
 
-# --- TAB 2: PROJECT PIPELINE (INTERLINKED WITH PURCHASE) ---
+# --- TAB 2: PROJECT PIPELINE (INTERLINKED WITH PURCHASE REMARKS) ---
 with tabs[1]:
     st.subheader("Sales Lifecycle & Quick Purchase Trigger")
     if not df_display.empty:
@@ -87,16 +87,23 @@ with tabs[1]:
                 new_status = st.selectbox("Update Stage", ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"], 
                                          index=["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"].index(row['status']), key=f"st_{row['id']}")
                 
-                # 🔵 SECTION B: INTERLINKED PURCHASE TRIGGER
+                # 🔵 SECTION B: INTERLINKED PURCHASE TRIGGER & REMARKS
                 st.markdown("---")
                 st.markdown("##### 🛒 Quick Purchase Trigger")
                 pc1, pc2 = st.columns([1, 2])
                 u_job = pc1.text_input("Job No.", value=row['job_no'] or "", key=f"pjob_{row['id']}")
                 u_trig = pc1.checkbox("Trigger Purchase Now?", value=row['purchase_trigger'], key=f"ptrig_{row['id']}")
-                u_mats = pc2.text_area("Critical Materials Required", value=row['critical_materials'] or "", key=f"pmat_{row['id']}", placeholder="Enter items needed for this job...")
+                u_mats = pc2.text_area("Critical Materials Required", value=row['critical_materials'] or "", key=f"pmat_{row['id']}", placeholder="Enter items needed...")
                 
-                if row['purchase_status']:
-                    st.caption(f"Current Purchase Status: **{row['purchase_status']}**")
+                # --- LINKED PURCHASE FEEDBACK ---
+                if row['purchase_trigger']:
+                    st.markdown("##### 💬 Purchase Dept Feedback")
+                    f_col1, f_col2 = st.columns(2)
+                    f_col1.metric("Status", row['purchase_status'] or "Pending")
+                    f_col2.metric("ETA", str(row['expected_arrival']) if row['expected_arrival'] else "TBD")
+                    
+                    if row['purchase_remarks']:
+                        st.info(f"**Remarks from Purchase:** {row['purchase_remarks']}")
 
                 # --- UPDATE & DELETE BUTTONS ---
                 st.markdown("---")
@@ -132,18 +139,25 @@ with tabs[2]:
                         update_data["drawing_submit_date"] = str(datetime.now().date())
                     conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute(); st.rerun()
 
-# --- TAB 4: PURCHASE (MAINTAINED FOR BULK REVIEW) ---
+# --- TAB 4: PURCHASE (LINKED VIEW) ---
 with tabs[3]:
-    st.subheader("Purchase Link (Full View)")
+    st.subheader("Detailed Purchase Status")
     if not df_display.empty:
         for index, row in df_display.iterrows():
-            with st.container():
-                c1, c2, c3 = st.columns([1, 2, 1])
-                c1.write(f"**{row['client_name']}**")
-                c1.write(f"Job: {row['job_no']}")
-                is_trig = c1.checkbox("Trigger Active", value=row['purchase_trigger'], key=f"t_bulk_{row['id']}")
-                mats = c2.text_area("Materials", value=row['critical_materials'] or "", key=f"m_bulk_{row['id']}")
-                c3.write(f"Status: {row['purchase_status'] or 'Pending'}")
-                if st.button("Sync Changes", key=f"p_bulk_{row['id']}"):
-                    conn.table("anchor_projects").update({"purchase_trigger": is_trig, "critical_materials": mats}).eq("id", row['id']).execute(); st.rerun()
-                st.divider()
+            if row['purchase_trigger']:
+                with st.container():
+                    c1, c2, c3 = st.columns([1, 2, 1])
+                    with c1:
+                        st.write(f"**Job: {row['job_no']}**")
+                        st.caption(f"Client: {row['client_name']}")
+                        new_trig = st.checkbox("Trigger Active", value=row['purchase_trigger'], key=f"t_bulk_{row['id']}")
+                    with c2:
+                        new_mats = st.text_area("Materials Needed", value=row['critical_materials'] or "", key=f"m_bulk_{row['id']}")
+                        if row['purchase_remarks']:
+                            st.success(f"**Purchase Note:** {row['purchase_remarks']}")
+                    with c3:
+                        st.write(f"**Status:** {row['purchase_status']}")
+                        st.write(f"**ETA:** {row['expected_arrival'] or 'Pending'}")
+                        if st.button("Sync Mats", key=f"p_bulk_{row['id']}"):
+                            conn.table("anchor_projects").update({"purchase_trigger": new_trig, "critical_materials": new_mats}).eq("id", row['id']).execute(); st.rerun()
+                    st.divider()
