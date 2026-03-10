@@ -50,8 +50,7 @@ if not df_display.empty:
     pend_quotes = df_display[df_display['status'].isin(['Enquiry', 'Estimation'])]
     
     # Logic: Drawings ONLY after WON and not yet Approved
-    pend_drawings = df_display[(df_display['status'] == 'Won') & (df_display['drawing_status'] != 'Approved')]
-
+    pend_drawings = df_display[(df_display['status'] == 'Won') & (df_display['drawing_status'] != 'Approved') & (df_display['drawing_status'] != 'NA')]
     col1, col2 = st.columns(2)
     with col1:
         st.info(f"📋 **Pending Quotations ({len(pend_quotes)})**")
@@ -132,8 +131,8 @@ with tabs[2]:
             with st.expander(f"📐 DRAWING: {row['client_name']} ({row['drawing_status']})", expanded=True):
                 c1, c2 = st.columns(2)
                 d_ref = c1.text_input("Drawing Ref No.", value=row['drawing_ref'] or "", key=f"dr_{row['id']}")
-                d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved"], 
-                         index=["Pending", "Drafting", "Approved"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved"] else 0, key=f"ds_{row['id']}")
+                d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved", "NA"], 
+                     index=["Pending", "Drafting", "Approved", "NA"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved", "NA"] else 0, key=f"ds_{row['id']}")
                 d_notes = st.text_area("Drawing Notes", value=row['drawing_notes'] or "", key=f"dn_{row['id']}")
                 if st.button("Save Drawing Info", key=f"dbtn_{row['id']}", type="primary"):
                     conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat, "drawing_notes": d_notes}).eq("id", row['id']).execute()
