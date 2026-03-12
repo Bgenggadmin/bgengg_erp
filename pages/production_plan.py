@@ -1,164 +1,151 @@
 import streamlit as st
-from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime
 import pytz
+from supabase import create_client, Client
 import plotly.express as px
 
-# --- 1. CONFIGURATION & DATABASE ---
+# --- 1. SETTINGS & CONNECTION ---
 IST = pytz.timezone('Asia/Kolkata')
-st.set_page_config(page_title="B&G Production Master", layout="wide", page_icon="🏭")
-conn = st.connection("supabase", type=SupabaseConnection)
+st.set_page_config(page_title="B&G ERP | Production Master", layout="wide", page_icon="🏗️")
 
-# --- 2. DATA LOADERS (Cached for Speed) ---
-@st.cache_data(ttl=5)
-def get_unified_data():
-    plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
-    prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
-    return pd.DataFrame(plan_res.data or []), pd.DataFrame(prod_res.data or [])
+try:
+    URL = st.secrets["SUPABASE_URL"]
+    KEY = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(URL, KEY)
+except Exception:
+    st.error("❌ Database Connection Error. Check Streamlit Secrets.")
+    st.stop()
 
-df_plan, df_logs = get_unified_data()
+# --- 2. DATABASE FUNCTIONS ---
+def load_data():
+    try:
+        response = supabase.table("production").select("*").order("created_at", desc=True).execute()
+        # Also fetch job details from your projects table to show client names
+        jobs_res = supabase.table("anchor_projects").select("job_no, client_name, project_description").eq("status", "Won").execute()
+        
+        df_logs = pd.DataFrame(response.data) if response.data else pd.DataFrame()
+        df_jobs = pd.DataFrame(jobs_res.data) if jobs_res.data else pd.DataFrame()
+        return df_logs, df_jobs
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
 
-# --- 3. MASTER MAPPINGS ---
+df, df_active_jobs = load_data()
+
+# --- 3. DYNAMIC DROPDOWN LOGIC ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
-universal_gates = [
-    "1. Engineering & MTC Verify", "2. Marking & Cutting", "3. Sub-Assembly & Machining",
-    "4. Shell/Body Fabrication", "5. Main Assembly/Internals", "6. Nozzles & Accessories",
-    "7. Inspection & NDT", "8. Hydro/Pressure Testing", "9. Insulation & Finishing",
-    "10. Final Assembly & Dispatch"
+# Updated Activities based on your Zoho exports (Reactor & Tank)
+default_activities = [
+    "Drawing Preparation", "RM Procurement", "Shell Fabrication", 
+    "Limpet/Jacket Fitting", "Nozzle Fit-up", "Welding", "Grinding", 
+    "Hydro-test", "Painting", "Packing/Dispatch"
 ]
 
-# --- 4. THE UI TABS ---
-tab_plan, tab_work, tab_costing = st.tabs([
-    "🏗️ Production Planning & Gates", 
-    "👷 Daily Worker Productivity", 
-    "💰 Job Costing & Analytics"
-])
+if not df.empty:
+    all_supervisors = sorted(list(set(base_supervisors + [s for s in df["Supervisor"].dropna().unique().tolist() if s not in ["N/A", ""]])))
+    all_workers = sorted([w for w in df["Worker"].dropna().unique().tolist() if w not in ["N/A", ""]])
+    # Pull Job Codes from the Active Jobs table instead of logs for better control
+    all_jobs = sorted(df_active_jobs["job_no"].unique().tolist()) if not df_active_jobs.empty else []
+    all_activities = sorted(list(set(default_activities + [a for a in df["Activity"].dropna().unique().tolist() if a not in ["N/A", ""]])))
+else:
+    all_supervisors = sorted(base_supervisors)
+    all_activities = sorted(default_activities)
+    all_workers, all_jobs = [], []
 
-# --- TAB 1: PRODUCTION PLANNING & QUALITY GATES ---
-with tab_plan:
-    st.subheader("Live Shop Floor Gates & Quality Alerts")
+# --- 4. NAVIGATION ---
+st.sidebar.title("🛠️ B&G ERP Control")
+menu = st.sidebar.radio("Go to:", ["🏗️ Daily Entry", "📊 Job Analytics", "🗂️ Manage Masters"])
+
+# --- PAGE 1: PRODUCTION ENTRY ---
+if menu == "🏗️ Daily Entry":
+    st.title("Daily Production & Engineer Log")
     
-    if not df_plan.empty:
-        # Pre-calculate hours for the "Red Alert" logic
-        hrs_sum = df_logs.groupby('Job_Code')['Hours'].sum().to_dict() if not df_logs.empty else {}
+    with st.form("entry_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            sup = st.selectbox("Supervisor", ["-- Select --"] + all_supervisors)
+            wrk = st.selectbox("Person (Worker/Engineer)", ["-- Select --"] + all_workers)
+            jb = st.selectbox("Job Code", ["-- Select --"] + all_jobs)
+            act = st.selectbox("Activity (Zoho Task)", ["-- Select --"] + all_activities)
+        with col2:
+            unt = st.selectbox("Unit", ["Meters (Mts)", "Components (Nos)", "Joints/Points (Nos)", "Layouts (Nos)"])
+            out = st.number_input("Output Value", min_value=0.0)
+            hrs = st.number_input("Hours Spent", min_value=0.0, step=0.5)
+            nts = st.text_area("Specific Remarks (e.g. Shell A-B Seam)")
 
-        for index, row in df_plan.iterrows():
-            job_id = str(row['job_no'])
-            actual_hrs = hrs_sum.get(job_id, 0)
-            
-            # Simple Budget Logic: 200hrs for heavy equip, 100hrs for light
-            budget = 200 if any(x in row['project_description'].upper() for x in ["REACTOR", "COLUMN", "ANFD"]) else 100
-            is_over = actual_hrs > budget
-
-            with st.container(border=True):
-                # Header Section
-                c1, c2, c3 = st.columns([2, 1, 1])
-                with c1:
-                    st.markdown(f"### Job {job_id} | {row['client_name']}")
-                    st.caption(f"📦 {row['project_description']}")
-                
-                with c2:
-                    color = "normal" if not is_over else "inverse"
-                    st.metric("Man-Hours Used", f"{actual_hrs} Hrs", 
-                              delta=f"{actual_hrs - budget} Over" if is_over else None, 
-                              delta_color=color)
-                
-                with c3:
-                    if row.get('material_shortage'):
-                        st.error(f"🚨 SHORTAGE: {row.get('shortage_details', 'Pending')}")
-                    else:
-                        st.success("✅ Materials OK")
-
-                # Controls Section
-                col_a, col_b, col_c = st.columns([1.5, 1.5, 1])
-                new_gate = col_a.selectbox("Current Gate", universal_gates, 
-                                          index=universal_gates.index(row['drawing_status']) if row['drawing_status'] in universal_gates else 0,
-                                          key=f"gt_{row['id']}")
-                
-                sh_toggle = col_b.toggle("Report Shortage", value=row.get('material_shortage', False), key=f"tg_{row['id']}")
-                sh_note = col_b.text_input("Shortage Detail", value=row.get('shortage_details', ""), key=f"shn_{row['id']}")
-                
-                if col_c.button("Update Status", key=f"sav_{row['id']}", use_container_width=True, type="primary"):
-                    conn.table("anchor_projects").update({
-                        "drawing_status": new_gate,
-                        "material_shortage": sh_toggle,
-                        "shortage_details": sh_note
-                    }).eq("id", row['id']).execute()
-                    st.toast("Updated Successfully")
-                    st.rerun()
-
-                # Critical Checklist Expander
-                with st.expander("🛠️ View Quality Checklist & Budget Progress"):
-                    st.progress(min(actual_hrs/budget, 1.0), text=f"Budget Consumption: {int((actual_hrs/budget)*100)}%")
-                    st.write("---")
-                    qc_cols = st.columns(3)
-                    qc_cols[0].checkbox("MTC/Plate ID Verified", key=f"qc1_{row['id']}")
-                    qc_cols[1].checkbox("Weld Plan Approved", key=f"qc2_{row['id']}")
-                    qc_cols[2].checkbox("NDT/Radiography Clear", key=f"qc3_{row['id']}")
-    else:
-        st.info("No active 'Won' projects found.")
-
-# --- TAB 2: WORKER PRODUCTIVITY (Integrated from bg_app.py) ---
-with tab_work:
-    st.subheader("Daily Productivity Log")
-    
-    with st.form("worker_entry", clear_on_submit=True):
-        f1, f2, f3 = st.columns(3)
-        
-        # Pull dynamic lists for better accuracy
-        all_workers = sorted(df_logs["Worker"].unique().tolist()) if not df_logs.empty else []
-        all_job_codes = sorted(df_plan["job_no"].unique().tolist()) if not df_plan.empty else []
-
-        w_sup = f1.selectbox("Supervisor", base_supervisors)
-        w_name = f1.selectbox("Worker Name", ["-- Select --"] + all_workers)
-        
-        w_job = f2.selectbox("Job Code", ["-- Select --"] + all_job_codes)
-        w_act = f2.selectbox("Activity", ["Welding", "Fitting", "Grinding", "Marking", "Plasma Cutting", "Bending"])
-        
-        w_out = f3.number_input("Output Value", min_value=0.0)
-        w_hrs = f3.number_input("Hours Spent", min_value=0.0)
-        
-        w_nts = st.text_area("Specific Work Notes")
-        
-        if st.form_submit_button("💾 Save to Cloud", use_container_width=True):
-            if "-- Select --" in [w_name, w_job]:
-                st.warning("Worker and Job Code are required.")
+        if st.form_submit_button("💾 Save to Cloud", type="primary"):
+            if "-- Select --" in [sup, wrk, jb, act]:
+                st.warning("⚠️ Please select all required fields.")
             else:
                 payload = {
                     "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
-                    "Supervisor": w_sup, "Worker": w_name, "Job_Code": w_job,
-                    "Activity": w_act, "Unit": "Nos/Mts", "Output": w_out,
-                    "Hours": w_hrs, "Notes": w_nts
+                    "Supervisor": sup, "Worker": wrk, "Job_Code": jb,
+                    "Activity": act, "Unit": unt, "Output": float(out),
+                    "Hours": float(hrs), "Notes": nts
                 }
-                conn.table("production").insert(payload).execute()
-                st.success("Log Saved!")
+                supabase.table("production").insert(payload).execute()
+                st.success(f"✅ Logged for {jb} successfully!")
                 st.rerun()
 
     st.divider()
-    st.write("### Recent Logs (Last 10)")
-    if not df_logs.empty:
-        st.dataframe(df_logs.head(10), use_container_width=True, hide_index=True)
+    st.subheader("📋 Recent Activity")
+    if not df.empty:
+        log_display = df[df['Notes'] != "SYSTEM_NEW_ITEM"].head(10)
+        st.dataframe(log_display[['created_at', 'Worker', 'Job_Code', 'Activity', 'Hours']], use_container_width=True)
 
-# --- TAB 3: JOB COSTING & ANALYTICS ---
-with tab_costing:
-    st.subheader("💰 Financial & Man-Hour Analytics")
+# --- PAGE 2: JOB ANALYTICS (The Zoho Replacement) ---
+elif menu == "📊 Job Analytics":
+    st.title("Project Costing & Man-Hour Analytics")
     
-    if not df_logs.empty:
-        clean_df = df_logs[df_logs['Notes'] != "SYSTEM_NEW_ITEM"].copy()
+    if not df.empty:
+        clean_df = df[df['Notes'] != "SYSTEM_NEW_ITEM"].copy()
         
-        # Chart 1: Job vs Hours
-        cost_df = clean_df.groupby('Job_Code')['Hours'].sum().reset_index()
-        fig_cost = px.bar(cost_df, x='Job_Code', y='Hours', title="Cumulative Man-Hours by Job", color='Hours')
-        st.plotly_chart(fig_cost, use_container_width=True)
+        # Summary Metrics
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Man-Hours Logged", f"{clean_df['Hours'].sum():,.1f}")
+        m2.metric("Active Projects", len(clean_df['Job_Code'].unique()))
+        m3.metric("Avg Hours/Log", f"{(clean_df['Hours'].mean()):,.1f}")
 
-        # Chart 2: Activity Breakdown
-        act_df = clean_df.groupby('Activity')['Hours'].sum().reset_index()
-        fig_pie = px.pie(act_df, values='Hours', names='Activity', title="Where is the time going?", hole=0.3)
-        st.plotly_chart(fig_pie, use_container_width=True)
+        # Job Wise Breakdown
+        st.subheader("⏱️ Hours Spent per Job (Costing)")
+        job_hrs = clean_df.groupby('Job_Code')['Hours'].sum().reset_index()
+        fig = px.bar(job_hrs, x='Job_Code', y='Hours', color='Hours', title="Cumulative Man-Hours")
+        st.plotly_chart(fig, use_container_width=True)
         
-        # Download Master Data
+        # Activity Breakdown
+        st.subheader("🛠️ Stage-wise Distribution")
+        act_hrs = clean_df.groupby('Activity')['Hours'].sum().reset_index()
+        fig2 = px.pie(act_hrs, values='Hours', names='Activity', hole=0.4)
+        st.plotly_chart(fig2, use_container_width=True)
+        
+        # Raw Data Download
         csv = clean_df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download Master Productivity Sheet", data=csv, file_name="BG_Master_Costing.csv")
+        st.download_button("📥 Download Master CSV for Audit", data=csv, file_name="BG_ERP_Master_Logs.csv")
     else:
-        st.info("Log data for analysis.")
+        st.info("No data available for analytics.")
+
+# --- PAGE 3: MANAGE MASTERS ---
+elif menu == "🗂️ Manage Masters":
+    st.title("ERP Master Lists")
+    st.info("Add new resources here to update the dropdowns.")
+    
+    def add_item(col, val):
+        payload = {
+            "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'), 
+            "Supervisor": val if col == "Supervisor" else "N/A", 
+            "Worker": val if col == "Worker" else "N/A", 
+            "Job_Code": val if col == "Job_Code" else "N/A", 
+            "Activity": val if col == "Activity" else "N/A", 
+            "Unit": "N/A", "Output": 0, "Hours": 0, "Notes": "SYSTEM_NEW_ITEM"
+        }
+        supabase.table("production").insert(payload).execute()
+        st.success(f"✅ Added {val} to Master.")
+        st.rerun()
+
+    c1, c2 = st.columns(2)
+    with c1:
+        new_w = st.text_input("New Worker/Engineer Name")
+        if st.button("Add Person") and new_w: add_item("Worker", new_w)
+    with c2:
+        new_act = st.text_input("New Activity/Task Name")
+        if st.button("Add Activity") and new_act: add_item("Activity", new_act)
