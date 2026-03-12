@@ -10,29 +10,30 @@ st.set_page_config(page_title="B&G Production Control", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 IST = pytz.timezone('Asia/Kolkata')
 
-# --- 2. DATA ENGINE (With Protection) ---
+# --- 2. DATA ENGINE ---
 def get_data():
-    # Essential Tables
     p = conn.table("anchor_projects").select("*").eq("status", "Won").execute()
     l = conn.table("production").select("*").order("created_at", desc=True).execute()
-    
-    # Optional Purchase Table (Prevents APIError if table is missing)
     try:
         pur = conn.table("purchase_orders").select("*").execute()
         df_pur = pd.DataFrame(pur.data or [])
     except Exception:
-        df_pur = pd.DataFrame(columns=['job_no', 'item_name', 'status', 'expected_delivery'])
+        df_pur = pd.DataFrame(columns=['job_no', 'item_name', 'status'])
     
     df_p = pd.DataFrame(p.data or [])
     df_l = pd.DataFrame(l.data or [])
-    
     if not df_p.empty:
         df_p['created_at'] = pd.to_datetime(df_p['created_at']).dt.tz_localize(None)
     return df_p, df_l, df_pur
 
 df_jobs, df_logs, df_purchase = get_data()
 
-# --- 3. GLOBAL PLANNING RECIPE ---
+# Helper to pull masters from the database
+def get_master(m_type):
+    if df_logs.empty: return []
+    return sorted(df_logs[df_logs['Notes'] == m_type]['Worker'].unique().tolist())
+
+# --- 3. GLOBAL RECIPE ---
 DEFAULT_TASKS = [
     {"Activity": "1. Engineering", "Days": 7, "Type": "Sequential"},
     {"Activity": "2. Marking/Cutting", "Days": 5, "Type": "Sequential"},
@@ -45,134 +46,123 @@ DEFAULT_TASKS = [
 
 menu = st.sidebar.radio("Navigate", ["📊 Founder Dashboard", "📅 Job-wise Activity Plan", "👷 Daily Logging", "🛠️ Master Data"])
 
-# --- TAB 1: FOUNDER DASHBOARD ---
-if menu == "📊 Founder Dashboard":
-    st.header("📊 Executive Production Control")
-    
-    # KPI Row
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Active Projects", len(df_jobs))
-    k2.metric("Total Man-Hours", f"{df_logs['Hours'].sum():.1f}")
-    k3.metric("Material Alerts", len(df_purchase[df_purchase['status'] == 'Shortage']) if not df_purchase.empty else 0)
+# --- TAB: MASTER DATA ---
+if menu == "🛠️ Master Data":
+    st.header("🛠️ Resource Masters")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        nw = st.text_input("New Worker")
+        if st.button("Add Worker") and nw:
+            conn.table("production").insert({"Worker": nw, "Notes": "WORKER_MASTER", "Hours": 0}).execute()
+            st.success("Worker Registered")
+        nm = st.text_input("New Machine")
+        if st.button("Add Machine") and nm:
+            conn.table("production").insert({"Worker": nm, "Notes": "MACHINE_MASTER", "Hours": 0}).execute()
+            st.success("Machine Registered")
+    with c2:
+        ne = st.text_input("New Engineer")
+        if st.button("Add Engineer") and ne:
+            conn.table("production").insert({"Worker": ne, "Notes": "ENGINEER_MASTER", "Hours": 0}).execute()
+            st.success("Engineer Registered")
+    with c3:
+        nc = st.text_input("New Customer")
+        if st.button("Add Customer") and nc:
+            conn.table("production").insert({"Worker": nc, "Notes": "CUSTOMER_MASTER", "Hours": 0}).execute()
+            st.success("Customer Registered")
 
-    # 1. DISPATCH COUNTDOWN
-    st.subheader("🏁 Dispatch Countdown & Urgency")
-    if not df_jobs.empty:
-        countdown_data = []
-        for _, job in df_jobs.iterrows():
-            # Critical Path Calculation for Dispatch Date
-            seq_days = sum([t['Days'] for t in DEFAULT_TASKS if t['Type'] == "Sequential"])
-            dispatch_date = job['created_at'] + timedelta(days=seq_days)
-            days_left = (dispatch_date - datetime.now()).days
-            
-            countdown_data.append({
-                "Job No": job['job_no'],
-                "Client": job['client_name'],
-                "Planned Dispatch": dispatch_date.strftime('%d-%b-%Y'),
-                "Days Left": days_left,
-                "Status": "🔴 OVERDUE" if days_left < 0 else "🟢 ON TRACK"
-            })
-        st.table(pd.DataFrame(countdown_data).sort_values("Days Left"))
-
-    # 2. MATERIAL SHORTAGE NOTIFICATION
-    st.subheader("⚠️ Material Shortages (Purchase Sync)")
-    if not df_purchase.empty:
-        shortages = df_purchase[df_purchase['status'].isin(['Shortage', 'Delayed', 'Pending'])]
-        if not shortages.empty:
-            st.error("Purchase Team reports missing materials for these jobs:")
-            st.dataframe(shortages[['job_no', 'item_name', 'status', 'expected_delivery']], use_container_width=True)
-        else:
-            st.success("All materials confirmed in-house.")
-
-# --- TAB 2: JOB-WISE ACTIVITY PLAN ---
+# --- TAB: JOB-WISE ACTIVITY PLAN ---
 elif menu == "📅 Job-wise Activity Plan":
-    st.header("📅 Critical Path Scheduler")
+    st.header("📅 Job-wise Activity Plan & Lead Time Planning")
     if not df_jobs.empty:
-        selected_job = st.selectbox("Select Job", df_jobs['job_no'].unique())
-        job_data = df_jobs[df_jobs['job_no'] == selected_job].iloc[0]
+        # Inputs Section
+        col1, col2, col3, col4 = st.columns(4)
+        sel_job = col1.selectbox("Select Job No", df_jobs['job_no'].unique())
+        sel_cust = col2.selectbox("Customer Name", get_master("CUSTOMER_MASTER"))
+        sel_eng = col3.selectbox("Engineer In-Charge", get_master("ENGINEER_MASTER"))
+        sel_unit = col4.selectbox("Unit", ["Unit 1", "Unit 2", "Unit 3"])
         
-        # Interactive Lead Time Editor
-        st.subheader("Edit Lead Times for this Job")
-        edited_df = st.data_editor(pd.DataFrame(DEFAULT_TASKS), hide_index=True, key="job_editor")
+        col1, col2 = st.columns(2)
+        start_date_input = col1.date_input("Project Start Date Override", datetime.now())
+        
+        # 🟢 SECTION: Critical Material Notification
+        st.subheader("🛒 Critical Material Notification")
+        job_mat = df_purchase[df_purchase['job_no'] == str(sel_job)]
+        if not job_mat.empty:
+            st.warning(f"Material Status for {sel_job}")
+            st.table(job_mat[['item_name', 'status']])
+        else:
+            st.info("No material shortages reported for this job in Purchase Console.")
 
-        # RECALCULATION WITH MERGE LOGIC
-        start_date = job_data['created_at']
+        # 🟢 SECTION: Lead Time Planning
+        st.subheader("📝 Lead Time Planning")
+        edited_plan = st.data_editor(pd.DataFrame(DEFAULT_TASKS), hide_index=True, key="plan_edit")
+
+        # 🟢 SECTION: Actual vs Planned
+        st.subheader("📊 Actual vs Planned")
+        start_dt = pd.to_datetime(start_date_input)
         plan_results = []
-        kettle_end = start_date
-        drive_end = start_date + timedelta(days=5)
+        k_end, d_end = start_dt, start_dt + timedelta(days=5)
 
-        for i, row in edited_df.iterrows():
-            if i <= 2: # Kettle Branch
-                t_start, t_end = kettle_end, kettle_end + timedelta(days=row['Days'])
-                kettle_end = t_end
-                path = "Critical"
-            elif i == 3: # Parallel Drive
-                t_start, t_end = start_date + timedelta(days=5), (start_date + timedelta(days=5)) + timedelta(days=row['Days'])
-                drive_end = t_end
-                path = "Buffer"
-            else: # Merge Point (Assembly)
-                # Assembly waits for the MAX of Kettle vs Drive
-                m_start = max(kettle_end, drive_end) if i == 4 else kettle_end
-                t_start, t_end = m_start, m_start + timedelta(days=row['Days'])
-                kettle_end = t_end
-                path = "Critical"
+        for i, row in edited_plan.iterrows():
+            if i <= 2: # Sequential
+                t_s, t_e = k_end, k_end + timedelta(days=row['Days']); k_end = t_e
+            elif i == 3: # Parallel
+                t_s, t_e = start_dt + timedelta(days=5), (start_dt + timedelta(days=5)) + timedelta(days=row['Days']); d_end = t_e
+            else: # Merge
+                m_s = max(k_end, d_end) if i == 4 else k_end
+                t_s, t_e = m_s, m_s + timedelta(days=row['Days']); k_end = t_e
             
-            # Fetch Actuals
-            act_hrs = df_logs[(df_logs['Job_Code'] == str(selected_job)) & (df_logs['Activity'] == row['Activity'])]['Hours'].sum() if not df_logs.empty else 0
-
+            act_hrs = df_logs[(df_logs['Job_Code'] == str(sel_job)) & (df_logs['Activity'] == row['Activity'])]['Hours'].sum() if not df_logs.empty else 0
             plan_results.append({
-                "Activity": row['Activity'], "Start": t_start, "End": t_end, 
-                "Planned Days": row['Days'], "Actual Hrs": act_hrs, "Path": path
+                "Activity": row['Activity'], "Start Date": t_s.strftime('%d-%b'), 
+                "End Date": t_e.strftime('%d-%b'), "Planned Days": row['Days'], 
+                "Actual Hrs": act_hrs, "Status": "✅" if act_hrs > 0 else "⏳"
             })
+        st.table(pd.DataFrame(plan_results))
 
-        df_cp = pd.DataFrame(plan_results)
-        
-        # Display Plan Table
-        view_df = df_cp.copy()
-        view_df['Start'] = view_df['Start'].dt.strftime('%d-%b')
-        view_df['End'] = view_df['End'].dt.strftime('%d-%b')
-        st.dataframe(view_df[['Activity', 'Start', 'End', 'Planned Days', 'Actual Hrs', 'Path']], use_container_width=True)
-
-        if st.button("📊 Show Critical Path Gantt"):
-            fig = px.timeline(df_cp, x_start="Start", x_end="End", y="Activity", color="Path",
-                             color_discrete_map={"Critical": "#D62728", "Buffer": "#1F77B4"})
-            fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig, use_container_width=True)
-            
-
-# --- TAB 3: DAILY LOGGING ---
+# --- TAB: DAILY LOGGING ---
 elif menu == "👷 Daily Logging":
     st.header("👷 Shop Floor Productivity Log")
-    with st.form("log_form_vfinal", clear_on_submit=True):
+    with st.form("productivity_log", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        f_job = c1.selectbox("Job Code", df_jobs['job_no'].unique() if not df_jobs.empty else [])
-        f_act = c1.selectbox("Activity", sorted(list(set([t['Activity'] for t in DEFAULT_TASKS] + (df_logs['Activity'].unique().tolist() if not df_logs.empty else [])))))
-        
-        # Pull Workers from Master Data (Notes == MASTER_DATA)
-        worker_master = df_logs[df_logs['Notes'] == 'MASTER_DATA']['Worker'].unique().tolist() if not df_logs.empty else []
-        f_wrk = c2.selectbox("Worker/Operator", worker_master if worker_master else ["No Workers Found"])
-        f_hrs = c2.number_input("Actual Hours Spent", min_value=0.0, step=0.5)
-        f_out = c2.number_input("Output (Mts/Joints)", min_value=0.0)
+        f_job = c1.selectbox("Job No", df_jobs['job_no'].unique() if not df_jobs.empty else [])
+        f_cust = c1.selectbox("Customer", get_master("CUSTOMER_MASTER"))
+        f_eng = c2.selectbox("Engineer Logging", get_master("ENGINEER_MASTER"))
+        f_mach = c2.selectbox("Machine/Station", get_master("MACHINE_MASTER"))
+        f_wrk = c1.selectbox("Worker", get_master("WORKER_MASTER"))
+        f_act = c2.selectbox("Activity", [t['Activity'] for t in DEFAULT_TASKS])
+        f_hrs = c2.number_input("Hours Spent", min_value=0.0, step=0.5)
         
         if st.form_submit_button("💾 Save Entry", type="primary"):
             conn.table("production").insert({
-                "Job_Code": str(f_job), "Worker": f_wrk, "Activity": f_act, 
-                "Hours": f_hrs, "Output": f_out, "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
+                "Job_Code": str(f_job), "Worker": f_wrk, "Supervisor": f_eng, 
+                "Notes": f_cust, "Activity": f_act, "Hours": f_hrs, "Machine": f_mach,
+                "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
             }).execute()
-            st.success("Log Saved!")
-            st.rerun()
+            st.success("Log Entry Saved.")
 
-# --- TAB 4: MASTER DATA ---
-elif menu == "🛠️ Master Data":
-    st.header("🛠️ Production Masters")
-    col1, col2 = st.columns(2)
-    with col1:
-        new_w = st.text_input("Register New Worker")
-        if st.button("Add Worker") and new_w:
-            conn.table("production").insert({"Worker": new_w, "Notes": "MASTER_DATA", "Hours": 0}).execute()
-            st.success(f"{new_w} added to worker pool.")
-    with col2:
-        new_m = st.text_input("Register New Machine/Station")
-        if st.button("Add Machine") and new_m:
-            conn.table("production").insert({"Supervisor": new_m, "Notes": "MASTER_DATA", "Hours": 0}).execute()
-            st.success(f"Station {new_m} registered.")
+# --- TAB: FOUNDER DASHBOARD ---
+elif menu == "📊 Founder Dashboard":
+    st.header("📊 Executive Production Control")
+    if not df_logs.empty:
+        # Filter out Master Data entries
+        main_df = df_logs[~df_logs['Notes'].str.contains('MASTER', na=False)].copy()
+        main_df['Date'] = pd.to_datetime(main_df['created_at']).dt.date
+
+        tab1, tab2, tab3, tab4 = st.tabs(["Worker Analytics", "Job Analytics", "Customer Analytics", "Machine Analytics"])
+        
+        with tab1:
+            st.subheader("Worker-wise Total Hours")
+            st.table(main_df.groupby('Worker')['Hours'].sum().reset_index())
+        with tab2:
+            st.subheader("Job-wise Performance")
+            st.table(main_df.groupby('Job_Code')['Hours'].sum().reset_index())
+        with tab3:
+            st.subheader("Customer-wise Loading")
+            st.table(main_df.groupby('Notes')['Hours'].sum().reset_index().rename(columns={'Notes':'Customer'}))
+        with tab4:
+            st.subheader("Machine/Station Load")
+            st.table(main_df.groupby('Machine')['Hours'].sum().reset_index())
+
+        st.subheader("📅 Day-wise Total Shop Load")
+        st.line_chart(main_df.groupby('Date')['Hours'].sum())
