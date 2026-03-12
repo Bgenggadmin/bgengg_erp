@@ -2,137 +2,130 @@ import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, timedelta
-import pytz
 import plotly.express as px
 
-# --- 1. SETUP ---
-IST = pytz.timezone('Asia/Kolkata')
-st.set_page_config(page_title="B&G ERP | Founder Dashboard", layout="wide", page_icon="🏗️")
+# --- 1. SETTINGS & CONNECTION ---
+st.set_page_config(page_title="Planning & Scheduling", layout="wide", page_icon="🗓️")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. THE MASTER ACTIVITY PLAN (DEPENDENCY LOGIC) ---
-PLANNING_RECIPE = {
-    "1. Engineering & MTC": {"dur": 7, "deps": [0]},
-    "2. Shell Fabrication": {"dur": 15, "deps": [1]},
-    "3. Jacket/Limpet Fitting": {"dur": 10, "deps": [2]},
-    "4. DRIVE ASSEMBLY (Parallel)": {"dur": 12, "deps": [1]},
-    "5. MAIN ASSEMBLY": {"dur": 7, "deps": [3, 4]},
-    "6. Hydro-test": {"dur": 4, "deps": [5]},
-    "7. Dispatch": {"dur": 2, "deps": [6]}
+# --- 2. THE MASTER PLANNING RECIPE ---
+# 0 = Project Start. Other numbers = Gate ID dependency.
+# This replaces Zoho's dependency engine.
+PLANNING_LOGIC = {
+    "1. Engineering & MTC": {"dur": 7, "deps": [0], "type": "Main"},
+    "2. Shell Fabrication": {"dur": 15, "deps": [1], "type": "Main"},
+    "3. Jacket/Limpet Fitting": {"dur": 10, "deps": [2], "type": "Main"},
+    "4. DRIVE ASSEMBLY (Parallel)": {"dur": 12, "deps": [1], "type": "Parallel"},
+    "5. INTERNAL COIL FAB (Parallel)": {"dur": 10, "deps": [1], "type": "Parallel"},
+    "6. MAIN ASSEMBLY": {"dur": 7, "deps": [3, 4, 5], "type": "Main"}, # Waits for all 3
+    "7. Hydro-test & NDT": {"dur": 4, "deps": [6], "type": "Main"},
+    "8. Finishing & Painting": {"dur": 3, "deps": [7], "type": "Main"},
+    "9. Dispatch": {"dur": 1, "deps": [8], "type": "Main"}
 }
 
-@st.cache_data(ttl=2)
-def get_all_data():
-    p = conn.table("anchor_projects").select("*").eq("status", "Won").execute()
-    l = conn.table("production").select("*").order("created_at", desc=True).execute()
-    df_projects = pd.DataFrame(p.data or [])
-    df_logs = pd.DataFrame(l.data or [])
+@st.cache_data(ttl=5)
+def load_planning_data():
+    # Fetch Won Projects from Anchor Console
+    res = conn.table("anchor_projects").select("*").eq("status", "Won").execute()
+    df = pd.DataFrame(res.data or [])
+    if not df.empty:
+        # Convert to naive datetime to prevent TypeError during comparison
+        df['created_at'] = pd.to_datetime(df['created_at']).dt.tz_localize(None)
+    return df
+
+df_projects = load_planning_data()
+
+# --- 3. THE SCHEDULING ENGINE ---
+def generate_schedule(project_start, recipe):
+    schedule = []
+    finish_times = {0: project_start}
     
-    # Crucial Fix: Ensure 'created_at' is datetime and timezone-naive for comparison
+    for i, (name, val) in enumerate(recipe.items(), 1):
+        # Start time is the maximum finish time of all dependencies
+        start_time = max([finish_times[d] for d in val['deps']])
+        end_time = start_time + timedelta(days=val['dur'])
+        finish_times[i] = end_time
+        
+        schedule.append({
+            "Task": name,
+            "Start": start_time,
+            "Finish": end_time,
+            "Category": val['type']
+        })
+    return pd.DataFrame(schedule)
+
+# --- 4. INTERFACE ---
+st.title("🏗️ Project Master Scheduler")
+st.markdown("### *Lead-Time Based Parallel Planning (Zoho Replacement)*")
+
+tab_gantt, tab_status, tab_masters = st.tabs(["📊 Master Gantt Chart", "📍 Current Stage Update", "🛠️ Manage Masters"])
+
+# --- TAB 1: MASTER GANTT ---
+with tab_gantt:
     if not df_projects.empty:
-        df_projects['created_at'] = pd.to_datetime(df_projects['created_at']).dt.tz_localize(None)
-    if not df_logs.empty:
-        df_logs['created_at'] = pd.to_datetime(df_logs['created_at']).dt.tz_localize(None)
+        all_schedules = []
+        for _, job in df_projects.iterrows():
+            job_sch = generate_schedule(job['created_at'], PLANNING_LOGIC)
+            job_sch['Job_Code'] = f"{job['job_no']} - {job['client_name']}"
+            all_schedules.append(job_sch)
         
-    return df_projects, df_logs
+        master_gantt_df = pd.concat(all_schedules)
+        
+        fig = px.timeline(
+            master_gantt_df, 
+            x_start="Start", 
+            x_end="Finish", 
+            y="Job_Code", 
+            color="Task",
+            hover_data=["Category"],
+            title="Consolidated Shop-Floor Timeline"
+        )
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No 'Won' projects found in the database.")
 
-df_p, df_l = get_all_data()
+# --- TAB 2: CURRENT STAGE UPDATE ---
+with tab_status:
+    st.subheader("Update Project Milestones")
+    if not df_projects.empty:
+        for _, job in df_projects.iterrows():
+            with st.container(border=True):
+                c1, c2, c3 = st.columns([2, 1, 1])
+                c1.markdown(f"**Job {job['job_no']}** | {job['client_name']}")
+                c1.caption(f"Details: {job['project_description']}")
+                
+                # Dropdown for current gate (replaces Zoho task tracking)
+                current_gate = job.get('drawing_status', "1. Engineering & MTC")
+                all_gates = list(PLANNING_LOGIC.keys())
+                
+                new_gate = c2.selectbox(
+                    "Current Gate", 
+                    all_gates, 
+                    index=all_gates.index(current_gate) if current_gate in all_gates else 0,
+                    key=f"gate_{job['id']}"
+                )
+                
+                if c3.button("Update Progress", key=f"upd_{job['id']}", type="primary"):
+                    conn.table("anchor_projects").update({"drawing_status": new_gate}).eq("id", job['id']).execute()
+                    st.toast(f"Job {job['job_no']} updated to {new_gate}")
+                    st.rerun()
 
-# --- 3. LOGIC: MERGING PLAN VS ACTUAL (FIXED COMPARISON) ---
-def get_plan_vs_actual(df_jobs, df_logs):
-    rows = []
-    now_naive = datetime.now().replace(microsecond=0) # Naive comparison time
+# --- TAB 3: MANAGE MASTERS ---
+with tab_masters:
+    st.subheader("Planning Master Data")
+    st.info("Since this app replaces Zoho, use this section to manage your technical parameters.")
     
-    for _, job in df_jobs.iterrows():
-        start_date = job['created_at']
-        finish_map = {0: start_date}
-        
-        for i, (name, val) in enumerate(PLANNING_RECIPE.items(), 1):
-            # CALCULATE PLAN
-            p_start = max([finish_map[d] for d in val['deps']])
-            p_end = p_start + timedelta(days=val['dur'])
-            finish_map[i] = p_end
-            
-            # CALCULATE ACTUAL (From Logs)
-            act_hrs = 0
-            if not df_logs.empty:
-                job_act_logs = df_logs[(df_logs['Job_Code'] == str(job['job_no'])) & (df_logs['Activity'] == name)]
-                act_hrs = job_act_logs['Hours'].sum()
-            
-            act_status = "In Progress" if act_hrs > 0 else "Pending"
-            
-            # FIXED COMPARISON LOGIC
-            is_delayed = (now_naive > p_end) and (act_status == "Pending")
-
-            rows.append({
-                "Job": job['job_no'],
-                "Activity": name,
-                "Planned Finish": p_end.strftime('%d-%b'),
-                "Actual Hrs": act_hrs,
-                "Status": "🔴 DELAYED" if is_delayed else "🟢 On Track" if act_hrs > 0 else "⚪ Waiting",
-            })
-    return pd.DataFrame(rows)
-
-# --- 4. DASHBOARD TABS ---
-tab_founder, tab_planning, tab_entry = st.tabs(["📈 Founder Dashboard", "🗓️ Activity Plan", "👷 Shop Entry"])
-
-with tab_founder:
-    st.subheader("Founder Control Tower")
-    if not df_p.empty:
-        df_analysis = get_plan_vs_actual(df_p, df_l)
-        
-        # Delay Summary
-        delayed_df = df_analysis[df_analysis['Status'] == "🔴 DELAYED"]
-        if not delayed_df.empty:
-            st.error(f"🚨 {len(delayed_df)} Activities are behind schedule!")
-            st.dataframe(delayed_df, use_container_width=True)
-        else:
-            st.success("✅ All active jobs are within planned timelines.")
-
-        # Analytics Charts
-        c1, c2 = st.columns(2)
-        if not df_l.empty:
-            with c1:
-                fig_pie = px.pie(df_l, values='Hours', names='Activity', title="Man-Hour Distribution", hole=0.4)
-                st.plotly_chart(fig_pie, use_container_width=True)
-            with c2:
-                fig_bar = px.bar(df_l.groupby('Worker')['Hours'].sum().reset_index(), x='Worker', y='Hours', title="Worker Workload (Total Hrs)")
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-with tab_planning:
-    st.subheader("Parallel Project Gantt")
-    if not df_p.empty:
-        # Generate data for Timeline
-        gantt_list = []
-        for _, job in df_p.iterrows():
-            start = job['created_at']
-            f_map = {0: start}
-            for i, (name, val) in enumerate(PLANNING_RECIPE.items(), 1):
-                ts = max([f_map[d] for d in val['deps']])
-                te = ts + timedelta(days=val['dur'])
-                f_map[i] = te
-                gantt_list.append({"Job": job['job_no'], "Task": name, "Start": ts, "Finish": te, "Type": "Parallel" if "Parallel" in name else "Standard"})
-        
-        df_g = pd.DataFrame(gantt_list)
-        fig_g = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Task", title="Automatic Schedule")
-        fig_g.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig_g, use_container_width=True)
-
-with tab_entry:
-    st.subheader("New Productivity Log")
-    with st.form("entry_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        sel_job = col1.selectbox("Select Job Code", df_p['job_no'].unique() if not df_p.empty else [])
-        sel_act = col1.selectbox("Select Activity", list(PLANNING_RECIPE.keys()))
-        sel_wrk = col2.selectbox("Worker Name", sorted(df_l['Worker'].unique()) if not df_l.empty else ["Add in Master"])
-        in_hrs = col2.number_input("Hours Spent", min_value=0.0, step=0.5)
-        in_out = col2.number_input("Output (Mts/Nos)", min_value=0.0)
-        
-        if st.form_submit_button("Submit Work Log"):
-            conn.table("production").insert({
-                "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
-                "Job_Code": str(sel_job), "Activity": sel_act, "Worker": sel_wrk,
-                "Hours": in_hrs, "Output": in_out, "Notes": "Verified Entry"
-            }).execute()
-            st.success("Log Saved Successfully!")
-            st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Current Lead Times (Read Only)**")
+        st.table(pd.DataFrame([
+            {"Task": k, "Duration (Days)": v['dur']} for k, v in PLANNING_LOGIC.items()
+        ]))
+    
+    with col2:
+        st.write("**Add New Project Metadata**")
+        new_tag = st.text_input("New Custom Activity Name")
+        if st.button("Register Activity"):
+            # This would allow you to expand the dropdowns in App 2
+            st.success("New Activity Registered for Shop Floor Monitor.")
