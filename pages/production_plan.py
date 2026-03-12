@@ -25,15 +25,26 @@ PLANNING_RECIPE = {
 def get_all_data():
     p = conn.table("anchor_projects").select("*").eq("status", "Won").execute()
     l = conn.table("production").select("*").order("created_at", desc=True).execute()
-    return pd.DataFrame(p.data or []), pd.DataFrame(l.data or [])
+    df_projects = pd.DataFrame(p.data or [])
+    df_logs = pd.DataFrame(l.data or [])
+    
+    # Crucial Fix: Ensure 'created_at' is datetime and timezone-naive for comparison
+    if not df_projects.empty:
+        df_projects['created_at'] = pd.to_datetime(df_projects['created_at']).dt.tz_localize(None)
+    if not df_logs.empty:
+        df_logs['created_at'] = pd.to_datetime(df_logs['created_at']).dt.tz_localize(None)
+        
+    return df_projects, df_logs
 
 df_p, df_l = get_all_data()
 
-# --- 3. LOGIC: MERGING PLAN VS ACTUAL ---
+# --- 3. LOGIC: MERGING PLAN VS ACTUAL (FIXED COMPARISON) ---
 def get_plan_vs_actual(df_jobs, df_logs):
     rows = []
+    now_naive = datetime.now().replace(microsecond=0) # Naive comparison time
+    
     for _, job in df_jobs.iterrows():
-        start_date = pd.to_datetime(job['created_at'])
+        start_date = job['created_at']
         finish_map = {0: start_date}
         
         for i, (name, val) in enumerate(PLANNING_RECIPE.items(), 1):
@@ -43,83 +54,85 @@ def get_plan_vs_actual(df_jobs, df_logs):
             finish_map[i] = p_end
             
             # CALCULATE ACTUAL (From Logs)
-            job_act_logs = df_logs[(df_logs['Job_Code'] == str(job['job_no'])) & (df_logs['Activity'] == name)]
-            act_hrs = job_act_logs['Hours'].sum()
+            act_hrs = 0
+            if not df_logs.empty:
+                job_act_logs = df_logs[(df_logs['Job_Code'] == str(job['job_no'])) & (df_logs['Activity'] == name)]
+                act_hrs = job_act_logs['Hours'].sum()
+            
             act_status = "In Progress" if act_hrs > 0 else "Pending"
             
-            # Identify Delays
-            is_delayed = (datetime.now(IST).replace(tzinfo=None) > p_end) and (act_status == "Pending")
+            # FIXED COMPARISON LOGIC
+            is_delayed = (now_naive > p_end) and (act_status == "Pending")
 
             rows.append({
                 "Job": job['job_no'],
                 "Activity": name,
                 "Planned Finish": p_end.strftime('%d-%b'),
-                "Actual Hrs Logged": act_hrs,
+                "Actual Hrs": act_hrs,
                 "Status": "🔴 DELAYED" if is_delayed else "🟢 On Track" if act_hrs > 0 else "⚪ Waiting",
-                "Progress": f"{act_hrs} Hrs"
             })
     return pd.DataFrame(rows)
 
 # --- 4. DASHBOARD TABS ---
 tab_founder, tab_planning, tab_entry = st.tabs(["📈 Founder Dashboard", "🗓️ Activity Plan", "👷 Shop Entry"])
 
-# --- TAB 1: FOUNDER DASHBOARD ---
 with tab_founder:
-    st.subheader("Executive Control: Plan vs. Logs")
+    st.subheader("Founder Control Tower")
     if not df_p.empty:
         df_analysis = get_plan_vs_actual(df_p, df_l)
         
-        # Quick Alert for Delayed Activities
-        delays = df_analysis[df_analysis['Status'] == "🔴 DELAYED"]
-        if not delays.empty:
-            st.error(f"⚠️ Warning: {len(delays)} activities have missed their Planned Finish dates!")
-            st.dataframe(delays, use_container_width=True)
+        # Delay Summary
+        delayed_df = df_analysis[df_analysis['Status'] == "🔴 DELAYED"]
+        if not delayed_df.empty:
+            st.error(f"🚨 {len(delayed_df)} Activities are behind schedule!")
+            st.dataframe(delayed_df, use_container_width=True)
+        else:
+            st.success("✅ All active jobs are within planned timelines.")
 
-        # Activity Breakdown Pie
+        # Analytics Charts
         c1, c2 = st.columns(2)
-        with c1:
-            st.write("**Hours Spent per Activity**")
-            fig = px.pie(df_l[df_l['Notes'] != "SYSTEM_NEW_ITEM"], values='Hours', names='Activity', hole=0.4)
-            st.plotly_chart(fig, use_container_width=True)
-        with c2:
-            st.write("**Resource Distribution**")
-            fig2 = px.bar(df_l[df_l['Notes'] != "SYSTEM_NEW_ITEM"].groupby('Worker')['Hours'].sum().reset_index(), x='Worker', y='Hours')
-            st.plotly_chart(fig2, use_container_width=True)
+        if not df_l.empty:
+            with c1:
+                fig_pie = px.pie(df_l, values='Hours', names='Activity', title="Man-Hour Distribution", hole=0.4)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            with c2:
+                fig_bar = px.bar(df_l.groupby('Worker')['Hours'].sum().reset_index(), x='Worker', y='Hours', title="Worker Workload (Total Hrs)")
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-# --- TAB 2: ACTIVITY PLAN (GANTT) ---
 with tab_planning:
-    st.subheader("Parallel Master Gantt")
+    st.subheader("Parallel Project Gantt")
     if not df_p.empty:
-        # Drawing the Gantt chart using Calculated Dates
-        gantt_rows = []
+        # Generate data for Timeline
+        gantt_list = []
         for _, job in df_p.iterrows():
-            start_date = pd.to_datetime(job['created_at'])
-            finish_map = {0: start_date}
+            start = job['created_at']
+            f_map = {0: start}
             for i, (name, val) in enumerate(PLANNING_RECIPE.items(), 1):
-                t_s = max([finish_map[d] for d in val['deps']])
-                t_e = t_s + timedelta(days=val['dur'])
-                finish_map[i] = t_e
-                gantt_rows.append({"Job": job['job_no'], "Task": name, "Start": t_s, "Finish": t_e})
+                ts = max([f_map[d] for d in val['deps']])
+                te = ts + timedelta(days=val['dur'])
+                f_map[i] = te
+                gantt_list.append({"Job": job['job_no'], "Task": name, "Start": ts, "Finish": te, "Type": "Parallel" if "Parallel" in name else "Standard"})
         
-        fig_g = px.timeline(pd.DataFrame(gantt_rows), x_start="Start", x_end="Finish", y="Job", color="Task")
+        df_g = pd.DataFrame(gantt_list)
+        fig_g = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Task", title="Automatic Schedule")
         fig_g.update_yaxes(autorange="reversed")
         st.plotly_chart(fig_g, use_container_width=True)
 
-# --- TAB 3: SHOP ENTRY (LOGS) ---
 with tab_entry:
-    st.subheader("Daily Productivity Log")
-    with st.form("entry", clear_on_submit=True):
+    st.subheader("New Productivity Log")
+    with st.form("entry_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
-        f_job = col1.selectbox("Job", df_p['job_no'].unique() if not df_p.empty else [])
-        f_act = col1.selectbox("Activity", list(PLANNING_RECIPE.keys()))
-        f_wrk = col2.selectbox("Worker", df_l['Worker'].unique() if not df_l.empty else [])
-        f_hrs = col2.number_input("Hours", min_value=0.0)
-        f_out = col2.number_input("Output Value", min_value=0.0)
+        sel_job = col1.selectbox("Select Job Code", df_p['job_no'].unique() if not df_p.empty else [])
+        sel_act = col1.selectbox("Select Activity", list(PLANNING_RECIPE.keys()))
+        sel_wrk = col2.selectbox("Worker Name", sorted(df_l['Worker'].unique()) if not df_l.empty else ["Add in Master"])
+        in_hrs = col2.number_input("Hours Spent", min_value=0.0, step=0.5)
+        in_out = col2.number_input("Output (Mts/Nos)", min_value=0.0)
         
-        if st.form_submit_button("Save Log"):
+        if st.form_submit_button("Submit Work Log"):
             conn.table("production").insert({
                 "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S'),
-                "Job_Code": str(f_job), "Activity": f_act, "Worker": f_wrk, 
-                "Hours": f_hrs, "Output": f_out, "Notes": "Daily Log"
+                "Job_Code": str(sel_job), "Activity": sel_act, "Worker": sel_wrk,
+                "Hours": in_hrs, "Output": in_out, "Notes": "Verified Entry"
             }).execute()
+            st.success("Log Saved Successfully!")
             st.rerun()
