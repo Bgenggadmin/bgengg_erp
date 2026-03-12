@@ -5,82 +5,74 @@ from datetime import datetime
 
 st.set_page_config(page_title="Production Control | BGEngg ERP", layout="wide", page_icon="🏗️")
 
-# --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5)
 def get_won_jobs():
-    # Only pull projects marked as 'Won' to start production
-    res = conn.table("anchor_projects").select("*").eq("status", "Won").execute()
+    res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 df_prod = get_won_jobs()
 
-st.title("🏗️ Production Planning & Material Sync")
+st.title("🏗️ Production Planning & Activity Sync")
+
+# Top Level Metrics
+if not df_prod.empty:
+    total_jobs = len(df_prod)
+    shortages = len(df_prod[df_prod['material_shortage'] == True])
+    
+    m1, m2 = st.columns(2)
+    m1.metric("Total Active Jobs", total_jobs)
+    m2.metric("Material Stoppages", shortages, delta=-shortages, delta_color="inverse")
+
 st.markdown("---")
 
+stages = [
+    "Material Identification/MTC Check", "Shell & Dish Layout", "Plasma Cutting", 
+    "Shell Rolling", "Long Seam Welding", "Circ Seam Welding", "Nozzle Fit-up", 
+    "Final Welding", "NDT (RT/DP/UT)", "Hydro-Testing", "Pickling & Passivation", "Dispatch"
+]
+
 if not df_prod.empty:
-    # --- 2. ACTIVITY DEFINITION ---
-    # Standard SS Pressure Vessel Stages
-    stages = [
-        "Material Identification/MTC Check",
-        "Shell & Dish Layout",
-        "Plasma Cutting & Edge Prep",
-        "Shell Rolling",
-        "Long Seam Welding",
-        "Circ Seam Welding",
-        "Nozzle Fit-up",
-        "Final Welding",
-        "NDT (RT/DP/UT)",
-        "Hydro-Testing",
-        "Pickling & Passivation",
-        "Final Inspection/Dispatch"
-    ]
-
-    # --- 3. LIVE PRODUCTION BOARD ---
     for index, row in df_prod.iterrows():
-        # Visual color coding for stalled projects
-        is_stalled = row.get('material_shortage', False)
+        # Calculate Progress %
+        current_idx = stages.index(row['drawing_status']) if row['drawing_status'] in stages else 0
+        progress_val = (current_idx + 1) / len(stages)
         
+        # UI Container
         with st.container(border=True):
-            header_col, alert_col = st.columns([3, 1])
-            header_col.subheader(f"Job: {row['job_no']} | {row['client_name']}")
-            
-            if is_stalled:
-                alert_col.error("⚠️ MATERIAL SHORTAGE")
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.subheader(f"Job {row['job_no']} | {row['client_name']}")
+                st.caption(f"📦 **Vessel:** {row['project_description']}")
+            with c2:
+                if row.get('material_shortage'):
+                    st.error("🚨 MATERIAL SHORTAGE")
+                else:
+                    st.success("✅ Clear for Production")
 
-            col1, col2, col3 = st.columns([1, 1, 1])
+            # Progress Bar
+            st.progress(progress_val, text=f"Overall Progress: {int(progress_val*100)}%")
 
+            # Input Fields
+            col1, col2, col3 = st.columns(3)
             with col1:
-                st.write(f"**Vessel:** {row['project_description']}")
-                # We reuse 'drawing_status' for production stage tracking in this basic version
-                current_stage = st.selectbox(
-                    "Current Activity", 
-                    stages, 
-                    index=stages.index(row['drawing_status']) if row['drawing_status'] in stages else 0,
-                    key=f"stage_{row['id']}"
-                )
-
+                new_stage = st.selectbox("Current Activity", stages, index=current_idx, key=f"stg_{row['id']}")
+            
             with col2:
-                st.write("**Material Alert**")
-                shortage_flag = st.toggle("Shortage Alert", value=is_stalled, key=f"flag_{row['id']}")
-                shortage_note = st.text_input(
-                    "Shortage Details", 
-                    value=row.get('shortage_details', ""), 
-                    placeholder="e.g., Missing 4 nos 3'' Flanges",
-                    key=f"note_{row['id']}"
-                )
+                new_shortage = st.toggle("Report Shortage", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
+                new_note = st.text_input("Shortage/Activity Note", value=row.get('shortage_details', ""), key=f"nt_{row['id']}")
 
             with col3:
-                st.write("**Data Sync**")
-                if st.button("Update Shop Floor", key=f"up_{row['id']}", use_container_width=True, type="primary"):
+                st.write(" ") # Padding
+                if st.button("Update Floor Data", key=f"btn_{row['id']}", use_container_width=True, type="primary"):
                     conn.table("anchor_projects").update({
-                        "drawing_status": current_stage,
-                        "material_shortage": shortage_flag,
-                        "shortage_details": shortage_note
+                        "drawing_status": new_stage,
+                        "material_shortage": new_shortage,
+                        "shortage_details": new_note,
+                        "last_activity_update": datetime.now().isoformat()
                     }).eq("id", row['id']).execute()
-                    st.success(f"Job {row['job_no']} Updated!")
+                    st.toast(f"Updated Job {row['job_no']}")
                     st.rerun()
-
 else:
-    st.info("No 'Won' projects found. Once a project is marked 'Won' in the Anchor Portal, it will appear here for production.")
+    st.info("No active 'Won' jobs found in database.")
