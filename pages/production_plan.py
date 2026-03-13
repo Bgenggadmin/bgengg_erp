@@ -11,25 +11,35 @@ st.set_page_config(page_title="Production Master | B&G", layout="wide", page_ico
 
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS (Updated to include Purchase Orders) ---
+# --- 2. DATA LOADERS (Updated for Dynamic Gates) ---
 @st.cache_data(ttl=5)
 def get_master_data():
     plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
     prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
-    # Added: Fetch items to show replies to the shop floor
     pur_res = conn.table("purchase_orders").select("*").execute()
-    return pd.DataFrame(plan_res.data or []), pd.DataFrame(prod_res.data or []), pd.DataFrame(pur_res.data or [])
+    # NEW: Fetch Gates dynamically from DB
+    gate_res = conn.table("production_gates").select("*").order("step_order").execute()
+    
+    return (pd.DataFrame(plan_res.data or []), 
+            pd.DataFrame(prod_res.data or []), 
+            pd.DataFrame(pur_res.data or []),
+            pd.DataFrame(gate_res.data or []))
 
-df_plan, df_logs, df_pur = get_master_data()
+df_plan, df_logs, df_pur, df_gates = get_master_data()
 
 # --- 3. DYNAMIC MAPPING ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
-universal_stages = [
-    "1. Engineering & MTC Verify", "2. Marking & Cutting", "3. Sub-Assembly & Machining",
-    "4. Shell/Body Fabrication", "5. Main Assembly/Internals", "6. Nozzles & Accessories",
-    "7. Inspection & NDT", "8. Hydro/Pressure Testing", "9. Insulation & Finishing",
-    "10. Final Assembly & Dispatch"
-]
+
+# Logic: Use DB gates if available, otherwise fallback to your original list
+if not df_gates.empty:
+    universal_stages = df_gates['gate_name'].tolist()
+else:
+    universal_stages = [
+        "1. Engineering & MTC Verify", "2. Marking & Cutting", "3. Sub-Assembly & Machining",
+        "4. Shell/Body Fabrication", "5. Main Assembly/Internals", "6. Nozzles & Accessories",
+        "7. Inspection & NDT", "8. Hydro/Pressure Testing", "9. Insulation & Finishing",
+        "10. Final Assembly & Dispatch"
+    ]
 
 if not df_logs.empty:
     all_workers = sorted(list(set(df_logs["Worker"].dropna().unique().tolist())))
@@ -42,7 +52,7 @@ tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
     "🏗️ Production Planning", "👷 Daily Work Entry", "📊 Analytics & Shift Report", "🛠️ Manage Masters"
 ])
 
-# --- TAB 1: PRODUCTION PLANNING (Layout Preserved + Shortage Trigger) ---
+# --- TAB 1: PRODUCTION PLANNING ---
 with tab_plan:
     st.subheader("🚀 Shop Floor Gate Control")
     if not df_plan.empty:
@@ -66,28 +76,25 @@ with tab_plan:
                 prog_idx = universal_stages.index(current_stage) if current_stage in universal_stages else 0
                 st.progress((prog_idx + 1) / len(universal_stages))
 
-                # --- NEW SECTION: MATERIAL SHORTAGE TRIGGER ---
+                # --- MATERIAL SHORTAGE TRIGGER ---
                 with st.expander("🚨 Material Shortage? Trigger Purchase Request"):
                     mc1, mc2, mc3 = st.columns([2, 1, 1])
-                    req_item = mc1.text_input("Item Name (e.g. 2'' Flange)", key=f"req_{row['id']}")
+                    req_item = mc1.text_input("Item Name", key=f"req_{row['id']}")
                     req_qty = mc2.text_input("Qty/Spec", key=f"qty_{row['id']}")
                     if mc3.button("Request Item", key=f"rqb_{row['id']}", use_container_width=True):
                         if req_item:
                             conn.table("purchase_orders").insert({
-                                "job_no": job_id,
-                                "item_name": f"SHOP-FLOOR: {req_item}",
-                                "specs": req_qty,
-                                "status": "Urgent"
+                                "job_no": job_id, "item_name": f"SHOP-FLOOR: {req_item}",
+                                "specs": req_qty, "status": "Urgent"
                             }).execute()
-                            st.toast("Sent to Purchase Team!")
-                            st.rerun()
+                            st.toast("Sent to Purchase Team!"); st.rerun()
                 
-                # --- NEW SECTION: LIVE PURCHASE FEEDBACK ---
+                # --- LIVE PURCHASE FEEDBACK ---
                 if not df_pur.empty:
                     job_items = df_pur[df_pur['job_no'] == job_id]
                     if not job_items.empty:
                         st.caption("📦 Procurement Status:")
-                        for _, item in job_items.tail(2).iterrows(): # Show last 2 requests
+                        for _, item in job_items.tail(2).iterrows():
                             color = "orange" if item['status'] != "Received" else "green"
                             reply = f" | 💬 {item['purchase_reply']}" if item['purchase_reply'] else ""
                             st.markdown(f":{color}[**{item['item_name']}**: {item['status']}{reply}]")
@@ -101,14 +108,11 @@ with tab_plan:
 
                 if st.button("Update Gate Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     conn.table("anchor_projects").update({
-                        "drawing_status": new_gate,
-                        "material_shortage": new_short,
-                        "shortage_details": new_rem
+                        "drawing_status": new_gate, "material_shortage": new_short, "shortage_details": new_rem
                     }).eq("id", row['id']).execute()
-                    st.toast("Status Synced!")
-                    st.rerun()
+                    st.toast("Status Synced!"); st.rerun()
 
-# --- TAB 2 & 3 & 4 (LOGIC PRESERVED EXACTLY) ---
+# --- TAB 2 & 3: ENTRY & ANALYTICS (Layout Preserved) ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
@@ -143,10 +147,21 @@ with tab_analytics:
         fig = px.bar(clean_logs.groupby('Job_Code')['Hours'].sum().reset_index(), x='Job_Code', y='Hours', title="Cumulative Man-Hours")
         st.plotly_chart(fig, use_container_width=True)
 
+# --- TAB 4: MASTERS (Updated for Gate Management) ---
 with tab_masters:
     st.subheader("🛠️ Master Registration")
     m1, m2 = st.columns(2)
-    new_w = m1.text_input("Register New Worker")
-    if m1.button("Add Person") and new_w:
-        conn.table("production").insert({"Worker": new_w, "Notes": "SYSTEM_NEW_ITEM", "Hours": 0, "Activity": "N/A", "Job_Code": "N/A"}).execute()
-        st.rerun()
+    with m1:
+        new_w = st.text_input("Register New Worker")
+        if st.button("Add Person") and new_w:
+            conn.table("production").insert({"Worker": new_w, "Notes": "SYSTEM_NEW_ITEM", "Hours": 0, "Activity": "N/A", "Job_Code": "N/A"}).execute()
+            st.rerun()
+    
+    with m2:
+        st.write("Current Workflow Gates:")
+        st.dataframe(df_gates[['step_order', 'gate_name']], hide_index=True, height=200)
+        new_g = st.text_input("Add New Gate Name")
+        new_o = st.number_input("Gate Order", min_value=1, step=1, value=len(universal_stages)+1)
+        if st.button("Add Gate") and new_g:
+            conn.table("production_gates").insert({"gate_name": new_g, "step_order": new_o}).execute()
+            st.rerun()
