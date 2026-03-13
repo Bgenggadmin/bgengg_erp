@@ -33,23 +33,20 @@ if not check_password():
 # --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# CHANGE: Increased TTL from 10 to 3600 (1 Hour) 
-# CHANGE: Added specific column selection to stop downloading heavy unnecessary data
 @st.cache_data(ttl=3600) 
 def get_all_data():
-    # Only select the 12 columns actually used in your charts and KPIs
-    needed_cols = (
-        "enquiry_date, quote_date, drawing_submit_date, status, "
-        "estimated_value, anchor_person, job_no, client_name, "
-        "purchase_trigger, purchase_status, critical_materials"
-    )
+    # Only select columns used in the dashboard
+    needed_cols = "enquiry_date, quote_date, drawing_submit_date, status, estimated_value, anchor_person, job_no, client_name, purchase_trigger, purchase_status, critical_materials"
     res = conn.table("anchor_projects").select(needed_cols).execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
-# ADD: A refresh button in the sidebar so the Founder can force an update manually
-if st.sidebar.button("🔄 Refresh Strategic Data"):
-    st.cache_data.clear()
-    st.rerun()
+# --- IMPORTANT: YOU MUST HAVE THIS LINE BELOW ---
+df_all = get_all_data() 
+# -----------------------------------------------
+
+# --- 2. DASHBOARD START ---
+st.title("📈 Founder's Strategic Dashboard")
+
 # --- 2. DASHBOARD START ---
 st.title("📈 Founder's Strategic Dashboard")
 st.markdown("---")
