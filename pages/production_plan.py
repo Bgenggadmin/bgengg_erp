@@ -55,29 +55,25 @@ with tab_plan:
             updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
             days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
             
-            # Use manual days from DB, default to 7
             manual_limit = row.get('manual_days_limit', 7) 
             current_gate = row['drawing_status']
             prog_idx = universal_stages.index(current_gate) if current_gate in universal_stages else 0
             rem_gates_count = len(universal_stages) - prog_idx
 
             with st.container(border=True):
-                # --- CALCULATION BLOCK (DYNAMIZED BY UI INPUT) ---
-                # We define the input here first so the metric can use it immediately
-                # But since the metric is above the input in layout, we use a temporary placeholder or manual logic
-                
-                # Input Row: Manual Days/Gate is what drives the lead time logic
+                # We define inputs first so the metric above can react to them instantly
                 col1, col2, col3, col4 = st.columns(4)
                 new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
+                # The logic source:
                 new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
                 new_short = col3.toggle("Shortage", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
                 new_rem = col4.text_input("Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
 
-                # Logic: Total remaining days = gates left * the lead time limit currently in the input box
+                # Logic: Total remaining days = gates left * lead time currently in the input box
                 total_rem_days = rem_gates_count * new_limit
                 est_completion = (datetime.now(IST) + timedelta(days=total_rem_days)).strftime("%d %b %Y")
 
-                # Header Metric Row
+                # Header Metrics
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
                 c1.subheader(f"Job {job_id} | {row['client_name']}")
                 c1.caption(f"🛠️ {row['project_description']}")
@@ -88,12 +84,12 @@ with tab_plan:
                 c3.metric("Gate Aging", f"{days_at_gate} Days", 
                           delta=f"Limit: {manual_limit}d" if is_slow else "OK", delta_color="inverse" if is_slow else "normal")
                 
-                # Changed from "Projected Finish" to "Estimated completion Date"
+                # FIXED LOGIC: Estimated completion Date reactively based on 'new_limit'
                 c4.metric("Est. Completion Date", est_completion, delta=f"{total_rem_days} Days Rem.")
 
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
-                # Material Feed (Preserved)
+                # Material Feed
                 if not df_pur.empty:
                     job_items = df_pur[df_pur['job_no'] == job_id]
                     if not job_items.empty:
@@ -112,7 +108,7 @@ with tab_plan:
                     }).eq("id", row['id']).execute()
                     st.toast("Updated Successfully!"); st.rerun()
 
-# --- TABS 2, 3, 4 (Audited Line-by-Line) ---
+# --- TABS 2, 3, 4 (Unchanged) ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
