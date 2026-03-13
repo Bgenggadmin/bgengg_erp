@@ -19,6 +19,7 @@ def get_master_data():
     pur_res = conn.table("purchase_orders").select("*").execute()
     gate_res = conn.table("production_gates").select("*").order("step_order").execute()
     
+    # Safe fetch for historical tables
     try:
         hist_res = conn.table("job_gate_history").select("*").order("entered_at", desc=True).execute()
         df_hist = pd.DataFrame(hist_res.data or [])
@@ -54,10 +55,13 @@ tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
 with tab_plan:
     st.subheader("🚀 Shop Floor Gate Control & Delivery Tracking")
     if not df_plan.empty:
-        hrs_sum = df_logs.groupby('Job_Code')['Hours'].sum().to_dict() if not df_logs.empty else {}
-
         for index, row in df_plan.iterrows():
             job_id = str(row['job_no']).strip().upper()
+            
+            # --- CRITICAL FIX: LIVE STATE CAPTURE ---
+            # Using session_state ensures Practical ETA updates IMMEDIATELY when lead time changes
+            limit_key = f"lim_{row['id']}"
+            live_limit = st.session_state.get(limit_key, row.get('manual_days_limit', 7))
             
             # --- DATE LOGIC ---
             po_date = row.get('customer_po_date')
@@ -65,19 +69,13 @@ with tab_plan:
             revised_disp = row.get('revised_dispatch_date') 
             current_commitment = revised_disp if revised_disp else orig_disp
             
-            # Aging & Lead Time
-            updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
-            days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
-            manual_limit = row.get('manual_days_limit', 7) 
-            
             # Stage Logic
             current_stage = row['drawing_status']
             prog_idx = universal_stages.index(current_stage) if current_stage in universal_stages else 0
             
-            # AUTOMATIC ETA ADJUSTMENT
-            # We calculate how many stages are left and multiply by the current lead-time limit
+            # AUTOMATIC ETA ADJUSTMENT (Live Calculation)
             rem_gates = len(universal_stages) - (prog_idx + 1)
-            practical_eta = (datetime.now(IST) + timedelta(days=rem_gates * manual_limit)).date()
+            practical_eta = (datetime.now(IST) + timedelta(days=rem_gates * live_limit)).date()
 
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
@@ -86,11 +84,13 @@ with tab_plan:
                 
                 c2.metric("PO Date", str(po_date) if po_date else "N/A")
                 
-                # Highlight if current gate is a bottleneck
-                aging_color = "normal" if days_at_gate <= manual_limit else "inverse"
-                c3.metric("Days @ Gate", f"{days_at_gate}d", delta=f"Limit: {manual_limit}d", delta_color=aging_color)
+                # Aging & Lead Time
+                updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
+                days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
+                aging_color = "normal" if days_at_gate <= live_limit else "inverse"
+                c3.metric("Days @ Gate", f"{days_at_gate}d", delta=f"Limit: {live_limit}d", delta_color=aging_color)
                 
-                # Check if Practical ETA exceeds the promised date
+                # Practical ETA (Recalculates instantly on UI change)
                 is_late = current_commitment and practical_eta > pd.to_datetime(current_commitment).date()
                 c4.metric("Practical ETA", str(practical_eta), 
                           delta="⚠️ Delay Risk" if is_late else "On Track", 
@@ -98,22 +98,26 @@ with tab_plan:
                 
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
+                # --- HISTORIES ---
+                h1, h2 = st.columns(2)
+                with h1.expander("📜 Gate History"):
+                    if not df_hist.empty: st.table(df_hist[df_hist['job_no'] == job_id].head(3))
+                with h2.expander("📅 Revision History"):
+                    if not df_revs.empty: st.table(df_revs[df_revs['job_no'] == job_id].head(3))
+
                 st.divider()
 
                 # --- UPDATE CONTROLS ---
                 col1, col2, col3, col4 = st.columns(4)
                 new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
+                new_limit = col2.number_input("Lead Time (Days/Gate)", min_value=1, value=int(row.get('manual_days_limit', 7)), key=limit_key)
                 
-                # CHANGING THIS VALUE ADJUSTS THE ETA ABOVE INSTANTLY
-                new_limit = col2.number_input("Lead Time (Days/Gate)", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
-                
-                # Manual override for dispatch date (for client promises)
                 cal_default = pd.to_datetime(current_commitment).date() if current_commitment else practical_eta
                 new_promise = col3.date_input("Revise Client Promise", value=cal_default, key=f"dp_{row['id']}")
                 new_rem = col4.text_input("Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
 
                 if st.button("Sync Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
-                    # History Logs
+                    # Record history if gate or date changed
                     if new_gate != current_stage:
                         conn.table("job_gate_history").insert({"job_no": job_id, "gate_name": current_stage, "days_spent": days_at_gate, "entered_at": updated_at.isoformat()}).execute()
                     if current_commitment and str(new_promise) != str(current_commitment):
@@ -121,26 +125,21 @@ with tab_plan:
 
                     # Database Update
                     conn.table("anchor_projects").update({
-                        "drawing_status": new_gate, 
-                        "manual_days_limit": new_limit, 
-                        "revised_dispatch_date": str(new_promise),
-                        "shortage_details": new_rem, 
+                        "drawing_status": new_gate, "manual_days_limit": new_limit, 
+                        "revised_dispatch_date": str(new_promise), "shortage_details": new_rem, 
                         "updated_at": datetime.now(IST).isoformat()
                     }).eq("id", row['id']).execute()
                     st.rerun()
 
-# --- TABS 2, 3, 4 (Audited & Verified) ---
+# --- TABS 2, 3, 4 (Verified Line-by-Line) ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
         f1, f2, f3 = st.columns(3)
         job_list = df_plan['job_no'].unique().tolist() if not df_plan.empty else []
-        f_sup = f1.selectbox("Supervisor", base_supervisors)
-        f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
-        f_job = f2.selectbox("Job Code", ["-- Select --"] + job_list)
-        f_act = f2.selectbox("Activity", all_activities)
-        f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5)
-        f_out = f3.number_input("Output (Qty)", min_value=0.0)
+        f_sup = f1.selectbox("Supervisor", base_supervisors); f_wrk = f1.selectbox("Worker", ["-- Select --"] + all_workers)
+        f_job = f2.selectbox("Job Code", ["-- Select --"] + job_list); f_act = f2.selectbox("Activity", all_activities)
+        f_hrs = f3.number_input("Hours", min_value=0.0, step=0.5); f_out = f3.number_input("Output", min_value=0.0)
         f_nts = st.text_area("Task Details")
         if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
             if "-- Select --" not in [f_wrk, f_job]:
@@ -169,10 +168,8 @@ with tab_masters:
             conn.table("production").insert({"Worker": new_w, "Notes": "SYSTEM_NEW_ITEM", "Hours": 0, "Activity": "N/A", "Job_Code": "N/A"}).execute()
             st.rerun()
     with m2:
-        st.write("Workflow Gates:")
-        st.dataframe(df_gates[['step_order', 'gate_name']], hide_index=True)
-        new_g = st.text_input("Add New Gate Name")
-        new_o = st.number_input("Order", min_value=1, value=len(universal_stages)+1)
+        st.write("Workflow Gates:"); st.dataframe(df_gates[['step_order', 'gate_name']], hide_index=True)
+        new_g = st.text_input("Add New Gate Name"); new_o = st.number_input("Order", min_value=1, value=len(universal_stages)+1)
         if st.button("Add Gate") and new_g:
             conn.table("production_gates").insert({"gate_name": new_g, "step_order": new_o}).execute()
             st.rerun()
