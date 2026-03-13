@@ -11,23 +11,23 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 @st.cache_data(ttl=5)
 def get_purchase_tasks():
-    # Fetch projects where purchase is triggered
+    # Fetch projects where purchase is triggered by Anchors
     res = conn.table("anchor_projects").select("*").eq("purchase_trigger", True).order("id", desc=True).execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 @st.cache_data(ttl=2)
 def get_all_items():
-    # Fetch all specific material items
-    res = conn.table("purchase_orders").select("*").execute()
+    # Fetch all items (from both Anchors and Production)
+    res = conn.table("purchase_orders").select("*").order("id", desc=True).execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 df_p = get_purchase_tasks()
 df_items = get_all_items()
 
 st.title("🛒 Purchase Integration Console")
-st.info("Manage both Project-level status and Specific Material items below.")
+st.info("Centralized Procurement: Processing requests from both Anchor Sales & Shop Floor Production.")
 
-# --- 2. PROCUREMENT WORKLOAD SUMMARY (PRESERVED) ---
+# --- 2. PROCUREMENT WORKLOAD SUMMARY ---
 if not df_p.empty:
     st.subheader("📦 Procurement Overview")
     p_summary = df_p.groupby('purchase_status').agg(Total_Jobs=('id', 'count')).reset_index()
@@ -37,7 +37,7 @@ if not df_p.empty:
         st.dataframe(p_summary, hide_index=True, use_container_width=True)
     with col2:
         fig = px.pie(p_summary, values='Total_Jobs', names='purchase_status', 
-                     title="Workload", hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+                     title="Workload distribution", hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
         fig.update_layout(margin=dict(t=30, b=0, l=0, r=0), height=200)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -49,12 +49,12 @@ if not df_p.empty:
     for index, row in df_p.iterrows():
         curr_job = str(row['job_no']).strip().upper() if row['job_no'] else "N/A"
         
-        # Filter items for this specific job
+        # Filter items for this specific job (from any source)
         job_items = df_items[df_items['job_no'] == curr_job] if not df_items.empty else pd.DataFrame()
         
         status_color = "🟢" if row['purchase_status'] == "Received" else "🟡"
         
-        with st.expander(f"{status_color} Job: {curr_job} | {row['client_name']} | Items: {len(job_items)}"):
+        with st.expander(f"{status_color} Job: {curr_job} | {row['client_name']} | Items Requested: {len(job_items)}"):
             c1, c2 = st.columns([1, 2])
             
             with c1:
@@ -62,15 +62,14 @@ if not df_p.empty:
                 st.write(f"**Anchor:** {row['anchor_person']}")
                 st.write(f"**Critical Summary:** {row['critical_materials']}")
                 
-                # Update high-level project status
                 new_proj_stat = st.selectbox("Overall Status", 
-                                           ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"],
-                                           index=["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"].index(row['purchase_status']) if row['purchase_status'] in ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"] else 0,
-                                           key=f"pstat_{row['id']}")
+                    ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"],
+                    index=["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"].index(row['purchase_status']) if row['purchase_status'] in ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"] else 0,
+                    key=f"pstat_{row['id']}")
                 
-                new_rem = st.text_area("Purchase Remarks", value=row['purchase_remarks'] or "", key=f"prem_{row['id']}")
+                new_rem = st.text_area("Purchase Remarks (Global)", value=row['purchase_remarks'] or "", key=f"prem_{row['id']}")
                 
-                if st.button("Update Project Info", key=f"ubtn_{row['id']}", type="primary"):
+                if st.button("Update Overall Status", key=f"ubtn_{row['id']}", type="primary"):
                     conn.table("anchor_projects").update({
                         "purchase_status": new_proj_stat,
                         "purchase_remarks": new_rem
@@ -83,19 +82,35 @@ if not df_p.empty:
                     st.warning("No specific items added to list yet.")
                 else:
                     for _, item in job_items.iterrows():
-                        with st.container(border=True):
+                        # Logic to identify source and urgency
+                        is_prod = "SHOP-FLOOR" in str(item['item_name']).upper()
+                        is_urgent = "URGENT" in str(item['status']).upper()
+                        
+                        # Apply red border for urgent items
+                        container_border = True
+                        if is_urgent:
+                            st.error(f"🚨 URGENT REQUEST")
+                        
+                        with st.container(border=container_border):
                             ic1, ic2, ic3 = st.columns([1.5, 2, 1])
-                            ic1.write(f"**{item['item_name']}**\n\n{item['specs']}")
                             
-                            # Item-specific feedback
-                            i_reply = ic2.text_input("Reply", value=item['purchase_reply'] or "", key=f"irep_{item['id']}")
+                            # Visual cues for Source
+                            source_tag = "🏗️ [PROD]" if is_prod else "⚓ [ANCHOR]"
+                            ic1.write(f"**{source_tag}**")
+                            ic1.write(f"**{item['item_name']}**")
+                            ic1.caption(f"Spec: {item['specs']}")
                             
-                            i_stat_opts = ["Triggered", "Sourcing", "Ordered", "Received"]
-                            i_stat = ic3.selectbox("Item Status", i_stat_opts, 
-                                                 index=i_stat_opts.index(item['status']) if item['status'] in i_stat_opts else 0,
+                            i_reply = ic2.text_input("Reply to Team", value=item['purchase_reply'] or "", key=f"irep_{item['id']}", placeholder="e.g. Ordered, ETA Tuesday")
+                            
+                            i_stat_opts = ["Triggered", "Sourcing", "Ordered", "Received", "Urgent"]
+                            # Ensure current status is in options
+                            current_stat = item['status'] if item['status'] in i_stat_opts else "Triggered"
+                            
+                            i_stat = ic3.selectbox("Status", i_stat_opts, 
+                                                 index=i_stat_opts.index(current_stat),
                                                  key=f"istat_{item['id']}")
                             
-                            if st.button("Update Item", key=f"isave_{item['id']}"):
+                            if st.button("Update Item", key=f"isave_{item['id']}", use_container_width=True):
                                 conn.table("purchase_orders").update({
                                     "purchase_reply": i_reply,
                                     "status": i_stat
