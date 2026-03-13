@@ -1,205 +1,168 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, timedelta
-import pytz
+from datetime import datetime
 
-# --- 1. SETTINGS & AUTH ---
-st.set_page_config(page_title="B&G Production Control", layout="wide")
+st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_icon="⚓")
+
+# --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
-IST = pytz.timezone('Asia/Kolkata')
 
-# Simple Password Protection
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
+@st.cache_data(ttl=10)
+def get_projects():
+    res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
-if not st.session_state["authenticated"]:
-    st.title("🔒 B&G Production Gateway")
-    pwd = st.text_input("Enter Access Code", type="password")
-    if st.button("Unlock Systems"):
-        if pwd == "0990":
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Invalid Code")
-    st.stop()
+df = get_projects()
 
-# --- 2. DATA ENGINE ---
-def get_data():
-    # Projects: All won projects for selection
-    p = conn.table("anchor_projects").select("*").eq("status", "Won").execute()
-    # Production Logs
-    l = conn.table("production").select("*").order("created_at", desc=True).execute()
-    # Purchase Status
-    try:
-        pur = conn.table("purchase_orders").select("*").execute()
-        df_pur = pd.DataFrame(pur.data or [])
-    except:
-        df_pur = pd.DataFrame(columns=['job_no', 'item_name', 'status', 'purchase_reply', 'notes'])
+# --- 2. SIDEBAR CONFIGURATION ---
+st.sidebar.title("🎯 Anchor Control")
+anchor_choice = st.sidebar.selectbox("Select Your Profile", ["Ammu", "Kishore"])
+
+st.sidebar.divider()
+st.sidebar.subheader("🔍 Global Search")
+search_query = st.sidebar.text_input("Search Client, Job, or Desc", placeholder="Type here...")
+
+# Filtering Logic
+df_display = df[df['anchor_person'] == anchor_choice] if not df.empty else pd.DataFrame()
+
+if search_query and not df_display.empty:
+    df_display = df_display[
+        df_display['client_name'].str.contains(search_query, case=False, na=False) |
+        df_display['job_no'].str.contains(search_query, case=False, na=False) |
+        df_display['project_description'].str.contains(search_query, case=False, na=False)
+    ]
+
+st.title(f"⚓ {anchor_choice}'s Project Portal")
+if search_query:
+    st.caption(f"🔎 Filtering for: '{search_query}'")
+st.markdown("---")
+
+# --- 3. LIVE ACTION SUMMARY (SINGLE BLOCK) ---
+if not df_display.empty:
+    today = pd.to_datetime(datetime.now().date())
+    df_display['enquiry_date'] = pd.to_datetime(df_display['enquiry_date']).dt.tz_localize(None)
+    df_display['aging_days'] = (today - df_display['enquiry_date']).dt.days
+
+    st.subheader("🚀 Live Action Summary")
     
-    df_p = pd.DataFrame(p.data or [])
-    df_l = pd.DataFrame(l.data or [])
-    return df_p, df_l, df_pur
+    # Logic: Quotes are Enquiry/Estimation stages
+    pend_quotes = df_display[df_display['status'].isin(['Enquiry', 'Estimation'])]
+    
+    # Logic: Drawings ONLY after WON and not yet Approved
+    pend_drawings = df_display[(df_display['status'] == 'Won') & (df_display['drawing_status'] != 'Approved') & (df_display['drawing_status'] != 'NA')]
+    col1, col2 = st.columns(2)
+    with col1:
+        st.info(f"📋 **Pending Quotations ({len(pend_quotes)})**")
+        if not pend_quotes.empty:
+            st.dataframe(pend_quotes[['client_name', 'project_description', 'aging_days']].rename(columns={'aging_days': 'Days Pending'}), hide_index=True, use_container_width=True)
+    with col2:
+        st.warning(f"📐 **Pending Drawings ({len(pend_drawings)})**")
+        if not pend_drawings.empty:
+            st.dataframe(pend_drawings[['client_name', 'drawing_status', 'aging_days']].rename(columns={'aging_days': 'Days Since Won'}), hide_index=True, use_container_width=True)
+        else:
+            st.write("No drawings required (None in 'Won' stage).")
+    st.markdown("---")
 
-df_jobs, df_logs, df_purchase = get_data()
+# --- 4. MAIN TABS ---
+tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status", "📊 Download"])
 
-def get_master(m_type):
-    if df_logs.empty: return []
-    return sorted(df_logs[df_logs['Notes'] == m_type]['Worker'].unique().tolist())
+# --- TAB 1: NEW ENTRY ---
+with tabs[0]:
+    st.subheader("Register New Project Enquiry")
+    with st.form("new_project_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        u_client = col1.text_input("Client Name")
+        u_proj = col2.text_input("Project Description")
+        c1, c2, c3 = st.columns(3)
+        u_date = c1.date_input("Enquiry Date", value=datetime.now())
+        u_contact = c2.text_input("Contact Person Name")
+        u_phone = c3.text_input("Contact Phone")
+        u_notes = st.text_area("Initial Remarks")
+        if st.form_submit_button("Log Enquiry"):
+            if u_client and u_proj:
+                conn.table("anchor_projects").insert({
+                    "client_name": u_client, "project_description": u_proj,
+                    "anchor_person": anchor_choice, "enquiry_date": str(u_date),
+                    "contact_person": u_contact, "contact_phone": u_phone,
+                    "special_notes": u_notes, "status": "Enquiry", "drawing_status": "Pending"
+                }).execute()
+                st.success("Enquiry Logged!"); st.rerun()
 
-# --- 3. SIDEBAR NAVIGATION ---
-st.sidebar.title("B&G Navigation")
-menu = st.sidebar.radio("Navigate", [
-    "📊 Founder Dashboard", 
-    "➕ New Job Entry",
-    "📅 Job-wise Activity Plan", 
-    "👷 Daily Logging", 
-    "🛠️ Master Data"
-])
+# --- TAB 2: PIPELINE ---
+with tabs[1]:
+    st.subheader("Sales Lifecycle & Purchase Trigger")
+    if not df_display.empty:
+        for index, row in df_display.iterrows():
+            with st.expander(f"💼 {row['client_name']} | {row['project_description']} | Status: {row['status']}"):
+                st.markdown("##### 💰 Sales Info")
+                c1, c2, c3 = st.columns(3)
+                u_val = c1.number_input("Value (₹)", value=float(row['estimated_value'] or 0), key=f"val_{row['id']}")
+                u_qref = c2.text_input("Quote Ref.", value=row['quote_ref'] or "", key=f"qref_{row['id']}")
+                u_qdate = c3.date_input("Quote Date", value=pd.to_datetime(row['quote_date']).date() if row['quote_date'] else datetime.now(), key=f"qdt_{row['id']}")
+                
+                new_status = st.selectbox("Update Stage", ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"], 
+                            index=["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"].index(row['status']), key=f"st_{row['id']}")
+                
+                st.markdown("---")
+                st.markdown("##### 🛒 Quick Purchase Trigger")
+                pc1, pc2 = st.columns([1, 2])
+                u_job = pc1.text_input("Job No.", value=row['job_no'] or "", key=f"pjob_{row['id']}")
+                u_trig = pc1.checkbox("Trigger Purchase?", value=row['purchase_trigger'], key=f"ptrig_{row['id']}")
+                u_mats = pc2.text_area("Critical Materials", value=row['critical_materials'] or "", key=f"pmat_{row['id']}")
+                
+                if st.button("Save All Updates", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                    conn.table("anchor_projects").update({
+                        "estimated_value": u_val, "quote_ref": u_qref, "quote_date": str(u_qdate),
+                        "status": new_status, "job_no": u_job, "purchase_trigger": u_trig, "critical_materials": u_mats
+                    }).eq("id", row['id']).execute(); st.rerun()
 
-# --- TAB: NEW JOB ENTRY (Requested) ---
-if menu == "➕ New Job Entry":
-    st.header("🚀 Register New Production Job")
-    with st.form("new_job_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        j_no = c1.text_input("Job Number (e.g., BG-2024-001)")
-        j_cust = c1.selectbox("Customer", get_master("CUSTOMER_MASTER"))
-        j_val = c2.number_input("Project Budgeted Hours (Total)", min_value=0)
-        j_desc = c2.text_area("Job Description / Equipment Type")
+# --- TAB 3: DRAWINGS (FIXED FOR ALL) ---
+with tabs[2]:
+    st.subheader("Drawing Control")
+    if not df_display.empty:
+        won_projects = df_display[df_display['status'] == 'Won']
+        other_projects = df_display[df_display['status'] != 'Won']
+
+        if won_projects.empty:
+            st.info("Drawing entries will appear here once project status is updated to **'Won'** in the Pipeline.")
         
-        if st.form_submit_button("Create Job Record"):
-            # Note: This inserts into anchor_projects so it appears in selection
-            conn.table("anchor_projects").insert({
-                "job_no": j_no, "customer_name": j_cust, "status": "Won", "value": j_val
-            }).execute()
-            st.success(f"Job {j_no} created successfully!")
-            st.rerun()
-
-# --- TAB: MASTER DATA ---
-elif menu == "🛠️ Master Data":
-    st.header("🛠️ Resource & Entity Masters")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        nw = st.text_input("New Worker Name")
-        if st.button("Register Worker") and nw:
-            conn.table("production").insert({"Worker": nw, "Notes": "WORKER_MASTER", "Hours": 0}).execute()
-            st.success("Worker Registered")
-    with c2:
-        ne = st.text_input("New Engineer Name")
-        if st.button("Register Engineer") and ne:
-            conn.table("production").insert({"Worker": ne, "Notes": "ENGINEER_MASTER", "Hours": 0}).execute()
-            st.success("Engineer Registered")
-    with c3:
-        nc = st.text_input("New Customer Name")
-        if st.button("Register Customer") and nc:
-            conn.table("production").insert({"Worker": nc, "Notes": "CUSTOMER_MASTER", "Hours": 0}).execute()
-            st.success("Customer Registered")
-        nm = st.text_input("New Machine/Station")
-        if st.button("Register Machine") and nm:
-            conn.table("production").insert({"Worker": nm, "Notes": "MACHINE_MASTER", "Hours": 0}).execute()
-            st.success("Machine Registered")
-
-# --- TAB: JOB-WISE ACTIVITY PLAN ---
-elif menu == "📅 Job-wise Activity Plan":
-    st.header("📅 Planning & Critical Materials")
-    if not df_jobs.empty:
-        col1, col2, col3 = st.columns(3)
-        sel_job = col1.selectbox("Select Job No", df_jobs['job_no'].unique())
-        sel_eng = col2.selectbox("Engineer In-Charge", get_master("ENGINEER_MASTER"))
-        sel_unit = col3.selectbox("Unit", ["Unit 1", "Unit 2", "Unit 3"])
-
-        # Material Section
-        st.subheader("🛒 Critical Material Status")
-        with st.expander("Update Purchase Status"):
-            with st.form("pur_update"):
-                p_item = st.text_input("Item Name")
-                p_stat = st.selectbox("Status", ["Shortage", "Ordered", "Received"])
-                p_reply = st.text_input("Purchase Reply / ETD")
-                p_notes = st.text_area("Purchase Notes")
-                if st.form_submit_button("Save Status"):
-                    conn.table("purchase_orders").insert({
-                        "job_no": str(sel_job), "item_name": p_item, "status": p_stat,
-                        "purchase_reply": p_reply, "notes": p_notes
-                    }).execute()
+        for index, row in won_projects.iterrows():
+            with st.expander(f"📐 DRAWING: {row['client_name']} ({row['drawing_status']})", expanded=True):
+                c1, c2 = st.columns(2)
+                d_ref = c1.text_input("Drawing Ref No.", value=row['drawing_ref'] or "", key=f"dr_{row['id']}")
+                d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved", "NA"], 
+                     index=["Pending", "Drafting", "Approved", "NA"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved", "NA"] else 0, key=f"ds_{row['id']}")
+                d_notes = st.text_area("Drawing Notes", value=row['drawing_notes'] or "", key=f"dn_{row['id']}")
+                if st.button("Save Drawing Info", key=f"dbtn_{row['id']}", type="primary"):
+                    conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat, "drawing_notes": d_notes}).eq("id", row['id']).execute()
                     st.rerun()
-        
-        # Lead Time Days Input
-        st.subheader("📝 Lead Time Planning (Days)")
-        plan_data = pd.DataFrame([
-            {"Activity": "1. Engineering", "Days": 7},
-            {"Activity": "2. Marking/Cutting", "Days": 5},
-            {"Activity": "3. Shell Fab", "Days": 15},
-            {"Activity": "4. Assembly", "Days": 10}
-        ])
-        edited_plan = st.data_editor(plan_data, hide_index=True)
 
-        # Timeline Display
-        st.subheader("📊 Timeline & Productivity")
-        start_date = datetime.now().date()
-        plan_rows = []
-        curr = start_date
-        for i, row in edited_plan.iterrows():
-            end = curr + timedelta(days=row['Days'])
-            act_hrs = df_logs[(df_logs['Job_Code'] == str(sel_job)) & (df_logs['Activity'] == row['Activity'])]['Hours'].sum() if not df_logs.empty else 0
-            plan_rows.append({
-                "Activity": row['Activity'], "Schedule": f"{curr.strftime('%d-%b')} to {end.strftime('%d-%b')}",
-                "Actual Hrs": act_hrs, "Status": "✅" if act_hrs > 0 else "⏳"
-            })
-            curr = end
-        st.table(pd.DataFrame(plan_rows))
+        if not other_projects.empty:
+            with st.expander("⏳ Future Drawings (Pipeline Status: In-Progress)"):
+                st.dataframe(other_projects[['client_name', 'project_description', 'status']], hide_index=True, use_container_width=True)
 
-# --- TAB: DAILY LOGGING ---
-elif menu == "👷 Daily Logging":
-    st.header("👷 Daily Shop Floor Log")
-    with st.form("log_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        f_job = c1.selectbox("Job No", df_jobs['job_no'].unique() if not df_jobs.empty else [])
-        f_wrk = c1.selectbox("Worker", get_master("WORKER_MASTER"))
-        f_mach = c2.selectbox("Machine/Station", get_master("MACHINE_MASTER"))
-        f_act = c2.text_input("Activity (e.g., Welding)")
-        f_hrs = c2.number_input("Hours", min_value=0.0, step=0.5)
-        f_note = st.text_input("Customer Name / Remarks")
-        if st.form_submit_button("💾 Save Log"):
-            conn.table("production").insert({
-                "Job_Code": str(f_job), "Worker": f_wrk, "Machine": f_mach,
-                "Activity": f_act, "Hours": f_hrs, "Notes": f_note,
-                "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
-            }).execute()
-            st.success("Logged successfully.")
+# --- TAB 4: PURCHASE STATUS ---
+with tabs[3]:
+    st.subheader("Detailed Purchase Feedback")
+    if not df_display.empty:
+        for index, row in df_display.iterrows():
+            if row['purchase_trigger']:
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([1, 2, 1])
+                    c1.write(f"**Job: {row['job_no']}**")
+                    c1.write(f"Client: {row['client_name']}")
+                    c2.markdown(f"**Materials:** {row['critical_materials']}")
+                    if row['purchase_remarks']:
+                        c2.success(f"💬 **Purchase Remark:** {row['purchase_remarks']}")
+                    c3.metric("Status", row['purchase_status'] or "Pending")
+                    c3.write(f"ETA: {row['expected_arrival'] or 'TBD'}")
 
-# --- TAB: FOUNDER DASHBOARD (Enhanced with Downloads) ---
-elif menu == "📊 Founder Dashboard":
-    st.header("📊 Production Analytics & Productivity")
-    if not df_logs.empty:
-        # Data Preparation
-        main_df = df_logs[~df_logs['Notes'].str.contains('MASTER', na=False)].copy()
-        
-        # DOWNLOAD SECTION
-        st.sidebar.subheader("📥 Export Data")
-        csv = main_df.to_csv(index=False).encode('utf-8')
-        st.sidebar.download_button("Download Raw Logs CSV", data=csv, file_name="production_logs.csv", mime='text/csv')
-
-        t1, t2, t3, t4 = st.tabs(["👷 Worker Analysis", "📂 Job Analysis", "🏢 Customer View", "🛠️ Machine Load"])
-        
-        with t1:
-            st.subheader("Worker-wise Productivity")
-            w_df = main_df.groupby('Worker')['Hours'].sum().reset_index()
-            st.table(w_df)
-            st.download_button("Download Worker CSV", w_df.to_csv(index=False), "worker_data.csv")
-
-        with t2:
-            st.subheader("Job-wise Man-Hours")
-            j_df = main_df.groupby('Job_Code')['Hours'].sum().reset_index()
-            st.table(j_df)
-            st.download_button("Download Job CSV", j_df.to_csv(index=False), "job_data.csv")
-
-        with t3:
-            st.subheader("Customer-wise Allocation")
-            c_df = main_df.groupby('Notes')['Hours'].sum().reset_index().rename(columns={'Notes':'Customer'})
-            st.table(c_df)
-            st.download_button("Download Customer CSV", c_df.to_csv(index=False), "customer_data.csv")
-
-        with t4:
-            st.subheader("Machine Station Loading")
-            m_df = main_df.groupby('Machine')['Hours'].sum().reset_index()
-            st.table(m_df)
+# --- TAB 5: DOWNLOAD DATA ---
+with tabs[4]:
+    st.subheader("📊 Data Export")
+    if not df_display.empty:
+        export_df = df_display.drop(columns=['id'], errors='ignore')
+        csv = export_df.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 Download Filtered CSV", data=csv, file_name=f"BGEngg_{anchor_choice}.csv", mime='text/csv', use_container_width=True)
+        st.dataframe(export_df, use_container_width=True)
