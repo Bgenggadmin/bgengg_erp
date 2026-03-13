@@ -16,7 +16,8 @@ conn = st.connection("supabase", type=SupabaseConnection)
 def get_master_data():
     plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
     prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
-    pur_res = conn.table("purchase_orders").select("*").execute()
+    # CHANGE 1: Added sorting to ensure the latest purchase update is seen first
+    pur_res = conn.table("purchase_orders").select("*").order("updated_at", desc=True).execute()
     gate_res = conn.table("production_gates").select("*").order("step_order").execute()
     
     return (pd.DataFrame(plan_res.data or []), 
@@ -59,44 +60,49 @@ with tab_plan:
             current_gate = row['drawing_status']
             
             prog_idx = universal_stages.index(current_gate) if current_gate in universal_stages else 0
-            # Gates left after the current one
             future_gates_count = len(universal_stages) - (prog_idx + 1)
 
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns(4)
                 new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
-                
-                # Manual Lead Time Input
                 new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
                 new_short = col3.toggle("Shortage", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
                 new_rem = col4.text_input("Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
 
-                # --- REFINED DATE LOGIC ---
-                # Logic: Current gate lead time (new_limit) + 1 day for every future gate
-                # This prevents the "7-day jump" while keeping the date dynamic
                 total_days_offset = new_limit + (future_gates_count * 1) 
                 est_completion_date = (datetime.now(IST) + timedelta(days=total_days_offset)).strftime("%d %b %Y")
 
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
                 c1.subheader(f"Job {job_id} | {row['client_name']}")
                 c1.caption(f"🛠️ {row['project_description']}")
-                
                 c2.metric("Man-Hours", f"{actual_hrs} Hrs")
                 
                 is_slow = days_at_gate > manual_limit
                 c3.metric("Gate Aging", f"{days_at_gate} Days", 
                           delta=f"Limit: {manual_limit}d" if is_slow else "OK", delta_color="inverse" if is_slow else "normal")
                 
-                # Displaying completion Date
                 c4.metric("Estimated Completion Date", est_completion_date, delta=f"{total_days_offset}d Lead")
 
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
+                # --- CHANGE 2: ENHANCED PURCHASE SYNC FEED ---
                 if not df_pur.empty:
                     job_items = df_pur[df_pur['job_no'] == job_id]
                     if not job_items.empty:
-                        item = job_items.iloc[-1]
-                        st.caption(f"📦 Procurement: {item['item_name']} - **{item['status']}**")
+                        # Since df_pur is sorted by updated_at desc, index 0 is the newest
+                        item = job_items.iloc[0]
+                        p_status = item.get('status', 'Unknown')
+                        p_reply = item.get('purchase_reply', 'No comments yet')
+                        
+                        # Set colors based on status
+                        status_color = "#FFA500" if p_status == "Ordered" else "#FF4B4B" if p_status == "Urgent" else "#28A745"
+                        
+                        st.markdown(f"""
+                        <div style="background-color: #f8f9fa; padding: 8px; border-left: 5px solid {status_color}; border-radius: 4px;">
+                            <span style="font-size: 14px;">📦 <b>Procurement:</b> {item['item_name']} — <b>{p_status}</b></span><br>
+                            <span style="font-size: 12px; color: #555;">💬 <b>Purchase Team Reply:</b> {p_reply}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
 
                 st.divider()
 
@@ -110,7 +116,7 @@ with tab_plan:
                     }).eq("id", row['id']).execute()
                     st.toast("Updated Successfully!"); st.rerun()
 
-# --- TABS 2, 3, 4 (UNTOWCHED) ---
+# --- TABS 2, 3, 4 (REMAIN UNTOUCHED) ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
