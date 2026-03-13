@@ -58,14 +58,26 @@ with tab_plan:
             # Use manual days from DB, default to 7
             manual_limit = row.get('manual_days_limit', 7) 
             current_gate = row['drawing_status']
-            
-            # Calculate ETA based on manual limit * remaining gates
             prog_idx = universal_stages.index(current_gate) if current_gate in universal_stages else 0
             rem_gates_count = len(universal_stages) - prog_idx
-            total_rem_days = rem_gates_count * manual_limit
-            projected_finish = (datetime.now(IST) + timedelta(days=total_rem_days)).strftime("%d %b %Y")
 
             with st.container(border=True):
+                # --- CALCULATION BLOCK (DYNAMIZED BY UI INPUT) ---
+                # We define the input here first so the metric can use it immediately
+                # But since the metric is above the input in layout, we use a temporary placeholder or manual logic
+                
+                # Input Row: Manual Days/Gate is what drives the lead time logic
+                col1, col2, col3, col4 = st.columns(4)
+                new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
+                new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
+                new_short = col3.toggle("Shortage", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
+                new_rem = col4.text_input("Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
+
+                # Logic: Total remaining days = gates left * the lead time limit currently in the input box
+                total_rem_days = rem_gates_count * new_limit
+                est_completion = (datetime.now(IST) + timedelta(days=total_rem_days)).strftime("%d %b %Y")
+
+                # Header Metric Row
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
                 c1.subheader(f"Job {job_id} | {row['client_name']}")
                 c1.caption(f"🛠️ {row['project_description']}")
@@ -76,7 +88,8 @@ with tab_plan:
                 c3.metric("Gate Aging", f"{days_at_gate} Days", 
                           delta=f"Limit: {manual_limit}d" if is_slow else "OK", delta_color="inverse" if is_slow else "normal")
                 
-                c4.metric("Projected Finish", projected_finish)
+                # Changed from "Projected Finish" to "Estimated completion Date"
+                c4.metric("Est. Completion Date", est_completion, delta=f"{total_rem_days} Days Rem.")
 
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
@@ -89,20 +102,10 @@ with tab_plan:
 
                 st.divider()
 
-                # --- MANUAL UPDATE ROW ---
-                col1, col2, col3, col4 = st.columns(4)
-                new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
-                
-                # NEW: Manual Days Input
-                new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
-                
-                new_short = col3.toggle("Shortage", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
-                new_rem = col4.text_input("Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
-
                 if st.button("Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     conn.table("anchor_projects").update({
                         "drawing_status": new_gate, 
-                        "manual_days_limit": new_limit, # Save manual input
+                        "manual_days_limit": new_limit, 
                         "material_shortage": new_short, 
                         "shortage_details": new_rem,
                         "updated_at": datetime.now(IST).isoformat()
