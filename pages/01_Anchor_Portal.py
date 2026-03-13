@@ -89,32 +89,47 @@ with tabs[0]:
                 }).execute()
                 st.success("Enquiry Logged!"); st.rerun()
 
-# --- TAB 2: PIPELINE ---
+# --- TAB 2: PIPELINE (Updated with Item-wise Trigger) ---
 with tabs[1]:
-    st.subheader("Sales Lifecycle & Purchase Trigger")
+    st.subheader("Sales Lifecycle & Item-wise Purchase Trigger")
     if not df_display.empty:
         for index, row in df_display.iterrows():
-            with st.expander(f"💼 {row['client_name']} | {row['project_description']} | Status: {row['status']}"):
-                st.markdown("##### 💰 Sales Info")
-                c1, c2, c3 = st.columns(3)
-                u_val = c1.number_input("Value (₹)", value=float(row['estimated_value'] or 0), key=f"val_{row['id']}")
-                u_qref = c2.text_input("Quote Ref.", value=row['quote_ref'] or "", key=f"qref_{row['id']}")
-                u_qdate = c3.date_input("Quote Date", value=pd.to_datetime(row['quote_date']).date() if row['quote_date'] else datetime.now(), key=f"qdt_{row['id']}")
-                
-                new_status = st.selectbox("Update Stage", ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"], 
-                            index=["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"].index(row['status']), key=f"st_{row['id']}")
+            with st.expander(f"💼 {row['client_name']} | {row['project_description']}"):
+                # ... [Keep your existing Sales Info columns here] ...
                 
                 st.markdown("---")
-                st.markdown("##### 🛒 Quick Purchase Trigger")
-                pc1, pc2 = st.columns([1, 2])
-                u_job = pc1.text_input("Job No.", value=row['job_no'] or "", key=f"pjob_{row['id']}")
-                u_trig = pc1.checkbox("Trigger Purchase?", value=row['purchase_trigger'], key=f"ptrig_{row['id']}")
-                u_mats = pc2.text_area("Critical Materials", value=row['critical_materials'] or "", key=f"pmat_{row['id']}")
+                st.markdown("##### 🛒 Item-wise Purchase Trigger")
                 
-                if st.button("Save All Updates", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                # 1. Add New Item Form
+                with st.form(key=f"item_add_{row['id']}", clear_on_submit=True):
+                    ic1, ic2, ic3 = st.columns([2, 1, 1])
+                    new_item = ic1.text_input("Add Critical Item", placeholder="e.g. 10HP Motor")
+                    item_qty = ic2.text_input("Qty/Spec")
+                    if ic3.form_submit_button("➕ Add Item"):
+                        if new_item and row['job_no']:
+                            conn.table("purchase_orders").insert({
+                                "job_no": row['job_no'],
+                                "item_name": new_item,
+                                "specs": item_qty,
+                                "status": "Triggered"
+                            }).execute()
+                            st.toast(f"Added {new_item}")
+                            st.rerun()
+                        else:
+                            st.warning("Ensure Job No. is saved before adding items.")
+
+                # 2. Display existing items for this job
+                if row['job_no']:
+                    items_res = conn.table("purchase_orders").select("*").eq("job_no", row['job_no']).execute()
+                    if items_res.data:
+                        item_df = pd.DataFrame(items_res.data)
+                        st.dataframe(item_df[['item_name', 'specs', 'status', 'purchase_reply']], 
+                                     hide_index=True, use_container_width=True)
+
+                # 3. Save Project Level Updates
+                if st.button("Save Project Status", key=f"up_{row['id']}", type="primary"):
                     conn.table("anchor_projects").update({
-                        "estimated_value": u_val, "quote_ref": u_qref, "quote_date": str(u_qdate),
-                        "status": new_status, "job_no": u_job, "purchase_trigger": u_trig, "critical_materials": u_mats
+                        "status": new_status, "job_no": u_job, "purchase_trigger": True
                     }).eq("id", row['id']).execute(); st.rerun()
 
 # --- TAB 3: DRAWINGS (FIXED FOR ALL) ---
@@ -142,21 +157,36 @@ with tabs[2]:
             with st.expander("⏳ Future Drawings (Pipeline Status: In-Progress)"):
                 st.dataframe(other_projects[['client_name', 'project_description', 'status']], hide_index=True, use_container_width=True)
 
-# --- TAB 4: PURCHASE STATUS ---
+# --- TAB 4: PURCHASE STATUS (Updated for Item-wise Feedback) ---
 with tabs[3]:
-    st.subheader("Detailed Purchase Feedback")
+    st.subheader("📦 Detailed Item-wise Purchase Feedback")
     if not df_display.empty:
+        # Get all purchase data at once for speed
+        pur_res = conn.table("purchase_orders").select("*").execute()
+        all_pur_df = pd.DataFrame(pur_res.data) if pur_res.data else pd.DataFrame()
+
         for index, row in df_display.iterrows():
-            if row['purchase_trigger']:
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([1, 2, 1])
-                    c1.write(f"**Job: {row['job_no']}**")
-                    c1.write(f"Client: {row['client_name']}")
-                    c2.markdown(f"**Materials:** {row['critical_materials']}")
-                    if row['purchase_remarks']:
-                        c2.success(f"💬 **Purchase Remark:** {row['purchase_remarks']}")
-                    c3.metric("Status", row['purchase_status'] or "Pending")
-                    c3.write(f"ETA: {row['expected_arrival'] or 'TBD'}")
+            if not all_pur_df.empty and row['job_no']:
+                job_items = all_pur_df[all_pur_df['job_no'] == row['job_no']]
+                if not job_items.empty:
+                    with st.container(border=True):
+                        st.markdown(f"**Job: {row['job_no']} | {row['client_name']}**")
+                        
+                        # Create a clean table for the items
+                        for _, item in job_items.iterrows():
+                            c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
+                            c1.write(f"🔹 {item['item_name']}")
+                            c2.caption(f"Qty: {item['specs']}")
+                            
+                            # Color coding status
+                            stat_color = "green" if item['status'] == "Received" else "orange"
+                            c4.markdown(f":{stat_color}[**{item['status']}**]")
+                            
+                            if item['purchase_reply']:
+                                c3.info(f"💬 {item['purchase_reply']}")
+                            else:
+                                c3.write("⌛ No reply yet")
+                        st.divider()
 
 # --- TAB 5: DOWNLOAD DATA ---
 with tabs[4]:
