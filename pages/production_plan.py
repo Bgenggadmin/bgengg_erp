@@ -18,13 +18,16 @@ def get_master_data():
     prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
     pur_res = conn.table("purchase_orders").select("*").execute()
     gate_res = conn.table("production_gates").select("*").order("step_order").execute()
+    # Fetch History for the expanders
+    hist_res = conn.table("job_gate_history").select("*").order("entered_at", desc=True).execute()
     
     return (pd.DataFrame(plan_res.data or []), 
             pd.DataFrame(prod_res.data or []), 
             pd.DataFrame(pur_res.data or []),
-            pd.DataFrame(gate_res.data or []))
+            pd.DataFrame(gate_res.data or []),
+            pd.DataFrame(hist_res.data or []))
 
-df_plan, df_logs, df_pur, df_gates = get_master_data()
+df_plan, df_logs, df_pur, df_gates, df_hist = get_master_data()
 
 # --- 3. DYNAMIC MAPPING ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
@@ -61,12 +64,20 @@ with tab_plan:
             actual_hrs = hrs_sum.get(job_id, 0)
             budget = 200 if any(x in str(row['project_description']).upper() for x in ["REACTOR", "ANFD", "COLUMN"]) else 100
             
-            # --- CALCULATE GATE AGING ---
+            # --- CALCULATE GATE AGING & ETA ---
             updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
             days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
+            manual_limit = row.get('manual_days_limit', 7) # Manual days from DB
+            
+            current_stage = row['drawing_status']
+            prog_idx = universal_stages.index(current_stage) if current_stage in universal_stages else 0
+            
+            # ETA Calculation based on manual days x remaining gates
+            rem_gates = len(universal_stages) - (prog_idx + 1)
+            eta_finish = (datetime.now(IST) + timedelta(days=rem_gates * manual_limit)).strftime("%d %b %Y")
 
             with st.container(border=True):
-                c1, c2, c3 = st.columns([2, 1, 1])
+                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
                 c1.subheader(f"Job {job_id} | {row['client_name']}")
                 c1.caption(f"🛠️ {row['project_description']}")
                 
@@ -75,14 +86,24 @@ with tab_plan:
                           delta=f"{actual_hrs-budget} Over" if actual_hrs > budget else None, delta_color="inverse")
                 
                 # Metric 2: Gate Aging (Bottleneck Detection)
-                aging_color = "normal" if days_at_gate < 7 else "inverse"
-                c3.metric("Days at Current Gate", f"{days_at_gate} Days", 
-                          delta="Slow" if days_at_gate >= 7 else "On Track", delta_color=aging_color)
+                aging_color = "normal" if days_at_gate <= manual_limit else "inverse"
+                c3.metric("Days at Gate", f"{days_at_gate} Days", 
+                          delta=f"Limit: {manual_limit}d" if days_at_gate > manual_limit else "On Track", delta_color=aging_color)
+                
+                # Metric 3: Projected ETA
+                c4.metric("Projected Finish", eta_finish)
                 
                 # Progress Bar
-                current_stage = row['drawing_status']
-                prog_idx = universal_stages.index(current_stage) if current_stage in universal_stages else 0
-                st.progress((prog_idx + 1) / len(universal_stages))
+                st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
+
+                # --- NEW: GATE HISTORY LOG ---
+                with st.expander("📜 View Production History"):
+                    if not df_hist.empty:
+                        job_h = df_hist[df_hist['job_no'] == job_id]
+                        if not job_h.empty:
+                            st.dataframe(job_h[['gate_name', 'entered_at', 'days_spent']], hide_index=True, use_container_width=True)
+                        else:
+                            st.write("No gate transitions recorded yet.")
 
                 # --- MATERIAL SHORTAGE TRIGGER ---
                 with st.expander("🚨 Material Shortage? Trigger Purchase Request"):
@@ -102,24 +123,33 @@ with tab_plan:
                     job_items = df_pur[df_pur['job_no'] == job_id]
                     if not job_items.empty:
                         st.caption("📦 Procurement Status:")
-                        for _, item in job_items.tail(2).iterrows():
+                        for _, item in job_items.tail(1).iterrows():
                             color = "orange" if item['status'] != "Received" else "green"
                             reply = f" | 💬 {item['purchase_reply']}" if item['purchase_reply'] else ""
                             st.markdown(f":{color}[**{item['item_name']}**: {item['status']}{reply}]")
 
                 st.divider()
 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 new_gate = col1.selectbox("Current Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
-                new_short = col2.toggle("Alert Active", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
-                new_rem = col3.text_input("Floor Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
+                new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
+                new_short = col3.toggle("Alert Active", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
+                new_rem = col4.text_input("Floor Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
 
                 if st.button("Update Gate Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                    # Record history if gate has changed
+                    if new_gate != current_stage:
+                        conn.table("job_gate_history").insert({
+                            "job_no": job_id, "gate_name": current_stage, "days_spent": days_at_gate,
+                            "entered_at": updated_at.isoformat()
+                        }).execute()
+
                     conn.table("anchor_projects").update({
                         "drawing_status": new_gate, 
+                        "manual_days_limit": new_limit,
                         "material_shortage": new_short, 
                         "shortage_details": new_rem,
-                        "updated_at": datetime.now(IST).isoformat() # This triggers the timer reset
+                        "updated_at": datetime.now(IST).isoformat()
                     }).eq("id", row['id']).execute()
                     st.toast("Status Synced!"); st.rerun()
 
