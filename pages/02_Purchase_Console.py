@@ -1,78 +1,139 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
+import plotly.express as px
 from datetime import datetime
 import pytz
 
 # --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
-st.set_page_config(page_title="Purchase Console | BGEngg ERP", layout="wide")
+st.set_page_config(page_title="Purchase Integration | B&G", layout="wide", page_icon="🛒")
+
+# Custom Styles for Source Tags
+st.markdown("""
+    <style>
+    .tag-anchor { background-color: #e7f3ff; color: #007bff; padding: 3px 8px; border-radius: 5px; font-weight: bold; font-size: 12px; }
+    .tag-prod { background-color: #f0fff4; color: #28a745; padding: 3px 8px; border-radius: 5px; font-weight: bold; font-size: 12px; }
+    .urgent-box { border-left: 5px solid #ff4b4b !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
 conn = st.connection("supabase", type=SupabaseConnection)
 
+# --- 2. DATA LOADERS ---
 @st.cache_data(ttl=2)
-def get_purchase_data():
-    # Fetching both the trigger projects and the itemized orders
+def get_full_purchase_data():
     proj = conn.table("anchor_projects").select("*").eq("purchase_trigger", True).execute()
     items = conn.table("purchase_orders").select("*").execute()
     return pd.DataFrame(proj.data or []), pd.DataFrame(items.data or [])
 
-df_p, df_items = get_purchase_data()
+df_p, df_items = get_full_purchase_data()
 
-st.title("📦 Purchase Console")
-st.markdown("---")
+st.title("🛒 Purchase Integration Console")
 
+# --- 3. ANALYTICS & SUMMARY SECTION ---
 if not df_p.empty:
-    # Outer Loop: Projects
+    st.subheader("📦 Procurement Workload Overview")
+    
+    # Calculate Summary
+    status_col = 'purchase_status' if 'purchase_status' in df_p.columns else 'status'
+    p_summary = df_p.groupby(status_col).agg(Total_Jobs=('id', 'count')).reset_index()
+    
+    sum_c1, sum_c2 = st.columns([1, 1.2])
+    
+    with sum_c1:
+        st.dataframe(p_summary, hide_index=True, use_container_width=True)
+    
+    with sum_c2:
+        fig = px.pie(p_summary, values='Total_Jobs', names=status_col, 
+                     hole=0.4, height=220, color_discrete_sequence=px.colors.qualitative.Safe)
+        fig.update_layout(margin=dict(t=20, b=0, l=0, r=0), showlegend=True)
+        st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# --- 4. DETAILED ACTION CENTER ---
+if not df_p.empty:
     for p_idx, p_row in df_p.iterrows():
         p_db_id = p_row['id']
         job_no = str(p_row.get('job_no', 'N/A')).strip().upper()
         
-        with st.expander(f"📋 Job: {job_no} | {p_row.get('client_name', '')}"):
-            # Filter items for this job
-            job_items = df_items[df_items['job_no'] == job_no] if not df_items.empty else pd.DataFrame()
+        # Filter items for this specific job
+        job_items = df_items[df_items['job_no'] == job_no] if not df_items.empty else pd.DataFrame()
+        
+        # Expander Header with Summary Info
+        with st.expander(f"📋 Job: {job_no} | {p_row.get('client_name', 'Unknown Client')} | Requests: {len(job_items)}"):
             
-            # Inner Loop: Items
-            # We use 'enumerate' to get an index (i) for absolute uniqueness
-            for i, i_row in job_items.reset_index().iterrows():
-                i_db_id = i_row['id']
+            c1, c2 = st.columns([1, 2.5])
+            
+            # --- LEFT: ANCHOR HEADER ---
+            with c1:
+                st.markdown("### Project Header")
+                st.write(f"**Anchor:** {p_row.get('anchor_person', 'N/A')}")
+                st.caption(f"Critical Mats: {p_row.get('critical_materials', 'N/A')}")
                 
-                # --- THE BULLETPROOF KEY STRATEGY ---
-                # We combine: Widget Name + Project ID + Item ID + Loop Index
-                # This prevents collision even if the same item is listed twice.
-                k_suffix = f"{p_db_id}_{i_db_id}_{i}" 
+                # Global Project Status
+                stat_opts = ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"]
+                curr_p_stat = p_row.get('purchase_status', "Pending Review")
                 
-                with st.container(border=True):
-                    c1, c2, c3, c4 = st.columns([1.5, 2, 1, 0.8])
-                    
-                    c1.write(f"**{i_row.get('item_name', 'Item')}**")
-                    c1.caption(f"Spec: {i_row.get('specs', '-')}")
-                    
-                    # Widget 1: Reply
-                    i_reply = c2.text_input(
-                        "Reply", 
-                        value=i_row.get('purchase_reply', "") or "", 
-                        key=f"txt_{k_suffix}", # UNIQUE KEY
-                        label_visibility="collapsed"
-                    )
-                    
-                    # Widget 2: Status
-                    i_opts = ["Triggered", "Sourcing", "Ordered", "Received"]
-                    curr_stat = i_row.get('status', 'Triggered')
-                    i_stat = c3.selectbox(
-                        "Status", 
-                        i_opts, 
-                        index=i_opts.index(curr_stat) if curr_stat in i_opts else 0,
-                        key=f"sel_{k_suffix}", # UNIQUE KEY
-                        label_visibility="collapsed"
-                    )
-                    
-                    # Widget 3: Button
-                    if c4.button("Save", key=f"btn_{k_suffix}", use_container_width=True):
-                        conn.table("purchase_orders").update({
-                            "purchase_reply": i_reply,
-                            "status": i_stat,
-                            "updated_at": datetime.now(IST).isoformat()
-                        }).eq("id", i_db_id).execute()
-                        st.rerun()
+                new_p_stat = st.selectbox("Job Status", stat_opts, 
+                                         index=stat_opts.index(curr_p_stat) if curr_p_stat in stat_opts else 0,
+                                         key=f"h_stat_{p_db_id}")
+                
+                if st.button("Update Header", key=f"h_btn_{p_db_id}", type="primary", use_container_width=True):
+                    conn.table("anchor_projects").update({"purchase_status": new_p_stat}).eq("id", p_db_id).execute()
+                    st.rerun()
+
+            # --- RIGHT: ITEM-WISE BREAKDOWN ---
+            with c2:
+                st.markdown("### Material Items")
+                if job_items.empty:
+                    st.info("No itemized requests for this job.")
+                else:
+                    for i, i_row in job_items.reset_index().iterrows():
+                        i_db_id = i_row['id']
+                        # TRIPLE-LOCK KEY for stability
+                        k_suffix = f"p{p_db_id}_i{i_db_id}_idx{i}"
+                        
+                        is_prod = "SHOP" in str(i_row.get('item_name', '')).upper()
+                        is_urgent = "URGENT" in str(i_row.get('status', '')).upper()
+                        
+                        # Container with conditional urgent styling
+                        with st.container(border=True):
+                            ic1, ic2, ic3, ic4 = st.columns([1.5, 2, 1, 0.8])
+                            
+                            # Info & Source Tag
+                            with ic1:
+                                if is_prod:
+                                    st.markdown('<span class="tag-prod">🏗️ PROD</span>', unsafe_allow_html=True)
+                                else:
+                                    st.markdown('<span class="tag-anchor">⚓ ANCHOR</span>', unsafe_allow_html=True)
+                                
+                                st.write(f"**{i_row.get('item_name', 'Item')}**")
+                                st.caption(f"Spec: {i_row.get('specs', '-')}")
+                            
+                            # Response Field
+                            i_reply = ic2.text_input("Reply", 
+                                                    value=i_row.get('purchase_reply', "") or "", 
+                                                    key=f"irep_{k_suffix}", 
+                                                    label_visibility="collapsed")
+                            
+                            # Item Status
+                            i_opts = ["Triggered", "Sourcing", "Ordered", "Received", "Urgent"]
+                            curr_i_stat = i_row.get('status', 'Triggered')
+                            i_stat = ic3.selectbox("Status", i_opts, 
+                                                  index=i_opts.index(curr_i_stat) if curr_i_stat in i_opts else 0,
+                                                  key=f"istat_{k_suffix}", 
+                                                  label_visibility="collapsed")
+                            
+                            # Save Button
+                            if ic4.button("Save", key=f"isave_{k_suffix}", use_container_width=True):
+                                conn.table("purchase_orders").update({
+                                    "purchase_reply": i_reply,
+                                    "status": i_stat,
+                                    "updated_at": datetime.now(IST).isoformat()
+                                }).eq("id", i_db_id).execute()
+                                st.toast("Item Updated")
+                                st.rerun()
 else:
-    st.info("No active purchase triggers.")
+    st.success("All clear! No pending purchase triggers.")
