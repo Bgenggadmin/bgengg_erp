@@ -15,7 +15,6 @@ conn = st.connection("supabase", type=SupabaseConnection)
 @st.cache_data(ttl=5)
 def get_master_data():
     plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
-    # Updated to include worker field
     prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
     pur_res = conn.table("purchase_orders").select("*").execute()
     gate_res = conn.table("production_gates").select("*").order("step_order").execute()
@@ -26,35 +25,34 @@ def get_master_data():
 df_plan, df_logs, df_pur, df_gates = get_master_data()
 universal_stages = df_gates['gate_name'].tolist() if not df_gates.empty else ["Stage 1"]
 
-# --- 3. TAB NAVIGATION (Updated Headings) ---
+# --- 3. TAB NAVIGATION ---
 tab_plan, tab_entry, tab_reports, tab_masters = st.tabs([
     "🏗️ Production Planning", "🛠️ Shop Floor Log", "📊 Performance Reports", "⚙️ System Masters"
 ])
 
-# --- TAB 1: PRODUCTION PLANNING (Fulfillment & Gates) ---
+# --- TAB 1: PRODUCTION PLANNING ---
 with tab_plan:
     if not df_plan.empty:
         for index, row in df_plan.iterrows():
             db_id = row['id']
-            job_id = str(row['job_no']).strip().upper()
+            job_id = str(row.get('job_no', 'N/A')).strip().upper()
             
             # --- LIVE LEAD TIME & STABLE ETA ---
             limit_key = f"ld_lim_{db_id}"
             live_limit = st.session_state.get(limit_key, row.get('manual_days_limit', 7))
-            current_stage = row['drawing_status']
+            current_stage = row.get('drawing_status', 'Stage 1')
             prog_idx = universal_stages.index(current_stage) if current_stage in universal_stages else 0
             future_gates = len(universal_stages) - (prog_idx + 1)
             practical_eta = (datetime.now(IST) + timedelta(days=int(live_limit) + (future_gates * 7))).date()
 
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-                c1.subheader(f"Job {job_id} | {row['client_name']}")
+                c1.subheader(f"Job {job_id} | {row.get('client_name', 'Client')}")
                 
-                po_date = row.get('customer_po_date')
                 revised_disp = row.get('revised_dispatch_date')
                 current_commitment = revised_disp if revised_disp else row.get('promised_dispatch_date')
                 
-                c2.metric("PO Date", str(po_date) if po_date else "N/A")
+                c2.metric("PO Date", str(row.get('customer_po_date', 'N/A')))
                 updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
                 days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
                 c3.metric("Days @ Gate", f"{days_at_gate}d", delta=f"Limit: {live_limit}d", delta_color="inverse" if days_at_gate > live_limit else "normal")
@@ -65,12 +63,12 @@ with tab_plan:
                 st.divider()
                 st.markdown("**📦 Fulfillment Status & Material Requests**")
                 
-                # Purchase Inline List
                 job_pur = df_pur[df_pur['job_no'] == job_id] if not df_pur.empty else pd.DataFrame()
                 if not job_pur.empty:
-                    st.dataframe(job_pur[['item_name', 'status', 'purchase_reply']], hide_index=True, height=100, use_container_width=True)
+                    # Only show columns that exist in df_pur
+                    show_pur = [c for c in ['item_name', 'status', 'purchase_reply'] if c in job_pur.columns]
+                    st.dataframe(job_pur[show_pur], hide_index=True, height=100, use_container_width=True)
                 
-                # Request Form
                 r1, r2, r3 = st.columns([3, 2, 1])
                 req_item = r1.text_input("Material", key=f"req_name_{db_id}", label_visibility="collapsed", placeholder="Enter Material Required...")
                 req_qty = r2.text_input("Spec", key=f"req_qty_{db_id}", label_visibility="collapsed", placeholder="Quantity / Specs...")
@@ -80,7 +78,6 @@ with tab_plan:
                         st.rerun()
 
                 st.divider()
-                # Production Controls
                 ctrl1, ctrl2, ctrl3, ctrl4 = st.columns(4)
                 new_gate = ctrl1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_sel_{db_id}")
                 new_limit = ctrl2.number_input("Gate Limit", min_value=1, value=int(row.get('manual_days_limit', 7)), key=limit_key)
@@ -95,18 +92,18 @@ with tab_plan:
                     }).eq("id", db_id).execute()
                     st.rerun()
 
-# --- TAB 2: SHOP FLOOR LOG (Worker Productivity Entry) ---
+# --- TAB 2: SHOP FLOOR LOG (Worker Output) ---
 with tab_entry:
     st.subheader("⚙️ Worker Daily Output Entry")
     with st.form("worker_log_form", clear_on_submit=True):
         f1, f2, f3 = st.columns(3)
         w_job = f1.selectbox("Job Number", df_plan['job_no'].unique() if not df_plan.empty else ["None"])
         w_gate = f2.selectbox("Operation/Gate", universal_stages)
-        w_name = f3.text_input("Worker Name/ID", placeholder="e.g., Rajesh Kumar")
+        w_name = f3.text_input("Worker Name/ID")
         
         f4, f5 = st.columns([1, 3])
         w_qty = f4.number_input("Quantity Produced", min_value=1, step=1)
-        w_notes = f5.text_input("Process Remarks", placeholder="e.g., Fabrication Complete")
+        w_notes = f5.text_input("Process Remarks")
         
         if st.form_submit_button("Submit Production Log", use_container_width=True):
             if w_name:
@@ -121,28 +118,25 @@ with tab_entry:
 
     st.markdown("### 🕒 Recent Activity")
     if not df_logs.empty:
-        st.dataframe(df_logs[['created_at', 'job_no', 'worker_name', 'gate', 'qty', 'notes']].head(20), use_container_width=True, hide_index=True)
+        # THE FIX: Only select columns that actually exist in the DB to prevent KeyError
+        existing_cols = [c for c in ['created_at', 'job_no', 'worker_name', 'gate', 'qty', 'notes'] if c in df_logs.columns]
+        st.dataframe(df_logs[existing_cols].head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 3: PERFORMANCE REPORTS (Analytics) ---
+# --- TAB 3: PERFORMANCE REPORTS ---
 with tab_reports:
     st.subheader("📊 Operational Analytics")
-    if not df_logs.empty:
+    if not df_logs.empty and 'worker_name' in df_logs.columns:
         rep1, rep2 = st.columns(2)
         
-        # Worker-wise Output
         worker_out = df_logs.groupby('worker_name')['qty'].sum().reset_index()
-        fig_worker = px.bar(worker_out, x='worker_name', y='qty', title="Worker-wise Total Output", color='qty')
+        fig_worker = px.bar(worker_out, x='worker_name', y='qty', title="Worker-wise Total Output")
         rep1.plotly_chart(fig_worker, use_container_width=True)
         
-        # Job-wise Output
         job_out = df_logs.groupby(['job_no', 'gate'])['qty'].sum().reset_index()
-        fig_job = px.bar(job_out, x='job_no', y='qty', color='gate', title="Job-wise Gate Completion")
+        fig_job = px.bar(job_out, x='job_no', y='qty', color='gate', title="Job-wise Progress")
         rep2.plotly_chart(fig_job, use_container_width=True)
-        
-        st.markdown("### 📑 Detailed Output Report")
-        st.dataframe(df_logs, use_container_width=True)
     else:
-        st.info("No production data available to generate reports.")
+        st.warning("Note: Please ensure the 'worker_name' column exists in your Supabase 'production' table to see analytics.")
 
 # --- TAB 4: SYSTEM MASTERS ---
 with tab_masters:
@@ -152,7 +146,7 @@ with tab_masters:
         st.write("**Current Production Gates**")
         st.table(df_gates)
     with m2:
-        new_gate = st.text_input("Add New Gate")
+        new_gate_name = st.text_input("Add New Gate")
         if st.button("Save New Gate"):
-            conn.table("production_gates").insert({"gate_name": new_gate, "step_order": len(universal_stages)+1}).execute()
+            conn.table("production_gates").insert({"gate_name": new_gate_name, "step_order": len(universal_stages)+1}).execute()
             st.rerun()
