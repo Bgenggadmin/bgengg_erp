@@ -10,22 +10,20 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="Production Master | B&G", layout="wide", page_icon="🏭")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS ---
-@st.cache_data(ttl=5)
-def get_master_data():
-    plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
-    prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
-    # Logic: Order by updated_at so the FEED shows newest updates first
-    pur_res = conn.table("purchase_orders").select("*").order("updated_at", desc=True).execute()
-    gate_res = conn.table("production_gates").select("*").order("step_order").execute()
-    
-    return (pd.DataFrame(plan_res.data or []), 
-            pd.DataFrame(prod_res.data or []), 
-            pd.DataFrame(pur_res.data or []),
-            pd.DataFrame(gate_res.data or []))
+# --- 3. DATA LOADERS ---
+    @st.cache_data(ttl=5)
+    def get_master_data():
+        plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
+        prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
+        pur_res = conn.table("purchase_orders").select("*").order("updated_at", desc=True).execute()
+        gate_res = conn.table("production_gates").select("*").order("step_order").execute()
+        
+        return (pd.DataFrame(plan_res.data or []), 
+                pd.DataFrame(prod_res.data or []), 
+                pd.DataFrame(pur_res.data or []),
+                pd.DataFrame(gate_res.data or []))
 
-df_plan, df_logs, df_pur, df_gates = get_master_data()
-
+    df_plan, df_logs, df_pur, df_gates = get_master_data()
 # --- 3. DYNAMIC MAPPING ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
 universal_stages = df_gates['gate_name'].tolist() if not df_gates.empty else []
