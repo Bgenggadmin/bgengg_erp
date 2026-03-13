@@ -8,7 +8,6 @@ import plotly.express as px
 # --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="Production Master | B&G", layout="wide", page_icon="🏭")
-
 conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. DATA LOADERS ---
@@ -16,7 +15,6 @@ conn = st.connection("supabase", type=SupabaseConnection)
 def get_master_data():
     plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
     prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
-    # CHANGE 1: Added sorting to ensure the latest purchase update is seen first
     pur_res = conn.table("purchase_orders").select("*").order("updated_at", desc=True).execute()
     gate_res = conn.table("production_gates").select("*").order("step_order").execute()
     
@@ -55,7 +53,6 @@ with tab_plan:
             # --- AGING & MANUAL LIMIT LOGIC ---
             updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
             days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
-            
             manual_limit = row.get('manual_days_limit', 7) 
             current_gate = row['drawing_status']
             
@@ -63,12 +60,14 @@ with tab_plan:
             future_gates_count = len(universal_stages) - (prog_idx + 1)
 
             with st.container(border=True):
+                # Existing Controls
                 col1, col2, col3, col4 = st.columns(4)
                 new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
                 new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
                 new_short = col3.toggle("Shortage", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
                 new_rem = col4.text_input("Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
 
+                # Refined Date Logic
                 total_days_offset = new_limit + (future_gates_count * 1) 
                 est_completion_date = (datetime.now(IST) + timedelta(days=total_days_offset)).strftime("%d %b %Y")
 
@@ -80,29 +79,37 @@ with tab_plan:
                 is_slow = days_at_gate > manual_limit
                 c3.metric("Gate Aging", f"{days_at_gate} Days", 
                           delta=f"Limit: {manual_limit}d" if is_slow else "OK", delta_color="inverse" if is_slow else "normal")
-                
                 c4.metric("Estimated Completion Date", est_completion_date, delta=f"{total_days_offset}d Lead")
 
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
-                # --- CHANGE 2: ENHANCED PURCHASE SYNC FEED ---
+                # --- NEW FEATURE: PURCHASE TRIGGER ---
+                with st.expander("🛒 Trigger New Material Request"):
+                    tc1, tc2, tc3 = st.columns([2, 2, 1])
+                    t_item = tc1.text_input("Item Name (e.g. SHOP_Grinding Wheel)", key=f"titem_{row['id']}")
+                    t_spec = tc2.text_input("Specifications / Size", key=f"tspec_{row['id']}")
+                    if tc3.button("Send to Purchase", key=f"tbtn_{row['id']}", use_container_width=True):
+                        if t_item:
+                            # 1. Add to Purchase Table
+                            conn.table("purchase_orders").insert({
+                                "job_no": job_id,
+                                "item_name": t_item,
+                                "specs": t_spec,
+                                "status": "Triggered"
+                            }).execute()
+                            # 2. Flag the Project as needing purchase attention
+                            conn.table("anchor_projects").update({"purchase_trigger": True}).eq("id", row['id']).execute()
+                            st.toast("Purchase Request Sent!")
+                            st.rerun()
+                        else:
+                            st.error("Enter Item Name")
+
+                # Purchase Status Feed
                 if not df_pur.empty:
                     job_items = df_pur[df_pur['job_no'] == job_id]
                     if not job_items.empty:
-                        # Since df_pur is sorted by updated_at desc, index 0 is the newest
-                        item = job_items.iloc[0]
-                        p_status = item.get('status', 'Unknown')
-                        p_reply = item.get('purchase_reply', 'No comments yet')
-                        
-                        # Set colors based on status
-                        status_color = "#FFA500" if p_status == "Ordered" else "#FF4B4B" if p_status == "Urgent" else "#28A745"
-                        
-                        st.markdown(f"""
-                        <div style="background-color: #f8f9fa; padding: 8px; border-left: 5px solid {status_color}; border-radius: 4px;">
-                            <span style="font-size: 14px;">📦 <b>Procurement:</b> {item['item_name']} — <b>{p_status}</b></span><br>
-                            <span style="font-size: 12px; color: #555;">💬 <b>Purchase Team Reply:</b> {p_reply}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        latest = job_items.iloc[0]
+                        st.caption(f"📦 **Latest Procurement:** {latest['item_name']} - {latest['status']} ({latest.get('purchase_reply', 'No reply yet')})")
 
                 st.divider()
 
@@ -116,7 +123,7 @@ with tab_plan:
                     }).eq("id", row['id']).execute()
                     st.toast("Updated Successfully!"); st.rerun()
 
-# --- TABS 2, 3, 4 (REMAIN UNTOUCHED) ---
+# --- TABS 2, 3, 4 (UNTOUCHED) ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
