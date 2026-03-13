@@ -19,7 +19,6 @@ def get_master_data():
     pur_res = conn.table("purchase_orders").select("*").execute()
     gate_res = conn.table("production_gates").select("*").order("step_order").execute()
     
-    # Safe fetch for new features tables
     try:
         hist_res = conn.table("job_gate_history").select("*").order("entered_at", desc=True).execute()
         df_hist = pd.DataFrame(hist_res.data or [])
@@ -43,16 +42,7 @@ df_plan, df_logs, df_pur, df_gates, df_hist, df_revs = get_master_data()
 
 # --- 3. DYNAMIC MAPPING ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
-
-if not df_gates.empty:
-    universal_stages = df_gates['gate_name'].tolist()
-else:
-    universal_stages = [
-        "1. Engineering & MTC Verify", "2. Marking & Cutting", "3. Sub-Assembly & Machining",
-        "4. Shell/Body Fabrication", "5. Main Assembly/Internals", "6. Nozzles & Accessories",
-        "7. Inspection & NDT", "8. Hydro/Pressure Testing", "9. Insulation & Finishing",
-        "10. Final Assembly & Dispatch"
-    ]
+universal_stages = df_gates['gate_name'].tolist() if not df_gates.empty else ["Stage 1"]
 
 if not df_logs.empty:
     all_workers = sorted(list(set(df_logs["Worker"].dropna().unique().tolist())))
@@ -76,16 +66,20 @@ with tab_plan:
             actual_hrs = hrs_sum.get(job_id, 0)
             budget = 200 if any(x in str(row['project_description']).upper() for x in ["REACTOR", "ANFD", "COLUMN"]) else 100
             
-            # --- DATE & AGING LOGIC ---
+            # --- DATE LOGIC (DRAGGED FROM ANCHOR) ---
+            po_date = row.get('customer_po_date')
+            orig_disp = row.get('promised_dispatch_date') # Baseline from Sales
+            revised_disp = row.get('revised_dispatch_date') # Current Floor Promise
+            
+            # Active Commitment: Use Revised if it exists, otherwise use Original from Sales
+            current_commitment = revised_disp if revised_disp else orig_disp
+            
             updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
             days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
             manual_limit = row.get('manual_days_limit', 7) 
-            promised_date = row.get('revised_dispatch_date')
             
             current_stage = row['drawing_status']
             prog_idx = universal_stages.index(current_stage) if current_stage in universal_stages else 0
-            
-            # Practical ETA calculation
             rem_gates = len(universal_stages) - (prog_idx + 1)
             practical_eta = (datetime.now(IST) + timedelta(days=rem_gates * manual_limit)).date()
 
@@ -94,58 +88,54 @@ with tab_plan:
                 c1.subheader(f"Job {job_id} | {row['client_name']}")
                 c1.caption(f"🛠️ {row['project_description']}")
                 
-                c2.metric("Total Man-Hours", f"{actual_hrs} Hrs", 
-                          delta=f"{actual_hrs-budget} Over" if actual_hrs > budget else None, delta_color="inverse")
+                # Column 2: Sales Baseline
+                c2.metric("PO Date", str(po_date) if po_date else "N/A")
+                c2.caption(f"Original Disp: {orig_disp}")
                 
+                # Column 3: Shop Floor Aging
                 aging_color = "normal" if days_at_gate <= manual_limit else "inverse"
-                c3.metric("Days at Gate", f"{days_at_gate} Days", 
-                          delta=f"Limit: {manual_limit}d" if days_at_gate > manual_limit else "On Track", delta_color=aging_color)
+                c3.metric("Days at Gate", f"{days_at_gate}d", delta=f"Limit: {manual_limit}d", delta_color=aging_color)
                 
-                c4.metric("Promised Date", str(promised_date) if promised_date else "Not Set",
-                          delta="⚠️ Late" if promised_date and practical_eta > pd.to_datetime(promised_date).date() else None, 
-                          delta_color="inverse")
+                # Column 4: Delivery Risk
+                is_late = current_commitment and practical_eta > pd.to_datetime(current_commitment).date()
+                c4.metric("Current Promise", str(current_commitment) if current_commitment else "Not Set",
+                          delta="⚠️ Late" if is_late else "On Track", delta_color="inverse" if is_late else "normal")
                 
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
                 # --- HISTORIES ---
                 h1, h2 = st.columns(2)
                 with h1.expander("📜 Gate History"):
-                    if not df_hist.empty:
-                        st.table(df_hist[df_hist['job_no'] == job_id].head(3))
-                with h2.expander("📅 Revision History"):
-                    if not df_revs.empty:
-                        st.table(df_revs[df_revs['job_no'] == job_id].head(3))
-
-                # --- MATERIAL SHORTAGE ---
-                with st.expander("🚨 Trigger Purchase Request"):
-                    mc1, mc2, mc3 = st.columns([2, 1, 1])
-                    req_item = mc1.text_input("Item Name", key=f"req_{row['id']}")
-                    req_qty = mc2.text_input("Qty/Spec", key=f"qty_{row['id']}")
-                    if mc3.button("Request Item", key=f"rqb_{row['id']}"):
-                        conn.table("purchase_orders").insert({"job_no": job_id, "item_name": f"SHOP: {req_item}", "specs": req_qty, "status": "Urgent"}).execute()
-                        st.toast("Requested!"); st.rerun()
+                    if not df_hist.empty: st.table(df_hist[df_hist['job_no'] == job_id].head(3))
+                with h2.expander("📅 Delivery Revisions"):
+                    if not df_revs.empty: st.table(df_revs[df_revs['job_no'] == job_id].head(3))
 
                 st.divider()
 
                 # --- UPDATE CONTROLS ---
                 col1, col2, col3, col4 = st.columns(4)
                 new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
-                new_limit = col2.number_input("Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
-                new_promise = col3.date_input("Revise Dispatch", value=pd.to_datetime(promised_date).date() if promised_date else datetime.now(IST).date(), key=f"dp_{row['id']}")
-                new_rem = col4.text_input("Floor Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
+                new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
+                
+                # Set default date for calendar
+                cal_default = pd.to_datetime(current_commitment).date() if current_commitment else datetime.now(IST).date()
+                new_promise = col3.date_input("Revise Dispatch", value=cal_default, key=f"dp_{row['id']}")
+                new_rem = col4.text_input("Remarks/Reason", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
 
-                if st.button("Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                if st.button("Update Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     if new_gate != current_stage:
                         conn.table("job_gate_history").insert({"job_no": job_id, "gate_name": current_stage, "days_spent": days_at_gate, "entered_at": updated_at.isoformat()}).execute()
-                    if promised_date and str(new_promise) != str(promised_date):
-                        conn.table("dispatch_revision_history").insert({"job_no": job_id, "old_date": str(promised_date), "new_date": str(new_promise), "reason": "Revised by Floor"}).execute()
+                    
+                    if current_commitment and str(new_promise) != str(current_commitment):
+                        conn.table("dispatch_revision_history").insert({"job_no": job_id, "old_date": str(current_commitment), "new_date": str(new_promise), "reason": new_rem}).execute()
+
                     conn.table("anchor_projects").update({
                         "drawing_status": new_gate, "manual_days_limit": new_limit, "revised_dispatch_date": str(new_promise),
                         "shortage_details": new_rem, "updated_at": datetime.now(IST).isoformat()
                     }).eq("id", row['id']).execute()
                     st.rerun()
 
-# --- TAB 2: DAILY WORK ENTRY ---
+# --- TABS 2, 3, 4 (Audited Line-by-Line) ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
@@ -163,7 +153,6 @@ with tab_entry:
                 conn.table("production").insert({"Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job, "Activity": f_act, "Hours": f_hrs, "Output": f_out, "Notes": f_nts}).execute()
                 st.success("Work Logged!"); st.rerun()
 
-# --- TAB 3: ANALYTICS ---
 with tab_analytics:
     if not df_logs.empty:
         st.subheader("📅 Today's Shift Report")
@@ -178,7 +167,6 @@ with tab_analytics:
         fig = px.bar(clean_logs.groupby('Job_Code')['Hours'].sum().reset_index(), x='Job_Code', y='Hours', title="Cumulative Man-Hours")
         st.plotly_chart(fig, use_container_width=True)
 
-# --- TAB 4: MASTERS ---
 with tab_masters:
     st.subheader("🛠️ Master Registration")
     m1, m2 = st.columns(2)
