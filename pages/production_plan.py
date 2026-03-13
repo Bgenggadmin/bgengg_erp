@@ -11,13 +11,12 @@ st.set_page_config(page_title="Production Master | B&G", layout="wide", page_ico
 
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS (Updated for Dynamic Gates) ---
+# --- 2. DATA LOADERS ---
 @st.cache_data(ttl=5)
 def get_master_data():
     plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
     prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
     pur_res = conn.table("purchase_orders").select("*").execute()
-    # NEW: Fetch Gates dynamically from DB
     gate_res = conn.table("production_gates").select("*").order("step_order").execute()
     
     return (pd.DataFrame(plan_res.data or []), 
@@ -30,7 +29,6 @@ df_plan, df_logs, df_pur, df_gates = get_master_data()
 # --- 3. DYNAMIC MAPPING ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
 
-# Logic: Use DB gates if available, otherwise fallback to your original list
 if not df_gates.empty:
     universal_stages = df_gates['gate_name'].tolist()
 else:
@@ -54,7 +52,7 @@ tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
 
 # --- TAB 1: PRODUCTION PLANNING ---
 with tab_plan:
-    st.subheader("🚀 Shop Floor Gate Control")
+    st.subheader("🚀 Shop Floor Gate Control & Bottleneck Tracking")
     if not df_plan.empty:
         hrs_sum = df_logs.groupby('Job_Code')['Hours'].sum().to_dict() if not df_logs.empty else {}
 
@@ -63,13 +61,23 @@ with tab_plan:
             actual_hrs = hrs_sum.get(job_id, 0)
             budget = 200 if any(x in str(row['project_description']).upper() for x in ["REACTOR", "ANFD", "COLUMN"]) else 100
             
+            # --- CALCULATE GATE AGING ---
+            updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
+            days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
+
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2, 1, 1])
                 c1.subheader(f"Job {job_id} | {row['client_name']}")
                 c1.caption(f"🛠️ {row['project_description']}")
                 
+                # Metric 1: Man Hours
                 c2.metric("Total Man-Hours", f"{actual_hrs} Hrs", 
                           delta=f"{actual_hrs-budget} Over" if actual_hrs > budget else None, delta_color="inverse")
+                
+                # Metric 2: Gate Aging (Bottleneck Detection)
+                aging_color = "normal" if days_at_gate < 7 else "inverse"
+                c3.metric("Days at Current Gate", f"{days_at_gate} Days", 
+                          delta="Slow" if days_at_gate >= 7 else "On Track", delta_color=aging_color)
                 
                 # Progress Bar
                 current_stage = row['drawing_status']
@@ -108,11 +116,14 @@ with tab_plan:
 
                 if st.button("Update Gate Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     conn.table("anchor_projects").update({
-                        "drawing_status": new_gate, "material_shortage": new_short, "shortage_details": new_rem
+                        "drawing_status": new_gate, 
+                        "material_shortage": new_short, 
+                        "shortage_details": new_rem,
+                        "updated_at": datetime.now(IST).isoformat() # This triggers the timer reset
                     }).eq("id", row['id']).execute()
                     st.toast("Status Synced!"); st.rerun()
 
-# --- TAB 2 & 3: ENTRY & ANALYTICS (Layout Preserved) ---
+# --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
@@ -133,6 +144,7 @@ with tab_entry:
                 }).execute()
                 st.success("Work Logged!"); st.rerun()
 
+# --- TAB 3: ANALYTICS ---
 with tab_analytics:
     if not df_logs.empty:
         st.subheader("📅 Today's Shift Report")
@@ -147,7 +159,7 @@ with tab_analytics:
         fig = px.bar(clean_logs.groupby('Job_Code')['Hours'].sum().reset_index(), x='Job_Code', y='Hours', title="Cumulative Man-Hours")
         st.plotly_chart(fig, use_container_width=True)
 
-# --- TAB 4: MASTERS (Updated for Gate Management) ---
+# --- TAB 4: MASTERS ---
 with tab_masters:
     st.subheader("🛠️ Master Registration")
     m1, m2 = st.columns(2)
@@ -156,7 +168,6 @@ with tab_masters:
         if st.button("Add Person") and new_w:
             conn.table("production").insert({"Worker": new_w, "Notes": "SYSTEM_NEW_ITEM", "Hours": 0, "Activity": "N/A", "Job_Code": "N/A"}).execute()
             st.rerun()
-    
     with m2:
         st.write("Current Workflow Gates:")
         st.dataframe(df_gates[['step_order', 'gate_name']], hide_index=True, height=200)
