@@ -8,17 +8,20 @@ st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_
 # --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
-@st.cache_data(ttl=5) # Reduced TTL for faster updates
+@st.cache_data(ttl=5) 
 def get_projects():
     res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=2) # Very low TTL for purchase items so they appear instantly
 def get_purchase_items():
     try:
         res = conn.table("purchase_orders").select("*").execute()
         if res.data:
-            return pd.DataFrame(res.data)
+            df_p = pd.DataFrame(res.data)
+            # CRITICAL: Clean Job Numbers for matching
+            df_p['job_no'] = df_p['job_no'].astype(str).str.strip().str.upper()
+            return df_p
         return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply'])
     except:
         return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply'])
@@ -68,7 +71,29 @@ if not df_display.empty:
 # --- 4. MAIN TABS ---
 tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status", "📊 Download"])
 
-# --- TAB 2: PIPELINE (Where you add items) ---
+# --- TAB 1: NEW ENTRY ---
+with tabs[0]:
+    st.subheader("Register New Project Enquiry")
+    with st.form("new_project_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        u_client = col1.text_input("Client Name")
+        u_proj = col2.text_input("Project Description")
+        c1, c2, c3 = st.columns(3)
+        u_date = c1.date_input("Enquiry Date", value=datetime.now())
+        u_contact = c2.text_input("Contact Person Name")
+        u_phone = c3.text_input("Contact Phone")
+        u_notes = st.text_area("Initial Remarks")
+        if st.form_submit_button("Log Enquiry"):
+            if u_client and u_proj:
+                conn.table("anchor_projects").insert({
+                    "client_name": u_client, "project_description": u_proj,
+                    "anchor_person": anchor_choice, "enquiry_date": str(u_date),
+                    "contact_person": u_contact, "contact_phone": u_phone,
+                    "special_notes": u_notes, "status": "Enquiry", "drawing_status": "Pending"
+                }).execute()
+                st.success("Enquiry Logged!"); st.rerun()
+
+# --- TAB 2: PIPELINE ---
 with tabs[1]:
     st.subheader("Sales Lifecycle & Item-wise Purchase Trigger")
     if not df_display.empty:
@@ -89,22 +114,23 @@ with tabs[1]:
                 u_job = pc1.text_input("Job No.", value=row['job_no'] or "", key=f"pjob_{row['id']}")
                 u_trig = pc1.checkbox("Trigger Purchase?", value=row['purchase_trigger'], key=f"ptrig_{row['id']}")
                 
-                # Material Entry Form
+                # Normalize Job No for matching
+                clean_job = str(u_job).strip().upper()
+
                 with st.container(border=True):
                     st.write("**Add Individual Material Item:**")
                     ic1, ic2, ic3 = st.columns([2, 1, 1])
                     i_name = ic1.text_input("Material Name", key=f"iname_{row['id']}")
                     i_spec = ic2.text_input("Qty / Specs", key=f"ispec_{row['id']}")
                     if ic3.button("➕ Add Item", key=f"ibtn_{row['id']}", use_container_width=True):
-                        if i_name and u_job:
-                            conn.table("purchase_orders").insert({"job_no": u_job, "item_name": i_name, "specs": i_spec, "status": "Triggered"}).execute()
-                            st.success(f"Added {i_name} for Job {u_job}")
+                        if i_name and clean_job:
+                            conn.table("purchase_orders").insert({"job_no": clean_job, "item_name": i_name, "specs": i_spec, "status": "Triggered"}).execute()
+                            st.success(f"Added {i_name}")
                             st.rerun()
-                        else: st.error("Enter Job No & Item Name")
+                        else: st.error("Job No & Material Name required")
                     
-                    # Show items already added for THIS job
-                    if u_job and not df_pur.empty:
-                        job_items_mini = df_pur[df_pur['job_no'] == u_job]
+                    if clean_job and not df_pur.empty:
+                        job_items_mini = df_pur[df_pur['job_no'] == clean_job]
                         if not job_items_mini.empty:
                             st.caption("Items already triggered:")
                             st.dataframe(job_items_mini[['item_name', 'specs', 'status']], hide_index=True, use_container_width=True)
@@ -115,43 +141,49 @@ with tabs[1]:
                         "status": new_status, "job_no": u_job, "purchase_trigger": u_trig
                     }).eq("id", row['id']).execute(); st.rerun()
 
+# --- TAB 3: DRAWINGS ---
+with tabs[2]:
+    st.subheader("Drawing Control")
+    won_projects = df_display[df_display['status'] == 'Won'] if not df_display.empty else pd.DataFrame()
+    for index, row in won_projects.iterrows():
+        with st.expander(f"📐 DRAWING: {row['client_name']}"):
+            c1, c2 = st.columns(2)
+            d_ref = c1.text_input("Drawing Ref No.", value=row['drawing_ref'] or "", key=f"dr_{row['id']}")
+            d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved", "NA"], index=["Pending", "Drafting", "Approved", "NA"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved", "NA"] else 0, key=f"ds_{row['id']}")
+            if st.button("Save Drawing Info", key=f"dbtn_{row['id']}"):
+                conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat}).eq("id", row['id']).execute()
+                st.rerun()
+
 # --- TAB 4: PURCHASE STATUS (Feedback View) ---
 with tabs[3]:
     st.subheader("📦 Item-wise Purchase Feedback")
     if not df_display.empty:
-        # Sort display by Job No
-        df_sorted = df_display.dropna(subset=['job_no'])
-        for index, row in df_sorted.iterrows():
-            job_items = df_pur[df_pur['job_no'] == row['job_no']] if 'job_no' in df_pur.columns else pd.DataFrame()
-            
-            if not job_items.empty:
-                with st.container(border=True):
-                    st.markdown(f"#### Job: {row['job_no']} | {row['client_name']}")
-                    st.write(f"Description: {row['project_description']}")
-                    
-                    # Layout Header
-                    cols = st.columns([2, 1, 3, 1])
-                    cols[0].label("Item")
-                    cols[1].label("Qty")
-                    cols[2].label("Purchase Reply")
-                    cols[3].label("Status")
-                    
-                    for _, item in job_items.iterrows():
-                        c1, c2, c3, c4 = st.columns([2, 1, 3, 1])
-                        c1.write(f"🔹 {item['item_name']}")
-                        c2.write(item['specs'])
-                        
-                        if item['purchase_reply']:
-                            c3.info(item['purchase_reply'])
-                        else:
-                            c3.write("⌛ Pending response")
-                        
-                        # Color coding status
-                        s = item['status']
-                        if s == "Received": c4.success(s)
-                        elif s == "Delayed": c4.error(s)
-                        else: c4.warning(s)
-            elif row['purchase_trigger']:
-                st.info(f"Job {row['job_no']}: Purchase Triggered, but no items added in Pipeline tab.")
+        for index, row in df_display.iterrows():
+            if row['job_no']:
+                # Normalize for search
+                curr_job = str(row['job_no']).strip().upper()
+                job_items = df_pur[df_pur['job_no'] == curr_job] if not df_pur.empty else pd.DataFrame()
+                
+                if not job_items.empty:
+                    with st.container(border=True):
+                        st.markdown(f"#### Job: {curr_job} | {row['client_name']}")
+                        # Custom Table Display
+                        for _, item in job_items.iterrows():
+                            c1, c2, c3, c4 = st.columns([2, 1, 3, 1])
+                            c1.write(f"🔹 {item['item_name']}")
+                            c2.write(item['specs'])
+                            c3.info(item['purchase_reply'] or "⌛ No reply yet")
+                            s = item['status']
+                            if s == "Received": c4.success(s)
+                            else: c4.warning(s)
+                elif row['purchase_trigger']:
+                    st.info(f"Job {curr_job}: No specific items added yet.")
 
-# --- (Keep TAB 1, 3, and 5 as per your original script) ---
+# --- TAB 5: DOWNLOAD DATA ---
+with tabs[4]:
+    st.subheader("📊 Data Export")
+    if not df_display.empty:
+        export_df = df_display.drop(columns=['id'], errors='ignore')
+        csv = export_df.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 Download Filtered CSV", data=csv, file_name=f"BGEngg_{anchor_choice}.csv", mime='text/csv')
+        st.dataframe(export_df)
