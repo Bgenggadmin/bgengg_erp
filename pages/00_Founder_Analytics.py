@@ -46,9 +46,6 @@ df_all = get_all_data()
 
 # --- 2. DASHBOARD START ---
 st.title("📈 Founder's Strategic Dashboard")
-
-# --- 2. DASHBOARD START ---
-st.title("📈 Founder's Strategic Dashboard")
 st.markdown("---")
 
 if not df_all.empty:
