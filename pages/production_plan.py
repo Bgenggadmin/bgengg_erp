@@ -121,16 +121,30 @@ with tab_plan:
                                 st.toast("Request Sent!"); st.rerun()
                 
                 with p_col2:
-                    st.markdown("**💬 Purchase Feedback**")
+                    st.markdown("**💬 Production Queries**")
                     if not df_pur.empty:
-                        job_items = df_pur[df_pur['job_no'] == job_id]
-                        if not job_items.empty:
-                            for _, p_item in job_items.head(3).iterrows():
-                                b_color = "#FF4B4B" if p_item['status'] == "Urgent" else "#28A745" if p_item['status'] == "Received" else "#FFA500"
-                                st.markdown(f"""<div style="border-left: 4px solid {b_color}; padding-left: 10px; background-color: #f9f9f9; border-radius: 4px; margin-bottom:5px;">
-                                    <b>{p_item['item_name']}</b>: {p_item['status']}<br>
-                                    <small>Reply: {p_item.get('purchase_reply', 'Awaiting Action')}</small></div>""", unsafe_allow_html=True)
+                        # FILTER: Match Job ID and EXCLUDE 'Received' status
+                        # This ensures only active bottlenecks are shown
+                        job_queries = df_pur[
+                            (df_pur['job_no'].astype(str).str.strip().str.upper() == job_id) & 
+                            (df_pur['status'] != "Received")
+                        ]
+                        
+                        if not job_queries.empty:
+                            # Show top 3 pending queries
+                            for _, p_item in job_queries.head(3).iterrows():
+                                b_color = "#FF4B4B" if p_item['status'] == "Urgent" else "#FFA500"
+                                st.markdown(f"""
+                                    <div style="border-left: 4px solid {b_color}; padding-left: 10px; background-color: #fefefe; border: 1px solid #eee; border-radius: 4px; margin-bottom:5px;">
+                                        <b style="color:#333;">{p_item['item_name']}</b>: {p_item['status']}<br>
+                                        <small style="color:#d32f2f;"><b>Reply:</b> {p_item.get('purchase_reply', 'Pending Action')}</small>
+                                    </div>""", unsafe_allow_html=True)
+                        else:
+                            st.caption("✅ No pending material queries.")
+                    else:
+                        st.caption("No purchase data available.")
 
+                # --- MOVE GATE / STATUS UPDATE BUTTON ---
                 st.write("") 
                 if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     try:
@@ -139,6 +153,7 @@ with tab_plan:
                             "material_shortage": new_short,
                             "updated_at": datetime.now(IST).isoformat()
                         }
+                        # Add optional columns safely
                         if 'manual_days_limit' in df_plan.columns:
                             update_data["manual_days_limit"] = new_limit
                         if 'shortage_details' in df_plan.columns:
@@ -146,11 +161,10 @@ with tab_plan:
 
                         conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute()
                         st.cache_data.clear()
-                        st.success("✅ Database Updated!")
+                        st.toast("✅ Master Status Updated!")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Update Failed: {e}")
-
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
