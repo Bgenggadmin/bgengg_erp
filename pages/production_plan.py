@@ -118,35 +118,49 @@ with tab_plan:
                                 st.toast("Request Sent!")
                                 st.rerun()
                 
-                with p_col2:
-                    st.markdown("**💬 Production Queries**")
+               with p_col2:
+                    st.markdown("**📋 Queries Pending (Job + Anchors)**")
+                    
                     if not df_pur.empty:
-                        clean_job_id = str(job_id).strip().upper()
-                        # Strictly filtering by Job ID to fix the "Wrong Pump" issue
-                        job_queries = df_pur[
-                            (df_pur['job_no'].astype(str).str.strip().str.upper() == clean_job_id) & 
-                            (df_pur['status'] != "Received")
-                        ]
+                        # 1. Standardize IDs for searching
+                        current_id = str(job_id).strip().upper().replace(".0", "")
                         
-                        if not job_queries.empty:
-                            for _, p_item in job_queries.head(3).iterrows():
-                                b_color = "#FF4B4B" if p_item['status'] == "Urgent" else "#FFA500"
-                                raw_reply = p_item.get('purchase_reply')
-                                display_reply = raw_reply if raw_reply and str(raw_reply).lower() != 'none' else "⏳ Pending Purchase Action"
-                                
-                                st.markdown(f"""
-                                    <div style="border-left: 4px solid {b_color}; padding: 8px; background-color: #fefefe; border: 1px solid #eee; border-radius: 4px; margin-bottom:5px;">
-                                        <b style="color:#333;">{p_item['item_name']}</b> <br>
-                                        <small style="color:#666;">Status: {p_item['status']}</small><br>
-                                        <div style="color:#d32f2f; font-size: 0.9rem; margin-top:4px;">
-                                            <b>Reply:</b> {display_reply}
-                                        </div>
-                                    </div>""", unsafe_allow_html=True)
+                        # 2. COMBINED FILTER: Show Job-specific items OR common 'ANCHORS'
+                        # This ensures production sees all relevant follow-ups in one list
+                        combined_queries = df_pur[
+                            (df_pur['job_no'].astype(str).str.strip().str.upper().replace(".0", "").isin([current_id, "ANCHORS"])) & 
+                            (df_pur['status'] != "Received")
+                        ].copy()
+                        
+                        if not combined_queries.empty:
+                            # 3. Clean up the data for horizontal display
+                            # We create a 'Source' column to distinguish Anchor vs Job
+                            combined_queries['Source'] = combined_queries['job_no'].apply(
+                                lambda x: "⚓ ANCHOR" if str(x).strip().upper() == "ANCHORS" else f"🏗️ {current_id}"
+                            )
+                            
+                            # Handle empty replies
+                            combined_queries['purchase_reply'] = combined_queries['purchase_reply'].fillna("⏳ Awaiting Update")
+                            
+                            # 4. Display as a compact horizontal table
+                            st.dataframe(
+                                combined_queries[['Source', 'item_name', 'status', 'purchase_reply']],
+                                column_config={
+                                    "Source": st.column_config.TextColumn("Origin", width="small"),
+                                    "item_name": st.column_config.TextColumn("Item", width="medium"),
+                                    "status": st.column_config.TextColumn("Status", width="small"),
+                                    "purchase_reply": st.column_config.TextColumn("Purchase Reply", width="large"),
+                                },
+                                hide_index=True,
+                                use_container_width=True,
+                                height=150 # Fixed height to prevent the page from growing too long
+                            )
                         else:
-                            st.caption(f"✅ No queries for {job_id}")
+                            st.caption(f"✅ No pending queries for {current_id} or Anchors.")
                     else:
                         st.caption("No purchase data available.")
 
+                # --- UPDATE BUTTON ---
                 st.write("") 
                 if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     try:
