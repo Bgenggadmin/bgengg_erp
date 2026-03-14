@@ -174,39 +174,66 @@ with tab_plan:
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
+    
+    # 1. Unit Logic Mapping
     unit_map = {
-        "Welding": "MTs", "Buffing": "Sq.Ft", "Painting": "Sq.Ft",
-        "Cutting": "Nos", "Fitting": "Nos", "Grinding": "Nos",
-        "Assembly": "Nos", "Others": "Nos"
+        "Welding": "MTs", 
+        "Buffing": "Sq.Ft", 
+        "Painting": "Sq.Ft",
+        "Cutting": "Nos", 
+        "Fitting": "Nos", 
+        "Grinding": "Nos",
+        "Assembly": "Nos", 
+        "Others": "Nos"
     }
 
+    # 2. Activity Selection (Outside form for instant Unit update)
     f_act = st.selectbox("Select Activity first", all_activities, key="act_main")
     current_unit = unit_map.get(f_act, "Nos")
 
+    # 3. Entry Form
     with st.form("prod_form", clear_on_submit=True):
         f1, f2, f3 = st.columns(3)
+        
+        # Column 1
         f_sup = f1.selectbox("Supervisor", base_supervisors)
         f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
+        
+        # Column 2
         f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
-        f2.info(f"Unit: {current_unit}")
-        f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5)
-        f_out = f3.number_input(f"Output ({current_unit})", min_value=0.0)
-        f_nts = st.text_area("Task Details")
+        f2.info(f"📍 Unit for {f_act}: **{current_unit}**")
+        
+        # Column 3
+        f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5, format="%.1f")
+        f_out = f3.number_input(f"Output Qty ({current_unit})", min_value=0.0, format="%.2f")
+        
+        f_nts = st.text_area("Task Details / Remarks")
 
         if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
+            # Validation Logic
             if f_act == "Others" and not f_nts.strip():
-                st.error("⚠️ Details required for 'Others'.")
+                st.error("⚠️ Please provide details in 'Task Details' for 'Others'.")
             elif "-- Select --" in [f_wrk, f_job]:
-                st.error("❌ Select Worker and Job Code.")
+                st.error("❌ Selection Missing: Please select both Worker and Job Code.")
+            elif f_hrs <= 0:
+                st.error("❌ Invalid Hours: Must be greater than 0.")
             else:
                 try:
+                    # Database Insertion
                     conn.table("production").insert({
-                        "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
-                        "Activity": f_act, "Hours": f_hrs, "Output": f_out, 
-                        "Notes": f_nts, "Unit": current_unit 
+                        "Supervisor": f_sup, 
+                        "Worker": f_wrk, 
+                        "Job_Code": f_job,
+                        "Activity": f_act, 
+                        "Hours": f_hrs, 
+                        "Output": f_out, 
+                        "Unit": current_unit, # <--- Correctly passing the mapped unit
+                        "Notes": f_nts,
+                        "created_at": datetime.now(IST).isoformat()
                     }).execute()
+                    
                     st.cache_data.clear()
-                    st.success(f"✅ Logged {f_out} {current_unit}")
+                    st.success(f"✅ Logged: {f_out} {current_unit} of {f_act} for Job {f_job}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Database Error: {e}")
