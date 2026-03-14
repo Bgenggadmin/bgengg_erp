@@ -130,13 +130,31 @@ with tab_plan:
                                     <b>{p_item['item_name']}</b>: {p_item['status']}<br>
                                     <small>Reply: {p_item.get('purchase_reply', 'Awaiting Action')}</small></div>""", unsafe_allow_html=True)
 
-                if st.button("Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
-                    conn.table("anchor_projects").update({
-                        "drawing_status": new_gate, "manual_days_limit": new_limit,
-                        "material_shortage": new_short, "shortage_details": new_rem,
-                        "updated_at": datetime.now(IST).isoformat()
-                    }).eq("id", row['id']).execute()
-                    st.cache_data.clear(); st.rerun()
+          
+if st.button("Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+    try:
+        # Prepare the update data
+        update_data = {
+            "drawing_status": new_gate,
+            "material_shortage": new_short,
+            "updated_at": datetime.now(IST).isoformat()
+        }
+        
+        # Only add these if they were successfully loaded in your dataframe earlier
+        if 'manual_days_limit' in row:
+            update_data["manual_days_limit"] = new_limit
+        if 'shortage_details' in row:
+            update_data["shortage_details"] = new_rem
+
+        # Execute the update
+        conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute()
+        
+        st.cache_data.clear()
+        st.toast("✅ Database Updated!")
+        st.rerun()
+        
+    except Exception as e:
+        st.error(f"Update Failed. Check if column names are correct. Error: {e}")
 
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
