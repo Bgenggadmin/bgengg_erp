@@ -8,7 +8,9 @@ from io import BytesIO
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# 2. MASTER MAPPING (Status, Note, and Manual Progress Key)
+# 2. MASTER MAPPING (Restored Keys + New Progress Sliders)
+HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
+
 MILESTONE_MAP = [
     ("Drawing Submission", "draw_sub", "draw_sub_note", "draw_sub_prog"),
     ("Drawing Approval", "draw_app", "draw_app_note", "draw_app_prog"),
@@ -21,57 +23,77 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note", "fat_prog")
 ]
 
-HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
-
 # --- DATA FETCHING ---
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- STABLE PDF ENGINE ---
+# --- PDF ENGINE (RE-RESTORED WITH OLD LOGIC) ---
 def generate_pdf(logs):
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
         pdf.add_page()
         
-        # 1. Blue Header
-        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 20, 'F')
-        pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 14)
-        pdf.set_xy(10, 5); pdf.cell(0, 10, "B&G ENGINEERING INDUSTRIES - PROGRESS REPORT", 0, 1, "L")
+        # 1. BLUE STRIP & LOGO (Restored)
+        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
+        try:
+            logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
+            if logo_data: pdf.image(BytesIO(logo_data), x=12, y=5, h=15)
+        except: pass
+
+        # 2. HEADER TEXT (Restored)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5) 
+        pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14) 
+        pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # 2. Job Info Grid
-        pdf.set_xy(10, 25); pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
+        # 3. JOB DETAILS GRID
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+        pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
+        
+        pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
             f1, f2 = HEADER_FIELDS[i], HEADER_FIELDS[i+1]
-            pdf.cell(30, 6, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
-            pdf.cell(65, 6, f" {str(log.get(f1,''))}", 1, 0, 'L')
-            pdf.cell(30, 6, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
-            pdf.cell(65, 6, f" {str(log.get(f2,''))}", 1, 1, 'L')
+            pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
+            pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
+            pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
+            pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
 
-        # 3. Milestone Table
-        pdf.ln(5); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
-        pdf.cell(50, 7, " Milestone Item", 1, 0, 'L', True)
-        pdf.cell(30, 7, " Status", 1, 0, 'C', True)
-        pdf.cell(20, 7, " Done %", 1, 0, 'C', True)
-        pdf.cell(90, 7, " Remarks", 1, 1, 'L', True)
+        # 4. MILESTONE TABLE (Restored with Dynamic Coloring + Progress Column)
+        pdf.ln(5); pdf.set_font("Arial", "B", 9)
+        pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
+        pdf.cell(55, 8, " Milestone Item", 1, 0, 'L', True)
+        pdf.cell(30, 8, " Status", 1, 0, 'C', True)
+        pdf.cell(15, 8, " %", 1, 0, 'C', True)
+        pdf.cell(90, 8, " Remarks", 1, 1, 'L', True)
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
         for label, s_key, n_key, p_key in MILESTONE_MAP:
-            pdf.cell(50, 6, f" {label}", 1)
-            pdf.cell(30, 6, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
-            pdf.cell(20, 6, f" {str(log.get(p_key, 0))}%", 1, 0, 'C')
-            pdf.cell(90, 6, f" {str(log.get(n_key,'-'))}", 1, 1)
+            status = str(log.get(s_key, 'Pending'))
+            # COLOR LOGIC (Restored)
+            if status in ["Completed", "Approved", "Submitted"]: pdf.set_fill_color(144, 238, 144)
+            elif status in ["In-Progress", "Ordered", "Received", "Planning"]: pdf.set_fill_color(255, 255, 204)
+            else: pdf.set_fill_color(255, 255, 255)
+            
+            pdf.cell(55, 7, f" {label}", 1)
+            pdf.cell(30, 7, f" {status}", 1, 0, 'C', True)
+            pdf.cell(15, 7, f" {log.get(p_key, 0)}%", 1, 0, 'C')
+            pdf.cell(90, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # 4. Photo Logic (Keeps it on the same page)
+        # 5. PHOTO LOGIC
         try:
             photo_data = conn.client.storage.from_("progress-photos").download(f"{log['id']}.jpg")
             if photo_data:
                 if pdf.get_y() > 210: pdf.add_page()
-                pdf.ln(5); pdf.set_font("Arial", "B", 10); pdf.cell(0, 6, "Progress Verification Photo:", 0, 1)
+                pdf.ln(5); pdf.set_font("Arial", "B", 10); pdf.cell(0, 6, "Progress Photo:", 0, 1)
                 pdf.image(BytesIO(photo_data), x=10, h=60) 
         except: pass
 
-    return bytes(pdf.output(dest='S'))
+    # STABLE ENCODING (Restored)
+    raw_pdf = pdf.output(dest='S')
+    return bytes(raw_pdf) if isinstance(raw_pdf, (bytes, bytearray)) else raw_pdf.encode('latin-1')
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -79,19 +101,17 @@ tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"]
 with tab1:
     st.subheader("📋 Select Project")
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
-
+    
     last_data = {}
     if f_job:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        if res.data:
-            last_data = res.data[0]
-            st.info(f"🔄 Data loaded for {f_job}. Update completion percentages below.")
+        if res.data: last_data = res.data[0]
 
     with st.form("main_entry_form", clear_on_submit=True):
         st.subheader("📋 Project Details")
         c1, c2, c3 = st.columns(3)
-        default_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
-        f_cust = c1.selectbox("Customer", [""] + customers, index=default_cust_idx)
+        def_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
+        f_cust = c1.selectbox("Customer", [""] + customers, index=def_cust_idx)
         c2.text_input("Selected Job", value=f_job, disabled=True)
         f_eq = c3.text_input("Equipment Name", value=last_data.get('equipment', ""))
         
@@ -103,7 +123,7 @@ with tab1:
             except: return datetime.now()
         f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c6.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
-        
+
         c7, c8 = st.columns(2)
         f_p_del = c7.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
         f_r_del = c8.date_input("Revised Dispatch Date", value=safe_date('exp_dispatch_date'))
@@ -113,10 +133,11 @@ with tab1:
         for label, skey, nkey, pkey in MILESTONE_MAP:
             col_stat, col_note, col_prog = st.columns([1.2, 2, 1.2])
             
-            # Restored Status Options Logic
+            # RESTORED DROPDOWN OPTIONS LOGIC
             if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
             elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
             elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
+            elif label == "Fabrication Status": opts = ["Planning", "In-Progress", "Hold", "Completed"]
             else: opts = ["Pending", "In-Progress", "Completed", "NA", "Hold"]
 
             prev_status = last_data.get(skey, "Pending")
