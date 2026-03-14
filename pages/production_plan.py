@@ -34,7 +34,7 @@ df_plan, df_logs, df_pur, df_gates = get_master_data()
 
 # --- 3. DYNAMIC MAPPING & CONSTANTS ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
-all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly", "Buffing"]
+all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly", "Buffing", "Others"]
 
 if not df_gates.empty:
     universal_stages = df_gates['gate_name'].tolist()
@@ -151,6 +151,7 @@ with tab_entry:
         "Fitting": "Nos",
         "Grinding": "Nos",
         "Assembly": "Nos"
+        "Others": "Nos"
     }
 
     # 2. MOVE ACTIVITY OUTSIDE THE FORM (This makes the label dynamic)
