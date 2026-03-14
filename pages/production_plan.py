@@ -118,49 +118,47 @@ with tab_plan:
                                 st.toast("Request Sent!")
                                 st.rerun()
                 
-               with p_col2:
+              with p_col2:
                     st.markdown("**📋 Queries Pending (Job + Anchors)**")
                     
                     if not df_pur.empty:
-                        # 1. Standardize IDs for searching
+                        # 1. Standardize IDs (e.g., "1500")
                         current_id = str(job_id).strip().upper().replace(".0", "")
                         
-                        # 2. COMBINED FILTER: Show Job-specific items OR common 'ANCHORS'
-                        # This ensures production sees all relevant follow-ups in one list
+                        # 2. COMBINED FILTER: Show THIS job OR 'ANCHORS'
                         combined_queries = df_pur[
                             (df_pur['job_no'].astype(str).str.strip().str.upper().replace(".0", "").isin([current_id, "ANCHORS"])) & 
                             (df_pur['status'] != "Received")
                         ].copy()
                         
                         if not combined_queries.empty:
-                            # 3. Clean up the data for horizontal display
-                            # We create a 'Source' column to distinguish Anchor vs Job
+                            # 3. Label the source so Production knows what is what
                             combined_queries['Source'] = combined_queries['job_no'].apply(
                                 lambda x: "⚓ ANCHOR" if str(x).strip().upper() == "ANCHORS" else f"🏗️ {current_id}"
                             )
                             
-                            # Handle empty replies
+                            # Clean up empty replies
                             combined_queries['purchase_reply'] = combined_queries['purchase_reply'].fillna("⏳ Awaiting Update")
                             
-                            # 4. Display as a compact horizontal table
+                            # 4. Compact Horizontal Table
                             st.dataframe(
                                 combined_queries[['Source', 'item_name', 'status', 'purchase_reply']],
                                 column_config={
                                     "Source": st.column_config.TextColumn("Origin", width="small"),
-                                    "item_name": st.column_config.TextColumn("Item", width="medium"),
+                                    "item_name": st.column_config.TextColumn("Item Name", width="medium"),
                                     "status": st.column_config.TextColumn("Status", width="small"),
                                     "purchase_reply": st.column_config.TextColumn("Purchase Reply", width="large"),
                                 },
                                 hide_index=True,
                                 use_container_width=True,
-                                height=150 # Fixed height to prevent the page from growing too long
+                                height=150
                             )
                         else:
                             st.caption(f"✅ No pending queries for {current_id} or Anchors.")
                     else:
                         st.caption("No purchase data available.")
 
-                # --- UPDATE BUTTON ---
+                # --- UPDATE BUTTON (Ensure this is indented to Level 2) ---
                 st.write("") 
                 if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     try:
