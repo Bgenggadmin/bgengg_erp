@@ -103,7 +103,7 @@ with tab_plan:
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
                 st.markdown("---")
-                p_col1, p_col2 = st.columns([1, 2]) # Adjusted ratio for horizontal table space
+                p_col1, p_col2 = st.columns([1, 2]) 
                 
                 with p_col1:
                     with st.expander("🛒 New Material Request"):
@@ -122,8 +122,6 @@ with tab_plan:
                     st.markdown("**📋 Queries Pending (Job + Anchors)**")
                     if not df_pur.empty:
                         current_id = str(job_id).strip().upper().replace(".0", "")
-                        
-                        # Show current Job items + ANCHORS items
                         combined_queries = df_pur[
                             (df_pur['job_no'].astype(str).str.strip().str.upper().replace(".0", "").isin([current_id, "ANCHORS"])) & 
                             (df_pur['status'] != "Received")
@@ -150,7 +148,6 @@ with tab_plan:
                         else:
                             st.caption(f"✅ No pending queries for {current_id} or Anchors.")
 
-                # Update Master Status Button
                 st.write("") 
                 if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     try:
@@ -175,7 +172,6 @@ with tab_plan:
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     
-    # 1. Unit Logic Mapping
     unit_map = {
         "Welding": "MTs", 
         "Buffing": "Sq.Ft", 
@@ -187,29 +183,20 @@ with tab_entry:
         "Others": "Nos"
     }
 
-    # 2. Activity Selection (Keep outside for instant reactivity)
     f_act = st.selectbox("🎯 Select Current Activity", all_activities, key="act_main")
     current_unit = unit_map.get(f_act, "Nos")
 
-    # 3. Entry Form
     with st.form("prod_form", clear_on_submit=True):
-        # We display the unit clearly at the top of the form so the user is sure
         st.markdown(f"Logging work for: **{f_act}** | Target Unit: **{current_unit}**")
         
         f1, f2, f3 = st.columns(3)
-        
-        # Column 1
         f_sup = f1.selectbox("Supervisor", base_supervisors)
         f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
         
-        # Column 2
         f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
-        # Instead of .info, we just use a small caption to save vertical space
         f2.caption(f"Unit type: {current_unit}")
         
-        # Column 3
         f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5, format="%.1f")
-        # We use a generic label because labels inside forms don't update live
         f_out = f3.number_input(f"Total Output ({current_unit})", min_value=0.0, format="%.2f")
         
         f_nts = st.text_area("Task Details / Remarks", placeholder="Enter specific details here...")
@@ -240,11 +227,11 @@ with tab_entry:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Database Error: {e}")
+
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
     st.subheader("📅 Production Shift Report")
     
-    # 1. Add a Manual Refresh & Date Picker to save space and offer flexibility
     a1, a2 = st.columns([1, 3])
     with a1:
         if st.button("🔄 Refresh Data"):
@@ -254,34 +241,25 @@ with tab_analytics:
         report_date = st.date_input("Select Report Date", datetime.now(IST).date())
 
     if not df_logs.empty and 'created_at' in df_logs.columns:
-        # 2. Process Timezones safely
         df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
         df_logs = df_logs.dropna(subset=['created_at']).copy()
         
         if df_logs['created_at'].dt.tz is None:
             df_logs['created_at'] = df_logs['created_at'].dt.tz_localize('UTC')
         
-        # Convert to IST for filtering
         df_logs['ist_time'] = df_logs['created_at'].dt.tz_convert(IST)
-        
-        # 3. Filter by the SELECTED date
         filtered_logs = df_logs[df_logs['ist_time'].dt.date == report_date].copy()
         
         if not filtered_logs.empty:
-            # Format time for the table (e.g., 02:30 PM)
             filtered_logs['Logged At'] = filtered_logs['ist_time'].dt.strftime('%I:%M %p')
-            
-            # Sort by newest first
             filtered_logs = filtered_logs.sort_values('ist_time', ascending=False)
             
-            # 4. Display the Data
             st.dataframe(
                 filtered_logs[['Logged At', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Output', 'Unit', 'Notes']], 
                 hide_index=True,
                 use_container_width=True
             )
             
-            # Summary Metrics
             m1, m2 = st.columns(2)
             m1.metric("Total Man-Hours", f"{filtered_logs['Hours'].sum():.1f} Hrs")
             m2.metric("Total Entries", len(filtered_logs))
@@ -289,6 +267,7 @@ with tab_analytics:
             st.info(f"No entries found for {report_date.strftime('%d %b %Y')}.")
     else:
         st.warning("No logs found in the database.")
+
 # --- TAB 4: MANAGE MASTERS ---
 with tab_masters:
     st.subheader("🛠️ Master Registration")
