@@ -8,7 +8,7 @@ from io import BytesIO
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# 2. THE MASTER MAPPING
+# 2. MASTER MAPPING
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 
 MILESTONE_MAP = [
@@ -27,7 +27,7 @@ MILESTONE_MAP = [
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE (REPAIRED FOR NEW LIBRARIES) ---
+# --- PDF ENGINE (REWRITTEN FOR UNIVERSAL COMPATIBILITY) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -35,7 +35,6 @@ def generate_pdf(logs):
         pdf.add_page()
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         
-        # Logo Logic
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
             if logo_data: pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
@@ -65,14 +64,16 @@ def generate_pdf(logs):
         for label, s_key, n_key in MILESTONE_MAP:
             status = str(log.get(s_key, 'Pending'))
             if status in ["Completed", "Approved", "Submitted"]: pdf.set_fill_color(144, 238, 144)
-            elif status in ["In-Progress", "Hold", "Ordered", "Received", "Planning", "Scheduled"]: pdf.set_fill_color(255, 255, 204)
+            elif status in ["In-Progress", "Hold", "Ordered", "Received", "Planning", "Scheduled"]: pdf.set_fill_color(255, 204, 204)
             else: pdf.set_fill_color(255, 255, 255)
             pdf.cell(60, 7, f" {label}", 1); pdf.cell(35, 7, f" {status}", 1, 0, 'C', True); pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-    # SECURE ENCODING FIX
-    output = pdf.output()
-    if isinstance(output, str): return output.encode('latin-1')
-    return output
+    # --- THE CRITICAL FIX: BYTESIO BUFFER ---
+    # This creates a standard byte stream that Streamlit cannot reject.
+    pdf_output = pdf.output(dest='S')
+    if isinstance(pdf_output, str):
+        return pdf_output.encode('latin-1')
+    return bytes(pdf_output)
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -80,7 +81,6 @@ tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"]
 with tab1:
     st.subheader("📋 Select Project")
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
-
     last_data = {}
     if f_job:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
@@ -89,9 +89,7 @@ with tab1:
             st.info(f"🔄 Autofilled latest data for Job: {f_job}.")
 
     with st.form("main_entry_form", clear_on_submit=True):
-        st.subheader("📋 Project Details")
         c1, c2, c3 = st.columns(3)
-        
         default_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
         f_cust = c1.selectbox("Customer", [""] + customers, index=default_cust_idx)
         c2.text_input("Selected Job", value=f_job, disabled=True)
@@ -107,10 +105,8 @@ with tab1:
 
         f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c6.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
-        
-        c7, c8 = st.columns(2)
-        f_p_del = c7.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
-        f_r_del = c8.date_input("Revised Dispatch Date", value=safe_date('exp_dispatch_date'))
+        f_p_del = st.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
+        f_r_del = st.date_input("Revised Dispatch Date", value=safe_date('exp_dispatch_date'))
 
         st.divider()
         m_responses = {}
@@ -123,34 +119,32 @@ with tab1:
 
         st.divider()
         cam_photo = st.camera_input("📸 Take Progress Photo")
-
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
-            if not f_cust or not f_job:
-                st.error("Select a Job Code and Customer first!")
+            if not f_cust or not f_job: st.error("Select Job & Customer!")
             else:
-                try:
-                    entry_payload = {
-                        "customer": f_cust, "job_code": f_job, "equipment": f_eq,
-                        "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
-                        "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del),
-                        **m_responses
-                    }
-                    res = conn.table("progress_logs").insert(entry_payload).execute()
-                    if cam_photo and res.data:
-                        conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
-                    st.success("✅ Update Saved!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                entry_payload = {"customer": f_cust, "job_code": f_job, "equipment": f_eq, "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng, "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del), **m_responses}
+                res = conn.table("progress_logs").insert(entry_payload).execute()
+                if cam_photo and res.data: conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
+                st.success("✅ Saved!"); st.rerun()
 
 with tab2:
     st.subheader("📂 Report Archive")
-    archive_res = conn.table("progress_logs").select("*").order("created_at", desc=True).limit(20).execute()
+    archive_res = conn.table("progress_logs").select("*").order("id", desc=True).limit(10).execute()
     if archive_res.data:
         for row in archive_res.data:
             with st.expander(f"📦 {row['job_code']} | {row['customer']} | {row['created_at'][:10]}"):
-                pdf_bytes = generate_pdf([row])
-                st.download_button("📩 Download PDF", pdf_bytes, f"Report_{row['job_code']}.pdf", "application/pdf", key=f"dl_{row['id']}")
+                # REPAIRED DOWNLOAD BUTTON CALL
+                try:
+                    pdf_data = generate_pdf([row])
+                    st.download_button(
+                        label="📩 Download PDF",
+                        data=pdf_data,
+                        file_name=f"Report_{row['job_code']}.pdf",
+                        mime="application/pdf",
+                        key=f"dl_{row['id']}"
+                    )
+                except Exception as e:
+                    st.error(f"PDF Error: {e}")
 
 with tab3:
     st.header("🛠️ Masters")
