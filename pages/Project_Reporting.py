@@ -1,6 +1,6 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 from fpdf import FPDF
 from io import BytesIO
 
@@ -8,7 +8,7 @@ from io import BytesIO
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# 2. MASTER MAPPING (Restored Keys + New Progress Sliders)
+# 2. MASTER MAPPING
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 
 MILESTONE_MAP = [
@@ -27,31 +27,23 @@ MILESTONE_MAP = [
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE (RE-RESTORED WITH OLD LOGIC) ---
+# --- PDF ENGINE (RESTORED WITH BRANDING) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
         pdf.add_page()
-        
-        # 1. BLUE STRIP & LOGO (Restored)
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
             if logo_data: pdf.image(BytesIO(logo_data), x=12, y=5, h=15)
         except: pass
-
-        # 2. HEADER TEXT (Restored)
         pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5) 
-        pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14) 
-        pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
+        pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # 3. JOB DETAILS GRID
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
+        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+        pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | DATE: {log.get('created_at',' ')[:10]}", "B", 1, "L")
         
         pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
@@ -61,9 +53,7 @@ def generate_pdf(logs):
             pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
 
-        # 4. MILESTONE TABLE (Restored with Dynamic Coloring + Progress Column)
-        pdf.ln(5); pdf.set_font("Arial", "B", 9)
-        pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
+        pdf.ln(5); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(55, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
         pdf.cell(15, 8, " %", 1, 0, 'C', True)
@@ -72,28 +62,15 @@ def generate_pdf(logs):
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
         for label, s_key, n_key, p_key in MILESTONE_MAP:
             status = str(log.get(s_key, 'Pending'))
-            # COLOR LOGIC (Restored)
             if status in ["Completed", "Approved", "Submitted"]: pdf.set_fill_color(144, 238, 144)
-            elif status in ["In-Progress", "Ordered", "Received", "Planning"]: pdf.set_fill_color(255, 255, 204)
+            elif status in ["In-Progress", "Ordered", "Received"]: pdf.set_fill_color(255, 255, 204)
             else: pdf.set_fill_color(255, 255, 255)
-            
             pdf.cell(55, 7, f" {label}", 1)
             pdf.cell(30, 7, f" {status}", 1, 0, 'C', True)
             pdf.cell(15, 7, f" {log.get(p_key, 0)}%", 1, 0, 'C')
             pdf.cell(90, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # 5. PHOTO LOGIC
-        try:
-            photo_data = conn.client.storage.from_("progress-photos").download(f"{log['id']}.jpg")
-            if photo_data:
-                if pdf.get_y() > 210: pdf.add_page()
-                pdf.ln(5); pdf.set_font("Arial", "B", 10); pdf.cell(0, 6, "Progress Photo:", 0, 1)
-                pdf.image(BytesIO(photo_data), x=10, h=60) 
-        except: pass
-
-    # STABLE ENCODING (Restored)
-    raw_pdf = pdf.output(dest='S')
-    return bytes(raw_pdf) if isinstance(raw_pdf, (bytes, bytearray)) else raw_pdf.encode('latin-1')
+    return bytes(pdf.output(dest='S'))
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -105,7 +82,9 @@ with tab1:
     last_data = {}
     if f_job:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        if res.data: last_data = res.data[0]
+        if res.data:
+            last_data = res.data[0]
+            st.info(f"🔄 Form pre-filled from latest update of {f_job}")
 
     with st.form("main_entry_form", clear_on_submit=True):
         st.subheader("📋 Project Details")
@@ -119,67 +98,68 @@ with tab1:
         f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
         def safe_date(field):
             val = last_data.get(field)
-            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
-            except: return datetime.now()
+            return datetime.strptime(val, "%Y-%m-%d").date() if val else date.today()
+
         f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c6.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
-
-        c7, c8 = st.columns(2)
+        f_p_del = c7, c8 = st.columns(2)
         f_p_del = c7.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
         f_r_del = c8.date_input("Revised Dispatch Date", value=safe_date('exp_dispatch_date'))
 
-        st.divider(); st.subheader("📊 Milestone Tracking (Individual Manual Control)")
+        st.divider(); st.subheader("📊 Milestone Tracking")
         m_responses = {}
         for label, skey, nkey, pkey in MILESTONE_MAP:
             col_stat, col_note, col_prog = st.columns([1.2, 2, 1.2])
-            
-            # RESTORED DROPDOWN OPTIONS LOGIC
             if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
             elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
-            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
-            elif label == "Fabrication Status": opts = ["Planning", "In-Progress", "Hold", "Completed"]
+            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received"]
             else: opts = ["Pending", "In-Progress", "Completed", "NA", "Hold"]
-
-            prev_status = last_data.get(skey, "Pending")
-            def_idx = opts.index(prev_status) if prev_status in opts else 0
             
-            m_responses[skey] = col_stat.selectbox(label, opts, index=def_idx, key=f"s_{skey}")
+            p_status = last_data.get(skey, "Pending")
+            m_responses[skey] = col_stat.selectbox(label, opts, index=opts.index(p_status) if p_status in opts else 0, key=f"s_{skey}")
             m_responses[nkey] = col_note.text_input(f"Remarks ({label})", value=last_data.get(nkey, ""), key=f"n_{nkey}")
             m_responses[pkey] = col_prog.slider(f"{label} %", 0, 100, value=int(last_data.get(pkey, 0)), key=f"p_{pkey}")
-            st.write("---")
 
-        st.divider(); cam_photo = st.camera_input("📸 Take Progress Photo")
+        st.divider(); cam = st.camera_input("📸 Take Progress Photo")
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
-            if not f_cust or not f_job: st.error("Select Job Code first!")
+            if not f_cust or not f_job: st.error("Incomplete Data!")
             else:
-                try:
-                    payload = {
-                        "customer": f_cust, "job_code": f_job, "equipment": f_eq,
-                        "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
-                        "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del),
-                        **m_responses
-                    }
-                    res = conn.table("progress_logs").insert(payload).execute()
-                    if cam_photo and res.data:
-                        conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
-                    st.success("✅ Saved!"); st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
+                payload = {"customer": f_cust, "job_code": f_job, "equipment": f_eq, "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng, "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del), **m_responses}
+                res = conn.table("progress_logs").insert(payload).execute()
+                if cam and res.data: conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam.getvalue())
+                st.success("Entry Saved!"); st.rerun()
 
 with tab2:
     st.subheader("📂 Report Archive")
-    f_cust_search = st.selectbox("🔍 Filter by Customer", ["All"] + customers)
-    query = conn.table("progress_logs").select("*").order("created_at", desc=True)
-    if f_cust_search != "All": query = query.eq("customer", f_cust_search)
+    # --- REPORT DURATION LOGIC (RESTORED) ---
+    c1, c2 = st.columns(2)
+    duration = c1.selectbox("Report Duration", ["Current Week", "Current Month", "Last 30 Days", "All Time", "Custom Range"])
     
+    start_date = date.today() - timedelta(days=365) # Default
+    if duration == "Current Week": start_date = date.today() - timedelta(days=date.today().weekday())
+    elif duration == "Current Month": start_date = date.today().replace(day=1)
+    elif duration == "Last 30 Days": start_date = date.today() - timedelta(days=30)
+    elif duration == "All Time": start_date = date(2020, 1, 1)
+    
+    if duration == "Custom Range":
+        date_range = c2.date_input("Select Range", [date.today() - timedelta(days=7), date.today()])
+        if len(date_range) == 2: start_date, end_date = date_range
+    else:
+        end_date = date.today()
+
+    query = conn.table("progress_logs").select("*").gte("created_at", start_date.strftime("%Y-%m-%d")).lte("created_at", (end_date + timedelta(days=1)).strftime("%Y-%m-%d")).order("created_at", desc=True)
     archive_data = query.execute().data
+    
     if archive_data:
         for row in archive_data:
             with st.expander(f"📦 {row['job_code']} | {row['customer']} | {row['created_at'][:10]}"):
                 pdf_bytes = generate_pdf([row])
                 st.download_button("📩 Download PDF", pdf_bytes, f"Report_{row['job_code']}.pdf", "application/pdf", key=f"dl_{row['id']}")
+    else:
+        st.warning("No reports found for this period.")
 
 with tab3:
-    st.header("🛠️ Masters")
+    st.header("🛠️ Masters Management")
     c_a, c_b = st.columns(2)
     with c_a:
         nc = st.text_input("New Customer")
