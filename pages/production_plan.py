@@ -141,22 +141,50 @@ with tab_plan:
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
+    
+    # Define unit mapping
+    unit_map = {
+        "Welding": "MTs",
+        "Buffing": "Sq.Ft",
+        "Painting": "Sq.Ft",
+        "Cutting": "Nos",
+        "Fitting": "Nos",
+        "Grinding": "Nos",
+        "Assembly": "Nos"
+    }
+
     with st.form("prod_form", clear_on_submit=True):
         f1, f2, f3 = st.columns(3)
         f_sup = f1.selectbox("Supervisor", base_supervisors)
         f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
+        
         f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
         f_act = f2.selectbox("Activity", all_activities)
+        
+        # Determine the unit label dynamically
+        current_unit = unit_map.get(f_act, "Nos")
+        
         f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5)
-        f_out = f3.number_input("Output (Qty)", min_value=0.0)
+        # Dynamic label based on activity selection
+        f_out = f3.number_input(f"Output ({current_unit})", min_value=0.0)
+        
         f_nts = st.text_area("Task Details")
+        
         if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
             if "-- Select --" not in [f_wrk, f_job]:
                 conn.table("production").insert({
-                    "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
-                    "Activity": f_act, "Hours": f_hrs, "Output": f_out, "Notes": f_nts
+                    "Supervisor": f_sup, 
+                    "Worker": f_wrk, 
+                    "Job_Code": f_job,
+                    "Activity": f_act, 
+                    "Hours": f_hrs, 
+                    "Output": f_out, 
+                    "Notes": f_nts,
+                    "Unit": current_unit  # Storing the unit helps in reports later
                 }).execute()
-                st.cache_data.clear(); st.success("Work Logged!"); st.rerun()
+                st.cache_data.clear()
+                st.success(f"Work Logged in {current_unit}!")
+                st.rerun()
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
