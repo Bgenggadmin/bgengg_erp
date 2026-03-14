@@ -25,15 +25,11 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- DATA FETCHING (With Safety Fix) ---
-try:
-    customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
-    jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
-except Exception:
-    customers = []
-    jobs = []
+# --- DATA FETCHING ---
+customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
+jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE (Fixed for Streamlit) ---
+# --- PDF ENGINE ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -105,7 +101,6 @@ def generate_pdf(logs):
 
         # --- Progress Photo ---
         try:
-            if pdf.get_y() > 220: pdf.add_page() # Check for space
             img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
             img_res = requests.get(img_url, timeout=3)
             if img_res.status_code == 200:
@@ -116,7 +111,7 @@ def generate_pdf(logs):
         except Exception: 
             pass
 
-    return pdf.output(dest='S').encode('latin-1') # CORRECTED LINE
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -225,7 +220,6 @@ with tab2:
     
     res = query.execute()
     data = res.data if res else []
-
     filtered_data = []
     today = datetime.now().date()
     
@@ -272,11 +266,11 @@ with tab2:
                             with center_col:
                                 st.image(photo_url, caption=f"Job: {log.get('job_code')}", width=160)
                         else:
-                            st.info("💡 No photo uploaded for this entry.")
-                    except Exception:
-                        st.info("⚠️ Photo could not be loaded.")
+                            st.info("💡 No photo uploaded.")
+                    except:
+                        st.info("⚠️ Photo issue.")
         else:
-            st.warning("No records found for the selected filter.")
+            st.warning("No records found.")
 
 with tab3:
     st.header("🛠️ Master Data Management")
