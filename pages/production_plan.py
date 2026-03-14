@@ -177,23 +177,37 @@ with tab_entry:
         
         f_nts = st.text_area("Task Details")
         
-        if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
-            if "-- Select --" not in [f_wrk, f_job]:
-                conn.table("production").insert({
-                    "Supervisor": f_sup, 
-                    "Worker": f_wrk, 
-                    "Job_Code": f_job,
-                    "Activity": f_act, # Takes the value from the selector above
-                    "Hours": f_hrs, 
-                    "Output": f_out, 
-                    "Notes": f_nts,
-                    "Unit": current_unit 
-                }).execute()
-                st.cache_data.clear()
-                st.success(f"Successfully logged {f_out} {current_unit} for {f_act}")
-                st.rerun()
+       if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
+            # 1. Check if 'Others' has an explanation
+            if f_act == "Others" and not f_nts.strip():
+                st.error("⚠️ Please provide details in 'Task Details' when selecting 'Others'.")
+            
+            # 2. Check if Worker and Job are selected
+            elif "-- Select --" in [f_wrk, f_job]:
+                st.error("❌ Please select both a valid Worker and Job Code.")
+            
+            # 3. If everything is valid, insert into Supabase
             else:
-                st.error("Please select both Worker and Job Code.")
+                try:
+                    conn.table("production").insert({
+                        "Supervisor": f_sup, 
+                        "Worker": f_wrk, 
+                        "Job_Code": f_job,
+                        "Activity": f_act, 
+                        "Hours": f_hrs, 
+                        "Output": f_out, 
+                        "Notes": f_nts,
+                        "Unit": current_unit 
+                    }).execute()
+                    
+                    # Clear cache so the analytics tab updates immediately
+                    st.cache_data.clear()
+                    st.success(f"✅ Successfully logged {f_out} {current_unit} for {f_act}")
+                    
+                    # Use st.rerun() to refresh the page and clear the form
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save data: {e}")
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
