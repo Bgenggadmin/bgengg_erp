@@ -213,23 +213,53 @@ with tab_entry:
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
+    st.subheader("📅 Production Shift Report")
+    
+    # 1. Add a Manual Refresh & Date Picker to save space and offer flexibility
+    a1, a2 = st.columns([1, 3])
+    with a1:
+        if st.button("🔄 Refresh Data"):
+            st.cache_data.clear()
+            st.rerun()
+    with a2:
+        report_date = st.date_input("Select Report Date", datetime.now(IST).date())
+
     if not df_logs.empty and 'created_at' in df_logs.columns:
-        st.subheader("📅 Today's Shift Report")
+        # 2. Process Timezones safely
         df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
-        df_logs = df_logs.dropna(subset=['created_at'])
+        df_logs = df_logs.dropna(subset=['created_at']).copy()
         
         if df_logs['created_at'].dt.tz is None:
             df_logs['created_at'] = df_logs['created_at'].dt.tz_localize('UTC')
-        df_logs['created_at'] = df_logs['created_at'].dt.tz_convert(IST)
         
-        today_logs = df_logs[df_logs['created_at'].dt.date == datetime.now(IST).date()]
-        if not today_logs.empty:
-            st.dataframe(today_logs[['created_at', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Notes']], hide_index=True)
+        # Convert to IST for filtering
+        df_logs['ist_time'] = df_logs['created_at'].dt.tz_convert(IST)
+        
+        # 3. Filter by the SELECTED date
+        filtered_logs = df_logs[df_logs['ist_time'].dt.date == report_date].copy()
+        
+        if not filtered_logs.empty:
+            # Format time for the table (e.g., 02:30 PM)
+            filtered_logs['Logged At'] = filtered_logs['ist_time'].dt.strftime('%I:%M %p')
+            
+            # Sort by newest first
+            filtered_logs = filtered_logs.sort_values('ist_time', ascending=False)
+            
+            # 4. Display the Data
+            st.dataframe(
+                filtered_logs[['Logged At', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Output', 'Unit', 'Notes']], 
+                hide_index=True,
+                use_container_width=True
+            )
+            
+            # Summary Metrics
+            m1, m2 = st.columns(2)
+            m1.metric("Total Man-Hours", f"{filtered_logs['Hours'].sum():.1f} Hrs")
+            m2.metric("Total Entries", len(filtered_logs))
         else:
-            st.info("No entries for today.")
+            st.info(f"No entries found for {report_date.strftime('%d %b %Y')}.")
     else:
-        st.warning("No logs found.")
-
+        st.warning("No logs found in the database.")
 # --- TAB 4: MANAGE MASTERS ---
 with tab_masters:
     st.subheader("🛠️ Master Registration")
