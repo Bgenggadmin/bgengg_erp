@@ -76,9 +76,56 @@ def generate_pdf(logs):
     raw_output = pdf.output()
     return bytes(raw_output) if isinstance(raw_output, (bytes, bytearray)) else raw_output.encode('latin-1')
 
-# --- STREAMLIT UI ---
+# --- TAB 1: UI LOGIC ---
 st.title("📊 Project Progress Reports")
-# (Your Fetching Logic Here)
-# if st.button("Generate Report"):
-#     pdf_bytes = generate_pdf(results)
-#     st.download_button("Download", data=pdf_bytes, file_name="Report.pdf", mime="application/pdf")
+
+# 1. Fetch Master Data for Selectboxes
+try:
+    customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
+    jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
+except Exception as e:
+    st.error(f"Database Connection Error: {e}")
+    st.stop()
+
+# 2. Filter Section
+with st.expander("🔍 Filter Reports", expanded=True):
+    col1, col2 = st.columns(2)
+    sel_cust = col1.selectbox("Select Customer", ["All"] + customers)
+    sel_job = col2.selectbox("Select Job Code", ["All"] + jobs)
+
+# 3. Execution Section
+if st.button("🚀 Generate Report", use_container_width=True):
+    with st.spinner("Fetching data from Supabase..."):
+        # Build Query
+        query = conn.table("progress_logs").select("*").order("id", desc=True)
+        
+        if sel_cust != "All":
+            query = query.eq("customer", sel_cust)
+        if sel_job != "All":
+            query = query.eq("job_code", sel_job)
+            
+        res = query.execute()
+        data = res.data if res.data else []
+
+    if data:
+        st.success(f"Found {len(data)} records!")
+        
+        # Run the PDF Engine we fixed earlier
+        with st.spinner("Creating PDF file..."):
+            pdf_bytes = generate_pdf(data)
+            
+        if pdf_bytes:
+            st.download_button(
+                label="📥 Download PDF Report",
+                data=pdf_bytes,
+                file_name=f"BG_Report_{sel_cust}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+            
+            # Show a small preview of what's in the PDF
+            st.divider()
+            for record in data[:3]: # Preview first 3
+                st.write(f"✅ Previewing: {record.get('job_code')} - {record.get('customer')}")
+    else:
+        st.warning("No records found for the selected filters.")
