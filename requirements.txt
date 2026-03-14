@@ -1,4 +1,5 @@
 streamlit
 st-supabase-connection
-pandas
-plotly
+fpdf
+requests
+Pillow
