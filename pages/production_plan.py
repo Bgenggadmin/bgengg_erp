@@ -14,16 +14,9 @@ conn = st.connection("supabase", type=SupabaseConnection)
 @st.cache_data(ttl=300)
 def get_master_data():
     try:
-        # Fetching all columns to ensure logic works
         plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
-        
-        # Production logs
         prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
-        
-        # Purchase data
         pur_res = conn.table("purchase_orders").select("*").execute()
-        
-        # Gates/Stages
         gate_res = conn.table("production_gates").select("*").order("step_order").execute()
         
         return (pd.DataFrame(plan_res.data or []), 
@@ -69,10 +62,14 @@ with tab_plan:
             actual_hrs = hrs_sum.get(job_id, 0)
             
             try:
-                updated_at = pd.to_datetime(row.get('updated_at'))
-                if updated_at.tzinfo is None:
-                    updated_at = updated_at.replace(tzinfo=pytz.UTC)
-                updated_at = updated_at.astimezone(IST)
+                updated_at_raw = row.get('updated_at')
+                if pd.isna(updated_at_raw):
+                    updated_at = datetime.now(IST)
+                else:
+                    updated_at = pd.to_datetime(updated_at_raw)
+                    if updated_at.tzinfo is None:
+                        updated_at = updated_at.replace(tzinfo=pytz.UTC)
+                    updated_at = updated_at.astimezone(IST)
             except:
                 updated_at = datetime.now(IST)
 
@@ -118,14 +115,13 @@ with tab_plan:
                                     "job_no": job_id, "item_name": t_item, "specs": t_spec, "status": "Triggered"
                                 }).execute()
                                 conn.table("anchor_projects").update({"purchase_trigger": True}).eq("id", row['id']).execute()
-                                st.toast("Request Sent!"); st.rerun()
+                                st.toast("Request Sent!")
+                                st.rerun()
                 
-               with p_col2:
+                with p_col2:
                     st.markdown("**💬 Production Queries**")
                     if not df_pur.empty:
-                        # Normalize IDs to ensure a perfect match
                         clean_job_id = str(job_id).strip().upper()
-                        
                         job_queries = df_pur[
                             (df_pur['job_no'].astype(str).str.strip().str.upper() == clean_job_id) & 
                             (df_pur['status'] != "Received")
@@ -146,12 +142,10 @@ with tab_plan:
                                         </div>
                                     </div>""", unsafe_allow_html=True)
                         else:
-                            st.caption("✅ No pending queries for this job.")
+                            st.caption("✅ No pending queries.")
                     else:
                         st.caption("No purchase data available.")
 
-                # --- MOVE GATE / STATUS UPDATE BUTTON ---
-                # This button must be indented exactly to the same level as p_col1/p_col2
                 st.write("") 
                 if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     try:
@@ -197,9 +191,9 @@ with tab_entry:
 
         if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
             if f_act == "Others" and not f_nts.strip():
-                st.error("⚠️ Please provide details in 'Task Details' for 'Others'.")
+                st.error("⚠️ Details required for 'Others'.")
             elif "-- Select --" in [f_wrk, f_job]:
-                st.error("❌ Please select Worker and Job Code.")
+                st.error("❌ Select Worker and Job Code.")
             else:
                 try:
                     conn.table("production").insert({
@@ -217,7 +211,8 @@ with tab_entry:
 with tab_analytics:
     if not df_logs.empty and 'created_at' in df_logs.columns:
         st.subheader("📅 Today's Shift Report")
-        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], errors='coerce').dropna()
+        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
+        df_logs = df_logs.dropna(subset=['created_at'])
         
         if df_logs['created_at'].dt.tz is None:
             df_logs['created_at'] = df_logs['created_at'].dt.tz_localize('UTC')
@@ -239,7 +234,8 @@ with tab_masters:
         new_w = st.text_input("Register Worker")
         if st.button("Add Person") and new_w:
             conn.table("production").insert({"Worker": new_w, "Notes": "SYSTEM_NEW_ITEM", "Hours": 0, "Activity": "N/A", "Job_Code": "N/A"}).execute()
-            st.cache_data.clear(); st.rerun()
+            st.cache_data.clear()
+            st.rerun()
     with m2:
         if not df_gates.empty:
             st.write("Production Gates:")
