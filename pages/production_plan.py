@@ -142,7 +142,7 @@ with tab_plan:
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     
-    # Define unit mapping
+    # 1. Define the unit map
     unit_map = {
         "Welding": "MTs",
         "Buffing": "Sq.Ft",
@@ -153,20 +153,26 @@ with tab_entry:
         "Assembly": "Nos"
     }
 
+    # 2. MOVE ACTIVITY OUTSIDE THE FORM (This makes the label dynamic)
+    f_act = st.selectbox("Select Activity first to set Units", all_activities, key="act_selector")
+    current_unit = unit_map.get(f_act, "Nos")
+    
+    st.info(f"Selected Activity: **{f_act}** | Recording output in: **{current_unit}**")
+
+    # 3. THE ENTRY FORM
     with st.form("prod_form", clear_on_submit=True):
         f1, f2, f3 = st.columns(3)
         f_sup = f1.selectbox("Supervisor", base_supervisors)
         f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
         
         f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
-        f_act = f2.selectbox("Activity", all_activities)
-        
-        # Determine the unit label dynamically
-        current_unit = unit_map.get(f_act, "Nos")
+        # We use a hidden input or caption to show the activity selected above
+        f2.write(f"Activity: **{f_act}**")
         
         f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5)
-        # Dynamic label based on activity selection
-        f_out = f3.number_input(f"Output ({current_unit})", min_value=0.0)
+        
+        # NOW THIS LABEL WILL BE CORRECT
+        f_out = f3.number_input(f"Output Value ({current_unit})", min_value=0.0)
         
         f_nts = st.text_area("Task Details")
         
@@ -176,15 +182,17 @@ with tab_entry:
                     "Supervisor": f_sup, 
                     "Worker": f_wrk, 
                     "Job_Code": f_job,
-                    "Activity": f_act, 
+                    "Activity": f_act, # Takes the value from the selector above
                     "Hours": f_hrs, 
                     "Output": f_out, 
                     "Notes": f_nts,
-                    "Unit": current_unit  # Storing the unit helps in reports later
+                    "Unit": current_unit 
                 }).execute()
                 st.cache_data.clear()
-                st.success(f"Work Logged in {current_unit}!")
+                st.success(f"Successfully logged {f_out} {current_unit} for {f_act}")
                 st.rerun()
+            else:
+                st.error("Please select both Worker and Job Code.")
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
