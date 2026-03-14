@@ -123,11 +123,9 @@ with tab_plan:
                with p_col2:
                     st.markdown("**💬 Production Queries**")
                     if not df_pur.empty:
-                        # 1. Standardize the Job ID from the loop
+                        # Normalize IDs to ensure a perfect match
                         clean_job_id = str(job_id).strip().upper()
                         
-                        # 2. Filter df_pur by forcing the column to match the same format
-                        # This prevents "Centrifugal Pumps" from appearing on every job
                         job_queries = df_pur[
                             (df_pur['job_no'].astype(str).str.strip().str.upper() == clean_job_id) & 
                             (df_pur['status'] != "Received")
@@ -135,10 +133,7 @@ with tab_plan:
                         
                         if not job_queries.empty:
                             for _, p_item in job_queries.head(3).iterrows():
-                                # Urgency Color Logic
                                 b_color = "#FF4B4B" if p_item['status'] == "Urgent" else "#FFA500"
-                                
-                                # Handle 'None' or Empty replies from Purchase
                                 raw_reply = p_item.get('purchase_reply')
                                 display_reply = raw_reply if raw_reply and str(raw_reply).lower() != 'none' else "⏳ Pending Purchase Action"
                                 
@@ -154,6 +149,29 @@ with tab_plan:
                             st.caption("✅ No pending queries for this job.")
                     else:
                         st.caption("No purchase data available.")
+
+                # --- MOVE GATE / STATUS UPDATE BUTTON ---
+                # This button must be indented exactly to the same level as p_col1/p_col2
+                st.write("") 
+                if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                    try:
+                        update_data = {
+                            "drawing_status": new_gate,
+                            "material_shortage": new_short,
+                            "updated_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        if 'manual_days_limit' in df_plan.columns:
+                            update_data["manual_days_limit"] = new_limit
+                        if 'shortage_details' in df_plan.columns:
+                            update_data["shortage_details"] = new_rem
+
+                        conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute()
+                        st.cache_data.clear()
+                        st.toast("✅ Master Status Updated!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Update Failed: {e}")
 
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
