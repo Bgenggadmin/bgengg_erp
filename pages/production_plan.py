@@ -11,22 +11,36 @@ st.set_page_config(page_title="Production Master | B&G", layout="wide", page_ico
 conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 3. DATA LOADERS ---
-    @st.cache_data(ttl=5)
-    def get_master_data():
-        plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
-        prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
-        pur_res = conn.table("purchase_orders").select("*").order("updated_at", desc=True).execute()
-        gate_res = conn.table("production_gates").select("*").order("step_order").execute()
-        
-        return (pd.DataFrame(plan_res.data or []), 
-                pd.DataFrame(prod_res.data or []), 
-                pd.DataFrame(pur_res.data or []),
-                pd.DataFrame(gate_res.data or []))
+@st.cache_data(ttl=600) # Increased to 10 mins to save data
+def get_master_data():
+    # Optimization: Pulling only the columns your app actually uses
+    plan_cols = "id, job_no, client_name, project_description, drawing_status, manual_days_limit, material_shortage, shortage_details"
+    plan_res = conn.table("anchor_projects").select(plan_cols).eq("status", "Won").order("id").execute()
+    
+    prod_cols = "id, created_at, Job_Code, Hours, Worker, Activity, Notes"
+    prod_res = conn.table("production").select(prod_cols).order("created_at", desc=True).execute()
+    
+    pur_cols = "job_no, item_name, status, purchase_reply, updated_at"
+    pur_res = conn.table("purchase_orders").select(pur_cols).order("updated_at", desc=True).execute()
+    
+    gate_res = conn.table("production_gates").select("gate_name, step_order").order("step_order").execute()
+    
+    return (pd.DataFrame(plan_res.data or []), 
+            pd.DataFrame(prod_res.data or []), 
+            pd.DataFrame(pur_res.data or []),
+            pd.DataFrame(gate_res.data or []))
 
-    df_plan, df_logs, df_pur, df_gates = get_master_data()
-# --- 3. DYNAMIC MAPPING ---
-base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
-universal_stages = df_gates['gate_name'].tolist() if not df_gates.empty else []
+# IMPORTANT: Ensure this line is NOT indented (it must be flush to the left)
+df_plan, df_logs, df_pur, df_gates = get_master_data()
+
+# --- 4. DYNAMIC MAPPING ---
+# This part stays the same but uses the optimized data
+if not df_gates.empty:
+    universal_stages = df_gates['gate_name'].tolist()
+else:
+    universal_stages = ["Cutting", "Fitting", "Welding", "Grinding", "Painting"]
+    base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
+    universal_stages = df_gates['gate_name'].tolist() if not df_gates.empty else []
 
 if not df_logs.empty:
     all_workers = sorted(list(set(df_logs["Worker"].dropna().unique().tolist())))
