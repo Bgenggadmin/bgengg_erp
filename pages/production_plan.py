@@ -187,12 +187,15 @@ with tab_entry:
         "Others": "Nos"
     }
 
-    # 2. Activity Selection (Outside form for instant Unit update)
-    f_act = st.selectbox("Select Activity first", all_activities, key="act_main")
+    # 2. Activity Selection (Keep outside for instant reactivity)
+    f_act = st.selectbox("🎯 Select Current Activity", all_activities, key="act_main")
     current_unit = unit_map.get(f_act, "Nos")
 
     # 3. Entry Form
     with st.form("prod_form", clear_on_submit=True):
+        # We display the unit clearly at the top of the form so the user is sure
+        st.markdown(f"Logging work for: **{f_act}** | Target Unit: **{current_unit}**")
+        
         f1, f2, f3 = st.columns(3)
         
         # Column 1
@@ -201,16 +204,17 @@ with tab_entry:
         
         # Column 2
         f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
-        f2.info(f"📍 Unit for {f_act}: **{current_unit}**")
+        # Instead of .info, we just use a small caption to save vertical space
+        f2.caption(f"Unit type: {current_unit}")
         
         # Column 3
         f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5, format="%.1f")
-        f_out = f3.number_input(f"Output Qty ({current_unit})", min_value=0.0, format="%.2f")
+        # We use a generic label because labels inside forms don't update live
+        f_out = f3.number_input(f"Total Output ({current_unit})", min_value=0.0, format="%.2f")
         
-        f_nts = st.text_area("Task Details / Remarks")
+        f_nts = st.text_area("Task Details / Remarks", placeholder="Enter specific details here...")
 
         if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
-            # Validation Logic
             if f_act == "Others" and not f_nts.strip():
                 st.error("⚠️ Please provide details in 'Task Details' for 'Others'.")
             elif "-- Select --" in [f_wrk, f_job]:
@@ -219,7 +223,6 @@ with tab_entry:
                 st.error("❌ Invalid Hours: Must be greater than 0.")
             else:
                 try:
-                    # Database Insertion
                     conn.table("production").insert({
                         "Supervisor": f_sup, 
                         "Worker": f_wrk, 
@@ -227,17 +230,16 @@ with tab_entry:
                         "Activity": f_act, 
                         "Hours": f_hrs, 
                         "Output": f_out, 
-                        "Unit": current_unit, # <--- Correctly passing the mapped unit
+                        "Unit": current_unit,
                         "Notes": f_nts,
                         "created_at": datetime.now(IST).isoformat()
                     }).execute()
                     
                     st.cache_data.clear()
-                    st.success(f"✅ Logged: {f_out} {current_unit} of {f_act} for Job {f_job}")
+                    st.success(f"✅ Success! {f_out} {current_unit} recorded.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Database Error: {e}")
-
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
     st.subheader("📅 Production Shift Report")
