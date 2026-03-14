@@ -111,7 +111,8 @@ def generate_pdf(logs):
         except Exception: 
             pass
 
-    return bytes(pdf.output())
+    # FIXED LINE FOR PDF OUTPUT
+    return pdf.output(dest='S')
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -174,7 +175,6 @@ with tab1:
             prev_status = last_data.get(skey, "Pending")
             default_idx = opts.index(prev_status) if prev_status in opts else 0
             
-            # --- DYNAMIC KEYS TO FORCE UPDATE ON JOB CHANGE ---
             m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx, key=f"{f_job}_{skey}")
             m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""), key=f"{f_job}_{nkey}")
 
@@ -246,33 +246,28 @@ with tab2:
             for log in filtered_data:
                 with st.expander(f"📦 Job: {log.get('job_code','N/A')} | {log.get('customer','Unknown')}"):
                     st.write(f"### Status Details for Job {log.get('job_code')}")
-                    
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Engineer", log.get('engineer', 'N/A'))
                     col2.metric("PO No", log.get('po_no', 'N/A'))
                     col3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
-
                     st.markdown("---")
                     for label, skey, nkey in MILESTONE_MAP:
                         c_stat, c_rem = st.columns([1, 2])
                         c_stat.write(f"**{label}:** {log.get(skey, 'Pending')}")
                         c_rem.write(f"_{log.get(nkey, '-')}_")
-
                     st.markdown("---")
                     st.markdown("### 📸 Progress Photo")
-                    
                     try:
                         photo_name = f"{log.get('id')}.jpg"
                         photo_url = conn.client.storage.from_("progress-photos").get_public_url(photo_name)
                         check = requests.head(photo_url, timeout=2)
-                        
                         if check.status_code == 200:
                             _, center_col, _ = st.columns([1, 1, 1])
                             with center_col:
                                 st.image(photo_url, caption=f"Job: {log.get('job_code')}", width=160)
                         else:
                             st.info("💡 No photo uploaded for this entry.")
-                    except Exception as e:
+                    except:
                         st.info("⚠️ Photo could not be loaded.")
         else:
             st.warning("No records found for the selected date range.")
@@ -282,15 +277,15 @@ with tab3:
     col_cust, col_job = st.columns(2)
     with col_cust:
         st.subheader("👥 Customers")
-        new_cust = st.text_input("New Customer Name", key="add_cust_input_fixed")
-        if st.button("➕ Add Customer", key="add_cust_btn_fixed"):
+        new_cust = st.text_input("New Customer Name", key="add_cust_master")
+        if st.button("➕ Add Customer", key="btn_add_cust"):
             if new_cust:
                 conn.table("customer_master").insert({"name": new_cust}).execute()
                 st.rerun()
     with col_job:
         st.subheader("🔢 Job Codes")
-        new_job = st.text_input("New Job Code", key="add_job_input_fixed")
-        if st.button("➕ Add Job Code", key="add_job_btn_fixed"):
+        new_job = st.text_input("New Job Code", key="add_job_master")
+        if st.button("➕ Add Job Code", key="btn_add_job"):
             if new_job:
                 conn.table("job_master").insert({"job_code": new_job}).execute()
                 st.rerun()
