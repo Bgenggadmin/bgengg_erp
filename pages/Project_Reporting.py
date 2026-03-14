@@ -1,6 +1,6 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from fpdf import FPDF
 import requests
 from io import BytesIO
@@ -84,7 +84,7 @@ def generate_pdf(logs):
             pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
     # --- ENCODING FIX ---
-    raw_pdf = pdf.output()
+    raw_pdf = pdf.output(dest='S')
     return bytes(raw_pdf) if isinstance(raw_pdf, (bytes, bytearray)) else raw_pdf.encode('latin-1')
 
 # --- APP TABS ---
@@ -92,22 +92,19 @@ tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"]
 
 with tab1:
     st.subheader("📋 Select Project")
-    # Job Selector is OUTSIDE the form to trigger the "Autofill"
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
 
     last_data = {}
     if f_job:
-        # Fetch the most recent log for this job to pre-fill the form
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res.data:
             last_data = res.data[0]
-            st.info(f"🔄 Showing latest data for Job: {f_job}. Update only what has changed.")
+            st.info(f"🔄 Showing latest data for Job: {f_job}.")
 
     with st.form("main_entry_form", clear_on_submit=True):
         st.subheader("📋 Project Details")
         c1, c2, c3 = st.columns(3)
         
-        # Pre-select customer based on last data
         default_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
         f_cust = c1.selectbox("Customer", [""] + customers, index=default_cust_idx)
         c2.text_input("Selected Job", value=f_job, disabled=True)
@@ -116,10 +113,13 @@ with tab1:
         c4, c5, c6 = st.columns(3)
         f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
         
+        # FIX: Ensure safe_date returns a date object, not datetime
         def safe_date(field):
             val = last_data.get(field)
-            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
-            except: return datetime.now()
+            try: 
+                return datetime.strptime(val, "%Y-%m-%d").date() if val else date.today()
+            except: 
+                return date.today()
 
         f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c6.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
@@ -135,7 +135,6 @@ with tab1:
         for label, skey, nkey in MILESTONE_MAP:
             col_stat, col_note = st.columns([1, 2])
             
-            # Options Logic
             if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
             elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
             elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
@@ -147,7 +146,6 @@ with tab1:
             elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
             else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
 
-            # Pre-select status based on last entry
             prev_status = last_data.get(skey, "Pending")
             default_idx = opts.index(prev_status) if prev_status in opts else 0
             
@@ -178,10 +176,27 @@ with tab1:
                     st.error(f"Error: {e}")
 
 with tab2:
-    # (Archive logic remains exactly as provided previously)
     st.subheader("📂 Report Archive")
-    # ... [Archive code omitted for brevity but remains the same] ...
-    # Note: Keep the archive logic from your previous stable version.
+    # RESTORED: Report Duration & PDF Download
+    c1, c2 = st.columns(2)
+    duration = c1.selectbox("Report Duration", ["Current Week", "Current Month", "Last 30 Days", "All Time"])
+    
+    start_filter = date.today() - timedelta(days=365) # Default
+    if duration == "Current Week": start_filter = date.today() - timedelta(days=date.today().weekday())
+    elif duration == "Current Month": start_filter = date.today().replace(day=1)
+    elif duration == "Last 30 Days": start_filter = date.today() - timedelta(days=30)
+    elif duration == "All Time": start_filter = date(2020, 1, 1)
+
+    query = conn.table("progress_logs").select("*").gte("created_at", start_filter.strftime("%Y-%m-%d")).order("created_at", desc=True)
+    archive_data = query.execute().data
+    
+    if archive_data:
+        for row in archive_data:
+            with st.expander(f"📦 {row['job_code']} | {row['customer']} | {row['created_at'][:10]}"):
+                pdf_bytes = generate_pdf([row])
+                st.download_button("📩 Download PDF", pdf_bytes, f"Report_{row['job_code']}.pdf", "application/pdf", key=f"dl_{row['id']}")
+    else:
+        st.warning("No records found for this duration.")
 
 with tab3:
     st.header("🛠️ Master Data Management")
