@@ -172,15 +172,14 @@ with tab1:
             elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
             else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
 
-            # --- PRE-FILL FEATURE ---
-            # Fetch status and remarks from last_data (fetched when job was selected)
+            # --- DYNAMIC KEY FIX FOR FORM PRE-FILL ---
             prev_status = last_data.get(skey, "Pending")
             prev_note = last_data.get(nkey, "")
-            
             default_idx = opts.index(prev_status) if prev_status in opts else 0
             
-            m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx, key=f"form_{skey}")
-            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=prev_note, key=f"form_{nkey}")
+            # Using f_job in the key ensures fields reset when the job changes
+            m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx, key=f"{f_job}_{skey}")
+            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=prev_note, key=f"{f_job}_{nkey}")
 
         st.divider()
         st.subheader("📸 Progress Capture")
