@@ -118,20 +118,32 @@ with tab_plan:
                                 st.toast("Request Sent!")
                                 st.rerun()
                 
-                with p_col2:
+               with p_col2:
                     st.markdown("**💬 Production Queries**")
                     if not df_pur.empty:
+                        # 1. Clean the ID from the current row
                         clean_job_id = str(job_id).strip().upper()
+                        
+                        # 2. Hard-Filter: Convert column to string, strip, and match
+                        # This ensures '101' matches '101' and 'B-101' matches 'B-101'
                         job_queries = df_pur[
                             (df_pur['job_no'].astype(str).str.strip().str.upper() == clean_job_id) & 
                             (df_pur['status'] != "Received")
                         ]
+
+                        # DEBUG: Uncomment the line below if you still see wrong data
+                        # st.write(f"Testing Job: {clean_job_id} | Found: {len(job_queries)} items")
                         
                         if not job_queries.empty:
                             for _, p_item in job_queries.head(3).iterrows():
                                 b_color = "#FF4B4B" if p_item['status'] == "Urgent" else "#FFA500"
                                 raw_reply = p_item.get('purchase_reply')
-                                display_reply = raw_reply if raw_reply and str(raw_reply).lower() != 'none' else "⏳ Pending Purchase Action"
+                                
+                                # Handle 'None' values from database
+                                if not raw_reply or str(raw_reply).strip().lower() == 'none':
+                                    display_reply = "⏳ Pending Purchase Action"
+                                else:
+                                    display_reply = raw_reply
                                 
                                 st.markdown(f"""
                                     <div style="border-left: 4px solid {b_color}; padding: 8px; background-color: #fefefe; border: 1px solid #eee; border-radius: 4px; margin-bottom:5px;">
@@ -142,31 +154,9 @@ with tab_plan:
                                         </div>
                                     </div>""", unsafe_allow_html=True)
                         else:
-                            st.caption("✅ No pending queries.")
+                            st.caption(f"✅ No queries for {clean_job_id}")
                     else:
                         st.caption("No purchase data available.")
-
-                st.write("") 
-                if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
-                    try:
-                        update_data = {
-                            "drawing_status": new_gate,
-                            "material_shortage": new_short,
-                            "updated_at": datetime.now(IST).isoformat()
-                        }
-                        
-                        if 'manual_days_limit' in df_plan.columns:
-                            update_data["manual_days_limit"] = new_limit
-                        if 'shortage_details' in df_plan.columns:
-                            update_data["shortage_details"] = new_rem
-
-                        conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute()
-                        st.cache_data.clear()
-                        st.toast("✅ Master Status Updated!")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Update Failed: {e}")
-
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
