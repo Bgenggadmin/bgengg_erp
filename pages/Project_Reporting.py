@@ -1,6 +1,6 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from fpdf import FPDF
 from io import BytesIO
 
@@ -8,7 +8,7 @@ from io import BytesIO
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# 2. MASTER MAPPING
+# 2. THE MASTER MAPPING
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 
 MILESTONE_MAP = [
@@ -27,14 +27,13 @@ MILESTONE_MAP = [
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE (REWRITTEN FOR UNIVERSAL COMPATIBILITY) ---
+# --- PDF ENGINE (REPAIRED & STABILIZED) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
         pdf.add_page()
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
-        
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
             if logo_data: pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
@@ -68,12 +67,9 @@ def generate_pdf(logs):
             else: pdf.set_fill_color(255, 255, 255)
             pdf.cell(60, 7, f" {label}", 1); pdf.cell(35, 7, f" {status}", 1, 0, 'C', True); pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-    # --- THE CRITICAL FIX: BYTESIO BUFFER ---
-    # This creates a standard byte stream that Streamlit cannot reject.
-    pdf_output = pdf.output(dest='S')
-    if isinstance(pdf_output, str):
-        return pdf_output.encode('latin-1')
-    return bytes(pdf_output)
+    # Universal Byte Return Fix
+    pdf_out = pdf.output(dest='S')
+    return pdf_out.encode('latin-1') if isinstance(pdf_out, str) else bytes(pdf_out)
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -86,9 +82,10 @@ with tab1:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res.data:
             last_data = res.data[0]
-            st.info(f"🔄 Autofilled latest data for Job: {f_job}.")
+            st.info(f"🔄 Showing latest data for Job: {f_job}.")
 
     with st.form("main_entry_form", clear_on_submit=True):
+        st.subheader("📋 Project Details")
         c1, c2, c3 = st.columns(3)
         default_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
         f_cust = c1.selectbox("Customer", [""] + customers, index=default_cust_idx)
@@ -122,38 +119,66 @@ with tab1:
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job: st.error("Select Job & Customer!")
             else:
-                entry_payload = {"customer": f_cust, "job_code": f_job, "equipment": f_eq, "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng, "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del), **m_responses}
-                res = conn.table("progress_logs").insert(entry_payload).execute()
-                if cam_photo and res.data: conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
-                st.success("✅ Saved!"); st.rerun()
+                try:
+                    entry_payload = {"customer": f_cust, "job_code": f_job, "equipment": f_eq, "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng, "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del), **m_responses}
+                    res = conn.table("progress_logs").insert(entry_payload).execute()
+                    if cam_photo and res.data: conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
+                    st.success("✅ Update Saved!"); st.rerun()
+                except Exception as e: st.error(f"Error: {e}")
 
 with tab2:
-    st.subheader("📂 Report Archive")
-    archive_res = conn.table("progress_logs").select("*").order("id", desc=True).limit(10).execute()
-    if archive_res.data:
-        for row in archive_res.data:
+    st.subheader("📂 Search & Filter Archive")
+    
+    # RESTORED: THE COMPLETE ARCHIVE FILTER LOGIC
+    c1, c2, c3 = st.columns([1, 1, 1])
+    search_job = c1.text_input("🔍 Search Job Code")
+    filter_cust = c2.selectbox("👥 Filter Customer", ["All"] + customers)
+    
+    # RESTORED: DATE RANGE SELECTION
+    today = date.today()
+    last_month = today - timedelta(days=30)
+    date_range = c3.date_input("📅 Date Range", value=(last_month, today))
+
+    # RESTORED: DYNAMIC SUPABASE QUERY
+    query = conn.table("progress_logs").select("*")
+    
+    if search_job:
+        query = query.ilike("job_code", f"%{search_job}%")
+    if filter_cust != "All":
+        query = query.eq("customer", filter_cust)
+    
+    if len(date_range) == 2:
+        query = query.gte("created_at", date_range[0].isoformat()).lte("created_at", date_range[1].isoformat() + "T23:59:59")
+
+    archive_data = query.order("id", desc=True).limit(50).execute().data
+
+    if archive_data:
+        st.write(f"Showing {len(archive_data)} records")
+        for row in archive_data:
             with st.expander(f"📦 {row['job_code']} | {row['customer']} | {row['created_at'][:10]}"):
-                # REPAIRED DOWNLOAD BUTTON CALL
-                try:
-                    pdf_data = generate_pdf([row])
-                    st.download_button(
-                        label="📩 Download PDF",
-                        data=pdf_data,
-                        file_name=f"Report_{row['job_code']}.pdf",
-                        mime="application/pdf",
-                        key=f"dl_{row['id']}"
-                    )
-                except Exception as e:
-                    st.error(f"PDF Error: {e}")
+                col_info, col_btn = st.columns([3, 1])
+                col_info.write(f"**Equipment:** {row.get('equipment','-')} | **PO:** {row.get('po_no','-')}")
+                
+                # RESTORED: SAFE PDF DOWNLOAD
+                pdf_bytes = generate_pdf([row])
+                col_btn.download_button(
+                    label="📩 PDF Report",
+                    data=pdf_bytes,
+                    file_name=f"Report_{row['job_code']}.pdf",
+                    mime="application/pdf",
+                    key=f"dl_{row['id']}"
+                )
+    else:
+        st.info("No records found with these filters.")
 
 with tab3:
     st.header("🛠️ Masters")
     col_cust, col_job = st.columns(2)
     with col_cust:
-        new_cust = st.text_input("New Customer Name")
-        if st.button("➕ Add Customer"):
+        new_cust = st.text_input("New Customer Name", key="new_c")
+        if st.button("➕ Add Customer", key="btn_c"):
             if new_cust: conn.table("customer_master").insert({"name": new_cust}).execute(); st.rerun()
     with col_job:
-        new_job = st.text_input("New Job Code")
-        if st.button("➕ Add Job Code"):
+        new_job = st.text_input("New Job Code", key="new_j")
+        if st.button("➕ Add Job Code", key="btn_j"):
             if new_job: conn.table("job_master").insert({"job_code": new_job}).execute(); st.rerun()
