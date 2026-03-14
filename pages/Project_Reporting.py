@@ -27,7 +27,7 @@ MILESTONE_MAP = [
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE (RESTORED WITH BRANDING & COLOR LOGIC) ---
+# --- PDF ENGINE ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -42,7 +42,7 @@ def generate_pdf(logs):
         pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 35)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | DATE: {log.get('created_at',' ')[:10]}", "B", 1, "L")
         
         pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
@@ -78,7 +78,6 @@ tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"]
 
 with tab1:
     st.subheader("📋 Select Project")
-    # Job Selector is OUTSIDE the form to trigger pre-filling
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
     
     last_data = {}
@@ -86,16 +85,15 @@ with tab1:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res.data:
             last_data = res.data[0]
-            st.info(f"🔄 Showing latest data for Job: {f_job}. Update only what has changed.")
+            st.info(f"🔄 Auto-filling fields from the most recent entry for Job {f_job}")
 
     with st.form("main_entry_form", clear_on_submit=True):
         st.subheader("📋 Project Details")
         c1, c2, c3 = st.columns(3)
         
-        # RESTORED CUSTOMER SELECTION WITH PRE-FILLING
-        default_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
-        f_cust = c1.selectbox("Customer", [""] + customers, index=default_cust_idx)
-        
+        # PRE-FILLING HEADER
+        def_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
+        f_cust = c1.selectbox("Customer", [""] + customers, index=def_cust_idx)
         c2.text_input("Selected Job", value=f_job, disabled=True)
         f_eq = c3.text_input("Equipment Name", value=last_data.get('equipment', ""))
         
@@ -104,8 +102,7 @@ with tab1:
         
         def safe_date(field):
             val = last_data.get(field)
-            if not val: return date.today()
-            try: return datetime.strptime(val, "%Y-%m-%d").date()
+            try: return datetime.strptime(val, "%Y-%m-%d").date() if val else date.today()
             except: return date.today()
 
         f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
@@ -120,76 +117,74 @@ with tab1:
         for label, skey, nkey, pkey in MILESTONE_MAP:
             col_stat, col_note, col_prog = st.columns([1.2, 2, 1.2])
             
-            # Options Logic (Restored)
+            # Options Logic
             if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
             elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
-            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
+            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received"]
             else: opts = ["Pending", "In-Progress", "Completed", "NA", "Hold"]
             
             prev_status = last_data.get(skey, "Pending")
-            def_idx = opts.index(prev_status) if prev_status in opts else 0
-            
-            m_responses[skey] = col_stat.selectbox(label, opts, index=def_idx, key=f"s_{skey}")
+            m_responses[skey] = col_stat.selectbox(label, opts, index=opts.index(prev_status) if prev_status in opts else 0, key=f"s_{skey}")
             m_responses[nkey] = col_note.text_input(f"Remarks ({label})", value=last_data.get(nkey, ""), key=f"n_{nkey}")
             m_responses[pkey] = col_prog.slider(f"{label} %", 0, 100, value=int(last_data.get(pkey, 0)), key=f"p_{pkey}")
 
         st.divider(); cam = st.camera_input("📸 Take Progress Photo")
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
-            if not f_cust or not f_job: st.error("Select Job and Customer!")
+            if not f_cust or not f_job: st.error("Select Job & Customer!")
             else:
-                try:
-                    payload = {
-                        "customer": f_cust, "job_code": f_job, "equipment": f_eq,
-                        "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
-                        "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del),
-                        **m_responses
-                    }
-                    res = conn.table("progress_logs").insert(payload).execute()
-                    if cam and res.data:
-                        conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam.getvalue())
-                    st.success("Update Saved Successfully!"); st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
+                payload = {
+                    "customer": f_cust, "job_code": f_job, "equipment": f_eq,
+                    "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
+                    "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del),
+                    **m_responses
+                }
+                res = conn.table("progress_logs").insert(payload).execute()
+                if cam and res.data:
+                    conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam.getvalue())
+                st.success("Saved Successfully!"); st.rerun()
 
 with tab2:
     st.subheader("📂 Report Archive")
-    # RESTORED REPORT DURATION FILTERING
-    c1, c2 = st.columns(2)
-    duration = c1.selectbox("Report Duration", ["All Time", "Current Week", "Current Month", "Last 30 Days", "Custom Range"])
+    # THE RESTORED ARCHIVE FILTERS
+    c1, c2, c3 = st.columns([1, 1, 2])
     
+    f_cust_search = c1.selectbox("Filter by Customer", ["All"] + customers)
+    f_job_search = c2.selectbox("Filter by Job", ["All"] + jobs)
+    
+    duration = c3.selectbox("Report Duration", ["All Time", "This Week", "This Month", "Last 30 Days", "Custom Range"])
+    
+    # Date Logic
     start_date = date(2020, 1, 1)
     end_date = date.today()
-
-    if duration == "Current Week":
-        start_date = date.today() - timedelta(days=date.today().weekday())
-    elif duration == "Current Month":
-        start_date = date.today().replace(day=1)
-    elif duration == "Last 30 Days":
-        start_date = date.today() - timedelta(days=30)
+    if duration == "This Week": start_date = date.today() - timedelta(days=date.today().weekday())
+    elif duration == "This Month": start_date = date.today().replace(day=1)
+    elif duration == "Last 30 Days": start_date = date.today() - timedelta(days=30)
     elif duration == "Custom Range":
-        range_input = c2.date_input("Select Range", [date.today() - timedelta(days=7), date.today()])
-        if len(range_input) == 2: start_date, end_date = range_input
+        dr = st.date_input("Range", [date.today() - timedelta(days=7), date.today()])
+        if len(dr) == 2: start_date, end_date = dr
 
-    query = conn.table("progress_logs").select("*").gte("created_at", start_date.strftime("%Y-%m-%d")).lte("created_at", (end_date + timedelta(days=1)).strftime("%Y-%m-%d")).order("created_at", desc=True)
-    archive_data = query.execute().data
+    # QUERY BUILDING
+    query = conn.table("progress_logs").select("*").gte("created_at", start_date).lte("created_at", end_date + timedelta(days=1))
+    if f_cust_search != "All": query = query.eq("customer", f_cust_search)
+    if f_job_search != "All": query = query.eq("job_code", f_job_search)
+    
+    archive_data = query.order("created_at", desc=True).execute().data
     
     if archive_data:
         for row in archive_data:
             with st.expander(f"📦 {row['job_code']} | {row['customer']} | {row['created_at'][:10]}"):
+                st.write(f"**Equipment:** {row['equipment']} | **Engineer:** {row['engineer']}")
                 pdf_bytes = generate_pdf([row])
                 st.download_button("📩 Download PDF", pdf_bytes, f"Report_{row['job_code']}.pdf", "application/pdf", key=f"dl_{row['id']}")
     else:
-        st.warning("No reports found for the selected duration.")
+        st.warning("No reports matching these filters.")
 
 with tab3:
-    st.header("🛠️ Master Data")
+    st.header("🛠️ Masters")
     c_a, c_b = st.columns(2)
     with c_a:
         nc = st.text_input("New Customer")
-        if st.button("Add Customer"): 
-            conn.table("customer_master").insert({"name": nc}).execute()
-            st.rerun()
+        if st.button("Add Customer"): conn.table("customer_master").insert({"name": nc}).execute(); st.rerun()
     with c_b:
         nj = st.text_input("New Job Code")
-        if st.button("Add Job"): 
-            conn.table("job_master").insert({"job_code": nj}).execute()
-            st.rerun()
+        if st.button("Add Job"): conn.table("job_master").insert({"job_code": nj}).execute(); st.rerun()
