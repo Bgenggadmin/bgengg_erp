@@ -111,8 +111,7 @@ def generate_pdf(logs):
         except Exception: 
             pass
 
-    raw_pdf = pdf.output(dest='S')
-    return raw_pdf.encode('latin-1') if isinstance(raw_pdf, str) else bytes(raw_pdf)
+    return bytes(pdf.output())
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -172,14 +171,12 @@ with tab1:
             elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
             else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
 
-            # --- DYNAMIC KEY FIX FOR FORM PRE-FILL ---
             prev_status = last_data.get(skey, "Pending")
-            prev_note = last_data.get(nkey, "")
             default_idx = opts.index(prev_status) if prev_status in opts else 0
             
-            # Using f_job in the key ensures fields reset when the job changes
+            # --- DYNAMIC KEYS TO FORCE UPDATE ON JOB CHANGE ---
             m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx, key=f"{f_job}_{skey}")
-            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=prev_note, key=f"{f_job}_{nkey}")
+            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""), key=f"{f_job}_{nkey}")
 
         st.divider()
         st.subheader("📸 Progress Capture")
@@ -285,15 +282,15 @@ with tab3:
     col_cust, col_job = st.columns(2)
     with col_cust:
         st.subheader("👥 Customers")
-        new_cust = st.text_input("New Customer Name", key="add_cust_input")
-        if st.button("➕ Add Customer", key="add_cust_btn"):
+        new_cust = st.text_input("New Customer Name", key="add_cust_input_fixed")
+        if st.button("➕ Add Customer", key="add_cust_btn_fixed"):
             if new_cust:
                 conn.table("customer_master").insert({"name": new_cust}).execute()
                 st.rerun()
     with col_job:
         st.subheader("🔢 Job Codes")
-        new_job = st.text_input("New Job Code", key="add_job_input")
-        if st.button("➕ Add Job Code", key="add_job_btn"):
+        new_job = st.text_input("New Job Code", key="add_job_input_fixed")
+        if st.button("➕ Add Job Code", key="add_job_btn_fixed"):
             if new_job:
                 conn.table("job_master").insert({"job_code": new_job}).execute()
                 st.rerun()
