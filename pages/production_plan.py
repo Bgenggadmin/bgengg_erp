@@ -11,13 +11,14 @@ st.set_page_config(page_title="Production Master | B&G", layout="wide", page_ico
 conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. DATA LOADERS ---
-@st.cache_data(ttl=600) # Increased to 10 mins to save data
+@st.cache_data(ttl=600) 
 def get_master_data():
-    # Optimization: Pulling only the columns your app actually uses
-    plan_cols = "id, job_no, client_name, project_description, drawing_status, manual_days_limit, material_shortage, shortage_details"
+    # Includes all columns needed for planning logic and aging
+    plan_cols = "id, job_no, client_name, project_description, drawing_status, manual_days_limit, material_shortage, shortage_details, updated_at, purchase_trigger"
     plan_res = conn.table("anchor_projects").select(plan_cols).eq("status", "Won").order("id").execute()
     
-    prod_cols = "id, created_at, Job_Code, Hours, Worker, Activity, Notes"
+    # Includes all columns for analytics and productivity entry
+    prod_cols = "id, created_at, Job_Code, Hours, Worker, Activity, Notes, Supervisor, Output"
     prod_res = conn.table("production").select(prod_cols).order("created_at", desc=True).execute()
     
     pur_cols = "job_no, item_name, status, purchase_reply, updated_at"
@@ -30,55 +31,25 @@ def get_master_data():
             pd.DataFrame(pur_res.data or []),
             pd.DataFrame(gate_res.data or []))
 
-# IMPORTANT: Ensure this line is NOT indented (it must be flush to the left)
 df_plan, df_logs, df_pur, df_gates = get_master_data()
 
-# --- 4. DYNAMIC MAPPING (Define these FIRST) ---
+# --- 3. DYNAMIC MAPPING & CONSTANTS ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
-
-# Make sure this list exists for your line 151
 all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly", "Buffing"]
 
 if not df_gates.empty:
     universal_stages = df_gates['gate_name'].tolist()
 else:
-    universal_stages = all_activities # Fallback
+    universal_stages = all_activities
 
-all_workers = sorted(df_logs['Worker'].unique().tolist()) if not df_logs.empty else []
-all_jobs = sorted(df_plan['job_no'].unique().tolist()) if not df_plan.empty else []
+# Clean strings for exact matching in charts
+if not df_logs.empty:
+    df_logs['Job_Code'] = df_logs['Job_Code'].astype(str).str.strip().str.upper()
+    all_workers = sorted(df_logs['Worker'].unique().tolist())
+else:
+    all_workers = []
 
-# --- 5. WORK ENTRY FORM ---
-st.subheader("📝 Daily Work Entry")
-
-# If you use st.form, you MUST have a submit button inside it
-with st.form("work_entry_form", clear_on_submit=True):
-    f1, f2 = st.columns(2)
-    
-    # These will work now because variables are defined above
-    f_sup = f1.selectbox("Supervisor", base_supervisors)
-    f_act = f2.selectbox("Activity", all_activities) 
-    
-    f_job = f1.selectbox("Job No", all_jobs)
-    f_worker = f2.selectbox("Worker", all_workers)
-    
-    f_hrs = f1.number_input("Hours", min_value=0.5, max_value=24.0, step=0.5)
-    f_notes = f2.text_input("Notes/Remarks")
-
-    # FIX FOR "MISSING SUBMIT BUTTON":
-    submitted = st.form_submit_button("🚀 Submit Work Log")
-
-    if submitted:
-        # This only runs when the button is clicked
-        new_data = {
-            "Worker": f_worker,
-            "Job_Code": f_job,
-            "Activity": f_act,
-            "Hours": f_hrs,
-            "Notes": f_notes
-        }
-        # Add your conn.table("production").insert(new_data).execute() logic here
-        st.success("Log Entry Successful!")
-        st.cache_data.clear()
+all_jobs = sorted(df_plan['job_no'].astype(str).unique().tolist()) if not df_plan.empty else []
 
 # --- 4. NAVIGATION TABS ---
 tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
@@ -89,14 +60,22 @@ tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
 with tab_plan:
     st.subheader("🚀 Shop Floor Control Center")
     if not df_plan.empty:
+        # Pre-calculate hours per job for performance
         hrs_sum = df_logs.groupby('Job_Code')['Hours'].sum().to_dict() if not df_logs.empty else {}
 
         for index, row in df_plan.iterrows():
             job_id = str(row['job_no']).strip().upper()
             actual_hrs = hrs_sum.get(job_id, 0)
             
-            # --- AGING & MANUAL LIMIT LOGIC ---
-            updated_at = pd.to_datetime(row.get('updated_at', datetime.now(IST)))
+            # Timestamp handling for aging
+            try:
+                updated_at = pd.to_datetime(row.get('updated_at'))
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=pytz.UTC)
+                updated_at = updated_at.astimezone(IST)
+            except:
+                updated_at = datetime.now(IST)
+
             days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
             manual_limit = row.get('manual_days_limit', 7) 
             current_gate = row['drawing_status']
@@ -105,14 +84,12 @@ with tab_plan:
             future_gates_count = len(universal_stages) - (prog_idx + 1)
 
             with st.container(border=True):
-                # Row 1: Production Controls
                 col1, col2, col3, col4 = st.columns(4)
                 new_gate = col1.selectbox("Move Gate", universal_stages, index=prog_idx, key=f"gt_{row['id']}")
                 new_limit = col2.number_input("Allowed Days/Gate", min_value=1, value=int(manual_limit), key=f"lim_{row['id']}")
                 new_short = col3.toggle("Shortage", value=row.get('material_shortage', False), key=f"sh_{row['id']}")
                 new_rem = col4.text_input("Remarks", value=row.get('shortage_details', ""), key=f"rm_{row['id']}")
 
-                # Row 2: Metrics & Progress
                 total_days_offset = new_limit + (future_gates_count * 1) 
                 est_completion_date = (datetime.now(IST) + timedelta(days=total_days_offset)).strftime("%d %b %Y")
 
@@ -128,14 +105,13 @@ with tab_plan:
 
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
-                # --- restored: PURCHASE TRIGGER & FEEDBACK FEED ---
+                # Purchase Integration
                 st.markdown("---")
                 p_col1, p_col2 = st.columns([1, 1])
-                
                 with p_col1:
                     with st.expander("🛒 New Material Request"):
-                        t_item = st.text_input("Item Name", key=f"titem_{row['id']}", placeholder="SHOP_Grinding Wheel")
-                        t_spec = st.text_input("Specs / Size", key=f"tspec_{row['id']}", placeholder="4 inch - 10 Nos")
+                        t_item = st.text_input("Item Name", key=f"titem_{row['id']}")
+                        t_spec = st.text_input("Specs / Size", key=f"tspec_{row['id']}")
                         if st.button("Send Request", key=f"tbtn_{row['id']}", use_container_width=True):
                             if t_item:
                                 conn.table("purchase_orders").insert({
@@ -145,43 +121,32 @@ with tab_plan:
                                 st.toast("Request Sent!"); st.rerun()
                 
                 with p_col2:
-                    st.markdown("**💬 Purchase Feedback Feed**")
+                    st.markdown("**💬 Purchase Feedback**")
                     if not df_pur.empty:
                         job_items = df_pur[df_pur['job_no'] == job_id]
                         if not job_items.empty:
-                            # Show top 3 recent items to keep the UI clean
                             for _, p_item in job_items.head(3).iterrows():
                                 b_color = "#FF4B4B" if p_item['status'] == "Urgent" else "#28A745" if p_item['status'] == "Received" else "#FFA500"
-                                st.markdown(f"""
-                                <div style="border-left: 4px solid {b_color}; padding-left: 10px; margin-bottom: 8px; background-color: #f9f9f9; border-radius: 4px;">
-                                    <span style="font-size: 13px;"><b>{p_item['item_name']}</b>: {p_item['status']}</span><br>
-                                    <span style="font-size: 11px; color: #555;">Reply: {p_item.get('purchase_reply', 'Awaiting Action')}</span>
-                                </div>
-                                """, unsafe_allow_html=True)
-                        else:
-                            st.caption("No requests for this job.")
-
-                st.divider()
+                                st.markdown(f"""<div style="border-left: 4px solid {b_color}; padding-left: 10px; background-color: #f9f9f9; border-radius: 4px; margin-bottom:5px;">
+                                    <b>{p_item['item_name']}</b>: {p_item['status']}<br>
+                                    <small>Reply: {p_item.get('purchase_reply', 'Awaiting Action')}</small></div>""", unsafe_allow_html=True)
 
                 if st.button("Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     conn.table("anchor_projects").update({
-                        "drawing_status": new_gate, 
-                        "manual_days_limit": new_limit,
-                        "material_shortage": new_short, 
-                        "shortage_details": new_rem,
+                        "drawing_status": new_gate, "manual_days_limit": new_limit,
+                        "material_shortage": new_short, "shortage_details": new_rem,
                         "updated_at": datetime.now(IST).isoformat()
                     }).eq("id", row['id']).execute()
-                    st.toast("Updated Successfully!"); st.rerun()
+                    st.cache_data.clear(); st.rerun()
 
-# --- TABS 2, 3, 4 (VERIFIED) ---
+# --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     with st.form("prod_form", clear_on_submit=True):
         f1, f2, f3 = st.columns(3)
-        job_list = df_plan['job_no'].unique().tolist() if not df_plan.empty else []
         f_sup = f1.selectbox("Supervisor", base_supervisors)
         f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
-        f_job = f2.selectbox("Job Code", ["-- Select --"] + job_list)
+        f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
         f_act = f2.selectbox("Activity", all_activities)
         f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5)
         f_out = f3.number_input("Output (Qty)", min_value=0.0)
@@ -192,12 +157,16 @@ with tab_entry:
                     "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
                     "Activity": f_act, "Hours": f_hrs, "Output": f_out, "Notes": f_nts
                 }).execute()
-                st.success("Work Logged!"); st.rerun()
+                st.cache_data.clear(); st.success("Work Logged!"); st.rerun()
 
+# --- TAB 3: ANALYTICS ---
 with tab_analytics:
     if not df_logs.empty:
         st.subheader("📅 Today's Shift Report")
-        df_logs['created_at'] = pd.to_datetime(df_logs['created_at']).dt.tz_convert(IST)
+        # Safety timezone conversion
+        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'])
+        df_logs['created_at'] = df_logs['created_at'].dt.tz_convert(IST)
+        
         today_logs = df_logs[df_logs['created_at'].dt.date == datetime.now(IST).date()]
         if not today_logs.empty:
             st.dataframe(today_logs[['created_at', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Notes']], hide_index=True, use_container_width=True)
@@ -207,6 +176,7 @@ with tab_analytics:
         fig = px.bar(clean_logs.groupby('Job_Code')['Hours'].sum().reset_index(), x='Job_Code', y='Hours', title="Cumulative Man-Hours")
         st.plotly_chart(fig, use_container_width=True)
 
+# --- TAB 4: MANAGE MASTERS ---
 with tab_masters:
     st.subheader("🛠️ Master Registration")
     m1, m2 = st.columns(2)
@@ -214,11 +184,7 @@ with tab_masters:
         new_w = st.text_input("Register Worker")
         if st.button("Add Person") and new_w:
             conn.table("production").insert({"Worker": new_w, "Notes": "SYSTEM_NEW_ITEM", "Hours": 0, "Activity": "N/A", "Job_Code": "N/A"}).execute()
-            st.rerun()
+            st.cache_data.clear(); st.rerun()
     with m2:
         st.write("Production Gates:")
         st.dataframe(df_gates[['step_order', 'gate_name']], hide_index=True)
-        new_g = st.text_input("New Gate Name")
-        if st.button("Add Gate") and new_g:
-            conn.table("production_gates").insert({"gate_name": new_g, "step_order": len(universal_stages)+1}).execute()
-            st.rerun()
