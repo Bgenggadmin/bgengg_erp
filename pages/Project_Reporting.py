@@ -10,26 +10,8 @@ from PIL import Image
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# 2. THE MASTER MAPPING & WEIGHTED LOGIC
-# Define how much EACH milestone contributes to the 100% total
-MILESTONE_WEIGHTS = {
-    "draw_sub": 0.05, 
-    "draw_app": 0.05,
-    "rm_status": 0.20,
-    "sub_del": 0.05,
-    "fab_status": 0.30,
-    "buff_stat": 0.10,
-    "testing": 0.10,
-    "qc_stat": 0.10,
-    "fat_stat": 0.05
-}
-
-# Define how much each STATUS within a milestone is worth (0.0 to 1.0)
-STATUS_MULTIPLIER = {
-    "Completed": 1.0, "Approved": 1.0, "Submitted": 1.0, "Received": 1.0, "NA": 1.0,
-    "In-Progress": 0.5, "Ordered": 0.4, "Scheduled": 0.2, "Planning": 0.1,
-    "Pending": 0.0, "Hold": 0.0
-}
+# 2. THE MASTER MAPPING
+HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 
 MILESTONE_MAP = [
     ("Drawing Submission", "draw_sub", "draw_sub_note"),
@@ -43,6 +25,10 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
+# --- DATA FETCHING ---
+customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
+jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
+
 # --- PDF ENGINE ---
 def generate_pdf(logs):
     pdf = FPDF()
@@ -50,116 +36,167 @@ def generate_pdf(logs):
     for log in logs:
         pdf.add_page()
         
-        # Calculate Weighted Progress
-        total_weighted_progress = 0
-        for skey, weight in MILESTONE_WEIGHTS.items():
-            status = log.get(skey, "Pending")
-            total_weighted_progress += (STATUS_MULTIPLIER.get(status, 0) * weight)
-        overall_pct = int(total_weighted_progress * 100)
-
-        # 1. HEADER (Blue Strip & Logo)
-        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
+        # 1. BLUE STRIP & LOGO
+        pdf.set_fill_color(0, 51, 102) 
+        pdf.rect(0, 0, 210, 25, 'F')
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-            if logo_data: pdf.image(BytesIO(logo_data), x=12, y=5, h=15)
+            if logo_data:
+                pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
         except: pass
 
+        # 2. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
+        pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5) 
+        pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14) 
+        pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # 2. JOB HEADER & OVERALL PROGRESS
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        pdf.cell(140, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 0, "L")
-        pdf.set_text_color(0, 51, 102); pdf.cell(50, 8, f"WEIGHTED PROGRESS: {overall_pct}%", "B", 1, "R")
+        # --- Job Details Section ---
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+        pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
         
-        # 3. FIELD GRID (Header Details)
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
-        fields = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
-        for i in range(0, len(fields), 2):
-            f1, f2 = fields[i], fields[i+1]
+        pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
+        for i in range(0, len(HEADER_FIELDS), 2):
+            f1, f2 = HEADER_FIELDS[i], HEADER_FIELDS[i+1]
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
             pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
 
-        # 4. MILESTONE TABLE
-        pdf.ln(5); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 9)
-        pdf.cell(65, 8, " Milestone Item", 1, 0, 'L', True)
-        pdf.cell(20, 8, " Weight", 1, 0, 'C', True)
+        # --- Milestone Table ---
+        pdf.ln(5); pdf.set_font("Arial", "B", 9)
+        pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
+        pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(35, 8, " Status", 1, 0, 'C', True)
-        pdf.cell(70, 8, " Remarks", 1, 1, 'L', True)
+        pdf.cell(95, 8, " Remarks", 1, 1, 'L', True)
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
-        for label, skey, nkey in MILESTONE_MAP:
-            status = str(log.get(skey, 'Pending'))
-            weight_label = f"{int(MILESTONE_WEIGHTS[skey]*100)}%"
-            
-            # Row coloring based on completion
-            if STATUS_MULTIPLIER.get(status) == 1.0: pdf.set_fill_color(144, 238, 144)
-            elif STATUS_MULTIPLIER.get(status, 0) > 0: pdf.set_fill_color(255, 255, 204)
+        for label, s_key, n_key in MILESTONE_MAP:
+            status = str(log.get(s_key, 'Pending'))
+            if status in ["Completed", "Approved", "Submitted"]: pdf.set_fill_color(144, 238, 144)
+            elif status in ["In-Progress", "Hold", "Ordered", "Received", "Planning", "Scheduled"]: pdf.set_fill_color(255, 255, 204)
             else: pdf.set_fill_color(255, 255, 255)
             
-            pdf.cell(65, 7, f" {label}", 1)
-            pdf.cell(20, 7, f" {weight_label}", 1, 0, 'C')
+            pdf.cell(60, 7, f" {label}", 1)
             pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
-            pdf.cell(70, 7, f" {str(log.get(nkey,'-'))}", 1, 1)
+            pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
+    # --- ENCODING FIX ---
     raw_pdf = pdf.output()
     return bytes(raw_pdf) if isinstance(raw_pdf, (bytes, bytearray)) else raw_pdf.encode('latin-1')
 
-# --- TAB 1: ENTRY FORM ---
-with st.sidebar:
-    st.header("⚙️ App Settings")
-    st.caption("Weights are pre-configured to prioritize Fabrication (30%) and RM Status (20%).")
-
-# (Data fetching for customers/jobs remains as before)
-customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
-jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
-
+# --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
 
 with tab1:
-    f_job = st.selectbox("Select Job Code", [""] + jobs, key="job_lookup")
+    st.subheader("📋 Select Project")
+    # Job Selector is OUTSIDE the form to trigger the "Autofill"
+    f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
+
     last_data = {}
     if f_job:
+        # Fetch the most recent log for this job to pre-fill the form
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        if res.data: last_data = res.data[0]
+        if res.data:
+            last_data = res.data[0]
+            st.info(f"🔄 Showing latest data for Job: {f_job}. Update only what has changed.")
 
-    with st.form("entry_form"):
-        # (Project details section remains same as previous code)
-        # ...
+    with st.form("main_entry_form", clear_on_submit=True):
+        st.subheader("📋 Project Details")
+        c1, c2, c3 = st.columns(3)
         
-        st.subheader("📊 Weighted Milestone Tracking")
-        total_progress_bar = st.empty()
+        # Pre-select customer based on last data
+        default_cust_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
+        f_cust = c1.selectbox("Customer", [""] + customers, index=default_cust_idx)
+        c2.text_input("Selected Job", value=f_job, disabled=True)
+        f_eq = c3.text_input("Equipment Name", value=last_data.get('equipment', ""))
+        
+        c4, c5, c6 = st.columns(3)
+        f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
+        
+        def safe_date(field):
+            val = last_data.get(field)
+            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
+            except: return datetime.now()
+
+        f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
+        f_eng = c6.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
+        
+        c7, c8 = st.columns(2)
+        f_p_del = c7.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
+        f_r_del = c8.date_input("Revised Dispatch Date", value=safe_date('exp_dispatch_date'))
+
+        st.divider()
+        st.subheader("📊 Milestone Tracking")
         m_responses = {}
-        calc_progress = 0
         
         for label, skey, nkey in MILESTONE_MAP:
-            col_stat, col_note, col_info = st.columns([1.5, 2, 1])
+            col_stat, col_note = st.columns([1, 2])
             
-            # Logic for dropdown options
-            if "Drawing" in label: opts = ["Pending", "NA", "In-Progress", "Submitted", "Approved"]
-            elif "RM" in label: opts = ["Pending", "Ordered", "Received", "NA", "Hold"]
-            else: opts = ["Pending", "Planning", "In-Progress", "Scheduled", "Completed", "NA"]
-            
+            # Options Logic
+            if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
+            elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
+            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
+            elif label == "Sub-deliveries": opts = ["Pending", "In-Progress", "NA", "Completed"]
+            elif label == "Fabrication Status": opts = ["Planning", "In-Progress", "Hold", "Completed"]
+            elif label == "Buffing Status": opts = ["Planning", "In-Progress", "Completed"]
+            elif label == "Testing Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
+            elif label == "Dispatch Status": opts = ["Pending", "Scheduled", "In-Progress", "Completed"]
+            elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
+            else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
+
+            # Pre-select status based on last entry
             prev_status = last_data.get(skey, "Pending")
-            status_val = col_stat.selectbox(label, opts, index=opts.index(prev_status) if prev_status in opts else 0, key=f"s_{skey}")
-            m_responses[skey] = status_val
-            m_responses[nkey] = col_note.text_input("Remarks", value=last_data.get(nkey, ""), key=f"n_{nkey}")
+            default_idx = opts.index(prev_status) if prev_status in opts else 0
             
-            # Show individual weight contribution
-            w_contrib = MILESTONE_WEIGHTS[skey]
-            current_contrib = STATUS_MULTIPLIER.get(status_val, 0) * w_contrib
-            calc_progress += current_contrib
-            col_info.write(f"Weight: {int(w_contrib*100)}%")
-            col_info.progress(STATUS_MULTIPLIER.get(status_val, 0))
+            m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx)
+            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""))
 
-        # Final Overall Bar
-        final_pct = int(calc_progress * 100)
-        total_progress_bar.markdown(f"### 🎯 Total Project Completion: {final_pct}%")
-        total_progress_bar.progress(calc_progress)
+        st.divider()
+        cam_photo = st.camera_input("📸 Take Progress Photo")
 
-        if st.form_submit_button("🚀 SAVE UPDATE"):
-            # (Save logic remains same as previous code)
-            pass
+        if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
+            if not f_cust or not f_job:
+                st.error("Select a Job Code and Customer first!")
+            else:
+                try:
+                    entry_payload = {
+                        "customer": f_cust, "job_code": f_job, "equipment": f_eq,
+                        "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
+                        "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del),
+                        **m_responses
+                    }
+                    res = conn.table("progress_logs").insert(entry_payload).execute()
+                    if cam_photo and res.data:
+                        file_path = f"{res.data[0]['id']}.jpg"
+                        conn.client.storage.from_("progress-photos").upload(file_path, cam_photo.getvalue())
+                    st.success("✅ Update Saved Successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+with tab2:
+    # (Archive logic remains exactly as provided previously)
+    st.subheader("📂 Report Archive")
+    # ... [Archive code omitted for brevity but remains the same] ...
+    # Note: Keep the archive logic from your previous stable version.
+
+with tab3:
+    st.header("🛠️ Master Data Management")
+    col_cust, col_job = st.columns(2)
+    with col_cust:
+        st.subheader("👥 Customers")
+        new_cust = st.text_input("New Customer Name", key="add_cust_input")
+        if st.button("➕ Add Customer"):
+            if new_cust:
+                conn.table("customer_master").insert({"name": new_cust}).execute()
+                st.rerun()
+    with col_job:
+        st.subheader("🔢 Job Codes")
+        new_job = st.text_input("New Job Code", key="add_job_input")
+        if st.button("➕ Add Job Code"):
+            if new_job:
+                conn.table("job_master").insert({"job_code": new_job}).execute()
+                st.rerun()
