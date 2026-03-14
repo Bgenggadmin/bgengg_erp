@@ -10,7 +10,7 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="Production Master | B&G", layout="wide", page_icon="🏭")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 3. DATA LOADERS ---
+# --- 2. DATA LOADERS ---
 @st.cache_data(ttl=600) # Increased to 10 mins to save data
 def get_master_data():
     # Optimization: Pulling only the columns your app actually uses
@@ -33,20 +33,18 @@ def get_master_data():
 # IMPORTANT: Ensure this line is NOT indented (it must be flush to the left)
 df_plan, df_logs, df_pur, df_gates = get_master_data()
 
-# --- 4. DYNAMIC MAPPING ---
-# This part stays the same but uses the optimized data
+# --- 3. DYNAMIC MAPPING & CONSTANTS ---
+# Define these BEFORE you create the selectbox
+base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
+
 if not df_gates.empty:
     universal_stages = df_gates['gate_name'].tolist()
 else:
     universal_stages = ["Cutting", "Fitting", "Welding", "Grinding", "Painting"]
-    base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
-    universal_stages = df_gates['gate_name'].tolist() if not df_gates.empty else []
 
-if not df_logs.empty:
-    all_workers = sorted(list(set(df_logs["Worker"].dropna().unique().tolist())))
-    all_activities = sorted(list(set(universal_stages + df_logs["Activity"].dropna().unique().tolist())))
-else:
-    all_workers, all_activities = [], universal_stages
+# Get lists for dropdowns
+all_workers = sorted(df_logs['Worker'].unique().tolist()) if not df_logs.empty else []
+all_jobs = sorted(df_plan['job_no'].unique().tolist()) if not df_plan.empty else []
 
 # --- 4. NAVIGATION TABS ---
 tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
