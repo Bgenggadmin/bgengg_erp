@@ -33,6 +33,16 @@ jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code"
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Pre-fetch logo ONCE for the entire report
+    logo_stream = None
+    try:
+        logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
+        if logo_data:
+            logo_stream = BytesIO(logo_data)
+    except Exception as e:
+        print(f"Logo fetch failed: {e}")
+
     for log in logs:
         pdf.add_page()
         
@@ -40,16 +50,13 @@ def generate_pdf(logs):
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
-       # 2. LOGO (Corrected for New Code)
-        try:
-            logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-            if logo_data:
-                logo_stream = BytesIO(logo_data)
-                logo_stream.seek(0)  # <--- THIS IS THE MISSING PIECE
-                pdf.image(logo_stream, x=12, y=5, h=15) 
-        except Exception as e:
-            # Temporary: remove 'pass' and add print(e) if it still fails to see the error
-            pass
+        # 2. LOGO (Reset pointer each time it is used)
+        if logo_stream:
+            try:
+                logo_stream.seek(0)
+                pdf.image(logo_stream, x=12, y=5, h=15)
+            except:
+                pass
 
         # 3. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
@@ -105,16 +112,18 @@ def generate_pdf(logs):
         # --- Progress Photo ---
         try:
             img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
-            img_res = requests.get(img_url, timeout=3)
+            img_res = requests.get(img_url, timeout=5)
             if img_res.status_code == 200:
                 img = Image.open(BytesIO(img_res.content)).convert('RGB')
                 img.thumbnail((350, 350))
-                buf = BytesIO(); img.save(buf, format="JPEG")
+                buf = BytesIO()
+                img.save(buf, format="JPEG")
+                buf.seek(0)
                 pdf.image(buf, x=75, y=pdf.get_y()+10, w=60)
         except Exception: 
             pass
 
-    return pdf.output(dest='S').encode('latin-1')
+    return bytes(pdf.output())
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
