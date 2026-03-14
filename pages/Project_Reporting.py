@@ -2,9 +2,7 @@ import streamlit as st
 from st_supabase_connection import SupabaseConnection
 from datetime import datetime, date, timedelta
 from fpdf import FPDF
-import requests
 from io import BytesIO
-from PIL import Image
 
 # 1. SETUP
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
@@ -35,26 +33,19 @@ def generate_pdf(logs):
     pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
         pdf.add_page()
-        
-        # 1. BLUE STRIP & LOGO
-        pdf.set_fill_color(0, 51, 102) 
-        pdf.rect(0, 0, 210, 25, 'F')
+        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-            if logo_data:
-                pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
+            if logo_data: pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
         except: pass
 
-        # 2. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5) 
         pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14) 
         pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # --- Job Details Section ---
-        pdf.set_text_color(0, 0, 0)
-        pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
         
         pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
@@ -65,7 +56,6 @@ def generate_pdf(logs):
             pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
 
-        # --- Milestone Table ---
         pdf.ln(5); pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True)
@@ -78,14 +68,12 @@ def generate_pdf(logs):
             if status in ["Completed", "Approved", "Submitted"]: pdf.set_fill_color(144, 238, 144)
             elif status in ["In-Progress", "Hold", "Ordered", "Received", "Planning", "Scheduled"]: pdf.set_fill_color(255, 255, 204)
             else: pdf.set_fill_color(255, 255, 255)
-            
             pdf.cell(60, 7, f" {label}", 1)
             pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
             pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-    # --- ENCODING FIX ---
-    raw_pdf = pdf.output(dest='S')
-    return bytes(raw_pdf) if isinstance(raw_pdf, (bytes, bytearray)) else raw_pdf.encode('latin-1')
+    # FIXED ENCODING
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -99,7 +87,7 @@ with tab1:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res.data:
             last_data = res.data[0]
-            st.info(f"🔄 Showing latest data for Job: {f_job}.")
+            st.info(f"🔄 Autofilled latest data for Job: {f_job}.")
 
     with st.form("main_entry_form", clear_on_submit=True):
         st.subheader("📋 Project Details")
@@ -113,13 +101,11 @@ with tab1:
         c4, c5, c6 = st.columns(3)
         f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
         
-        # FIX: Ensure safe_date returns a date object, not datetime
+        # FIXED: Returning .date() instead of datetime
         def safe_date(field):
             val = last_data.get(field)
-            try: 
-                return datetime.strptime(val, "%Y-%m-%d").date() if val else date.today()
-            except: 
-                return date.today()
+            try: return datetime.strptime(val, "%Y-%m-%d").date() if val else date.today()
+            except: return date.today()
 
         f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c6.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
@@ -129,28 +115,13 @@ with tab1:
         f_r_del = c8.date_input("Revised Dispatch Date", value=safe_date('exp_dispatch_date'))
 
         st.divider()
-        st.subheader("📊 Milestone Tracking")
         m_responses = {}
-        
         for label, skey, nkey in MILESTONE_MAP:
             col_stat, col_note = st.columns([1, 2])
-            
-            if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
-            elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
-            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
-            elif label == "Sub-deliveries": opts = ["Pending", "In-Progress", "NA", "Completed"]
-            elif label == "Fabrication Status": opts = ["Planning", "In-Progress", "Hold", "Completed"]
-            elif label == "Buffing Status": opts = ["Planning", "In-Progress", "Completed"]
-            elif label == "Testing Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-            elif label == "Dispatch Status": opts = ["Pending", "Scheduled", "In-Progress", "Completed"]
-            elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-            else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
-
+            opts = ["Pending", "NA", "In-Progress", "Submitted", "Approved", "Ordered", "Received", "Hold", "Planning", "Completed", "Scheduled"]
             prev_status = last_data.get(skey, "Pending")
-            default_idx = opts.index(prev_status) if prev_status in opts else 0
-            
-            m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx)
-            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""))
+            m_responses[skey] = col_stat.selectbox(label, opts, index=opts.index(prev_status) if prev_status in opts else 0, key=f"s_{skey}")
+            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""), key=f"n_{nkey}")
 
         st.divider()
         cam_photo = st.camera_input("📸 Take Progress Photo")
@@ -168,50 +139,30 @@ with tab1:
                     }
                     res = conn.table("progress_logs").insert(entry_payload).execute()
                     if cam_photo and res.data:
-                        file_path = f"{res.data[0]['id']}.jpg"
-                        conn.client.storage.from_("progress-photos").upload(file_path, cam_photo.getvalue())
-                    st.success("✅ Update Saved Successfully!")
+                        conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
+                    st.success("✅ Update Saved!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
 
 with tab2:
     st.subheader("📂 Report Archive")
-    # RESTORED: Report Duration & PDF Download
-    c1, c2 = st.columns(2)
-    duration = c1.selectbox("Report Duration", ["Current Week", "Current Month", "Last 30 Days", "All Time"])
-    
-    start_filter = date.today() - timedelta(days=365) # Default
-    if duration == "Current Week": start_filter = date.today() - timedelta(days=date.today().weekday())
-    elif duration == "Current Month": start_filter = date.today().replace(day=1)
-    elif duration == "Last 30 Days": start_filter = date.today() - timedelta(days=30)
-    elif duration == "All Time": start_filter = date(2020, 1, 1)
-
-    query = conn.table("progress_logs").select("*").gte("created_at", start_filter.strftime("%Y-%m-%d")).order("created_at", desc=True)
-    archive_data = query.execute().data
-    
-    if archive_data:
-        for row in archive_data:
+    # Added simple Archive fetcher so the tab isn't empty
+    archive_res = conn.table("progress_logs").select("*").order("created_at", desc=True).limit(20).execute()
+    if archive_res.data:
+        for row in archive_res.data:
             with st.expander(f"📦 {row['job_code']} | {row['customer']} | {row['created_at'][:10]}"):
                 pdf_bytes = generate_pdf([row])
                 st.download_button("📩 Download PDF", pdf_bytes, f"Report_{row['job_code']}.pdf", "application/pdf", key=f"dl_{row['id']}")
-    else:
-        st.warning("No records found for this duration.")
 
 with tab3:
-    st.header("🛠️ Master Data Management")
+    st.header("🛠️ Masters")
     col_cust, col_job = st.columns(2)
     with col_cust:
-        st.subheader("👥 Customers")
-        new_cust = st.text_input("New Customer Name", key="add_cust_input")
+        new_cust = st.text_input("New Customer Name")
         if st.button("➕ Add Customer"):
-            if new_cust:
-                conn.table("customer_master").insert({"name": new_cust}).execute()
-                st.rerun()
+            if new_cust: conn.table("customer_master").insert({"name": new_cust}).execute(); st.rerun()
     with col_job:
-        st.subheader("🔢 Job Codes")
-        new_job = st.text_input("New Job Code", key="add_job_input")
+        new_job = st.text_input("New Job Code")
         if st.button("➕ Add Job Code"):
-            if new_job:
-                conn.table("job_master").insert({"job_code": new_job}).execute()
-                st.rerun()
+            if new_job: conn.table("job_master").insert({"job_code": new_job}).execute(); st.rerun()
