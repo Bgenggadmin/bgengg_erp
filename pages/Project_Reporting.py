@@ -37,18 +37,18 @@ MILESTONE_MAP = [
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE WITH PHOTO INCLUSION ---
+# --- PDF ENGINE WITH PHOTO & COMPLETION ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
         pdf.add_page()
         
-        # Calculate Progress
+        # Weighted Progress Calculation
         total_p = sum([STATUS_MULTIPLIER.get(log.get(m[1], "Pending"), 0) * MILESTONE_WEIGHTS.get(m[1], 0) for m in MILESTONE_MAP])
         overall_pct = int(total_p * 100)
         
-        # Header
+        # Header Blue Strip
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
@@ -59,12 +59,13 @@ def generate_pdf(logs):
         pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # Progress Bar & Job Info
+        # Job Details Row + Completion Bar in PDF
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
         pdf.cell(140, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 0, "L")
-        pdf.set_text_color(0, 51, 102); pdf.cell(50, 8, f"PROGRESS: {overall_pct}%", "B", 1, "R")
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(50, 8, f"COMPLETION: {overall_pct}%", "B", 1, "R")
         
-        # Main Info Grid
+        # Header Info Grid
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
             f1, f2 = HEADER_FIELDS[i], HEADER_FIELDS[i+1]
@@ -73,7 +74,7 @@ def generate_pdf(logs):
             pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
 
-        # Milestones
+        # Milestone Table
         pdf.ln(5); pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True); pdf.cell(35, 8, " Status", 1, 0, 'C', True); pdf.cell(95, 8, " Remarks", 1, 1, 'L', True)
         
@@ -85,13 +86,13 @@ def generate_pdf(logs):
             else: pdf.set_fill_color(255, 255, 255)
             pdf.cell(60, 7, f" {label}", 1); pdf.cell(35, 7, f" {status}", 1, 0, 'C', True); pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # --- PHOTO INTEGRATION ---
+        # --- PHOTO AT BOTTOM OF PDF ---
         try:
             photo_data = conn.client.storage.from_("progress-photos").download(f"{log['id']}.jpg")
             if photo_data:
                 pdf.ln(10)
-                pdf.set_font("Arial", "B", 10); pdf.cell(0, 10, "Progress Photo:", 0, 1)
-                pdf.image(BytesIO(photo_data), x=10, w=90) # Adjust w (width) as needed
+                pdf.set_font("Arial", "B", 10); pdf.cell(0, 10, "Progress Verification Photo:", 0, 1)
+                pdf.image(BytesIO(photo_data), x=10, w=100) 
         except: pass
 
     raw_pdf = pdf.output()
@@ -111,7 +112,6 @@ with tab1:
             st.info(f"🔄 Showing latest data for Job: {f_job}.")
 
     with st.form("main_entry_form", clear_on_submit=True):
-        # --- PROGRESS BAR AT TOP ---
         overall_bar_space = st.empty() 
         
         st.subheader("📋 Project Details")
@@ -121,7 +121,7 @@ with tab1:
         c2.text_input("Selected Job", value=f_job, disabled=True)
         f_eq = c3.text_input("Equipment Name", value=last_data.get('equipment', ""))
         
-        # ... Other header inputs remain identical ...
+        # ... Rest of Header Fields ...
         c4, c5, c6 = st.columns(3)
         f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
         def safe_date(field):
@@ -136,9 +136,11 @@ with tab1:
 
         st.divider(); st.subheader("📊 Milestone Tracking")
         m_responses = {}; total_weighted_pct = 0
+        
         for label, skey, nkey in MILESTONE_MAP:
-            col_stat, col_note = st.columns([1, 2])
-            # Dropdown logic
+            # --- 3 COLUMNS: STATUS | REMARKS | PROGRESS BAR ---
+            col_stat, col_note, col_bar = st.columns([1.5, 2.5, 1])
+            
             if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
             elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
             elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
@@ -152,16 +154,19 @@ with tab1:
 
             prev_status = last_data.get(skey, "Pending")
             default_idx = opts.index(prev_status) if prev_status in opts else 0
+            
             m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx)
             m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""))
             
-            # Weighted calculation
-            item_multiplier = STATUS_MULTIPLIER.get(m_responses[skey], 0)
-            total_weighted_pct += (item_multiplier * MILESTONE_WEIGHTS[skey])
+            # --- SHOW PROGRESS BAR AGAINST MILESTONE ---
+            mult = STATUS_MULTIPLIER.get(m_responses[skey], 0)
+            col_bar.write("") # Padding
+            col_bar.progress(mult)
+            total_weighted_pct += (mult * MILESTONE_WEIGHTS[skey])
 
-        # Render Progress Bar at the Top (placeholder we created)
+        # Top Completion Banner
         final_pct = int(total_weighted_pct * 100)
-        overall_bar_space.markdown(f"### 🎯 Total Completion: {final_pct}%")
+        overall_bar_space.markdown(f"### 🎯 Overall Completion: {final_pct}%")
         overall_bar_space.progress(total_weighted_pct)
 
         st.divider(); cam_photo = st.camera_input("📸 Take Progress Photo")
@@ -171,12 +176,13 @@ with tab1:
                 try:
                     entry_payload = {"customer": f_cust, "job_code": f_job, "equipment": f_eq, "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng, "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del), **m_responses}
                     res = conn.table("progress_logs").insert(entry_payload).execute()
-                    if cam_photo and res.data: conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
+                    if cam_photo and res.data:
+                        conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}.jpg", cam_photo.getvalue())
                     st.success("✅ Update Saved Successfully!"); st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
 
 with tab2:
-    # ... Archive code remains identical to the previous restoration ...
+    # (Restored Archive logic from previous turn with Filter and Photo check)
     st.subheader("📂 Report Archive")
     c1, c2 = st.columns(2)
     f_cust_search = c1.selectbox("🔍 Filter by Customer", ["All"] + customers)
@@ -207,7 +213,6 @@ with tab2:
                 st.download_button("📩 Download This Update PDF", pdf_row, f"{row['job_code']}_Update.pdf", key=f"dl_{row['id']}")
 
 with tab3:
-    # ... Masters code remains identical ...
     st.header("🛠️ Master Data Management")
     col_cust, col_job = st.columns(2)
     with col_cust:
