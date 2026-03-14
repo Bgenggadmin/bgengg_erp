@@ -34,23 +34,23 @@ def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Pre-fetch logo ONCE for the entire report
+    # 1. FETCH LOGO ONCE
     logo_stream = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
         if logo_data:
             logo_stream = BytesIO(logo_data)
-    except Exception as e:
-        print(f"Logo fetch failed: {e}")
+    except:
+        pass
 
     for log in logs:
         pdf.add_page()
         
-        # 1. BLUE STRIP
+        # 2. BLUE HEADER STRIP
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
-        # 2. LOGO (Reset pointer each time it is used)
+        # 3. RENDER LOGO
         if logo_stream:
             try:
                 logo_stream.seek(0)
@@ -58,25 +58,22 @@ def generate_pdf(logs):
             except:
                 pass
 
-        # 3. HEADER TEXT
+        # 4. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5) 
         pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-        
         pdf.set_font("Arial", "I", 10)
         pdf.set_xy(70, 14)
         pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
         pdf.set_text_color(0, 0, 0)
-
-        # --- Job Header ---
         pdf.set_font("Arial", "B", 10)
         pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
         pdf.ln(2)
         
-        # --- Field Grid ---
+        # 5. HEADER DATA GRID
         pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
@@ -88,7 +85,7 @@ def generate_pdf(logs):
 
         pdf.ln(5)
 
-        # --- Milestone Table ---
+        # 6. MILESTONES TABLE
         pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True)
@@ -98,21 +95,16 @@ def generate_pdf(logs):
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
         for label, s_key, n_key in MILESTONE_MAP:
             status = str(log.get(s_key, 'Pending'))
-            if status in ["Completed", "Approved", "Submitted"]:
-                pdf.set_fill_color(144, 238, 144)
-            elif status in ["In-Progress", "Hold", "Ordered", "Received", "Planning", "Scheduled"]:
-                pdf.set_fill_color(255, 255, 204)
-            else:
-                pdf.set_fill_color(255, 255, 255)
+            pdf.set_fill_color(144, 238, 144) if status in ["Completed", "Approved", "Submitted"] else pdf.set_fill_color(255, 255, 204) if status in ["In-Progress", "Hold", "Ordered"] else pdf.set_fill_color(255, 255, 255)
             
             pdf.cell(60, 7, f" {label}", 1)
             pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
             pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # --- Progress Photo ---
+        # 7. PROGRESS PHOTO
         try:
             img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
-            img_res = requests.get(img_url, timeout=5)
+            img_res = requests.get(img_url, timeout=3)
             if img_res.status_code == 200:
                 img = Image.open(BytesIO(img_res.content)).convert('RGB')
                 img.thumbnail((350, 350))
@@ -120,10 +112,11 @@ def generate_pdf(logs):
                 img.save(buf, format="JPEG")
                 buf.seek(0)
                 pdf.image(buf, x=75, y=pdf.get_y()+10, w=60)
-        except Exception: 
+        except: 
             pass
 
-    return bytes(pdf.output())
+    # --- THIS RETURN LINE IS THE FIX FOR THE TYPEERROR ---
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
