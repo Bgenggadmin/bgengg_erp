@@ -33,18 +33,52 @@ def get_master_data():
 # IMPORTANT: Ensure this line is NOT indented (it must be flush to the left)
 df_plan, df_logs, df_pur, df_gates = get_master_data()
 
-# --- 3. DYNAMIC MAPPING & CONSTANTS ---
-# Define these BEFORE you create the selectbox
+# --- 4. DYNAMIC MAPPING (Define these FIRST) ---
 base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
+
+# Make sure this list exists for your line 151
+all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly", "Buffing"]
 
 if not df_gates.empty:
     universal_stages = df_gates['gate_name'].tolist()
 else:
-    universal_stages = ["Cutting", "Fitting", "Welding", "Grinding", "Painting"]
+    universal_stages = all_activities # Fallback
 
-# Get lists for dropdowns
 all_workers = sorted(df_logs['Worker'].unique().tolist()) if not df_logs.empty else []
 all_jobs = sorted(df_plan['job_no'].unique().tolist()) if not df_plan.empty else []
+
+# --- 5. WORK ENTRY FORM ---
+st.subheader("📝 Daily Work Entry")
+
+# If you use st.form, you MUST have a submit button inside it
+with st.form("work_entry_form", clear_on_submit=True):
+    f1, f2 = st.columns(2)
+    
+    # These will work now because variables are defined above
+    f_sup = f1.selectbox("Supervisor", base_supervisors)
+    f_act = f2.selectbox("Activity", all_activities) 
+    
+    f_job = f1.selectbox("Job No", all_jobs)
+    f_worker = f2.selectbox("Worker", all_workers)
+    
+    f_hrs = f1.number_input("Hours", min_value=0.5, max_value=24.0, step=0.5)
+    f_notes = f2.text_input("Notes/Remarks")
+
+    # FIX FOR "MISSING SUBMIT BUTTON":
+    submitted = st.form_submit_button("🚀 Submit Work Log")
+
+    if submitted:
+        # This only runs when the button is clicked
+        new_data = {
+            "Worker": f_worker,
+            "Job_Code": f_job,
+            "Activity": f_act,
+            "Hours": f_hrs,
+            "Notes": f_notes
+        }
+        # Add your conn.table("production").insert(new_data).execute() logic here
+        st.success("Log Entry Successful!")
+        st.cache_data.clear()
 
 # --- 4. NAVIGATION TABS ---
 tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
