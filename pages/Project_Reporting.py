@@ -1,6 +1,6 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from fpdf import FPDF
 from io import BytesIO
 
@@ -27,23 +27,23 @@ MILESTONE_MAP = [
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE ---
+# --- PDF ENGINE (REPAIRED FOR NEW LIBRARIES) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
         pdf.add_page()
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
+        
+        # Logo Logic
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
             if logo_data: pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
         except: pass
 
         pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5) 
-        pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14) 
-        pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
+        pdf.set_font("Arial", "B", 16); pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
@@ -56,8 +56,7 @@ def generate_pdf(logs):
             pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
 
-        pdf.ln(5); pdf.set_font("Arial", "B", 9)
-        pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
+        pdf.ln(5); pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(35, 8, " Status", 1, 0, 'C', True)
         pdf.cell(95, 8, " Remarks", 1, 1, 'L', True)
@@ -68,12 +67,12 @@ def generate_pdf(logs):
             if status in ["Completed", "Approved", "Submitted"]: pdf.set_fill_color(144, 238, 144)
             elif status in ["In-Progress", "Hold", "Ordered", "Received", "Planning", "Scheduled"]: pdf.set_fill_color(255, 255, 204)
             else: pdf.set_fill_color(255, 255, 255)
-            pdf.cell(60, 7, f" {label}", 1)
-            pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
-            pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
+            pdf.cell(60, 7, f" {label}", 1); pdf.cell(35, 7, f" {status}", 1, 0, 'C', True); pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-    # FIXED ENCODING
-    return pdf.output(dest='S').encode('latin-1')
+    # SECURE ENCODING FIX
+    output = pdf.output()
+    if isinstance(output, str): return output.encode('latin-1')
+    return output
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -101,7 +100,6 @@ with tab1:
         c4, c5, c6 = st.columns(3)
         f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
         
-        # FIXED: Returning .date() instead of datetime
         def safe_date(field):
             val = last_data.get(field)
             try: return datetime.strptime(val, "%Y-%m-%d").date() if val else date.today()
@@ -147,7 +145,6 @@ with tab1:
 
 with tab2:
     st.subheader("📂 Report Archive")
-    # Added simple Archive fetcher so the tab isn't empty
     archive_res = conn.table("progress_logs").select("*").order("created_at", desc=True).limit(20).execute()
     if archive_res.data:
         for row in archive_res.data:
