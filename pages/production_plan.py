@@ -102,11 +102,12 @@ with tab_plan:
                           delta=f"Limit: {manual_limit}d" if is_slow else "OK", delta_color="inverse" if is_slow else "normal")
                 c4.metric("Est. Completion", est_completion_date, delta=f"{total_days_offset}d Lead")
 
-                st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
+               st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
-                # Purchase Integration
+                # --- PURCHASE INTEGRATION ---
                 st.markdown("---")
                 p_col1, p_col2 = st.columns([1, 1])
+                
                 with p_col1:
                     with st.expander("🛒 New Material Request"):
                         t_item = st.text_input("Item Name", key=f"titem_{row['id']}")
@@ -130,31 +131,33 @@ with tab_plan:
                                     <b>{p_item['item_name']}</b>: {p_item['status']}<br>
                                     <small>Reply: {p_item.get('purchase_reply', 'Awaiting Action')}</small></div>""", unsafe_allow_html=True)
 
-          
-if st.button("Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
-    try:
-        # Prepare the update data
-        update_data = {
-            "drawing_status": new_gate,
-            "material_shortage": new_short,
-            "updated_at": datetime.now(IST).isoformat()
-        }
-        
-        # Only add these if they were successfully loaded in your dataframe earlier
-        if 'manual_days_limit' in row:
-            update_data["manual_days_limit"] = new_limit
-        if 'shortage_details' in row:
-            update_data["shortage_details"] = new_rem
+                # --- MOVE GATE / STATUS UPDATE BUTTON ---
+                # This button must stay inside the loop but outside the column blocks
+                st.write("") # Spacer
+                if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                    try:
+                        # Prepare the update data
+                        update_data = {
+                            "drawing_status": new_gate,
+                            "material_shortage": new_short,
+                            "updated_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        # Only add these if they exist in your dataframe
+                        if 'manual_days_limit' in df_plan.columns:
+                            update_data["manual_days_limit"] = new_limit
+                        if 'shortage_details' in df_plan.columns:
+                            update_data["shortage_details"] = new_rem
 
-        # Execute the update
-        conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute()
-        
-        st.cache_data.clear()
-        st.toast("✅ Database Updated!")
-        st.rerun()
-        
-    except Exception as e:
-        st.error(f"Update Failed. Check if column names are correct. Error: {e}")
+                        # Execute the update
+                        conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute()
+                        
+                        st.cache_data.clear()
+                        st.toast("✅ Database Updated!")
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Update Failed. Error: {e}")
 
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
