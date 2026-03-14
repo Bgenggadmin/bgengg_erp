@@ -142,7 +142,6 @@ with tab_plan:
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     
-    # 1. Define the unit map
     unit_map = {
         "Welding": "MTs",
         "Buffing": "Sq.Ft",
@@ -150,44 +149,34 @@ with tab_entry:
         "Cutting": "Nos",
         "Fitting": "Nos",
         "Grinding": "Nos",
-        "Assembly": "Nos"
+        "Assembly": "Nos",
         "Others": "Nos"
     }
 
-    # 2. MOVE ACTIVITY OUTSIDE THE FORM (This makes the label dynamic)
-    f_act = st.selectbox("Select Activity first to set Units", all_activities, key="act_selector")
+    # Activity selector outside the form for dynamic unit labeling
+    f_act = st.selectbox("Select Activity first", all_activities, key="act_main")
     current_unit = unit_map.get(f_act, "Nos")
-    
-    st.info(f"Selected Activity: **{f_act}** | Recording output in: **{current_unit}**")
 
-    # 3. THE ENTRY FORM
     with st.form("prod_form", clear_on_submit=True):
         f1, f2, f3 = st.columns(3)
         f_sup = f1.selectbox("Supervisor", base_supervisors)
         f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
-        
         f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
-        # We use a hidden input or caption to show the activity selected above
-        f2.write(f"Activity: **{f_act}**")
+        
+        f2.info(f"Unit: {current_unit}")
         
         f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5)
-        
-        # NOW THIS LABEL WILL BE CORRECT
-        f_out = f3.number_input(f"Output Value ({current_unit})", min_value=0.0)
-        
+        f_out = f3.number_input(f"Output ({current_unit})", min_value=0.0)
         f_nts = st.text_area("Task Details")
-        
-       if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
-            # 1. Check if 'Others' has an explanation
+
+        if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
+            # 1. Validation Logic
             if f_act == "Others" and not f_nts.strip():
                 st.error("⚠️ Please provide details in 'Task Details' when selecting 'Others'.")
-            
-            # 2. Check if Worker and Job are selected
             elif "-- Select --" in [f_wrk, f_job]:
                 st.error("❌ Please select both a valid Worker and Job Code.")
-            
-            # 3. If everything is valid, insert into Supabase
             else:
+                # 2. Database Insertion
                 try:
                     conn.table("production").insert({
                         "Supervisor": f_sup, 
@@ -200,14 +189,11 @@ with tab_entry:
                         "Unit": current_unit 
                     }).execute()
                     
-                    # Clear cache so the analytics tab updates immediately
                     st.cache_data.clear()
-                    st.success(f"✅ Successfully logged {f_out} {current_unit} for {f_act}")
-                    
-                    # Use st.rerun() to refresh the page and clear the form
+                    st.success(f"✅ Logged {f_out} {current_unit} for {f_act}")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Failed to save data: {e}")
+                    st.error(f"Database Error: {e}")
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
