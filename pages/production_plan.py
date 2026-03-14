@@ -160,20 +160,29 @@ with tab_entry:
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
-    if not df_logs.empty:
+    if not df_logs.empty and 'created_at' in df_logs.columns:
         st.subheader("📅 Today's Shift Report")
-        # Safety timezone conversion
-        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'])
+        
+        # Safe conversion: only runs if data exists
+        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
+        
+        # Remove any rows where date conversion failed
+        df_logs = df_logs.dropna(subset=['created_at'])
+        
+        # Localize to IST
+        if df_logs['created_at'].dt.tz is None:
+            df_logs['created_at'] = df_logs['created_at'].dt.tz_localize('UTC')
         df_logs['created_at'] = df_logs['created_at'].dt.tz_convert(IST)
         
         today_logs = df_logs[df_logs['created_at'].dt.date == datetime.now(IST).date()]
-        if not today_logs.empty:
-            st.dataframe(today_logs[['created_at', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Notes']], hide_index=True, use_container_width=True)
         
-        st.divider()
-        clean_logs = df_logs[df_logs['Notes'] != "SYSTEM_NEW_ITEM"]
-        fig = px.bar(clean_logs.groupby('Job_Code')['Hours'].sum().reset_index(), x='Job_Code', y='Hours', title="Cumulative Man-Hours")
-        st.plotly_chart(fig, use_container_width=True)
+        if not today_logs.empty:
+            st.dataframe(today_logs[['created_at', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Notes']], 
+                         hide_index=True, use_container_width=True)
+        else:
+            st.info("No logs recorded for today yet.")
+    else:
+        st.warning("No production logs found in the database.")
 
 # --- TAB 4: MANAGE MASTERS ---
 with tab_masters:
