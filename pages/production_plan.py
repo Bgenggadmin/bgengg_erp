@@ -10,25 +10,29 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="Production Master | B&G", layout="wide", page_icon="🏭")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS (Recovery Version) ---
-@st.cache_data(ttl=300) 
+# --- 2. DATA LOADERS ---
+@st.cache_data(ttl=300)
 def get_master_data():
-    # TEMPORARY: Use "*" to stop the API Error while we verify column names
-    plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
-    
-    # These tables are usually simpler, so we keep them optimized
-    prod_cols = "id, created_at, Job_Code, Hours, Worker, Activity, Notes"
-    prod_res = conn.table("production").select(prod_cols).order("created_at", desc=True).execute()
-    
-    pur_cols = "job_no, item_name, status, purchase_reply"
-    pur_res = conn.table("purchase_orders").select(pur_cols).execute()
-    
-    gate_res = conn.table("production_gates").select("gate_name, step_order").order("step_order").execute()
-    
-    return (pd.DataFrame(plan_res.data or []), 
-            pd.DataFrame(prod_res.data or []), 
-            pd.DataFrame(pur_res.data or []),
-            pd.DataFrame(gate_res.data or []))
+    try:
+        # Fetching all columns to ensure logic works
+        plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
+        
+        # Production logs
+        prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
+        
+        # Purchase data
+        pur_res = conn.table("purchase_orders").select("*").execute()
+        
+        # Gates/Stages
+        gate_res = conn.table("production_gates").select("*").order("step_order").execute()
+        
+        return (pd.DataFrame(plan_res.data or []), 
+                pd.DataFrame(prod_res.data or []), 
+                pd.DataFrame(pur_res.data or []),
+                pd.DataFrame(gate_res.data or []))
+    except Exception as e:
+        st.error(f"Data Load Error: {e}")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
 df_plan, df_logs, df_pur, df_gates = get_master_data()
 
@@ -41,7 +45,6 @@ if not df_gates.empty:
 else:
     universal_stages = all_activities
 
-# Clean strings for exact matching in charts
 if not df_logs.empty:
     df_logs['Job_Code'] = df_logs['Job_Code'].astype(str).str.strip().str.upper()
     all_workers = sorted(df_logs['Worker'].unique().tolist())
@@ -59,14 +62,12 @@ tab_plan, tab_entry, tab_analytics, tab_masters = st.tabs([
 with tab_plan:
     st.subheader("🚀 Shop Floor Control Center")
     if not df_plan.empty:
-        # Pre-calculate hours per job for performance
         hrs_sum = df_logs.groupby('Job_Code')['Hours'].sum().to_dict() if not df_logs.empty else {}
 
         for index, row in df_plan.iterrows():
             job_id = str(row['job_no']).strip().upper()
             actual_hrs = hrs_sum.get(job_id, 0)
             
-            # Timestamp handling for aging
             try:
                 updated_at = pd.to_datetime(row.get('updated_at'))
                 if updated_at.tzinfo is None:
@@ -77,7 +78,7 @@ with tab_plan:
 
             days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
             manual_limit = row.get('manual_days_limit', 7) 
-            current_gate = row['drawing_status']
+            current_gate = row.get('drawing_status', universal_stages[0])
             
             prog_idx = universal_stages.index(current_gate) if current_gate in universal_stages else 0
             future_gates_count = len(universal_stages) - (prog_idx + 1)
@@ -102,9 +103,8 @@ with tab_plan:
                           delta=f"Limit: {manual_limit}d" if is_slow else "OK", delta_color="inverse" if is_slow else "normal")
                 c4.metric("Est. Completion", est_completion_date, delta=f"{total_days_offset}d Lead")
 
-               st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
+                st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
-                # --- PURCHASE INTEGRATION ---
                 st.markdown("---")
                 p_col1, p_col2 = st.columns([1, 1])
                 
@@ -131,50 +131,35 @@ with tab_plan:
                                     <b>{p_item['item_name']}</b>: {p_item['status']}<br>
                                     <small>Reply: {p_item.get('purchase_reply', 'Awaiting Action')}</small></div>""", unsafe_allow_html=True)
 
-                # --- MOVE GATE / STATUS UPDATE BUTTON ---
-                # This button must stay inside the loop but outside the column blocks
-                st.write("") # Spacer
+                st.write("") 
                 if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     try:
-                        # Prepare the update data
                         update_data = {
                             "drawing_status": new_gate,
                             "material_shortage": new_short,
                             "updated_at": datetime.now(IST).isoformat()
                         }
-                        
-                        # Only add these if they exist in your dataframe
                         if 'manual_days_limit' in df_plan.columns:
                             update_data["manual_days_limit"] = new_limit
                         if 'shortage_details' in df_plan.columns:
                             update_data["shortage_details"] = new_rem
 
-                        # Execute the update
                         conn.table("anchor_projects").update(update_data).eq("id", row['id']).execute()
-                        
                         st.cache_data.clear()
-                        st.toast("✅ Database Updated!")
+                        st.success("✅ Database Updated!")
                         st.rerun()
-                        
                     except Exception as e:
-                        st.error(f"Update Failed. Error: {e}")
+                        st.error(f"Update Failed: {e}")
 
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
-    
     unit_map = {
-        "Welding": "MTs",
-        "Buffing": "Sq.Ft",
-        "Painting": "Sq.Ft",
-        "Cutting": "Nos",
-        "Fitting": "Nos",
-        "Grinding": "Nos",
-        "Assembly": "Nos",
-        "Others": "Nos"
+        "Welding": "MTs", "Buffing": "Sq.Ft", "Painting": "Sq.Ft",
+        "Cutting": "Nos", "Fitting": "Nos", "Grinding": "Nos",
+        "Assembly": "Nos", "Others": "Nos"
     }
 
-    # Activity selector outside the form for dynamic unit labeling
     f_act = st.selectbox("Select Activity first", all_activities, key="act_main")
     current_unit = unit_map.get(f_act, "Nos")
 
@@ -183,35 +168,25 @@ with tab_entry:
         f_sup = f1.selectbox("Supervisor", base_supervisors)
         f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
         f_job = f2.selectbox("Job Code", ["-- Select --"] + all_jobs)
-        
         f2.info(f"Unit: {current_unit}")
-        
         f_hrs = f3.number_input("Hours Spent", min_value=0.0, step=0.5)
         f_out = f3.number_input(f"Output ({current_unit})", min_value=0.0)
         f_nts = st.text_area("Task Details")
 
         if st.form_submit_button("🚀 Log Productivity", use_container_width=True):
-            # 1. Validation Logic
             if f_act == "Others" and not f_nts.strip():
-                st.error("⚠️ Please provide details in 'Task Details' when selecting 'Others'.")
+                st.error("⚠️ Please provide details in 'Task Details' for 'Others'.")
             elif "-- Select --" in [f_wrk, f_job]:
-                st.error("❌ Please select both a valid Worker and Job Code.")
+                st.error("❌ Please select Worker and Job Code.")
             else:
-                # 2. Database Insertion
                 try:
                     conn.table("production").insert({
-                        "Supervisor": f_sup, 
-                        "Worker": f_wrk, 
-                        "Job_Code": f_job,
-                        "Activity": f_act, 
-                        "Hours": f_hrs, 
-                        "Output": f_out, 
-                        "Notes": f_nts,
-                        "Unit": current_unit 
+                        "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
+                        "Activity": f_act, "Hours": f_hrs, "Output": f_out, 
+                        "Notes": f_nts, "Unit": current_unit 
                     }).execute()
-                    
                     st.cache_data.clear()
-                    st.success(f"✅ Logged {f_out} {current_unit} for {f_act}")
+                    st.success(f"✅ Logged {f_out} {current_unit}")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Database Error: {e}")
@@ -220,27 +195,19 @@ with tab_entry:
 with tab_analytics:
     if not df_logs.empty and 'created_at' in df_logs.columns:
         st.subheader("📅 Today's Shift Report")
+        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], errors='coerce').dropna()
         
-        # Safe conversion: only runs if data exists
-        df_logs['created_at'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
-        
-        # Remove any rows where date conversion failed
-        df_logs = df_logs.dropna(subset=['created_at'])
-        
-        # Localize to IST
         if df_logs['created_at'].dt.tz is None:
             df_logs['created_at'] = df_logs['created_at'].dt.tz_localize('UTC')
         df_logs['created_at'] = df_logs['created_at'].dt.tz_convert(IST)
         
         today_logs = df_logs[df_logs['created_at'].dt.date == datetime.now(IST).date()]
-        
         if not today_logs.empty:
-            st.dataframe(today_logs[['created_at', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Notes']], 
-                         hide_index=True, use_container_width=True)
+            st.dataframe(today_logs[['created_at', 'Worker', 'Job_Code', 'Activity', 'Hours', 'Notes']], hide_index=True)
         else:
-            st.info("No logs recorded for today yet.")
+            st.info("No entries for today.")
     else:
-        st.warning("No production logs found in the database.")
+        st.warning("No logs found.")
 
 # --- TAB 4: MANAGE MASTERS ---
 with tab_masters:
@@ -252,5 +219,6 @@ with tab_masters:
             conn.table("production").insert({"Worker": new_w, "Notes": "SYSTEM_NEW_ITEM", "Hours": 0, "Activity": "N/A", "Job_Code": "N/A"}).execute()
             st.cache_data.clear(); st.rerun()
     with m2:
-        st.write("Production Gates:")
-        st.dataframe(df_gates[['step_order', 'gate_name']], hide_index=True)
+        if not df_gates.empty:
+            st.write("Production Gates:")
+            st.dataframe(df_gates[['step_order', 'gate_name']], hide_index=True)
