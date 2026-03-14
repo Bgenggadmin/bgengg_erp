@@ -99,9 +99,6 @@ with tabs[1]:
     if not df_display.empty:
         for index, row in df_display.iterrows():
             with st.expander(f"💼 {row['client_name']} | Job: {row['job_no'] or 'N/A'}"):
-                # ADDED: Project Description display
-                st.info(f"📝 **Description:** {row['project_description']}")
-                
                 c1, c2, c3 = st.columns(3)
                 u_val = c1.number_input("Value (₹)", value=float(row['estimated_value'] or 0), key=f"val_{row['id']}")
                 u_qref = c2.text_input("Quote Ref.", value=row['quote_ref'] or "", key=f"qref_{row['id']}")
@@ -117,6 +114,7 @@ with tabs[1]:
                 u_job = pc1.text_input("Job No.", value=row['job_no'] or "", key=f"pjob_{row['id']}")
                 u_trig = pc1.checkbox("Trigger Purchase?", value=row['purchase_trigger'], key=f"ptrig_{row['id']}")
                 
+                # Normalize Job No for matching
                 clean_job = str(u_job).strip().upper()
 
                 with st.container(border=True):
@@ -124,13 +122,9 @@ with tabs[1]:
                     ic1, ic2, ic3 = st.columns([2, 1, 1])
                     i_name = ic1.text_input("Material Name", key=f"iname_{row['id']}")
                     i_spec = ic2.text_input("Qty / Specs", key=f"ispec_{row['id']}")
-                    
-                    # ADDED: Logic to ensure items are triggered only if the main checkbox is checked or forcing it
                     if ic3.button("➕ Add Item", key=f"ibtn_{row['id']}", use_container_width=True):
                         if i_name and clean_job:
                             conn.table("purchase_orders").insert({"job_no": clean_job, "item_name": i_name, "specs": i_spec, "status": "Triggered"}).execute()
-                            # Automatically enable the main trigger if an item is added
-                            conn.table("anchor_projects").update({"purchase_trigger": True, "job_no": clean_job}).eq("id", row['id']).execute()
                             st.success(f"Added {i_name}")
                             st.rerun()
                         else: st.error("Job No & Material Name required")
@@ -166,12 +160,14 @@ with tabs[3]:
     if not df_display.empty:
         for index, row in df_display.iterrows():
             if row['job_no']:
+                # Normalize for search
                 curr_job = str(row['job_no']).strip().upper()
                 job_items = df_pur[df_pur['job_no'] == curr_job] if not df_pur.empty else pd.DataFrame()
                 
                 if not job_items.empty:
                     with st.container(border=True):
                         st.markdown(f"#### Job: {curr_job} | {row['client_name']}")
+                        # Custom Table Display
                         for _, item in job_items.iterrows():
                             c1, c2, c3, c4 = st.columns([2, 1, 3, 1])
                             c1.write(f"🔹 {item['item_name']}")
