@@ -111,7 +111,6 @@ def generate_pdf(logs):
         except Exception: 
             pass
 
-    # ENCODING FIX FOR DOWNLOAD BUTTON
     raw_pdf = pdf.output(dest='S')
     return raw_pdf.encode('latin-1') if isinstance(raw_pdf, str) else bytes(raw_pdf)
 
@@ -173,11 +172,15 @@ with tab1:
             elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
             else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
 
+            # --- PRE-FILL FEATURE ---
+            # Fetch status and remarks from last_data (fetched when job was selected)
             prev_status = last_data.get(skey, "Pending")
+            prev_note = last_data.get(nkey, "")
+            
             default_idx = opts.index(prev_status) if prev_status in opts else 0
             
             m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx, key=f"form_{skey}")
-            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""), key=f"form_{nkey}")
+            m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=prev_note, key=f"form_{nkey}")
 
         st.divider()
         st.subheader("📸 Progress Capture")
