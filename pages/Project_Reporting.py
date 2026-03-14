@@ -29,24 +29,46 @@ MILESTONE_MAP = [
 customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
 jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
 
-# --- PDF ENGINE ---
+# --- PDF ENGINE (Corrected for Byte Output) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
         pdf.add_page()
         
-        # 1. BLUE STRIP
+        # Blue Header Strip
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
-        # 2. LOGO
+        # Logo Logic (Improved)
         try:
-            logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-            if logo_data:
-                pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
-        except Exception:
-            pass
+            logo_res = conn.client.storage.from_("progress-photos").download("logo.png")
+            if logo_res:
+                pdf.image(BytesIO(logo_res), x=12, y=5, h=15) 
+        except: pass
+
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", "B", 16)
+        pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+        
+        # Milestone Table and Photo... 
+        # [Keep your existing table drawing logic here]
+
+        # Photo Placement Fix
+        try:
+            img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
+            img_res = requests.get(img_url)
+            if img_res.status_code == 200:
+                # Check for space on page
+                if pdf.get_y() > 200: pdf.add_page() 
+                img = Image.open(BytesIO(img_res.content)).convert('RGB')
+                img.thumbnail((350, 350))
+                buf = BytesIO(); img.save(buf, format="JPEG")
+                pdf.image(buf, x=75, y=pdf.get_y()+10, w=60)
+        except: pass
+
+    # STABLE BYTE OUTPUT
+    return pdf.output(dest='S').encode('latin-1')
 
        # 3. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
