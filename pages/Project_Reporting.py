@@ -6,7 +6,7 @@ import requests
 from io import BytesIO
 from PIL import Image
 
-# 1. SETUP (set_page_config removed for sub-page compatibility)
+# 1. SETUP
 st.header("📋 B&G Hub 2.0 - Project Reporting")
 conn = st.connection("supabase", type=SupabaseConnection)
 
@@ -25,52 +25,38 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- DATA FETCHING ---
-customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
-jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
+# --- DATA FETCHING (Improved with safety checks) ---
+try:
+    cust_data = conn.table("customer_master").select("name").execute().data
+    customers = sorted([d['name'] for d in cust_data]) if cust_data else []
+    
+    job_data = conn.table("job_master").select("job_code").execute().data
+    jobs = sorted([d['job_code'] for d in job_data]) if job_data else []
+except Exception as e:
+    st.error(f"Error fetching masters: {e}")
+    customers, jobs = [], []
 
-# --- PDF ENGINE (Corrected for Byte Output) ---
+# --- PDF ENGINE ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
+    
     for log in logs:
         pdf.add_page()
         
-        # Blue Header Strip
+        # 1. BLUE STRIP
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
-        # Logo Logic (Improved)
+        # 2. LOGO
         try:
-            logo_res = conn.client.storage.from_("progress-photos").download("logo.png")
-            if logo_res:
-                pdf.image(BytesIO(logo_res), x=12, y=5, h=15) 
-        except: pass
+            logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
+            if logo_data:
+                pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
+        except:
+            pass
 
-        pdf.set_text_color(255, 255, 255)
-        pdf.set_font("Arial", "B", 16)
-        pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-        
-        # Milestone Table and Photo... 
-        # [Keep your existing table drawing logic here]
-
-        # Photo Placement Fix
-        try:
-            img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
-            img_res = requests.get(img_url)
-            if img_res.status_code == 200:
-                # Check for space on page
-                if pdf.get_y() > 200: pdf.add_page() 
-                img = Image.open(BytesIO(img_res.content)).convert('RGB')
-                img.thumbnail((350, 350))
-                buf = BytesIO(); img.save(buf, format="JPEG")
-                pdf.image(buf, x=75, y=pdf.get_y()+10, w=60)
-        except: pass
-
-    # STABLE BYTE OUTPUT
-    return pdf.output(dest='S').encode('latin-1')
-
-       # 3. HEADER TEXT
+        # 3. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5) 
@@ -82,13 +68,13 @@ def generate_pdf(logs):
         
         pdf.set_text_color(0, 0, 0)
 
-        # --- Job Header ---
+        # Job Header
         pdf.set_font("Arial", "B", 10)
         pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
         pdf.ln(2)
         
-        # --- Field Grid ---
+        # Field Grid
         pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
@@ -100,7 +86,7 @@ def generate_pdf(logs):
 
         pdf.ln(5)
 
-        # --- Milestone Table ---
+        # Milestone Table
         pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True)
@@ -121,19 +107,22 @@ def generate_pdf(logs):
             pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
             pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # --- Progress Photo ---
+        # Progress Photo
         try:
-            img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
-            img_res = requests.get(img_url)
+            photo_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
+            img_res = requests.get(photo_url)
             if img_res.status_code == 200:
                 img = Image.open(BytesIO(img_res.content)).convert('RGB')
                 img.thumbnail((350, 350))
                 buf = BytesIO(); img.save(buf, format="JPEG")
+                # Add a page break if the image doesn't fit
+                if pdf.get_y() > 220: pdf.add_page()
                 pdf.image(buf, x=75, y=pdf.get_y()+10, w=60)
-        except Exception: 
+        except:
             pass
 
-    return bytes(pdf.output())
+    # STABLE PDF RETURN (FIXES THE TYPEERROR)
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -147,7 +136,7 @@ with tab1:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res.data:
             last_data = res.data[0]
-            st.toast(f"Autofilled from Job: {f_job}", icon="🔄")
+            st.toast(f"Autofilled from Job: {f_job}")
 
     with st.form("main_entry_form", clear_on_submit=True):
         st.subheader("📋 Project Details")
@@ -183,16 +172,9 @@ with tab1:
             col_stat, col_note = st.columns([1, 2])
             
             opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
-            if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
-            elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
-            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
-            elif label == "Sub-deliveries": opts = ["Pending", "In-Progress", "NA", "Completed"]
-            elif label == "Fabrication Status": opts = ["Planning", "In-Progress", "Hold", "Completed"]
-            elif label == "Buffing Status": opts = ["Planning", "In-Progress", "Completed"]
-            elif label == "Testing Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-            elif label == "Dispatch Status": opts = ["Pending", "Scheduled", "In-Progress", "Completed"]
-            elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-
+            if "Drawing" in label: opts = ["Pending", "NA", "In-Progress", "Submitted", "Approved"]
+            elif "RM" in label: opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
+            
             prev_status = last_data.get(skey, "Pending")
             default_idx = opts.index(prev_status) if prev_status in opts else 0
             
@@ -227,8 +209,8 @@ with tab2:
     st.subheader("📂 Report Archive")
     filter_c1, filter_c2, filter_c3 = st.columns(3)
     cust_list = ["All Customers"] + customers
-    selected_cust = filter_c1.selectbox("🔍 Filter by Customer", cust_list, key="arch_cust_sel")
-    report_type = filter_c2.selectbox("📅 Report Duration", ["All Time", "Current Week", "Current Month", "Custom Range"], key="arch_dur_sel")
+    selected_cust = filter_c1.selectbox("🔍 Filter by Customer", cust_list)
+    report_type = filter_c2.selectbox("📅 Duration", ["All Time", "Current Week", "Current Month", "Custom Range"])
     
     start_date, end_date = None, None
     if report_type == "Custom Range":
@@ -253,65 +235,36 @@ with tab2:
                 if not raw_date: continue
                 log_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
                 if report_type == "Current Week":
-                    if log_date.isocalendar()[1] == today.isocalendar()[1] and log_date.year == today.year: filtered_data.append(log)
+                    if log_date.isocalendar()[1] == today.isocalendar()[1]: filtered_data.append(log)
                 elif report_type == "Current Month":
-                    if log_date.month == today.month and log_date.year == today.year: filtered_data.append(log)
+                    if log_date.month == today.month: filtered_data.append(log)
                 elif report_type == "Custom Range" and start_date and end_date:
                     if start_date <= log_date <= end_date: filtered_data.append(log)
-                elif report_type == "All Time": filtered_data.append(log)
+                else: filtered_data.append(log)
             except: continue
         
         if filtered_data:
-            st.download_button(label="📥 Download Filtered PDF Report", data=generate_pdf(filtered_data), file_name=f"BG_Report.pdf", mime="application/pdf", use_container_width=True)
+            pdf_bytes = generate_pdf(filtered_data)
+            st.download_button(label="📥 Download PDF Report", data=pdf_bytes, file_name="BG_Report.pdf", mime="application/pdf", use_container_width=True)
             
             for log in filtered_data:
                 with st.expander(f"📦 Job: {log.get('job_code','N/A')} | {log.get('customer','Unknown')}"):
-                    st.write(f"### Status Details for Job {log.get('job_code')}")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Engineer", log.get('engineer', 'N/A'))
-                    col2.metric("PO No", log.get('po_no', 'N/A'))
-                    col3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
-
-                    st.markdown("---")
-                    for label, skey, nkey in MILESTONE_MAP:
-                        c_stat, c_rem = st.columns([1, 2])
-                        c_stat.write(f"**{label}:** {log.get(skey, 'Pending')}")
-                        c_rem.write(f"_{log.get(nkey, '-')}_")
-
-                    st.markdown("---")
-                    st.markdown("### 📸 Progress Photo")
-                    
-                    try:
-                        photo_name = f"{log.get('id')}.jpg"
-                        photo_url = conn.client.storage.from_("progress-photos").get_public_url(photo_name)
-                        check = requests.head(photo_url, timeout=2)
-                        
-                        if check.status_code == 200:
-                            _, center_col, _ = st.columns([1, 1, 1])
-                            with center_col:
-                                st.image(photo_url, caption=f"Job: {log.get('job_code')}", width=160)
-                        else:
-                            st.info("💡 No photo uploaded for this entry.")
-                    except Exception:
-                        st.info("⚠️ Photo could not be loaded.")
-        else:
-            st.warning("No records found for the selected date range.")
+                    st.json(log) # Simplified view for troubleshooting
 
 with tab3:
     st.header("🛠️ Master Data Management")
     col_cust, col_job = st.columns(2)
     with col_cust:
         st.subheader("👥 Customers")
-        new_cust = st.text_input("New Customer Name", key="add_cust_input_master")
-        if st.button("➕ Add Customer", key="add_cust_btn_master"):
+        new_cust = st.text_input("New Customer Name")
+        if st.button("➕ Add Customer"):
             if new_cust:
                 conn.table("customer_master").insert({"name": new_cust}).execute()
                 st.rerun()
     with col_job:
         st.subheader("🔢 Job Codes")
-        new_job = st.text_input("New Job Code", key="add_job_input_master")
-        if st.button("➕ Add Job Code", key="add_job_btn_master"):
+        new_job = st.text_input("New Job Code")
+        if st.button("➕ Add Job Code"):
             if new_job:
                 conn.table("job_master").insert({"job_code": new_job}).execute()
                 st.rerun()
