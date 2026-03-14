@@ -23,7 +23,29 @@ def get_master_data():
     
     pur_cols = "job_no, item_name, status, purchase_reply, updated_at"
     pur_res = conn.table("purchase_orders").select(pur_cols).order("updated_at", desc=True).execute()
+    # --- 2. DATA LOADERS (Safer Version) ---
+@st.cache_data(ttl=600) 
+def get_master_data():
+    # I removed 'shortage_details' and 'manual_days_limit' temporarily 
+    # to see which one is causing the "API Error"
+    plan_cols = "id, job_no, client_name, project_description, drawing_status, updated_at, purchase_trigger"
+    plan_res = conn.table("anchor_projects").select(plan_cols).eq("status", "Won").order("id").execute()
     
+    # Standard columns for production
+    prod_cols = "id, created_at, Job_Code, Hours, Worker, Activity, Notes"
+    prod_res = conn.table("production").select(prod_cols).order("created_at", desc=True).execute()
+    
+    # Standard columns for purchase
+    pur_cols = "job_no, item_name, status, purchase_reply"
+    pur_res = conn.table("purchase_orders").select(pur_cols).order("updated_at", desc=True).execute()
+    
+    # Standard columns for gates
+    gate_res = conn.table("production_gates").select("gate_name, step_order").order("step_order").execute()
+    
+    return (pd.DataFrame(plan_res.data or []), 
+            pd.DataFrame(prod_res.data or []), 
+            pd.DataFrame(pur_res.data or []),
+            pd.DataFrame(gate_res.data or []))
     gate_res = conn.table("production_gates").select("gate_name, step_order").order("step_order").execute()
     
     return (pd.DataFrame(plan_res.data or []), 
