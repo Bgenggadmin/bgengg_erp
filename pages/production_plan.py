@@ -103,7 +103,7 @@ with tab_plan:
                 st.progress((prog_idx + 1) / len(universal_stages) if universal_stages else 0)
 
                 st.markdown("---")
-                p_col1, p_col2 = st.columns([1, 1])
+                p_col1, p_col2 = st.columns([1, 2]) # Adjusted ratio for horizontal table space
                 
                 with p_col1:
                     with st.expander("🛒 New Material Request"):
@@ -118,29 +118,23 @@ with tab_plan:
                                 st.toast("Request Sent!")
                                 st.rerun()
                 
-              with p_col2:
+                with p_col2:
                     st.markdown("**📋 Queries Pending (Job + Anchors)**")
-                    
                     if not df_pur.empty:
-                        # 1. Standardize IDs (e.g., "1500")
                         current_id = str(job_id).strip().upper().replace(".0", "")
                         
-                        # 2. COMBINED FILTER: Show THIS job OR 'ANCHORS'
+                        # Show current Job items + ANCHORS items
                         combined_queries = df_pur[
                             (df_pur['job_no'].astype(str).str.strip().str.upper().replace(".0", "").isin([current_id, "ANCHORS"])) & 
                             (df_pur['status'] != "Received")
                         ].copy()
                         
                         if not combined_queries.empty:
-                            # 3. Label the source so Production knows what is what
                             combined_queries['Source'] = combined_queries['job_no'].apply(
                                 lambda x: "⚓ ANCHOR" if str(x).strip().upper() == "ANCHORS" else f"🏗️ {current_id}"
                             )
-                            
-                            # Clean up empty replies
                             combined_queries['purchase_reply'] = combined_queries['purchase_reply'].fillna("⏳ Awaiting Update")
                             
-                            # 4. Compact Horizontal Table
                             st.dataframe(
                                 combined_queries[['Source', 'item_name', 'status', 'purchase_reply']],
                                 column_config={
@@ -155,10 +149,8 @@ with tab_plan:
                             )
                         else:
                             st.caption(f"✅ No pending queries for {current_id} or Anchors.")
-                    else:
-                        st.caption("No purchase data available.")
 
-                # --- UPDATE BUTTON (Ensure this is indented to Level 2) ---
+                # Update Master Status Button
                 st.write("") 
                 if st.button("💾 Update Master Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
                     try:
@@ -178,6 +170,7 @@ with tab_plan:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Update Failed: {e}")
+
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
