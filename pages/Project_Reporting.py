@@ -58,7 +58,7 @@ def generate_pdf(logs):
         
         # Subtitle - Pushed to X=70 and moved down to Y=15
         pdf.set_font("Arial", "I", 10)
-        pdf.set_xy(70, 14) # Changed from set_x/set_y to set_xy for precision
+        pdf.set_xy(70, 14) 
         pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
         pdf.set_text_color(0, 0, 0)
@@ -114,7 +114,7 @@ def generate_pdf(logs):
         except Exception: 
             pass
 
-    # --- THE SMART RETURN FIX ---
+    # --- BRANDING COMPATIBILITY FIX ---
     raw_pdf = pdf.output()
     if isinstance(raw_pdf, (bytes, bytearray)):
         return bytes(raw_pdf)
@@ -188,7 +188,6 @@ with tab1:
         st.subheader("📸 Progress Capture")
         cam_photo = st.camera_input("Take Progress Photo")
 
-        # --- SUBMIT BUTTON INSIDE THE FORM ---
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job:
                 st.error("Select a Job Code and Customer first!")
@@ -253,38 +252,29 @@ with tab2:
             for log in filtered_data:
                 with st.expander(f"📦 Job: {log.get('job_code','N/A')} | {log.get('customer','Unknown')}"):
                     st.write(f"### Status Details for Job {log.get('job_code')}")
-                    
-                    # Information Grid
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Engineer", log.get('engineer', 'N/A'))
                     col2.metric("PO No", log.get('po_no', 'N/A'))
                     col3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
-
-                    # Milestone Status List
                     st.markdown("---")
                     for label, skey, nkey in MILESTONE_MAP:
                         c_stat, c_rem = st.columns([1, 2])
                         c_stat.write(f"**{label}:** {log.get(skey, 'Pending')}")
                         c_rem.write(f"_{log.get(nkey, '-')}_")
-
-                    # --- PHOTO DISPLAY ---
                     st.markdown("---")
                     st.markdown("### 📸 Progress Photo")
-                    
                     try:
                         photo_name = f"{log.get('id')}.jpg"
                         photo_url = conn.client.storage.from_("progress-photos").get_public_url(photo_name)
                         check = requests.head(photo_url, timeout=2)
-                        
                         if check.status_code == 200:
                             _, center_col, _ = st.columns([1, 1, 1])
                             with center_col:
                                 st.image(photo_url, caption=f"Job: {log.get('job_code')}", width=160)
                         else:
                             st.info("💡 No photo uploaded for this entry.")
-                    except Exception as e:
-                        st.info("⚠️ Photo could not be loaded (Connection issue).")
-
+                    except:
+                        st.info("⚠️ Photo could not be loaded.")
         else:
             st.warning("No records found for the selected date range.")
 
