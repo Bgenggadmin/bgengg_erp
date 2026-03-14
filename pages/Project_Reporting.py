@@ -40,12 +40,15 @@ def generate_pdf(logs):
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
-        # 2. LOGO
+       # 2. LOGO (Corrected for New Code)
         try:
             logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
             if logo_data:
-                pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
-        except Exception:
+                logo_stream = BytesIO(logo_data)
+                logo_stream.seek(0)  # <--- THIS IS THE MISSING PIECE
+                pdf.image(logo_stream, x=12, y=5, h=15) 
+        except Exception as e:
+            # Temporary: remove 'pass' and add print(e) if it still fails to see the error
             pass
 
         # 3. HEADER TEXT
