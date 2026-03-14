@@ -1,5 +1,5 @@
 streamlit
 st-supabase-connection
-fpdf2==2.7.4
+fpdf
 requests
 Pillow
