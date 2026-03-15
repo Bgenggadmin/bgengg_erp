@@ -21,7 +21,7 @@ st.markdown("""
 conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. DATA LOADERS ---
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=5)
 def get_full_purchase_data():
     proj = conn.table("anchor_projects").select("*").eq("purchase_trigger", True).execute()
     items = conn.table("purchase_orders").select("*").execute()
