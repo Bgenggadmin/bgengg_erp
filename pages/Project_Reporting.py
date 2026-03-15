@@ -5,11 +5,13 @@ from fpdf import FPDF
 import requests
 from io import BytesIO
 from PIL import Image
+import tempfile
+import os
 
 # 1. SETUP
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 
-# Set TTL globally to keep data fresh but avoid "unexpected keyword" errors in .execute()
+# Set TTL globally to keep data fresh
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. THE MASTER MAPPING
@@ -27,7 +29,7 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- DATA FETCHING (Cached for Speed) ---
+# --- DATA FETCHING ---
 @st.cache_data(ttl=600)
 def get_master_data():
     try:
@@ -43,18 +45,19 @@ def get_master_data():
 
 customers, jobs = get_master_data()
 
-# --- PDF ENGINE (Memory Optimized & Crash Proof) ---
+# --- PDF ENGINE ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # Pre-fetch logo once to save bandwidth
-    logo_bytes = None
+    # Handle Logo via Temp File to bypass FPDF AttributeError
+    logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
         if logo_data:
-            logo_bytes = BytesIO(logo_data)
-            logo_bytes.seek(0) # Reset pointer for first use
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
+                tmp_logo.write(logo_data)
+                logo_path = tmp_logo.name
     except:
         pass
 
@@ -65,10 +68,8 @@ def generate_pdf(logs):
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
-        if logo_bytes:
-            logo_bytes.seek(0) # Reset pointer every page
-            # We pass a name string 'logo.png' so the library identifies the type
-            pdf.image(logo_bytes, x=12, y=5, h=15, type="PNG")
+        if logo_path:
+            pdf.image(logo_path, x=12, y=5, h=15)
 
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", "B", 16)
@@ -92,7 +93,6 @@ def generate_pdf(logs):
         for i in range(0, len(HEADER_FIELDS), 2):
             f1 = HEADER_FIELDS[i]
             f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
-            
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
             if f2:
@@ -124,22 +124,25 @@ def generate_pdf(logs):
             pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
             pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # 5. Progress Photo (Compressed and Pointer Reset)
+        # 5. Progress Photo via Temp File
         try:
             img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
             img_res = requests.get(img_url, timeout=5)
             if img_res.status_code == 200:
                 img = Image.open(BytesIO(img_res.content)).convert('RGB')
-                img.thumbnail((300, 300)) 
+                img.thumbnail((300, 300))
                 
-                buf = BytesIO()
-                img.save(buf, format="JPEG", quality=70)
-                buf.seek(0) # CRITICAL: Reset pointer so FPDF can read from the start
-                pdf.image(buf, x=75, y=pdf.get_y()+10, w=60, type="JPG")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+                    img.save(tmp_img.name, format="JPEG", quality=75)
+                    pdf.image(tmp_img.name, x=75, y=pdf.get_y()+10, w=60)
+                    tmp_img_name = tmp_img.name
+                os.unlink(tmp_img_name) # Clean up photo temp file
         except: 
             pass
 
-    # Use 'latin-1' encoding to ensure binary data doesn't cause a blank screen on download
+    if logo_path:
+        os.unlink(logo_path) # Clean up logo temp file
+        
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- APP TABS ---
@@ -220,7 +223,7 @@ with tab1:
                         file_path = f"{res.data[0]['id']}.jpg"
                         conn.client.storage.from_("progress-photos").upload(file_path, cam_photo.getvalue())
                     st.success("✅ Update Saved!")
-                    st.cache_data.clear() # Refresh masters if needed
+                    st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -264,7 +267,7 @@ with tab2:
             except: continue
         
         if filtered_data:
-            with st.spinner("🛠️ Generating Report (High Quality)..."):
+            with st.spinner("🛠️ Generating Report..."):
                 pdf_data = generate_pdf(filtered_data)
                 st.download_button(label="📥 Download Filtered PDF Report", data=pdf_data, file_name=f"BG_Report.pdf", mime="application/pdf", use_container_width=True)
             
@@ -273,7 +276,6 @@ with tab2:
                     p_val = int(log.get('overall_progress') or 0)
                     st.write(f"**Overall Progress: {p_val}%**")
                     st.progress(p_val / 100)
-                    # ... (Status Details and Photo UI code remains exactly as yours) ...
                     st.write(f"### Status Details for Job {log.get('job_code')}")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Engineer", log.get('engineer', 'N/A'))
@@ -299,12 +301,12 @@ with tab3:
         if st.button("➕ Add Customer"):
             if new_cust:
                 conn.table("customer_master").insert({"name": new_cust}).execute()
-                st.cache_data.clear() # IMMEDIATELY refreshes the dropdowns
+                st.cache_data.clear()
                 st.rerun()
     with col_job:
         new_job = st.text_input("New Job Code", key="add_job_master")
         if st.button("➕ Add Job Code"):
             if new_job:
                 conn.table("job_master").insert({"job_code": new_job}).execute()
-                st.cache_data.clear() # IMMEDIATELY refreshes the dropdowns
+                st.cache_data.clear()
                 st.rerun()
