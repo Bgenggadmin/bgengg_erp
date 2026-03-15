@@ -8,8 +8,10 @@ from PIL import Image
 
 # 1. SETUP
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
-# Pro Tip: Global TTL of 2 minutes to keep app snappy
-conn = st.connection("supabase", type=SupabaseConnection, ttl="2m")
+
+# FIX: Set TTL here at the connection level instead of inside .execute()
+# This applies a 1-minute refresh globally to keep productivity high.
+conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. THE MASTER MAPPING
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
@@ -26,22 +28,20 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- DATA FETCHING (Optimized & Crash-Proof) ---
+# --- DATA FETCHING (Fixed for unexpected argument error) ---
 try:
-    cust_res = conn.table("customer_master").select("name").execute(ttl="1h")
-    # Only try to sort if data exists, otherwise use an empty list
-    customers = sorted([d['name'] for d in cust_res.data]) if cust_res and cust_res.data else []
+    c_res = conn.table("customer_master").select("name").execute()
+    customers = sorted([d['name'] for d in c_res.data]) if c_res and c_res.data else []
 except Exception as e:
+    st.error(f"Customer Sync Error: {e}")
     customers = []
-    st.sidebar.error(f"Customer Master Sync Error: {e}")
 
 try:
-    jobs_res = conn.table("job_master").select("job_code").execute(ttl="1h")
-    # Only try to sort if data exists, otherwise use an empty list
-    jobs = sorted([d['job_code'] for d in jobs_res.data]) if jobs_res and jobs_res.data else []
+    j_res = conn.table("job_master").select("job_code").execute()
+    jobs = sorted([d['job_code'] for d in j_res.data]) if j_res and j_res.data else []
 except Exception as e:
+    st.error(f"Job Sync Error: {e}")
     jobs = []
-    st.sidebar.error(f"Job Master Sync Error: {e}")
 
 # --- PDF ENGINE ---
 def generate_pdf(logs):
@@ -84,11 +84,16 @@ def generate_pdf(logs):
         pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
-            f1, f2 = HEADER_FIELDS[i], HEADER_FIELDS[i+1]
+            f1 = HEADER_FIELDS[i]
+            f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
+            
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
-            pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
-            pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
+            if f2:
+                pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
+                pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
+            else:
+                pdf.ln(7)
 
         pdf.ln(5)
 
@@ -136,9 +141,8 @@ with tab1:
 
     last_data = {}
     if f_job:
-        # Low TTL for job lookup to ensure productivity
-        res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute(ttl=10)
-        if res.data:
+        res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
+        if res and res.data:
             last_data = res.data[0]
             st.toast(f"Autofilled from Job: {f_job}", icon="🔄")
 
@@ -192,10 +196,9 @@ with tab1:
             m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx, key=f"{f_job}_{skey}")
             m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""), key=f"{f_job}_{nkey}")
 
-        # --- NEW: OVERALL PROGRESS (PRO FEATURE) ---
         st.divider()
         st.subheader("📈 Overall Progress")
-        f_progress = st.slider("Completion Percentage", 0, 100, value=int(last_data.get('overall_progress') or 0), step=5)
+        f_progress = st.slider("Completion %", 0, 100, value=int(last_data.get('overall_progress') or 0))
 
         st.divider()
         st.subheader("📸 Progress Capture")
@@ -214,7 +217,7 @@ with tab1:
                         **m_responses
                     }
                     res = conn.table("progress_logs").insert(entry_payload).execute()
-                    if cam_photo and res.data:
+                    if cam_photo and res and res.data:
                         file_path = f"{res.data[0]['id']}.jpg"
                         conn.client.storage.from_("progress-photos").upload(file_path, cam_photo.getvalue())
                     st.success("✅ Update Saved Successfully!")
@@ -235,8 +238,12 @@ with tab2:
         if isinstance(c_date, list) and len(c_date) == 2:
             start_date, end_date = c_date
 
-    # Use TTL=60 for Pro Tier Archive speed
-    res = conn.table("progress_logs").select("*").order("id", desc=True).execute(ttl=60)
+    # FIX: Removed ttl=60 from here because it's set in the conn setup
+    query = conn.table("progress_logs").select("*").order("id", desc=True)
+    if selected_cust != "All Customers":
+        query = query.eq("customer", selected_cust)
+    
+    res = query.execute()
     data = res.data if res else []
 
     filtered_data = []
@@ -262,18 +269,16 @@ with tab2:
             
             for log in filtered_data:
                 with st.expander(f"📦 Job: {log.get('job_code','N/A')} | {log.get('customer','Unknown')}"):
-                    # --- PROGRESS BAR IN ARCHIVE ---
-                    p_raw = log.get('overall_progress')
-                    p_clean = int(p_raw) if p_raw is not None else 0
-                    st.write(f"**Overall Progress: {p_clean}%**")
-                    st.progress(p_clean / 100)
+                    # PRO FIX: Safety check for progress
+                    p_val = int(log.get('overall_progress') or 0)
+                    st.write(f"**Overall Progress: {p_val}%**")
+                    st.progress(p_val / 100)
 
                     st.write(f"### Status Details for Job {log.get('job_code')}")
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Engineer", log.get('engineer', 'N/A'))
                     col2.metric("PO No", log.get('po_no', 'N/A'))
                     col3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
-                    
                     st.markdown("---")
                     for label, skey, nkey in MILESTONE_MAP:
                         c_stat, c_rem = st.columns([1, 2])
@@ -295,7 +300,7 @@ with tab2:
                     except:
                         st.info("⚠️ Photo unavailable.")
         else:
-            st.warning("No records found for the selected filters.")
+            st.warning("No records found.")
 
 with tab3:
     st.header("🛠️ Master Data Management")
