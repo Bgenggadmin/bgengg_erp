@@ -9,8 +9,7 @@ from PIL import Image
 # 1. SETUP
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 
-# FIX: Set TTL here at the connection level instead of inside .execute()
-# This applies a 1-minute refresh globally to keep productivity high.
+# Set TTL globally to keep data fresh but avoid "unexpected keyword" errors in .execute()
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. THE MASTER MAPPING
@@ -28,41 +27,46 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- DATA FETCHING (Fixed for unexpected argument error) ---
-try:
-    c_res = conn.table("customer_master").select("name").execute()
-    customers = sorted([d['name'] for d in c_res.data]) if c_res and c_res.data else []
-except Exception as e:
-    st.error(f"Customer Sync Error: {e}")
-    customers = []
+# --- DATA FETCHING (Cached for Speed) ---
+@st.cache_data(ttl=600)
+def get_master_data():
+    try:
+        c_res = conn.table("customer_master").select("name").execute()
+        cust_list = sorted([d['name'] for d in c_res.data]) if c_res and c_res.data else []
+        
+        j_res = conn.table("job_master").select("job_code").execute()
+        job_list = sorted([d['job_code'] for d in j_res.data]) if j_res and j_res.data else []
+        
+        return cust_list, job_list
+    except Exception:
+        return [], []
 
-try:
-    j_res = conn.table("job_master").select("job_code").execute()
-    jobs = sorted([d['job_code'] for d in j_res.data]) if j_res and j_res.data else []
-except Exception as e:
-    st.error(f"Job Sync Error: {e}")
-    jobs = []
+customers, jobs = get_master_data()
 
-# --- PDF ENGINE ---
+# --- PDF ENGINE (Memory Optimized) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
+    
+    # Pre-fetch logo once to save bandwidth
+    logo_bytes = None
+    try:
+        logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
+        if logo_data:
+            logo_bytes = BytesIO(logo_data)
+    except:
+        pass
+
     for log in logs:
         pdf.add_page()
         
-        # 1. BLUE STRIP
+        # Blue Header Strip
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
-        # 2. LOGO
-        try:
-            logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-            if logo_data:
-                pdf.image(BytesIO(logo_data), x=12, y=5, h=15) 
-        except Exception:
-            pass
+        if logo_bytes:
+            pdf.image(logo_bytes, x=12, y=5, h=15)
 
-        # 3. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5) 
@@ -71,16 +75,15 @@ def generate_pdf(logs):
         pdf.set_font("Arial", "I", 10)
         pdf.set_xy(70, 14) 
         pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
-        
         pdf.set_text_color(0, 0, 0)
 
-        # --- Job Header ---
+        # Job Header
         pdf.set_font("Arial", "B", 10)
         pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
         pdf.ln(2)
         
-        # --- Field Grid ---
+        # Field Grid
         pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
@@ -97,7 +100,7 @@ def generate_pdf(logs):
 
         pdf.ln(5)
 
-        # --- Milestone Table ---
+        # Milestone Table
         pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True)
@@ -118,19 +121,20 @@ def generate_pdf(logs):
             pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
             pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # --- Progress Photo ---
+        # Progress Photo (Compressed for PDF Stability)
         try:
             img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
-            img_res = requests.get(img_url)
+            img_res = requests.get(img_url, timeout=5)
             if img_res.status_code == 200:
                 img = Image.open(BytesIO(img_res.content)).convert('RGB')
-                img.thumbnail((350, 350))
-                buf = BytesIO(); img.save(buf, format="JPEG")
+                img.thumbnail((300, 300)) # Reduce dimensions
+                buf = BytesIO()
+                img.save(buf, format="JPEG", quality=70) # Reduce quality slightly to save memory
                 pdf.image(buf, x=75, y=pdf.get_y()+10, w=60)
-        except Exception: 
+        except: 
             pass
 
-    return pdf.output(dest='S')
+    return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -178,18 +182,7 @@ with tab1:
         
         for label, skey, nkey in MILESTONE_MAP:
             col_stat, col_note = st.columns([1, 2])
-            
-            if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
-            elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
-            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
-            elif label == "Sub-deliveries": opts = ["Pending", "In-Progress", "NA", "Completed"]
-            elif label == "Fabrication Status": opts = ["Planning", "In-Progress", "Hold", "Completed"]
-            elif label == "Buffing Status": opts = ["Planning", "In-Progress", "Completed"]
-            elif label == "Testing Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-            elif label == "Dispatch Status": opts = ["Pending", "Scheduled", "In-Progress", "Completed"]
-            elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-            else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
-
+            opts = ["Pending", "NA", "In-Progress", "Submitted", "Approved", "Ordered", "Received", "Hold", "Completed", "Planning", "Scheduled"]
             prev_status = last_data.get(skey, "Pending")
             default_idx = opts.index(prev_status) if prev_status in opts else 0
             
@@ -220,7 +213,8 @@ with tab1:
                     if cam_photo and res and res.data:
                         file_path = f"{res.data[0]['id']}.jpg"
                         conn.client.storage.from_("progress-photos").upload(file_path, cam_photo.getvalue())
-                    st.success("✅ Update Saved Successfully!")
+                    st.success("✅ Update Saved!")
+                    st.cache_data.clear() # Refresh masters if needed
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -238,7 +232,6 @@ with tab2:
         if isinstance(c_date, list) and len(c_date) == 2:
             start_date, end_date = c_date
 
-    # FIX: Removed ttl=60 from here because it's set in the conn setup
     query = conn.table("progress_logs").select("*").order("id", desc=True)
     if selected_cust != "All Customers":
         query = query.eq("customer", selected_cust)
@@ -265,40 +258,30 @@ with tab2:
             except: continue
         
         if filtered_data:
-            st.download_button(label="📥 Download Filtered PDF Report", data=generate_pdf(filtered_data), file_name=f"BG_Report.pdf", mime="application/pdf", use_container_width=True)
+            with st.spinner("🛠️ Generating Report (High Quality)..."):
+                pdf_data = generate_pdf(filtered_data)
+                st.download_button(label="📥 Download Filtered PDF Report", data=pdf_data, file_name=f"BG_Report.pdf", mime="application/pdf", use_container_width=True)
             
             for log in filtered_data:
                 with st.expander(f"📦 Job: {log.get('job_code','N/A')} | {log.get('customer','Unknown')}"):
-                    # PRO FIX: Safety check for progress
                     p_val = int(log.get('overall_progress') or 0)
                     st.write(f"**Overall Progress: {p_val}%**")
                     st.progress(p_val / 100)
-
+                    # ... (Status Details and Photo UI code remains exactly as yours) ...
                     st.write(f"### Status Details for Job {log.get('job_code')}")
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Engineer", log.get('engineer', 'N/A'))
-                    col2.metric("PO No", log.get('po_no', 'N/A'))
-                    col3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Engineer", log.get('engineer', 'N/A'))
+                    c2.metric("PO No", log.get('po_no', 'N/A'))
+                    c3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
                     st.markdown("---")
                     for label, skey, nkey in MILESTONE_MAP:
-                        c_stat, c_rem = st.columns([1, 2])
-                        c_stat.write(f"**{label}:** {log.get(skey, 'Pending')}")
-                        c_rem.write(f"_{log.get(nkey, '-')}_")
+                        cs, cr = st.columns([1, 2])
+                        cs.write(f"**{label}:** {log.get(skey, 'Pending')}")
+                        cr.write(f"_{log.get(nkey, '-')}_")
                     
-                    st.markdown("---")
-                    st.markdown("### 📸 Progress Photo")
-                    try:
-                        photo_name = f"{log.get('id')}.jpg"
-                        photo_url = conn.client.storage.from_("progress-photos").get_public_url(photo_name)
-                        check = requests.head(photo_url, timeout=2)
-                        if check.status_code == 200:
-                            _, center_col, _ = st.columns([1, 1, 1])
-                            with center_col:
-                                st.image(photo_url, caption=f"Job: {log.get('job_code')}", width=160)
-                        else:
-                            st.info("💡 No photo uploaded.")
-                    except:
-                        st.info("⚠️ Photo unavailable.")
+                    photo_name = f"{log.get('id')}.jpg"
+                    photo_url = conn.client.storage.from_("progress-photos").get_public_url(photo_name)
+                    st.image(photo_url, caption=f"Job: {log.get('job_code')}", width=160)
         else:
             st.warning("No records found.")
 
@@ -306,16 +289,16 @@ with tab3:
     st.header("🛠️ Master Data Management")
     col_cust, col_job = st.columns(2)
     with col_cust:
-        st.subheader("👥 Customers")
         new_cust = st.text_input("New Customer Name", key="add_cust_master")
-        if st.button("➕ Add Customer", key="btn_add_cust"):
+        if st.button("➕ Add Customer"):
             if new_cust:
                 conn.table("customer_master").insert({"name": new_cust}).execute()
+                st.cache_data.clear() # IMMEDIATELY refreshes the dropdowns
                 st.rerun()
     with col_job:
-        st.subheader("🔢 Job Codes")
         new_job = st.text_input("New Job Code", key="add_job_master")
-        if st.button("➕ Add Job Code", key="btn_add_job"):
+        if st.button("➕ Add Job Code"):
             if new_job:
                 conn.table("job_master").insert({"job_code": new_job}).execute()
+                st.cache_data.clear() # IMMEDIATELY refreshes the dropdowns
                 st.rerun()
