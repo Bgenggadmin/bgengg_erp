@@ -33,7 +33,7 @@ if not check_password():
 # --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
-@st.cache_data(ttl=3600) 
+@st.cache_data(ttl=5) 
 def get_all_data():
     # Only select columns used in the dashboard
     needed_cols = "enquiry_date, quote_date, drawing_submit_date, status, estimated_value, anchor_person, job_no, client_name, purchase_trigger, purchase_status, critical_materials"
