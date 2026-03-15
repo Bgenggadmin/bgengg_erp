@@ -8,7 +8,7 @@ st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_
 # --- 1. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
-@st.cache_data(ttl=300) 
+@st.cache_data(ttl=0) 
 def get_projects():
     res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
