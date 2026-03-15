@@ -26,9 +26,22 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- DATA FETCHING (Optimized TTL) ---
-customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute(ttl="1h").data])
-jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute(ttl="1h").data])
+# --- DATA FETCHING (Optimized & Crash-Proof) ---
+try:
+    cust_res = conn.table("customer_master").select("name").execute(ttl="1h")
+    # Only try to sort if data exists, otherwise use an empty list
+    customers = sorted([d['name'] for d in cust_res.data]) if cust_res and cust_res.data else []
+except Exception as e:
+    customers = []
+    st.sidebar.error(f"Customer Master Sync Error: {e}")
+
+try:
+    jobs_res = conn.table("job_master").select("job_code").execute(ttl="1h")
+    # Only try to sort if data exists, otherwise use an empty list
+    jobs = sorted([d['job_code'] for d in jobs_res.data]) if jobs_res and jobs_res.data else []
+except Exception as e:
+    jobs = []
+    st.sidebar.error(f"Job Master Sync Error: {e}")
 
 # --- PDF ENGINE ---
 def generate_pdf(logs):
