@@ -43,7 +43,7 @@ def get_master_data():
 
 customers, jobs = get_master_data()
 
-# --- PDF ENGINE (Memory Optimized) ---
+# --- PDF ENGINE (Memory Optimized & Crash Proof) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -54,18 +54,20 @@ def generate_pdf(logs):
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
         if logo_data:
             logo_bytes = BytesIO(logo_data)
+            logo_bytes.seek(0) # Reset pointer for first use
     except:
         pass
 
     for log in logs:
         pdf.add_page()
         
-        # Blue Header Strip
+        # 1. Blue Header Strip
         pdf.set_fill_color(0, 51, 102) 
         pdf.rect(0, 0, 210, 25, 'F')
         
         if logo_bytes:
-            # We add 'type="PNG"' so FPDF doesn't try to guess from a filename
+            logo_bytes.seek(0) # Reset pointer every page
+            # We pass a name string 'logo.png' so the library identifies the type
             pdf.image(logo_bytes, x=12, y=5, h=15, type="PNG")
 
         pdf.set_text_color(255, 255, 255)
@@ -78,13 +80,13 @@ def generate_pdf(logs):
         pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         pdf.set_text_color(0, 0, 0)
 
-        # Job Header
+        # 2. Job Header
         pdf.set_font("Arial", "B", 10)
         pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
         pdf.ln(2)
         
-        # Field Grid
+        # 3. Field Grid
         pdf.set_font("Arial", "B", 8)
         pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
@@ -101,7 +103,7 @@ def generate_pdf(logs):
 
         pdf.ln(5)
 
-        # Milestone Table
+        # 4. Milestone Table
         pdf.set_font("Arial", "B", 9)
         pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(60, 8, " Milestone Item", 1, 0, 'L', True)
@@ -122,20 +124,22 @@ def generate_pdf(logs):
             pdf.cell(35, 7, f" {status}", 1, 0, 'C', True)
             pdf.cell(95, 7, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # Progress Photo (Compressed for PDF Stability)
+        # 5. Progress Photo (Compressed and Pointer Reset)
         try:
             img_url = conn.client.storage.from_("progress-photos").get_public_url(f"{log['id']}.jpg")
             img_res = requests.get(img_url, timeout=5)
             if img_res.status_code == 200:
                 img = Image.open(BytesIO(img_res.content)).convert('RGB')
-                img.thumbnail((300, 300)) # Reduce dimensions
+                img.thumbnail((300, 300)) 
+                
                 buf = BytesIO()
-                # Update this line inside the try/except block for progress photos
-                img.save(buf, format="JPEG", quality=70) 
+                img.save(buf, format="JPEG", quality=70)
+                buf.seek(0) # CRITICAL: Reset pointer so FPDF can read from the start
                 pdf.image(buf, x=75, y=pdf.get_y()+10, w=60, type="JPG")
         except: 
             pass
 
+    # Use 'latin-1' encoding to ensure binary data doesn't cause a blank screen on download
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- APP TABS ---
