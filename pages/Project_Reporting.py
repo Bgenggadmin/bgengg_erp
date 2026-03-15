@@ -65,7 +65,8 @@ def generate_pdf(logs):
         pdf.rect(0, 0, 210, 25, 'F')
         
         if logo_bytes:
-            pdf.image(logo_bytes, x=12, y=5, h=15)
+            # We add 'type="PNG"' so FPDF doesn't try to guess from a filename
+            pdf.image(logo_bytes, x=12, y=5, h=15, type="PNG")
 
         pdf.set_text_color(255, 255, 255)
         pdf.set_font("Arial", "B", 16)
@@ -129,8 +130,9 @@ def generate_pdf(logs):
                 img = Image.open(BytesIO(img_res.content)).convert('RGB')
                 img.thumbnail((300, 300)) # Reduce dimensions
                 buf = BytesIO()
-                img.save(buf, format="JPEG", quality=70) # Reduce quality slightly to save memory
-                pdf.image(buf, x=75, y=pdf.get_y()+10, w=60)
+                # Update this line inside the try/except block for progress photos
+                img.save(buf, format="JPEG", quality=70) 
+                pdf.image(buf, x=75, y=pdf.get_y()+10, w=60, type="JPG")
         except: 
             pass
 
