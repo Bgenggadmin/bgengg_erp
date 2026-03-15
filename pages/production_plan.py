@@ -11,7 +11,7 @@ st.set_page_config(page_title="Production Master | B&G", layout="wide", page_ico
 conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. DATA LOADERS ---
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=5)
 def get_master_data():
     try:
         plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
