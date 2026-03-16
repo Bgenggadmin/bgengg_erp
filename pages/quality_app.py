@@ -97,14 +97,37 @@ if not df_plan.empty:
 else:
     st.warning("No active jobs found in the production plan.")
 
-# --- 4. SUMMARY VIEW ---
+# --- 4. SUMMARY VIEW & PHOTO PREVIEW ---
 st.divider()
-st.subheader("📋 Recent Clearances")
+st.subheader("📋 Recent Quality Clearances")
+
 if not df_plan.empty:
+    # Filter for inspected items
     inspected_df = df_plan.dropna(subset=['quality_status']).sort_values(by='quality_updated_at', ascending=False)
+    
     if not inspected_df.empty:
+        # 1. Show the Data Table
         st.dataframe(
             inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']],
             use_container_width=True,
             hide_index=True
         )
+
+        # 2. Photo Previewer
+        st.markdown("### 🖼️ Photo Preview")
+        # Let the user pick which recent record to view the photo for
+        photo_list = inspected_df[inspected_df['quality_photo_url'].notna()]
+        
+        if not photo_list.empty:
+            options = photo_list.apply(lambda x: f"{x['job_no']} - {x['gate_name']}", axis=1).tolist()
+            selection = st.selectbox("Select a record to view its photo:", options)
+            
+            # Find the selected photo URL
+            selected_row = photo_list[photo_list.apply(lambda x: f"{x['job_no']} - {x['gate_name']}", axis=1) == selection].iloc[0]
+            
+            # Display the image
+            st.image(selected_row['quality_photo_url'], caption=f"Evidence for {selection}", use_container_width=True)
+        else:
+            st.info("No photos available for recent clearances.")
+    else:
+        st.write("No inspections recorded yet.")
