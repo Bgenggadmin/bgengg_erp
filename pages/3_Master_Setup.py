@@ -3,7 +3,6 @@ from st_supabase_connection import SupabaseConnection
 from database_utils import fetch_all_master_data
 import pandas as pd
 
-
 st.set_page_config(page_title="Admin Setup", layout="wide")
 st.title("⚙️ Master Data Management")
 
@@ -13,11 +12,12 @@ def refresh_data():
     st.cache_data.clear()
     st.session_state.master_data = fetch_all_master_data(conn)
 
-# --- 1. FETCH FULL DATA ---
-staff_df = pd.DataFrame(conn.table("master_staff").select("*").order("name").execute().data)
-worker_df = pd.DataFrame(conn.table("master_workers").select("*").order("name").execute().data)
-machine_df = pd.DataFrame(conn.table("master_machines").select("*").order("name").execute().data)
-vehicle_df = pd.DataFrame(conn.table("master_vehicles").select("*").order("reg_no").execute().data)
+# --- 1. FETCH FULL DATA (Updated to include Clients) ---
+staff_df = pd.DataFrame(conn.table("master_staff").select("*").order("name").execute().data or [])
+worker_df = pd.DataFrame(conn.table("master_workers").select("*").order("name").execute().data or [])
+machine_df = pd.DataFrame(conn.table("master_machines").select("*").order("name").execute().data or [])
+vehicle_df = pd.DataFrame(conn.table("master_vehicles").select("*").order("reg_no").execute().data or [])
+client_df = pd.DataFrame(conn.table("master_clients").select("*").order("name").execute().data or []) # 👈 NEW
 
 # --- 2. SEARCH & RENDER UTILITY ---
 def render_section(df, table_name, col_name, label, id_col="id"):
@@ -36,7 +36,7 @@ def render_section(df, table_name, col_name, label, id_col="id"):
     
     # Filter DataFrame based on search
     filtered_df = df
-    if search:
+    if search and not df.empty:
         filtered_df = df[df[col_name].str.contains(search, case=False, na=False)]
 
     # Display Table
@@ -51,10 +51,11 @@ def render_section(df, table_name, col_name, label, id_col="id"):
     else:
         st.info("No matching records found.")
 
-# --- 3. UI TABS ---
-t1, t2, t3, t4 = st.tabs(["👔 Staff", "👷 Workers", "🚜 Machines", "🚛 Vehicles"])
+# --- 3. UI TABS (Added 5th Tab for Clients) ---
+t1, t2, t3, t4, t5 = st.tabs(["👔 Staff", "👷 Workers", "🚜 Machines", "🚛 Vehicles", "🏢 Clients"])
 
 with t1: render_section(staff_df, "master_staff", "name", "Staff")
 with t2: render_section(worker_df, "master_workers", "name", "Worker")
 with t3: render_section(machine_df, "master_machines", "name", "Machine")
 with t4: render_section(vehicle_df, "master_vehicles", "reg_no", "Vehicle")
+with t5: render_section(client_df, "master_clients", "name", "Client") # 👈 NEW
