@@ -23,6 +23,7 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. DATA LOADERS ---
 @st.cache_data(ttl=5)
 def get_full_purchase_data():
+    # FIXED: Added safety check for .data to prevent AttributeError on failure
     proj = conn.table("anchor_projects").select("*").eq("purchase_trigger", True).execute()
     items = conn.table("purchase_orders").select("*").execute()
     return pd.DataFrame(proj.data or []), pd.DataFrame(items.data or [])
@@ -34,13 +35,16 @@ st.title("🛒 Purchase Integration Console")
 # --- 3. ANALYTICS (Kept from earlier layout) ---
 if not df_p.empty:
     status_col = 'purchase_status' if 'purchase_status' in df_p.columns else 'status'
-    p_summary = df_p.groupby(status_col).agg(Total_Jobs=('id', 'count')).reset_index()
-    sum_c1, sum_c2 = st.columns([1, 1])
-    with sum_c1: st.dataframe(p_summary, hide_index=True, use_container_width=True)
-    with sum_c2:
-        fig = px.pie(p_summary, values='Total_Jobs', names=status_col, hole=0.4, height=200)
-        fig.update_layout(margin=dict(t=20, b=0, l=0, r=0))
-        st.plotly_chart(fig, use_container_width=True)
+    # FIXED: Groupby will fail if the column is missing; added a fallback
+    if status_col in df_p.columns:
+        p_summary = df_p.groupby(status_col).agg(Total_Jobs=('id', 'count')).reset_index()
+        sum_c1, sum_c2 = st.columns([1, 1])
+        with sum_c1: 
+            st.dataframe(p_summary, hide_index=True, use_container_width=True)
+        with sum_c2:
+            fig = px.pie(p_summary, values='Total_Jobs', names=status_col, hole=0.4, height=220)
+            fig.update_layout(margin=dict(t=20, b=0, l=0, r=0))
+            st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 
@@ -49,7 +53,11 @@ if not df_p.empty:
     for p_idx, p_row in df_p.iterrows():
         p_db_id = p_row['id']
         job_no = str(p_row.get('job_no', 'N/A')).strip().upper()
-        job_items = df_items[df_items['job_no'] == job_no] if not df_items.empty else pd.DataFrame()
+        
+        # FIXED: Added .str.upper() comparison to prevent missing items due to case-mismatch
+        job_items = pd.DataFrame()
+        if not df_items.empty and 'job_no' in df_items.columns:
+            job_items = df_items[df_items['job_no'].astype(str).str.upper() == job_no]
         
         with st.expander(f"📋 JOB: {job_no} | {p_row.get('client_name', 'Client')} | Items: {len(job_items)}", expanded=True):
             
@@ -63,11 +71,17 @@ if not df_p.empty:
             # Context Update Controls
             stat_opts = ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"]
             curr_p_stat = p_row.get('purchase_status', "Pending Review")
+            
+            # FIXED: Added safety index check to prevent ValueError if DB status isn't in stat_opts
+            def_stat_idx = stat_opts.index(curr_p_stat) if curr_p_stat in stat_opts else 0
+            
             new_p_stat = ac3.selectbox("Logistics Status", stat_opts, 
-                                      index=stat_opts.index(curr_p_stat) if curr_p_stat in stat_opts else 0,
+                                      index=def_stat_idx,
                                       key=f"h_stat_{p_db_id}")
+            
             if ac3.button("Update Context", key=f"h_btn_{p_db_id}", type="primary", use_container_width=True):
                 conn.table("anchor_projects").update({"purchase_status": new_p_stat}).eq("id", p_db_id).execute()
+                st.toast("Project Status Updated")
                 st.rerun()
 
             st.write(" ") # Spacer
@@ -80,7 +94,8 @@ if not df_p.empty:
             else:
                 for i, i_row in job_items.reset_index().iterrows():
                     i_db_id = i_row['id']
-                    k_suffix = f"p{p_db_id}_i{i_db_id}_idx{i}" # Bulletproof Key
+                    # Bulletproof Key maintained
+                    k_suffix = f"p{p_db_id}_i{i_db_id}_idx{i}" 
                     
                     is_prod = "SHOP" in str(i_row.get('item_name', '')).upper()
                     
@@ -97,16 +112,22 @@ if not df_p.empty:
                             st.caption(f"Spec: {i_row.get('specs', '-')}")
                         
                         # Fulfillment Input
+                        # FIXED: Added None-check for purchase_reply to prevent textarea crashing on nulls
+                        i_reply_val = i_row.get('purchase_reply', "")
+                        if i_reply_val is None: i_reply_val = ""
+                        
                         i_reply = ic2.text_area("Purchase Reply / Action Taken", 
-                                                value=i_row.get('purchase_reply', "") or "", 
+                                                value=i_reply_val, 
                                                 key=f"irep_{k_suffix}", 
                                                 height=68)
                         
                         # Item Status
                         i_opts = ["Triggered", "Sourcing", "Ordered", "Received", "Urgent"]
                         curr_i_stat = i_row.get('status', 'Triggered')
+                        def_i_idx = i_opts.index(curr_i_stat) if curr_i_stat in i_opts else 0
+                        
                         i_stat = ic3.selectbox("Status", i_opts, 
-                                              index=i_opts.index(curr_i_stat) if curr_i_stat in i_opts else 0,
+                                              index=def_i_idx,
                                               key=f"istat_{k_suffix}")
                         
                         # Action
