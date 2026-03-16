@@ -56,15 +56,42 @@ with tab_plan:
     if target_job != "-- Select --":
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
 
+        # --- 🏁 SECTION 0: CLONE TEMPLATE ---
+        # Useful for repeating sequences for Tanks, Condensers, etc.
+        if current_job_steps.empty:
+            with st.expander("👯 Clone Plan from another Job", expanded=True):
+                st.write("This job has no plan yet. Copy a sequence from a similar job:")
+                source_job = st.selectbox("Select Source Job (Template)", ["-- Select --"] + all_jobs, key="src_job")
+                
+                if st.button("Copy Entire Sequence") and source_job != "-- Select --":
+                    source_steps = df_job_plans[df_job_plans['job_no'] == source_job]
+                    if not source_steps.empty:
+                        new_steps = []
+                        for _, s_row in source_steps.iterrows():
+                            new_steps.append({
+                                "job_no": target_job,
+                                "gate_name": s_row['gate_name'],
+                                "step_order": s_row['step_order'],
+                                "planned_start_date": date.today().isoformat(),
+                                "planned_end_date": (date.today() + timedelta(days=5)).isoformat(),
+                                "current_status": "Pending"
+                            })
+                        conn.table("job_planning").insert(new_steps).execute()
+                        st.cache_data.clear()
+                        st.success(f"Copied {len(new_steps)} steps from {source_job}!")
+                        st.rerun()
+
+        # --- 🏁 SECTION 1: EDD DISPLAY ---
         if not current_job_steps.empty:
             valid_dates = pd.to_datetime(current_job_steps['planned_end_date'], errors='coerce').dropna()
             if not valid_dates.empty:
                 edd = valid_dates.max().date()
                 days_left = (edd - date.today()).days
-                st.info(f"📅 **Projected Completion (EDD): {edd.strftime('%d %b %Y')}** ({days_left} days remaining)")
+                st.info(f"📅 **Projected Completion (EDD): {edd.strftime('%d %b %Y')}** ({days_left} days left)")
 
-        with st.expander("📅 Step 1: Design Schedule (New Gates)", expanded=False):
-            with st.form("add_schedule_form"):
+        # --- 🏁 SECTION 2: ADD SINGLE GATES ---
+        with st.expander("📅 Add Custom Gate (Step-by-Step)", expanded=False):
+            with st.form("add_schedule_form", clear_on_submit=True):
                 c1, c2, c3 = st.columns([2, 2, 1])
                 g_name = c1.selectbox("Gate Name", all_activities)
                 d_range = c2.date_input("Planned Schedule", [date.today(), date.today() + timedelta(days=5)])
@@ -81,8 +108,9 @@ with tab_plan:
                         st.cache_data.clear()
                         st.rerun()
 
+        # --- 🏁 SECTION 3: EDIT / DELETE ---
         if not current_job_steps.empty:
-            with st.expander("📝 Edit or Remove Planned Gates", expanded=False):
+            with st.expander("📝 Edit Sequence", expanded=False):
                 for _, edit_row in current_job_steps.sort_values('step_order').iterrows():
                     e_id = edit_row['id']
                     with st.container(border=True):
@@ -103,20 +131,19 @@ with tab_plan:
                                     }).eq("id", e_id).execute()
                                     st.cache_data.clear()
                                     st.rerun()
-                            if st.button("🗑️ Del", key=f"del_{e_id}", use_container_width=True, type="secondary"):
+                            if st.button("🗑️", key=f"del_{e_id}", use_container_width=True):
                                 conn.table("job_planning").delete().eq("id", e_id).execute()
                                 st.cache_data.clear()
                                 st.rerun()
 
         st.divider()
 
+        # --- 🏁 SECTION 4: EXECUTION ---
         if not current_job_steps.empty:
             st.subheader(f"🏁 Execution Track: {target_job}")
             for index, row in current_job_steps.sort_values('step_order').iterrows():
                 status = row['current_status']
-                p_end_val = row.get('planned_end_date')
-                if pd.isna(p_end_val): continue 
-                p_end = pd.to_datetime(p_end_val).date()
+                p_end = pd.to_datetime(row['planned_end_date']).date() if row['planned_end_date'] else date.today()
                 
                 with st.container(border=True):
                     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
@@ -125,29 +152,20 @@ with tab_plan:
                     if status == "Pending":
                         col2.warning("⏳ Pending")
                         if col4.button("▶️ Start", key=f"start_btn_{row['id']}"):
-                            conn.table("job_planning").update({
-                                "current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()
-                            }).eq("id", row['id']).execute()
+                            conn.table("job_planning").update({"current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
                             st.cache_data.clear()
                             st.rerun()
-                            
                     elif status == "Active":
                         col2.info("🚀 Active")
                         delay = (date.today() - p_end).days if date.today() > p_end else 0
-                        if delay > 0:
-                            col3.metric("Status", "DELAYED", delta=f"{delay}d", delta_color="inverse")
-                        else:
-                            col3.success("On Track")
+                        if delay > 0: col3.metric("Delay", f"{delay}d", delta_color="inverse")
+                        else: col3.success("On Track")
                         if col4.button("✅ Close", key=f"end_btn_{row['id']}"):
-                            conn.table("job_planning").update({
-                                "current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()
-                            }).eq("id", row['id']).execute()
+                            conn.table("job_planning").update({"current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
                             st.cache_data.clear()
                             st.rerun()
-                    
                     elif status == "Completed":
                         col2.success("🏁 Done")
-
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
