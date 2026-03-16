@@ -154,8 +154,36 @@ with tab_plan:
                     elif status == "Completed":
                         col2.success("🏁 Done")
 
-# --- TAB 2: DAILY WORK ENTRY (REMAINS STABLE) ---
-# [Code from previous stable version remains here...]
+# --- TAB 2: DAILY WORK ENTRY ---
+with tab_entry:
+    st.subheader("👷 Labor Output Entry")
+    f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
+    
+    if f_job != "-- Select --":
+        active_gate_query = conn.table("job_planning").select("gate_name").eq("job_no", f_job).eq("current_status", "Active").execute()
+        active_options = [g['gate_name'] for g in active_gate_query.data]
+        
+        if active_options:
+            f_act = st.selectbox("🎯 Current Active Gate", active_options)
+            with st.form("prod_form", clear_on_submit=True):
+                f1, f2, f3 = st.columns(3)
+                f_sup = f1.selectbox("Supervisor", base_supervisors)
+                f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
+                f_hrs = f2.number_input("Hours Spent", min_value=0.0, step=0.5)
+                f_out = f3.number_input("Output Quantity", min_value=0.0)
+                f_nts = st.text_area("Remarks")
+
+                if st.form_submit_button("🚀 Log Productivity"):
+                    conn.table("production").insert({
+                        "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
+                        "Activity": f_act, "Hours": f_hrs, "Output": f_out,
+                        "Notes": f_nts, "created_at": datetime.now(IST).isoformat()
+                    }).execute()
+                    st.cache_data.clear()
+                    st.success("Entry Logged!")
+                    st.rerun()
+        else:
+            st.error("⚠️ Supervisor must 'Start' a gate in the Planning tab.")
 
 # --- TAB 3: ANALYTICS & GANTT ---
 with tab_analytics:
