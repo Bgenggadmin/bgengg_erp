@@ -1,6 +1,12 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
-import pandas as pd
+from database_utils import fetch_all_master_data  # 👈 IMPORT HERE
+
+conn = st.connection("supabase", type=SupabaseConnection)
+
+# Load data into session state so all pages can see it
+if "master_data" not in st.session_state:
+    st.session_state.master_data = fetch_all_master_data(conn)
 
 # --- 1. PAGE CONFIG ---
 st.set_page_config(
