@@ -5,26 +5,38 @@ from datetime import datetime, date, timedelta
 import pytz
 import plotly.express as px
 
-# 1. Access the master data from session state
-master = st.session_state.get('master_data', {})
-
-# 2. Extract lists (with empty list as fallback to prevent errors)
-all_staff = master.get('staff', [])
-all_workers = master.get('workers', [])
-all_machines = master.get('machines', [])
-all_vehicles = master.get('vehicles', [])
-all_activities = master.get('gates', []) # This replaces your old gate list
-# --- 1. SETUP ---
+# --- 1. SETUP & CONNECTION ---
 IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="Production Master ERP | B&G", layout="wide", page_icon="🏗️")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS ---
+# --- 2. SESSION STATE & MASTER RECOVERY ---
+# This ensures that even if you refresh this specific page, the dropdowns don't break.
+if 'master_data' not in st.session_state or not st.session_state.master_data:
+    try:
+        # Fetching directly from Master tables to populate session state
+        w_res = conn.table("master_workers").select("name").order("name").execute()
+        s_res = conn.table("master_staff").select("name").order("name").execute()
+        g_res = conn.table("production_gates").select("gate_name").order("step_order").execute()
+        
+        st.session_state.master_data = {
+            "workers": [w['name'] for w in (w_res.data or [])],
+            "staff": [s['name'] for s in (s_res.data or [])],
+            "gates": [g['gate_name'] for g in (g_res.data or [])]
+        }
+    except Exception as e:
+        st.error(f"Master Sync Error: {e}")
+
+# Access the recovered data
+master = st.session_state.get('master_data', {})
+
+# --- 3. DATA LOADERS (Cached) ---
 @st.cache_data(ttl=2)
 def get_master_data():
     try:
         plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
         prod_res = conn.table("production").select("*").order("created_at", desc=True).execute()
+        # Note: we use production_gates for the master gate list
         gate_master_res = conn.table("production_gates").select("*").order("step_order").execute()
         job_plan_res = conn.table("job_planning").select("*").order("step_order").execute()
         
@@ -38,31 +50,21 @@ def get_master_data():
 
 df_projects, df_logs, df_master_gates, df_job_plans = get_master_data()
 
-# --- 3. DYNAMIC MAPPING ---
-# 1. Pull approved lists from Master Setup (Session State)
+# --- 4. DYNAMIC MAPPING (STRICT MODE) ---
+# 1. Pull approved lists strictly from Master Data
 all_staff = master.get('staff', [])
-master_workers = master.get('workers', []) # These are the ones from your Master Setup table
-all_machines = master.get('machines', [])
+master_workers = master.get('workers', [])
 
-# 2. Pull Job Numbers
+# 2. Final Clean List for Dropdowns
+# This ensures ONLY names in Master Setup appear. 
+# Names present in old logs but NOT in Master Setup are excluded.
+all_workers = sorted(list(set(master_workers))) 
+
+# 3. Pull Job Numbers
 all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
 
-# 3. Create the final worker list
-# STRICT MODE: Only show names from Master Setup. 
-# We ignore names found in df_logs.
-all_workers = sorted(master_workers) 
-
-# 4. Pull Gate Names
-if not df_master_gates.empty:
-    all_activities = df_master_gates['gate_name'].tolist()
-else:
-    all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly"]
-
-# 4. Pull Gate Names from the Master List
-if not df_master_gates.empty:
-    all_activities = df_master_gates['gate_name'].tolist()
-else:
-    all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly"]
+# 4. Pull Gate Names (Activities)
+all_activities = master.get('gates', ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly"])
 
 # --- 4. NAVIGATION ---
 tab_plan, tab_entry, tab_analytics, tab_master = st.tabs([
