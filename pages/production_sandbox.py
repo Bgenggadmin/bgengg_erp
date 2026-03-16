@@ -39,15 +39,23 @@ def get_master_data():
 df_projects, df_logs, df_master_gates, df_job_plans = get_master_data()
 
 # --- 3. DYNAMIC MAPPING ---
-base_supervisors = ["RamaSai", "Ravindra", "Subodth", "Prasanth", "SUNIL"]
+# 1. Pull the lists from the session state (Master Data)
+all_staff = master.get('staff', [])
+all_workers = master.get('workers', [])
+all_machines = master.get('machines', [])
 
+# 2. Get Job Numbers from your projects table
+all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
+
+# ❌ REMOVED: all_workers = sorted(df_logs['Worker'].unique().tolist()) 
+# Why? Because this was pulling every old name from the logs, bypassing your Master Setup.
+
+# 3. Pull Gate Names from the Master List
 if not df_master_gates.empty:
     all_activities = df_master_gates['gate_name'].tolist()
 else:
-    all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly", "Buffing", "Others"]
-
-all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
-all_workers = sorted(df_logs['Worker'].unique().tolist()) if not df_logs.empty else []
+    # Fallback if Master Gates table is empty
+    all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly"]
 
 # --- 4. NAVIGATION ---
 tab_plan, tab_entry, tab_analytics, tab_master = st.tabs([
@@ -210,8 +218,9 @@ with tab_entry:
                     f1, f2, f3 = st.columns(3)
                     
                     # Column 1: Who
-                    f_sup = f1.selectbox("Supervisor", base_supervisors)
-                    f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
+                    # Inside tab_entry form:
+                    f_sup = f1.selectbox("Supervisor", ["-- Select --"] + all_staff) # Pulls from master_staff
+                    f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers) # Pulls from master_workers
                     
                     # Column 2: Time
                     f_hrs = f2.number_input("Time Spent (Hrs)", min_value=0.0, max_value=24.0, step=0.5, help="Enter decimal hours, e.g., 1.5 for 1hr 30m")
