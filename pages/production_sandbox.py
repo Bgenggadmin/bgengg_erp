@@ -184,38 +184,61 @@ with tab_entry:
         else:
             st.error("⚠️ Supervisor must 'Start' a gate in the Planning tab.")
 
-# --- TAB 3: ANALYTICS & GANTT ---
+# --- TAB 3: ANALYTICS & GANTT (Line 206 Fix) ---
 with tab_analytics:
     st.subheader("📊 Performance Analytics")
-    
     
     if not df_job_plans.empty:
         gantt_list = []
         for _, row in df_job_plans.iterrows():
+            # 1. Collect Planned Bars
             if not pd.isna(row.get('planned_start_date')) and not pd.isna(row.get('planned_end_date')):
-                gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['planned_start_date'], 
-                                       Finish=row['planned_end_date'], Type='Planned', Gate=row['gate_name']))
+                gantt_list.append(dict(
+                    Job=f"{row['job_no']}", 
+                    Start=row['planned_start_date'], 
+                    Finish=row['planned_end_date'], 
+                    Type='Planned', 
+                    Gate=row['gate_name']
+                ))
             
+            # 2. Collect Actual Bars
             if row.get('actual_start_date'):
-                a_finish = row['actual_end_date'] if row['actual_end_date'] else datetime.now(IST).isoformat()
-                gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['actual_start_date'], 
-                                       Finish=a_finish, Type='Actual', Gate=row['gate_name']))
+                # Use actual_end_date if finished, otherwise use 'now' for the moving bar
+                a_finish = row['actual_end_date'] if row.get('actual_end_date') else datetime.now(IST).isoformat()
+                gantt_list.append(dict(
+                    Job=f"{row['job_no']}", 
+                    Start=row['actual_start_date'], 
+                    Finish=a_finish, 
+                    Type='Actual', 
+                    Gate=row['gate_name']
+                ))
 
         if gantt_list:
             df_g = pd.DataFrame(gantt_list)
-            fig = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Type",
-                              hover_data=["Gate"], title="Critical Path: Planned vs Actual",
-                              color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"})
-            fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # --- THE CRITICAL FIX START ---
+            # Force conversion to datetime. 'coerce' turns garbage into NaT (Not a Time)
+            df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce')
+            df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce')
+            
+            # Drop any rows where conversion failed to prevent Plotly TypeError
+            df_g = df_g.dropna(subset=['Start', 'Finish'])
+            # --- THE CRITICAL FIX END ---
 
-    if not df_logs.empty:
-        st.divider()
-        c1, c2 = st.columns(2)
-        with c1:
-            df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce')
-            fig_pie = px.pie(df_logs, values='Hours', names='Activity', hole=0.4, title="Man-Hour Distribution")
-            st.plotly_chart(fig_pie, use_container_width=True)
-        with c2:
-            st.markdown("### 📝 Recent Production Logs")
-            st.dataframe(df_logs[['Worker', 'Job_Code', 'Activity', 'Hours']].head(15), hide_index=True)
+            if not df_g.empty:
+                fig = px.timeline(
+                    df_g, 
+                    x_start="Start", 
+                    x_end="Finish", 
+                    y="Job", 
+                    color="Type",
+                    hover_data=["Gate"], 
+                    title="Critical Path: Planned vs Actual",
+                    color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"}
+                )
+                fig.update_yaxes(autorange="reversed")
+                # Improve layout to prevent bars from overlapping weirdly
+                fig.update_layout(barmode='group') 
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No valid date data found to generate chart.")
