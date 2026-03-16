@@ -1,6 +1,7 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 from database_utils import fetch_all_master_data
+import pandas as pd
 
 st.set_page_config(page_title="Admin Setup", layout="wide")
 st.title("⚙️ Master Data Management")
@@ -11,51 +12,48 @@ def refresh_data():
     st.cache_data.clear()
     st.session_state.master_data = fetch_all_master_data(conn)
 
-# --- UI LAYOUT WITH 4 COLUMNS ---
-c1, c2, c3, c4 = st.columns(4)
+# --- 1. FETCH FULL DATA ---
+staff_df = pd.DataFrame(conn.table("master_staff").select("*").order("name").execute().data)
+worker_df = pd.DataFrame(conn.table("master_workers").select("*").order("name").execute().data)
+machine_df = pd.DataFrame(conn.table("master_machines").select("*").order("name").execute().data)
+vehicle_df = pd.DataFrame(conn.table("master_vehicles").select("*").order("reg_no").execute().data)
 
-with c1:
-    st.subheader("👔 Staff")
-    with st.form("staff_form", clear_on_submit=True):
-        name = st.text_input("Staff Name")
-        if st.form_submit_button("Add"):
-            conn.table("master_staff").insert({"name": name}).execute()
+# --- 2. SEARCH & RENDER UTILITY ---
+def render_section(df, table_name, col_name, label, id_col="id"):
+    # Add Form
+    with st.form(f"add_{table_name}", clear_on_submit=True):
+        new_val = st.text_input(f"Add New {label}")
+        if st.form_submit_button(f"➕ Save {label}") and new_val:
+            conn.table(table_name).insert({col_name: new_val}).execute()
             refresh_data()
             st.rerun()
-    st.caption(f"Count: {len(st.session_state.master_data.get('staff', []))}")
-    st.write(st.session_state.master_data.get('staff', []))
+    
+    st.divider()
+    
+    # Search Bar
+    search = st.text_input(f"🔍 Search {label}...", key=f"search_{table_name}")
+    
+    # Filter DataFrame based on search
+    filtered_df = df
+    if search:
+        filtered_df = df[df[col_name].str.contains(search, case=False, na=False)]
 
-with c2:
-    st.subheader("👷 Workers")
-    with st.form("worker_form", clear_on_submit=True):
-        name = st.text_input("Worker Name")
-        if st.form_submit_button("Add"):
-            conn.table("master_workers").insert({"name": name}).execute()
-            refresh_data()
-            st.rerun()
-    st.caption(f"Count: {len(st.session_state.master_data.get('workers', []))}")
-    st.write(st.session_state.master_data.get('workers', []))
+    # Display Table
+    if not filtered_df.empty:
+        for _, row in filtered_df.iterrows():
+            c1, c2 = st.columns([4, 1])
+            c1.write(f"**{row[col_name]}**")
+            if c2.button("🗑️", key=f"del_{table_name}_{row[id_col]}"):
+                conn.table(table_name).delete().eq(id_col, row[id_col]).execute()
+                refresh_data()
+                st.rerun()
+    else:
+        st.info("No matching records found.")
 
-with c3:
-    st.subheader("🚜 Machines")
-    with st.form("machine_form", clear_on_submit=True):
-        name = st.text_input("Machine ID")
-        if st.form_submit_button("Add"):
-            conn.table("master_machines").insert({"name": name}).execute()
-            refresh_data()
-            st.rerun()
-    st.caption(f"Count: {len(st.session_state.master_data.get('machines', []))}")
-    st.write(st.session_state.master_data.get('machines', []))
+# --- 3. UI TABS ---
+t1, t2, t3, t4 = st.tabs(["👔 Staff", "👷 Workers", "🚜 Machines", "🚛 Vehicles"])
 
-# --- THE MISSING VEHICLE SECTION ---
-with c4:
-    st.subheader("🚛 Vehicles")
-    with st.form("vehicle_form", clear_on_submit=True):
-        reg_no = st.text_input("Vehicle Reg No (e.g. KA-01-1234)")
-        v_type = st.selectbox("Type", ["Crane", "Forklift", "Truck", "Pickup", "Trailer"])
-        if st.form_submit_button("Add"):
-            conn.table("master_vehicles").insert({"reg_no": reg_no, "vehicle_type": v_type}).execute()
-            refresh_data()
-            st.rerun()
-    st.caption(f"Count: {len(st.session_state.master_data.get('vehicles', []))}")
-    st.write(st.session_state.master_data.get('vehicles', []))
+with t1: render_section(staff_df, "master_staff", "name", "Staff")
+with t2: render_section(worker_df, "master_workers", "name", "Worker")
+with t3: render_section(machine_df, "master_machines", "name", "Machine")
+with t4: render_section(vehicle_df, "master_vehicles", "reg_no", "Vehicle")
