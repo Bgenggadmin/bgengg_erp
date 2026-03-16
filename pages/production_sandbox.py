@@ -43,19 +43,16 @@ with tab_plan:
     st.subheader("📋 Production Control Center")
     target_job = st.selectbox("Select Job to Manage", all_jobs)
     
-    # Filter plans for this specific job
     current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
 
     # SECTION A: DATE-BASED SCHEDULING (Pre-Planning)
     with st.expander("📅 Step 1: Design Schedule (Start & End Dates)", expanded=False):
-        st.info("Set the planned start and end dates for each gate to define the Critical Path.")
-        
+        st.info("Define the planned timeline for each gate.")
         with st.form("add_schedule_form"):
             c1, c2, c3 = st.columns([2, 2, 1])
             g_name = c1.selectbox("Gate Name", all_activities)
-            # Date Range Picker
             d_range = c2.date_input("Planned Schedule", [date.today(), date.today() + timedelta(days=5)])
-            g_order = c3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
+            g_order = c3.number_input("Sequence", min_value=1, value=len(current_job_steps)+1)
             
             if st.form_submit_button("🚀 Save to Schedule"):
                 if len(d_range) == 2:
@@ -70,23 +67,29 @@ with tab_plan:
 
     st.divider()
 
-    # SECTION B: LIVE EXECUTION TRACK (Moving the Job)
+    # SECTION B: EXECUTION TRACK (With Null-Safety Fix)
     if not current_job_steps.empty:
         st.subheader(f"🏁 Execution Track: {target_job}")
         
         for index, row in current_job_steps.sort_values('step_order').iterrows():
             status = row['current_status']
-            p_start = pd.to_datetime(row['planned_start_date']).date()
-            p_end = pd.to_datetime(row['planned_end_date']).date()
+            
+            # --- NULL CHECK FIX FOR DATE ATTRIBUTE ERROR ---
+            p_start_val = row.get('planned_start_date')
+            p_end_val = row.get('planned_end_date')
+
+            if pd.isna(p_start_val) or pd.isna(p_end_val):
+                st.warning(f"⚠️ Gate '{row['gate_name']}' is missing planned dates. Update them in Step 1.")
+                continue 
+
+            p_start = pd.to_datetime(p_start_val).date()
+            p_end = pd.to_datetime(p_end_val).date()
             
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-                
-                # Column 1: Info & Target
                 col1.markdown(f"**{row['step_order']}. {row['gate_name']}**")
-                col1.caption(f"Target: {p_start.strftime('%d %b')} to {p_end.strftime('%d %b')}")
+                col1.caption(f"Planned: {p_start.strftime('%d %b')} — {p_end.strftime('%d %b')}")
                 
-                # Column 2 & 3: Progress & Alerts
                 if status == "Pending":
                     col2.warning("⏳ Pending")
                     if col4.button("▶️ Start", key=f"start_{row['id']}"):
@@ -98,10 +101,9 @@ with tab_plan:
                         
                 elif status == "Active":
                     col2.info("🚀 Active")
-                    # Delay Calculation (Critical Path Logic)
                     if date.today() > p_end:
                         delay = (date.today() - p_end).days
-                        col3.metric("Status", f"DELAYED", delta=f"{delay} days", delta_color="inverse")
+                        col3.metric("Status", "DELAYED", delta=f"{delay}d", delta_color="inverse")
                     else:
                         col3.success("On Track")
                     
@@ -114,13 +116,14 @@ with tab_plan:
                         
                 elif status == "Completed":
                     col2.success("🏁 Done")
-                    act_start = pd.to_datetime(row['actual_start_date']).date()
-                    act_end = pd.to_datetime(row['actual_end_date']).date()
-                    col3.write(f"Actual: {act_start.strftime('%d %b')} - {act_end.strftime('%d %b')}")
+                    # Safe conversion for actual dates
+                    a_s = pd.to_datetime(row['actual_start_date']).date() if row['actual_start_date'] else "N/A"
+                    a_e = pd.to_datetime(row['actual_end_date']).date() if row['actual_end_date'] else "N/A"
+                    col3.write(f"Actual: {a_s} to {a_e}")
     else:
         st.info("No schedule defined for this job yet.")
 
-# --- TAB 2: DAILY WORK ENTRY (DYNAMIC) ---
+# --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
@@ -149,38 +152,42 @@ with tab_entry:
                     st.success("Entry Logged!")
                     st.rerun()
         else:
-            st.error("⚠️ No active gate. Supervisor must 'Start' the gate first.")
+            st.error("⚠️ Supervisor must 'Start' a gate in the Planning tab before logging hours.")
 
 # --- TAB 3: ANALYTICS & GANTT ---
 with tab_analytics:
-    st.subheader("📊 Planned vs. Actual Performance")
+    st.subheader("📊 Performance Analytics")
     
     if not df_job_plans.empty:
-        # Prepare Data for Gantt
         gantt_list = []
         for _, row in df_job_plans.iterrows():
-            # Add PLANNED bars
-            gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['planned_start_date'], 
-                                   Finish=row['planned_end_date'], Type='Planned Schedule', Gate=row['gate_name']))
+            # Add PLANNED bars (Null-Safe)
+            if not pd.isna(row.get('planned_start_date')) and not pd.isna(row.get('planned_end_date')):
+                gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['planned_start_date'], 
+                                       Finish=row['planned_end_date'], Type='Planned', Gate=row['gate_name']))
             
-            # Add ACTUAL bars (if started)
-            if row['actual_start_date']:
+            # Add ACTUAL bars
+            if row.get('actual_start_date'):
                 a_finish = row['actual_end_date'] if row['actual_end_date'] else datetime.now(IST).isoformat()
                 gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['actual_start_date'], 
-                                       Finish=a_finish, Type='Actual Progress', Gate=row['gate_name']))
+                                       Finish=a_finish, Type='Actual', Gate=row['gate_name']))
 
         if gantt_list:
-            df_gantt = pd.DataFrame(gantt_list)
-            fig = px.timeline(df_gantt, x_start="Start", x_end="Finish", y="Job", color="Type",
-                              hover_data=["Gate"], title="Critical Path: Planned vs Actual Timeline",
-                              color_discrete_map={"Planned Schedule": "#CBD5E0", "Actual Progress": "#4299E1"})
+            df_g = pd.DataFrame(gantt_list)
+            fig = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Type",
+                              hover_data=["Gate"], title="Critical Path: Planned vs Actual",
+                              color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"})
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True)
             
-        
-    # Pie Chart for Man-Hours
+
     if not df_logs.empty:
         st.divider()
-        df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce')
-        fig_pie = px.pie(df_logs, values='Hours', names='Activity', hole=0.4, title="Man-Hour Distribution")
-        st.plotly_chart(fig_pie, use_container_width=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce')
+            fig_pie = px.pie(df_logs, values='Hours', names='Activity', hole=0.4, title="Total Man-Hour Distribution")
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with c2:
+            st.markdown("### 📝 Recent Production Logs")
+            st.dataframe(df_logs[['Worker', 'Job_Code', 'Activity', 'Hours']].head(15), hide_index=True)
