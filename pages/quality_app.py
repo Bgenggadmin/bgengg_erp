@@ -11,18 +11,22 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G Quality Portal", layout="wide", page_icon="🔍")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS ---
+# --- 2. DATA LOADERS (Updated for Troubleshooting) ---
 @st.cache_data(ttl=2)
 def get_quality_context():
-    # Pull Jobs that are Active or Completed
+    # 1. Pull Jobs
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
-    # Pull Authorized Inspectors from Master Staff
-    staff_res = conn.table("master_staff").select("name").execute()
     
-    return (
-        pd.DataFrame(plan_res.data or []),
-        sorted([s['name'] for s in staff_res.data]) if staff_res.data else []
-    )
+    # 2. Pull Staff - Updated with error handling
+    try:
+        # Check if your table is named 'master_staff' or 'staff_master'
+        staff_res = conn.table("master_staff").select("name").execute()
+        staff_list = sorted([s['name'] for s in staff_res.data]) if staff_res.data else []
+    except Exception as e:
+        st.error(f"⚠️ Master Staff Error: {e}")
+        staff_list = [] # Returns empty list if table not found
+    
+    return pd.DataFrame(plan_res.data or []), staff_list
 
 df_plan, authorized_inspectors = get_quality_context()
 
