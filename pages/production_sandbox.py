@@ -231,24 +231,52 @@ with tab_analytics:
                 fig.update_yaxes(autorange="reversed")
                 st.plotly_chart(fig, use_container_width=True)
 
-# --- TAB 4: MASTER SETTINGS ---
+# --- TAB 4: MASTER SETTINGS (Robust Version) ---
 with tab_master:
     st.subheader("⚙️ Shop Floor Gate Master")
     col_m1, col_m2 = st.columns([1, 2])
+    
     with col_m1:
+        st.markdown("### ➕ Add New Gate")
         with st.form("master_gate_form", clear_on_submit=True):
-            new_g_name = st.text_input("Gate Name")
+            new_g_name = st.text_input("Gate Name (e.g., Shot Blasting)").strip()
             new_g_order = st.number_input("Standard Sequence", min_value=1, value=len(df_master_gates)+1)
+            
             if st.form_submit_button("🔨 Add to Master"):
-                conn.table("production_gates").insert({"gate_name": new_g_name, "step_order": new_g_order}).execute()
-                st.cache_data.clear()
-                st.rerun()
+                if new_g_name:
+                    # Check if gate already exists in the dataframe to avoid API Error
+                    if not df_master_gates.empty and new_g_name.lower() in df_master_gates['gate_name'].str.lower().values:
+                        st.error(f"Gate '{new_g_name}' already exists!")
+                    else:
+                        try:
+                            # Attempt Insert
+                            conn.table("production_gates").insert({
+                                "gate_name": new_g_name, 
+                                "step_order": new_g_order
+                            }).execute()
+                            st.cache_data.clear()
+                            st.success(f"Added {new_g_name}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Database Error: {e}")
+                else:
+                    st.warning("Please enter a gate name.")
+
     with col_m2:
-        for _, m_row in df_master_gates.iterrows():
-            with st.container(border=True):
-                mc1, mc2 = st.columns([4, 1])
-                mc1.write(f"**{m_row['step_order']}. {m_row['gate_name']}**")
-                if mc2.button("🗑️", key=f"del_m_{m_row['id']}"):
-                    conn.table("production_gates").delete().eq("id", m_row['id']).execute()
-                    st.cache_data.clear()
-                    st.rerun()
+        st.markdown("### 📋 Existing Master Gates")
+        if not df_master_gates.empty:
+            # Sort by step order for clarity
+            for _, m_row in df_master_gates.sort_values('step_order').iterrows():
+                with st.container(border=True):
+                    mc1, mc2 = st.columns([4, 1])
+                    mc1.write(f"**{m_row['step_order']}. {m_row['gate_name']}**")
+                    # Delete logic
+                    if mc2.button("🗑️", key=f"del_m_{m_row['id']}"):
+                        try:
+                            conn.table("production_gates").delete().eq("id", m_row['id']).execute()
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error("Cannot delete: This gate might be in use in active schedules.")
+        else:
+            st.info("No master gates defined. Add your first gate (e.g., 'Cutting') to start.")
