@@ -1,5 +1,8 @@
 streamlit
 st-supabase-connection
+pandas
+plotly
+pytz
 fpdf
+pillow
 requests
-Pillow
