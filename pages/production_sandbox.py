@@ -182,34 +182,63 @@ with tab_plan:
                         col3.caption(f"Finished: {pd.to_datetime(row['actual_end_date']).strftime('%d %b')}")
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
-    st.subheader("👷 Labor Output Entry")
-    f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
+    st.subheader("👷 Labor & Output Tracking")
     
-    if f_job != "-- Select --":
-        active_gate_query = conn.table("job_planning").select("gate_name").eq("job_no", f_job).eq("current_status", "Active").execute()
-        active_options = [g['gate_name'] for g in active_gate_query.data]
+    with st.container(border=True):
+        f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
         
-        if active_options:
-            f_act = st.selectbox("🎯 Current Active Gate", active_options)
-            with st.form("prod_form", clear_on_submit=True):
-                f1, f2, f3 = st.columns(3)
-                f_sup = f1.selectbox("Supervisor", base_supervisors)
-                f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
-                f_hrs = f2.number_input("Hours Spent", min_value=0.0, step=0.5)
-                f_out = f3.number_input("Output Quantity", min_value=0.0)
-                f_nts = st.text_area("Remarks")
+        if f_job != "-- Select --":
+            # Filter the already loaded df_job_plans for speed
+            active_gates = df_job_plans[
+                (df_job_plans['job_no'] == f_job) & 
+                (df_job_plans['current_status'] == 'Active')
+            ]['gate_name'].tolist()
+            
+            if active_gates:
+                f_act = st.selectbox("🎯 Current Active Gate", active_gates)
+                
+                with st.form("prod_form", clear_on_submit=True):
+                    f1, f2, f3 = st.columns(3)
+                    
+                    # Column 1: Who
+                    f_sup = f1.selectbox("Supervisor", base_supervisors)
+                    f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
+                    
+                    # Column 2: Time
+                    f_hrs = f2.number_input("Time Spent (Hrs)", min_value=0.0, max_value=24.0, step=0.5, help="Enter decimal hours, e.g., 1.5 for 1hr 30m")
+                    
+                    # Column 3: Output Logic (The Change)
+                    f_out_val = f3.number_input("Output Quantity", min_value=0.0, step=0.1)
+                    f_unit = f3.selectbox("Unit of Measure", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Inches", "Joints"])
+                    
+                    f_nts = st.text_area("Work Details / Remarks")
 
-                if st.form_submit_button("🚀 Log Productivity"):
-                    conn.table("production").insert({
-                        "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
-                        "Activity": f_act, "Hours": f_hrs, "Output": f_out,
-                        "Notes": f_nts, "created_at": datetime.now(IST).isoformat()
-                    }).execute()
-                    st.cache_data.clear()
-                    st.success("Entry Logged!")
-                    st.rerun()
-        else:
-            st.error("⚠️ Supervisor must 'Start' a gate in the Planning tab.")
+                    if st.form_submit_button("🚀 Log Progress"):
+                        if f_wrk == "-- Select --":
+                            st.error("Please select a Worker.")
+                        else:
+                            try:
+                                # We combine output and unit for clear database records
+                                # Or if your 'production' table has a 'Unit' column, use that!
+                                conn.table("production").insert({
+                                    "Supervisor": f_sup, 
+                                    "Worker": f_wrk, 
+                                    "Job_Code": f_job,
+                                    "Activity": f_act, 
+                                    "Hours": f_hrs, 
+                                    "Output": f_out_val,
+                                    "Unit": f_unit, # Ensure this column exists in Supabase!
+                                    "Notes": f_nts, 
+                                    "created_at": datetime.now(IST).isoformat()
+                                }).execute()
+                                
+                                st.cache_data.clear()
+                                st.success(f"Logged: {f_out_val} {f_unit} in {f_hrs} hrs for {f_wrk}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}. Check if 'Unit' column exists in your Supabase table.")
+            else:
+                st.warning(f"⚠️ No gates are 'Active' for {f_job}. Start a gate in the Planning tab.")
 
 # --- TAB 3: ANALYTICS & GANTT (FIXED SECTION) ---
 with tab_analytics:
