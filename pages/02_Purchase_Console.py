@@ -1,10 +1,9 @@
-streamlit
-st-supabase-connection
-fpdf
-plotly
-pandas
-pillow
-requests
+import streamlit as st
+from st_supabase_connection import SupabaseConnection
+import pandas as pd
+import plotly.express as px
+from datetime import datetime
+import pytz
 
 # --- 1. SETUP & THEME ---
 IST = pytz.timezone('Asia/Kolkata')
