@@ -3,6 +3,7 @@ from st_supabase_connection import SupabaseConnection
 from database_utils import fetch_all_master_data
 import pandas as pd
 
+
 st.set_page_config(page_title="Admin Setup", layout="wide")
 st.title("⚙️ Master Data Management")
 
