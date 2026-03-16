@@ -45,9 +45,8 @@ with tab_plan:
     
     current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
 
-    # SECTION A: DATE-BASED SCHEDULING (Pre-Planning)
-    with st.expander("📅 Step 1: Design Schedule (Start & End Dates)", expanded=False):
-        st.info("Define the planned timeline for each gate.")
+    # --- SECTION A: SCHEDULING (INSERT) ---
+    with st.expander("📅 Step 1: Design Schedule (New Gates)", expanded=False):
         with st.form("add_schedule_form"):
             c1, c2, c3 = st.columns([2, 2, 1])
             g_name = c1.selectbox("Gate Name", all_activities)
@@ -65,25 +64,58 @@ with tab_plan:
                     st.cache_data.clear()
                     st.rerun()
 
+    # --- SECTION B: EDIT / DELETE LOGIC ---
+    if not current_job_steps.empty:
+        with st.expander("📝 Edit or Remove Planned Gates", expanded=False):
+            st.info("Modify sequence or dates for existing gates. Changes reflect on Gantt instantly.")
+            
+            for _, edit_row in current_job_steps.sort_values('step_order').iterrows():
+                e_id = edit_row['id']
+                with st.container(border=True):
+                    ec1, ec2, ec3, ec4 = st.columns([2, 2, 1, 1])
+                    
+                    # Pre-load existing gate index
+                    gate_idx = all_activities.index(edit_row['gate_name']) if edit_row['gate_name'] in all_activities else 0
+                    u_gate = ec1.selectbox("Gate", all_activities, index=gate_idx, key=f"e_name_{e_id}")
+                    
+                    # Pre-load dates
+                    st_dt = pd.to_datetime(edit_row['planned_start_date']).date() if not pd.isna(edit_row['planned_start_date']) else date.today()
+                    en_dt = pd.to_datetime(edit_row['planned_end_date']).date() if not pd.isna(edit_row['planned_end_date']) else date.today()
+                    u_dates = ec2.date_input("Dates", [st_dt, en_dt], key=f"e_date_{e_id}")
+                    
+                    u_order = ec3.number_input("Seq", value=int(edit_row['step_order']), key=f"e_order_{e_id}")
+                    
+                    with ec4:
+                        st.write("") # Spacer
+                        if st.button("💾 Save", key=f"save_{e_id}", use_container_width=True):
+                            if len(u_dates) == 2:
+                                conn.table("job_planning").update({
+                                    "gate_name": u_gate,
+                                    "planned_start_date": u_dates[0].isoformat(),
+                                    "planned_end_date": u_dates[1].isoformat(),
+                                    "step_order": u_order
+                                }).eq("id", e_id).execute()
+                                st.cache_data.clear()
+                                st.rerun()
+                        
+                        if st.button("🗑️ Del", key=f"del_{e_id}", use_container_width=True, type="secondary"):
+                            conn.table("job_planning").delete().eq("id", e_id).execute()
+                            st.cache_data.clear()
+                            st.rerun()
+
     st.divider()
 
-    # SECTION B: EXECUTION TRACK (With Null-Safety Fix)
+    # --- SECTION C: EXECUTION TRACK ---
     if not current_job_steps.empty:
         st.subheader(f"🏁 Execution Track: {target_job}")
-        
         for index, row in current_job_steps.sort_values('step_order').iterrows():
             status = row['current_status']
-            
-            # --- NULL CHECK FIX FOR DATE ATTRIBUTE ERROR ---
-            p_start_val = row.get('planned_start_date')
-            p_end_val = row.get('planned_end_date')
+            p_start_val, p_end_val = row.get('planned_start_date'), row.get('planned_end_date')
 
             if pd.isna(p_start_val) or pd.isna(p_end_val):
-                st.warning(f"⚠️ Gate '{row['gate_name']}' is missing planned dates. Update them in Step 1.")
                 continue 
 
-            p_start = pd.to_datetime(p_start_val).date()
-            p_end = pd.to_datetime(p_end_val).date()
+            p_start, p_end = pd.to_datetime(p_start_val).date(), pd.to_datetime(p_end_val).date()
             
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
@@ -92,7 +124,7 @@ with tab_plan:
                 
                 if status == "Pending":
                     col2.warning("⏳ Pending")
-                    if col4.button("▶️ Start", key=f"start_{row['id']}"):
+                    if col4.button("▶️ Start", key=f"start_btn_{row['id']}"):
                         conn.table("job_planning").update({
                             "current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()
                         }).eq("id", row['id']).execute()
@@ -106,8 +138,7 @@ with tab_plan:
                         col3.metric("Status", "DELAYED", delta=f"{delay}d", delta_color="inverse")
                     else:
                         col3.success("On Track")
-                    
-                    if col4.button("✅ Close", key=f"end_{row['id']}"):
+                    if col4.button("✅ Close", key=f"end_btn_{row['id']}"):
                         conn.table("job_planning").update({
                             "current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()
                         }).eq("id", row['id']).execute()
@@ -116,7 +147,6 @@ with tab_plan:
                         
                 elif status == "Completed":
                     col2.success("🏁 Done")
-                    # Safe conversion for actual dates
                     a_s = pd.to_datetime(row['actual_start_date']).date() if row['actual_start_date'] else "N/A"
                     a_e = pd.to_datetime(row['actual_end_date']).date() if row['actual_end_date'] else "N/A"
                     col3.write(f"Actual: {a_s} to {a_e}")
@@ -152,21 +182,20 @@ with tab_entry:
                     st.success("Entry Logged!")
                     st.rerun()
         else:
-            st.error("⚠️ Supervisor must 'Start' a gate in the Planning tab before logging hours.")
+            st.error("⚠️ Supervisor must 'Start' a gate in the Planning tab.")
 
 # --- TAB 3: ANALYTICS & GANTT ---
 with tab_analytics:
     st.subheader("📊 Performance Analytics")
     
+    
     if not df_job_plans.empty:
         gantt_list = []
         for _, row in df_job_plans.iterrows():
-            # Add PLANNED bars (Null-Safe)
             if not pd.isna(row.get('planned_start_date')) and not pd.isna(row.get('planned_end_date')):
                 gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['planned_start_date'], 
                                        Finish=row['planned_end_date'], Type='Planned', Gate=row['gate_name']))
             
-            # Add ACTUAL bars
             if row.get('actual_start_date'):
                 a_finish = row['actual_end_date'] if row['actual_end_date'] else datetime.now(IST).isoformat()
                 gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['actual_start_date'], 
@@ -179,14 +208,13 @@ with tab_analytics:
                               color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"})
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True)
-            
 
     if not df_logs.empty:
         st.divider()
         c1, c2 = st.columns(2)
         with c1:
             df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce')
-            fig_pie = px.pie(df_logs, values='Hours', names='Activity', hole=0.4, title="Total Man-Hour Distribution")
+            fig_pie = px.pie(df_logs, values='Hours', names='Activity', hole=0.4, title="Man-Hour Distribution")
             st.plotly_chart(fig_pie, use_container_width=True)
         with c2:
             st.markdown("### 📝 Recent Production Logs")
