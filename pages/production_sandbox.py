@@ -54,16 +54,17 @@ with tab_plan:
     target_job = st.selectbox("Select Job to Manage", ["-- Select --"] + all_jobs)
     
     if target_job != "-- Select --":
+        # Load planning data specifically for the selected job
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
 
-        # --- 🏁 SECTION 0: CLONE TEMPLATE ---
-        # Useful for repeating sequences for Tanks, Condensers, etc.
+        # --- 0. CLONE TEMPLATE FEATURE ---
         if current_job_steps.empty:
-            with st.expander("👯 Clone Plan from another Job", expanded=True):
-                st.write("This job has no plan yet. Copy a sequence from a similar job:")
-                source_job = st.selectbox("Select Source Job (Template)", ["-- Select --"] + all_jobs, key="src_job")
+            with st.container(border=True):
+                st.markdown("### 👯 No Plan Detected")
+                st.write("Would you like to clone a sequence from a similar job (e.g., another Tank or Dryer)?")
+                source_job = st.selectbox("Select Source Template", ["-- Select --"] + all_jobs, key="src_job_clone")
                 
-                if st.button("Copy Entire Sequence") and source_job != "-- Select --":
+                if st.button("🚀 Clone Sequence") and source_job != "-- Select --":
                     source_steps = df_job_plans[df_job_plans['job_no'] == source_job]
                     if not source_steps.empty:
                         new_steps = []
@@ -78,26 +79,26 @@ with tab_plan:
                             })
                         conn.table("job_planning").insert(new_steps).execute()
                         st.cache_data.clear()
-                        st.success(f"Copied {len(new_steps)} steps from {source_job}!")
+                        st.success(f"Successfully copied {len(new_steps)} steps!")
                         st.rerun()
 
-        # --- 🏁 SECTION 1: EDD DISPLAY ---
+        # --- 1. EDD & STATUS HEADER ---
         if not current_job_steps.empty:
             valid_dates = pd.to_datetime(current_job_steps['planned_end_date'], errors='coerce').dropna()
             if not valid_dates.empty:
                 edd = valid_dates.max().date()
                 days_left = (edd - date.today()).days
-                st.info(f"📅 **Projected Completion (EDD): {edd.strftime('%d %b %Y')}** ({days_left} days left)")
+                st.info(f"📅 **Projected Completion (EDD): {edd.strftime('%d %b %Y')}** ({days_left} days remaining)")
 
-        # --- 🏁 SECTION 2: ADD SINGLE GATES ---
-        with st.expander("📅 Add Custom Gate (Step-by-Step)", expanded=False):
+        # --- 2. FLEXIBLE SCHEDULING (ADD GATES) ---
+        with st.expander("➕ Add/Insert New Gate", expanded=False):
             with st.form("add_schedule_form", clear_on_submit=True):
                 c1, c2, c3 = st.columns([2, 2, 1])
-                g_name = c1.selectbox("Gate Name", all_activities)
-                d_range = c2.date_input("Planned Schedule", [date.today(), date.today() + timedelta(days=5)])
-                g_order = c3.number_input("Sequence", min_value=1, value=len(current_job_steps)+1)
+                g_name = c1.selectbox("Process Gate", all_activities)
+                d_range = c2.date_input("Planned Window", [date.today(), date.today() + timedelta(days=5)])
+                g_order = c3.number_input("Step No.", min_value=1, value=len(current_job_steps)+1)
                 
-                if st.form_submit_button("🚀 Save to Schedule"):
+                if st.form_submit_button("🚀 Add to Plan"):
                     if len(d_range) == 2:
                         conn.table("job_planning").insert({
                             "job_no": target_job, "gate_name": g_name, "step_order": g_order,
@@ -108,22 +109,23 @@ with tab_plan:
                         st.cache_data.clear()
                         st.rerun()
 
-        # --- 🏁 SECTION 3: EDIT / DELETE ---
+        # --- 3. SEQUENCE MANAGEMENT (EDIT/DELETE) ---
         if not current_job_steps.empty:
-            with st.expander("📝 Edit Sequence", expanded=False):
+            with st.expander("📝 Manage Sequence & Dates", expanded=False):
                 for _, edit_row in current_job_steps.sort_values('step_order').iterrows():
                     e_id = edit_row['id']
                     with st.container(border=True):
                         ec1, ec2, ec3, ec4 = st.columns([2, 2, 1, 1])
                         gate_idx = all_activities.index(edit_row['gate_name']) if edit_row['gate_name'] in all_activities else 0
                         u_gate = ec1.selectbox("Gate", all_activities, index=gate_idx, key=f"e_name_{e_id}")
+                        
                         st_dt = pd.to_datetime(edit_row['planned_start_date']).date() if not pd.isna(edit_row['planned_start_date']) else date.today()
                         en_dt = pd.to_datetime(edit_row['planned_end_date']).date() if not pd.isna(edit_row['planned_end_date']) else date.today()
                         u_dates = ec2.date_input("Dates", [st_dt, en_dt], key=f"e_date_{e_id}")
-                        u_order = ec3.number_input("Seq", value=int(edit_row['step_order']), key=f"e_order_{e_id}")
+                        u_order = ec3.number_input("Order", value=int(edit_row['step_order']), key=f"e_order_{e_id}")
                         
                         with ec4:
-                            if st.button("💾 Save", key=f"save_{e_id}", use_container_width=True):
+                            if st.button("💾", key=f"save_{e_id}"):
                                 if len(u_dates) == 2:
                                     conn.table("job_planning").update({
                                         "gate_name": u_gate, "planned_start_date": u_dates[0].isoformat(),
@@ -131,41 +133,53 @@ with tab_plan:
                                     }).eq("id", e_id).execute()
                                     st.cache_data.clear()
                                     st.rerun()
-                            if st.button("🗑️", key=f"del_{e_id}", use_container_width=True):
+                            if st.button("🗑️", key=f"del_{e_id}"):
                                 conn.table("job_planning").delete().eq("id", e_id).execute()
                                 st.cache_data.clear()
                                 st.rerun()
 
         st.divider()
 
-        # --- 🏁 SECTION 4: EXECUTION ---
+        # --- 4. SHOP FLOOR EXECUTION ---
         if not current_job_steps.empty:
-            st.subheader(f"🏁 Execution Track: {target_job}")
+            st.subheader(f"🏁 Active Execution: {target_job}")
+            
             for index, row in current_job_steps.sort_values('step_order').iterrows():
                 status = row['current_status']
                 p_end = pd.to_datetime(row['planned_end_date']).date() if row['planned_end_date'] else date.today()
                 
                 with st.container(border=True):
                     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-                    col1.markdown(f"**{row['step_order']}. {row['gate_name']}**")
+                    col1.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
                     
                     if status == "Pending":
                         col2.warning("⏳ Pending")
-                        if col4.button("▶️ Start", key=f"start_btn_{row['id']}"):
-                            conn.table("job_planning").update({"current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
+                        if col4.button("▶️ Start", key=f"start_btn_{row['id']}", use_container_width=True):
+                            conn.table("job_planning").update({
+                                "current_status": "Active", 
+                                "actual_start_date": datetime.now(IST).isoformat()
+                            }).eq("id", row['id']).execute()
                             st.cache_data.clear()
                             st.rerun()
+                            
                     elif status == "Active":
                         col2.info("🚀 Active")
                         delay = (date.today() - p_end).days if date.today() > p_end else 0
-                        if delay > 0: col3.metric("Delay", f"{delay}d", delta_color="inverse")
-                        else: col3.success("On Track")
-                        if col4.button("✅ Close", key=f"end_btn_{row['id']}"):
-                            conn.table("job_planning").update({"current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
+                        if delay > 0:
+                            col3.metric("Delay", f"{delay} Days", delta_color="inverse")
+                        else:
+                            col3.success("On Track")
+                        if col4.button("✅ Close", key=f"end_btn_{row['id']}", use_container_width=True):
+                            conn.table("job_planning").update({
+                                "current_status": "Completed", 
+                                "actual_end_date": datetime.now(IST).isoformat()
+                            }).eq("id", row['id']).execute()
                             st.cache_data.clear()
                             st.rerun()
+                            
                     elif status == "Completed":
-                        col2.success("🏁 Done")
+                        col2.success("🏁 Completed")
+                        col3.caption(f"Finished: {pd.to_datetime(row['actual_end_date']).strftime('%d %b')}")
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
