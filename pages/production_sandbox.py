@@ -39,22 +39,23 @@ def get_master_data():
 df_projects, df_logs, df_master_gates, df_job_plans = get_master_data()
 
 # --- 3. DYNAMIC MAPPING ---
-# 1. Pull the lists from the session state (Master Data)
+# 1. Pull approved lists from Master Setup (Session State)
 all_staff = master.get('staff', [])
-all_workers = master.get('workers', [])
+master_workers = master.get('workers', [])
 all_machines = master.get('machines', [])
 
-# 2. Get Job Numbers from your projects table
+# 2. Pull Job Numbers
 all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
 
-# ❌ REMOVED: all_workers = sorted(df_logs['Worker'].unique().tolist()) 
-# Why? Because this was pulling every old name from the logs, bypassing your Master Setup.
+# 3. Create the final worker list
+# We use a set() to combine Master Workers + anyone found in Logs, then sort it
+log_workers = df_logs['Worker'].unique().tolist() if not df_logs.empty else []
+all_workers = sorted(list(set(master_workers + log_workers)))
 
-# 3. Pull Gate Names from the Master List
+# 4. Pull Gate Names from the Master List
 if not df_master_gates.empty:
     all_activities = df_master_gates['gate_name'].tolist()
 else:
-    # Fallback if Master Gates table is empty
     all_activities = ["Cutting", "Fitting", "Welding", "Grinding", "Painting", "Assembly"]
 
 # --- 4. NAVIGATION ---
