@@ -44,51 +44,49 @@ all_workers = sorted(df_logs['Worker'].unique().tolist()) if not df_logs.empty e
 # --- 4. NAVIGATION ---
 tab_plan, tab_entry, tab_analytics = st.tabs(["🏗️ Planning", "👷 Daily Entry", "📊 Analytics"])
 
-# --- TAB 1: PLANNING (With Aging Logic) ---
 with tab_plan:
-    st.subheader("🚀 Shop Floor Control (Sandbox)")
-    if not df_plan.empty:
-        hrs_sum = df_logs.groupby('Job_Code')['Hours'].sum().to_dict() if not df_logs.empty else {}
+    st.subheader("📋 Job-Specific Blueprint & Planning")
+    
+    # Selection for Pre-Planning
+    target_job = st.selectbox("Select Job to Plan/View", all_jobs)
+    
+    # 1. FETCH SPECIFIC GATES FOR THIS JOB
+    job_steps = conn.table("job_planning").select("*").eq("job_no", target_job).order("step_order").execute()
+    steps_df = pd.DataFrame(job_steps.data or [])
 
-        for index, row in df_plan.iterrows():
-            job_id = str(row['job_no']).strip().upper()
-            actual_hrs = hrs_sum.get(job_id, 0)
-            
-            # Date Parsing for Aging
-            updated_at_raw = row.get('updated_at')
-            updated_at = pd.to_datetime(updated_at_raw or datetime.now(IST))
-            if updated_at.tzinfo is None: updated_at = updated_at.replace(tzinfo=pytz.UTC)
-            updated_at = updated_at.astimezone(IST)
+    # 2. PRE-PLANNING UI (If no gates exist yet)
+    with st.expander("🛠️ Define/Edit Job Gates"):
+        new_g_name = st.selectbox("Add Gate", all_activities)
+        new_g_days = st.number_input("Planned Days for this Gate", min_value=1, value=3)
+        if st.button("➕ Add Gate to Job"):
+            next_order = len(steps_df) + 1
+            conn.table("job_planning").insert({
+                "job_no": target_job, "gate_name": new_g_name, 
+                "step_order": next_order, "planned_days": new_g_days
+            }).execute()
+            st.rerun()
 
-            days_at_gate = (datetime.now(IST).date() - updated_at.date()).days
-            manual_limit = row.get('manual_days_limit', 7) 
-            current_gate = row.get('drawing_status', universal_stages[0])
+    # 3. PLANNED VS ACTUAL VISUALIZER
+    if not steps_df.empty:
+        st.write(f"### Progress for Job: {target_job}")
+        for _, step in steps_df.iterrows():
+            # Logic: Check if work logs exist for THIS job AND THIS activity
+            actual_work = df_logs[(df_logs['Job_Code'] == target_job) & 
+                                  (df_logs['Activity'] == step['gate_name'])]
+            total_hrs = actual_work['Hours'].sum()
             
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
-                c1.subheader(f"Job {job_id} | {row['client_name']}")
-                c2.metric("Man-Hours", f"{actual_hrs} Hrs")
-                
-                is_slow = days_at_gate > manual_limit
-                c3.metric("Aging", f"{days_at_gate} Days", 
-                          delta=f"Limit: {manual_limit}d" if is_slow else "OK", 
-                          delta_color="inverse" if is_slow else "normal")
-                
-                # Update UI
-                u1, u2, u3 = st.columns(3)
-                new_gate = u1.selectbox("Move Gate", universal_stages, 
-                                        index=universal_stages.index(current_gate) if current_gate in universal_stages else 0, 
-                                        key=f"gt_{row['id']}")
-                new_limit = u2.number_input("Limit (Days)", 1, 30, int(manual_limit), key=f"lim_{row['id']}")
-                
-                if u3.button("💾 Save Update", key=f"btn_{row['id']}", use_container_width=True):
-                    conn.table("anchor_projects").update({
-                        "drawing_status": new_gate,
-                        "manual_days_limit": new_limit,
-                        "updated_at": datetime.now(IST).isoformat()
-                    }).eq("id", row['id']).execute()
-                    st.cache_data.clear()
-                    st.rerun()
+            col_a, col_b = st.columns([3, 1])
+            with col_a:
+                # Progress Bar based on time vs planned days
+                planned_hrs = step['planned_days'] * 8
+                progress = min(total_hrs / planned_hrs, 1.0) if planned_hrs > 0 else 0
+                st.write(f"**{step['step_order']}. {step['gate_name']}** ({total_hrs} / {planned_hrs} Hrs)")
+                st.progress(progress)
+            with col_b:
+                if total_hrs > planned_hrs:
+                    st.error(f"⚠️ Overdue by {total_hrs - planned_hrs} Hrs")
+                else:
+                    st.success("On Track")
 
 # --- TAB 3: ANALYTICS (Charts Added) ---
 with tab_analytics:
