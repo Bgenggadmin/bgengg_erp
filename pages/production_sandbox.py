@@ -5,6 +5,15 @@ from datetime import datetime, date, timedelta
 import pytz
 import plotly.express as px
 
+# 1. Access the master data from session state
+master = st.session_state.get('master_data', {})
+
+# 2. Extract lists (with empty list as fallback to prevent errors)
+all_staff = master.get('staff', [])
+all_workers = master.get('workers', [])
+all_machines = master.get('machines', [])
+all_vehicles = master.get('vehicles', [])
+all_activities = master.get('gates', []) # This replaces your old gate list
 # --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="Production Master ERP | B&G", layout="wide", page_icon="🏗️")
