@@ -56,17 +56,13 @@ with tab_plan:
     if target_job != "-- Select --":
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
 
-        # --- FEATURE: ESTIMATED DELIVERY CALCULATION ---
         if not current_job_steps.empty:
-            # Clean and convert planned end dates
             valid_dates = pd.to_datetime(current_job_steps['planned_end_date'], errors='coerce').dropna()
             if not valid_dates.empty:
                 edd = valid_dates.max().date()
                 days_left = (edd - date.today()).days
-                
                 st.info(f"📅 **Projected Completion (EDD): {edd.strftime('%d %b %Y')}** ({days_left} days remaining)")
 
-        # SECTION A: SCHEDULING
         with st.expander("📅 Step 1: Design Schedule (New Gates)", expanded=False):
             with st.form("add_schedule_form"):
                 c1, c2, c3 = st.columns([2, 2, 1])
@@ -85,7 +81,6 @@ with tab_plan:
                         st.cache_data.clear()
                         st.rerun()
 
-        # SECTION B: EDIT / DELETE
         if not current_job_steps.empty:
             with st.expander("📝 Edit or Remove Planned Gates", expanded=False):
                 for _, edit_row in current_job_steps.sort_values('step_order').iterrows():
@@ -115,7 +110,6 @@ with tab_plan:
 
         st.divider()
 
-        # SECTION C: LIVE EXECUTION
         if not current_job_steps.empty:
             st.subheader(f"🏁 Execution Track: {target_job}")
             for index, row in current_job_steps.sort_values('step_order').iterrows():
@@ -185,30 +179,55 @@ with tab_entry:
         else:
             st.error("⚠️ Supervisor must 'Start' a gate in the Planning tab.")
 
-# --- TAB 3: ANALYTICS & GANTT ---
+# --- TAB 3: ANALYTICS & GANTT (FIXED SECTION) ---
 with tab_analytics:
     st.subheader("📊 Performance Analytics")
     
     if not df_job_plans.empty:
         gantt_list = []
         for _, row in df_job_plans.iterrows():
+            # Add Planned Bars
             if not pd.isna(row.get('planned_start_date')) and not pd.isna(row.get('planned_end_date')):
-                gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['planned_start_date'], 
-                                       Finish=row['planned_end_date'], Type='Planned', Gate=row['gate_name']))
+                gantt_list.append(dict(
+                    Job=f"{row['job_no']}", 
+                    Start=row['planned_start_date'], 
+                    Finish=row['planned_end_date'], 
+                    Type='Planned', 
+                    Gate=row['gate_name']
+                ))
+            # Add Actual Bars
             if row.get('actual_start_date'):
                 a_finish = row['actual_end_date'] if row.get('actual_end_date') else datetime.now(IST).isoformat()
-                gantt_list.append(dict(Job=f"{row['job_no']}", Start=row['actual_start_date'], 
-                                       Finish=a_finish, Type='Actual', Gate=row['gate_name']))
+                gantt_list.append(dict(
+                    Job=f"{row['job_no']}", 
+                    Start=row['actual_start_date'], 
+                    Finish=a_finish, 
+                    Type='Actual', 
+                    Gate=row['gate_name']
+                ))
 
         if gantt_list:
             df_g = pd.DataFrame(gantt_list)
-            df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce')
-            df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce')
+            
+            # --- FIX: FORCE UNIFIED DATETIME & REMOVE TIMEZONES ---
+            df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce').dt.tz_localize(None)
+            df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce').dt.tz_localize(None)
             df_g = df_g.dropna(subset=['Start', 'Finish'])
+            
             if not df_g.empty:
-                fig = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Type",
-                                  hover_data=["Gate"], barmode='group',
-                                  color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"})
+                # Remove barmode='group' from function call
+                fig = px.timeline(
+                    df_g, 
+                    x_start="Start", 
+                    x_end="Finish", 
+                    y="Job", 
+                    color="Type",
+                    hover_data=["Gate"], 
+                    color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"}
+                )
+                
+                # --- FIX: SET BARMODE IN LAYOUT ---
+                fig.update_layout(barmode='group')
                 fig.update_yaxes(autorange="reversed")
                 st.plotly_chart(fig, use_container_width=True)
 
