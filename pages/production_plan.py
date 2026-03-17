@@ -30,6 +30,7 @@ master = st.session_state.get('master_data', {})
 @st.cache_data(ttl=2)
 def get_master_data():
     try:
+        # Pulling specific columns to ensure po_delivery_date and revised_delivery_date are included
         plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
         prod_res = conn.table("production").select("*").order("created_at", desc=True).limit(100).execute()
         gate_master_res = conn.table("production_gates").select("*").order("step_order").execute()
@@ -42,8 +43,6 @@ def get_master_data():
     except Exception as e:
         st.error(f"Data Load Error: {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-df_projects, df_logs, df_master_gates, df_job_plans = get_master_data()
 
 # --- 4. DYNAMIC MAPPING ---
 all_staff = master.get('staff', [])
@@ -223,7 +222,104 @@ with tab_entry:
             csv_data = log_view.to_csv(index=False).encode('utf-8')
             dl_col.download_button("📥 Download CSV", data=csv_data, file_name="recent_logs.csv", mime='text/csv')
             
-            # Table Display (The compact version you prefer)
+            # Table Display (The compact version you prefer)# --- TAB 2: DAILY WORK ENTRY ---
+with tab_entry:
+    st.subheader("👷 Labor & Output Tracking")
+    
+    # --- FORM SECTION ---
+    with st.container(border=True):
+        f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
+        if f_job != "-- Select --":
+            # Correctly pulls ONLY active gates to prevent data entry errors
+            active_gates = df_job_plans[(df_job_plans['job_no'] == f_job) & (df_job_plans['current_status'] == 'Active')]['gate_name'].tolist()
+            if active_gates:
+                f_act = st.selectbox("🎯 Current Active Gate", active_gates)
+                with st.form("prod_form", clear_on_submit=True):
+                    f1, f2, f3 = st.columns(3)
+                    f_sup = f1.selectbox("Supervisor", ["-- Select --"] + all_staff)
+                    f_wrk = f1.selectbox("Worker/Engineer", ["-- Select --"] + all_workers)
+                    f_hrs = f2.number_input("Time Spent (Hrs)", min_value=0.0, max_value=24.0, step=0.5)
+                    f_out_val = f3.number_input("Output Quantity", min_value=0.0, step=0.1)
+                    f_unit = f3.selectbox("Unit of Measure", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Inches", "Joints"])
+                    f_nts = st.text_area("Work Details / Remarks")
+                    
+                    if st.form_submit_button("🚀 Log Progress"):
+                        if f_wrk == "-- Select --":
+                            st.error("Please select a Worker.")
+                        else:
+                            try:
+                                conn.table("production").insert({
+                                    "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
+                                    "Activity": f_act, "Hours": f_hrs, "Output": f_out_val,
+                                    "Unit": f_unit, "Notes": f_nts, 
+                                    "created_at": datetime.now(IST).isoformat()
+                                }).execute()
+                                st.cache_data.clear()
+                                st.success(f"Logged: {f_out_val} {f_unit}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+            else:
+                st.warning(f"⚠️ No gates are 'Active' for {f_job}. Start a gate in the Planning tab.")
+
+    st.divider()
+
+    # --- RECENT LOGS SECTION ---
+    st.markdown("### 🕒 Recent Entries (IST)")
+    if not df_logs.empty:
+        try:
+            display_logs = df_logs.copy()
+            # Standardize time for display
+            display_logs['Time (IST)'] = pd.to_datetime(
+                display_logs['created_at'], utc=True, format='ISO8601'
+            ).dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
+            
+            # --- ACTION BAR (Correction Tools) ---
+            with st.expander("🛠️ Correction Tools (Edit/Delete Last Entry)"):
+                last_row = display_logs.iloc[0]
+                c1, c2, c3 = st.columns([2, 2, 1])
+                c1.info(f"Last Log: {last_row['Worker']} ({last_row['Hours']} hrs)")
+                
+                if c2.button("✏️ Edit Last Entry"):
+                    @st.dialog("Edit Last Log")
+                    def edit_dialog(item):
+                        new_h = st.number_input("Hours", value=float(item['Hours']), step=0.5)
+                        new_q = st.number_input("Qty", value=float(item['Output']), step=0.1)
+                        if st.button("Save Changes"):
+                            conn.table("production").update({"Hours": new_h, "Output": new_q}).eq("id", item['id']).execute()
+                            st.cache_data.clear()
+                            st.rerun()
+                    edit_dialog(last_row)
+
+                if c3.button("🗑️ Delete Last", type="primary"):
+                    conn.table("production").delete().eq("id", last_row['id']).execute()
+                    st.cache_data.clear()
+                    st.rerun()
+
+            # --- SEARCH & DOWNLOAD ---
+            search_col, dl_col = st.columns([3, 1])
+            search_query = search_col.text_input("🔍 Search Worker or Job", "").lower()
+            
+            if search_query:
+                mask = (display_logs['Worker'].str.lower().str.contains(search_query) |
+                        display_logs['Job_Code'].str.lower().str.contains(search_query))
+                filtered_logs = display_logs[mask]
+            else:
+                filtered_logs = display_logs
+
+            # Compact Table Formatting
+            log_view = filtered_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(20)
+            log_view.columns = ['Time', 'Job', 'Process', 'Worker', 'Hrs', 'Qty', 'Unit', 'Remarks']
+            
+            csv_data = log_view.to_csv(index=False).encode('utf-8')
+            dl_col.download_button("📥 Download CSV", data=csv_data, file_name="recent_logs.csv", mime='text/csv')
+            
+            st.dataframe(log_view, use_container_width=True, hide_index=True)
+                        
+        except Exception as e:
+            st.error(f"Log Display Error: {e}")
+    else:
+        st.info("No logs found.")
             st.dataframe(log_view, use_container_width=True, hide_index=True)
                         
         except Exception as e:
