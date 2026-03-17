@@ -146,37 +146,37 @@ if not df_p.empty:
                             }).eq("id", i_db_id).execute()
                             st.toast("Saved"); st.rerun()
             
-          # --- SECTION 2: ITEMIZED FULFILLMENT (Full Width) ---
+         # --- SECTION 2: ITEMIZED FULFILLMENT (Full Width & Feature Complete) ---
 st.markdown(f'<div class="section-header">📋 Itemized Fulfillment ({len(job_items)})</div>', unsafe_allow_html=True)
 
 if job_items.empty:
     st.info("No specific material requests logged for this job.")
 else:
-    # IMPORTANT: Ensure items are sorted so they don't jump around after updates
-    job_items_sorted = job_items.sort_values('id').reset_index(drop=True)
-    
-    for i, i_row in job_items_sorted.iterrows():
-        i_db_id = i_row['id']
+    # FEATURE: One master container outside the loop to group all items for this job
+    with st.container(border=True):
+        # FEATURE: Sort ensures items don't jump around after an update
+        job_items_sorted = job_items.sort_values('id').reset_index(drop=True)
         
-        # FIX 1: ULTRA-UNIQUE KEY (Uses p_db_id, i_db_id and index i)
-        k_suffix = f"pur_{p_db_id}_{i_db_id}_{i}" 
-        
-        # FIX 2: IMPROVED PRODUCTION TRIGGER DETECTION
-        # Checks both Item Name and Specs for 'URGENT' or 'SHOP'
-        item_name_upper = str(i_row.get('item_name', '')).upper()
-        item_spec_upper = str(i_row.get('specs', '')).upper()
-        
-        is_urgent_prod = any(x in item_name_upper for x in ["SHOP", "URGENT"]) or \
-                         any(x in item_spec_upper for x in ["SHOP", "URGENT"])
-        
-        with st.container(border=True):
+        for i, i_row in job_items_sorted.iterrows():
+            i_db_id = i_row['id']
+            
+            # FIX: ULTRA-UNIQUE KEY (Combines Project ID, Item ID, and Loop Index)
+            k_suffix = f"pur_{p_db_id}_{i_db_id}_{i}" 
+            
+            # FEATURE: PROPER PRODUCTION TRIGGER DETECTION (Checks Name and Specs)
+            item_name_upper = str(i_row.get('item_name', '')).upper()
+            item_spec_upper = str(i_row.get('specs', '')).upper()
+            
+            is_urgent_prod = any(x in item_name_upper for x in ["SHOP", "URGENT"]) or \
+                             any(x in item_spec_upper for x in ["SHOP", "URGENT"])
+            
+            # --- ROW START ---
             ic1, ic2, ic3, ic4 = st.columns([1.5, 2.5, 1, 0.8])
             
             # Column 1: Source & Item Details
             with ic1:
                 if is_urgent_prod:
                     st.markdown('<span class="tag-prod">🏗️ FROM PRODUCTION</span>', unsafe_allow_html=True)
-                    # Visual cue for Purchase Team
                     st.error("🚨 URGENT REQUISITION")
                 else:
                     st.markdown('<span class="tag-anchor">⚓ FROM ANCHOR</span>', unsafe_allow_html=True)
@@ -193,14 +193,14 @@ else:
                 value=i_reply_val, 
                 key=f"irep_{k_suffix}", 
                 height=80,
-                placeholder="Enter action taken, PO numbers, or ETAs..."
+                placeholder="Enter action, POs, or ETAs...",
+                label_visibility="visible" # Kept visible as per your preference for clarity
             )
             
             # Column 3: Item Status
             i_opts = ["Triggered", "Sourcing", "Ordered", "Received", "Urgent"]
             curr_i_stat = str(i_row.get('status', 'Triggered'))
             
-            # Safe index finding
             try:
                 def_i_idx = i_opts.index(curr_i_stat)
             except ValueError:
@@ -227,5 +227,9 @@ else:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Update failed: {e}")
+            
+            # FEATURE: Visual divider between items within the same container
+            if i < len(job_items_sorted) - 1:
+                st.divider()
 
 st.write(" ") # Spacer
