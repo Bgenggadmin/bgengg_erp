@@ -269,55 +269,79 @@ with tab_entry:
 
 # --- TAB 3: ANALYTICS & GANTT (FIXED SECTION) ---
 with tab_analytics:
-    st.subheader("📊 Performance Analytics")
+    with tab_analytics:
+    st.subheader("📊 Production Reports & Exports")
     
-    if not df_job_plans.empty:
-        gantt_list = []
-        for _, row in df_job_plans.iterrows():
-            # Add Planned Bars
-            if not pd.isna(row.get('planned_start_date')) and not pd.isna(row.get('planned_end_date')):
-                gantt_list.append(dict(
-                    Job=f"{row['job_no']}", 
-                    Start=row['planned_start_date'], 
-                    Finish=row['planned_end_date'], 
-                    Type='Planned', 
-                    Gate=row['gate_name']
-                ))
-            # Add Actual Bars
-            if row.get('actual_start_date'):
-                a_finish = row['actual_end_date'] if row.get('actual_end_date') else datetime.now(IST).isoformat()
-                gantt_list.append(dict(
-                    Job=f"{row['job_no']}", 
-                    Start=row['actual_start_date'], 
-                    Finish=a_finish, 
-                    Type='Actual', 
-                    Gate=row['gate_name']
-                ))
+    # --- 1. FILTERS ---
+    with st.container(border=True):
+        f1, f2, f3 = st.columns([2, 2, 2])
+        
+        # Date Range Selection
+        today = date.today()
+        # Default to showing the last 7 days
+        d_range = f1.date_input("Select Period (Weekly/Monthly)", [today - timedelta(days=7), today])
+        
+        # Multi-select for Jobs and Workers
+        f_jobs = f2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
+        f_staff = f3.multiselect("Filter Workers", all_workers, default=all_workers)
 
-        if gantt_list:
-            df_g = pd.DataFrame(gantt_list)
-            
-            # --- FIX: FORCE UNIFIED DATETIME & REMOVE TIMEZONES ---
-            df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce').dt.tz_localize(None)
-            df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce').dt.tz_localize(None)
-            df_g = df_g.dropna(subset=['Start', 'Finish'])
-            
-            if not df_g.empty:
-                # Remove barmode='group' from function call
-                fig = px.timeline(
-                    df_g, 
-                    x_start="Start", 
-                    x_end="Finish", 
-                    y="Job", 
-                    color="Type",
-                    hover_data=["Gate"], 
-                    color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"}
-                )
-                
-                # --- FIX: SET BARMODE IN LAYOUT ---
-                fig.update_layout(barmode='group')
-                fig.update_yaxes(autorange="reversed")
-                st.plotly_chart(fig, use_container_width=True)
+    # --- 2. DATA PROCESSING ---
+    if not df_logs.empty and len(d_range) == 2:
+        # Filter logic
+        df_logs['date_only'] = pd.to_datetime(df_logs['created_at']).dt.date
+        mask = (
+            (df_logs['date_only'] >= d_range[0]) & 
+            (df_logs['date_only'] <= d_range[1]) &
+            (df_logs['Job_Code'].isin(f_jobs)) &
+            (df_logs['Worker'].isin(f_staff))
+        )
+        report_df = df_logs.loc[mask].copy()
+
+        # --- 3. DUAL VIEW SUMMARIES ---
+        st.divider()
+        col_left, col_right = st.columns(2)
+
+        with col_left:
+            st.markdown("#### 🏗️ Job-Wise Effort")
+            # Shows which processes are eating time on each job
+            job_summary = report_df.groupby(['Job_Code', 'Activity'])['Hours'].sum().unstack(fill_value=0)
+            st.dataframe(job_summary, use_container_width=True)
+
+        with col_right:
+            st.markdown("#### 👷 Worker-Wise Effort")
+            # Shows how workers are split across different jobs
+            worker_summary = report_df.groupby(['Worker', 'Job_Code'])['Hours'].sum().reset_index()
+            st.dataframe(worker_summary, use_container_width=True)
+
+        # --- 4. THE EXPORT BUTTONS ---
+        st.markdown("### 📥 Download CSV Reports")
+        d1, d2, d3 = st.columns(3)
+
+        def to_csv(df):
+            return df.to_csv(index=True if isinstance(df, pd.DataFrame) and not df.index.name is None else False).encode('utf-8')
+
+        d1.download_button(
+            "📄 Full Detailed Log (Includes Notes)", 
+            data=to_csv(report_df), 
+            file_name=f"Detailed_Logs_{d_range[0]}_to_{d_range[1]}.csv",
+            use_container_width=True
+        )
+        
+        d2.download_button(
+            "🏗️ Job Matrix Export", 
+            data=to_csv(job_summary), 
+            file_name=f"Job_Effort_Matrix_{today}.csv",
+            use_container_width=True
+        )
+
+        d3.download_button(
+            "👷 Worker Job-Split Export", 
+            data=to_csv(worker_summary), 
+            file_name=f"Worker_Job_Distribution_{today}.csv",
+            use_container_width=True
+        )
+    else:
+        st.info("Please select a full date range (Start and End date) to see the reports.")
 
 # --- TAB 4: MASTER SETTINGS (Robust Version) ---
 with tab_master:
