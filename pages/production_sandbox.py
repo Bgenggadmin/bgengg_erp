@@ -31,7 +31,7 @@ master = st.session_state.get('master_data', {})
 @st.cache_data(ttl=2)
 def get_master_data():
     try:
-       p_res = conn.table("anchor_projects").select("job_no, status, po_date, po_delivery_date, revised_delivery_date").eq("status", "Won").execute()
+        p_res = conn.table("anchor_projects").select("job_no, status, po_date, po_delivery_date, revised_delivery_date").eq("status", "Won").execute()
         l_res = conn.table("production").select("*").order("created_at", desc=True).execute()
         m_res = conn.table("production_gates").select("*").order("step_order").execute()
         j_res = conn.table("job_planning").select("*").order("step_order").execute()
@@ -64,49 +64,37 @@ with tab_plan:
     st.subheader("📋 Production Control Center")
     target_job = st.selectbox("Select Job to Manage", ["-- Select --"] + all_jobs)
     
-   if target_job != "-- Select --":
-    # A. DELIVERY DASHBOARD
+    if target_job != "-- Select --":
+        # A. DELIVERY DASHBOARD
         proj_match = df_projects[df_projects['job_no'] == target_job]
         if not proj_match.empty:
             p_data = proj_match.iloc[0]
             with st.container(border=True):
-                # Safe extraction of the three anchor dates
                 po_placed_dt = pd.to_datetime(p_data.get('po_date')).date() if pd.notnull(p_data.get('po_date')) else None
                 po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) else None
                 rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) else None
                 
-                # Layout: 4 Columns
                 c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
-                
                 c1.write(f"📅 **PO Date**\n{po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else 'Not Set'}")
                 c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else 'Not Set'}")
                 c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else 'None'}")
                 
-                # Metric calculation
                 final_target = rev_dt if rev_dt else po_disp_dt
                 if final_target:
                     days_left = (final_target - date.today()).days
                     c4.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
 
-                # Edit Schedule logic
                 if st.button("📝 Edit Schedule", key="edit_delivery"):
                     @st.dialog("Update Dates")
                     def update_dates():
                         n_po_disp = st.date_input("Original PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
                         n_rev = st.date_input("Revised Delivery Date", value=rev_dt if rev_dt else n_po_disp)
                         if st.button("Save Changes"):
-                            try:
-                                conn.table("anchor_projects").update({
-                                    "po_delivery_date": str(n_po_disp), 
-                                    "revised_delivery_date": str(n_rev)
-                                }).eq("job_no", target_job).execute()
-                                st.cache_data.clear()
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Update failed: {e}")
+                            conn.table("anchor_projects").update({"po_delivery_date": str(n_po_disp), "revised_delivery_date": str(n_rev)}).eq("job_no", target_job).execute()
+                            st.cache_data.clear(); st.rerun()
                     update_dates()
-       
-       # B. URGENT MATERIAL TRIGGER
+
+        # B. URGENT MATERIAL TRIGGER
         with st.expander("🚨 Trigger Urgent Purchase Requisition", expanded=False):
             with st.form("urgent_purchase_form", clear_on_submit=True):
                 r1, r2, r3 = st.columns([2, 1, 1])
@@ -118,12 +106,12 @@ with tab_plan:
                     if it_name and it_qty:
                         conn.table("purchase_orders").insert({
                             "job_no": target_job, "item_name": it_name,
-                            "specs": f"URGENT (Need by {it_date.strftime('%d-%b')}): {it_specs} (Qty: {it_qty})",
+                            "specs": f"URGENT (By {it_date.strftime('%d-%b')}): {it_specs} (Qty: {it_qty})",
                             "status": "Triggered", "created_at": datetime.now(IST).isoformat()
                         }).execute()
-                        st.cache_data.clear(); st.success("Urgent request sent!"); st.rerun()
+                        st.cache_data.clear(); st.success("Sent!"); st.rerun()
 
-        # C. MATERIAL STATUS CHECKLIST
+        # C. MATERIAL STATUS
         with st.expander("🛒 Current Material Status", expanded=False):
             job_purchase = df_purchase[df_purchase['job_no'] == target_job] if not df_purchase.empty else pd.DataFrame()
             if not job_purchase.empty:
@@ -131,22 +119,18 @@ with tab_plan:
                     pc1, pc2, pc3 = st.columns([2, 2, 1])
                     pc1.write(f"🔹 **{p_item['item_name']}**")
                     pc2.caption(f"{p_item['specs']}")
-                    status_val = p_item['status']
-                    if status_val == "Received": pc3.success(status_val)
-                    elif status_val == "Ordered": pc3.info(status_val)
-                    else: pc3.warning(status_val)
-            else:
-                st.info("No materials tracked for this job.")
+                    if p_item['status'] == "Received": pc3.success(p_item['status'])
+                    else: pc3.warning(p_item['status'])
+            else: st.info("No materials tracked.")
 
         st.divider()
 
         # D. PLANNING TOOLS
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
         
-        # D1. CLONE SEQUENCE (Only shown if plan is empty)
         if current_job_steps.empty:
             st.warning("⚠️ No Plan Detected")
-            src_job = st.selectbox("Clone from Job Template:", ["-- Select --"] + all_jobs, key="clone_src")
+            src_job = st.selectbox("Clone from Template:", ["-- Select --"] + all_jobs, key="clone_src")
             if st.button("🚀 Clone Sequence") and src_job != "-- Select --":
                 source_steps = df_job_plans[df_job_plans['job_no'] == src_job]
                 if not source_steps.empty:
@@ -154,7 +138,6 @@ with tab_plan:
                     conn.table("job_planning").insert(new_steps).execute()
                     st.cache_data.clear(); st.rerun()
 
-        # D2. ADD NEW GATE (RESTORED IMPORTANT FEATURE - ALWAYS AVAILABLE)
         with st.expander("➕ Add Single Gate to Plan", expanded=False):
             with st.form("add_gate_form", clear_on_submit=True):
                 sc1, sc2, sc3 = st.columns([2, 2, 1])
@@ -163,20 +146,10 @@ with tab_plan:
                 ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
                 if st.form_submit_button("🚀 Add to Plan"):
                     if len(ng_dates) == 2:
-                        conn.table("job_planning").insert({
-                            "job_no": target_job, "gate_name": ng_gate, "step_order": ng_order,
-                            "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(),
-                            "current_status": "Pending"
-                        }).execute()
+                        conn.table("job_planning").insert({"job_no": target_job, "gate_name": ng_gate, "step_order": ng_order, "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(), "current_status": "Pending"}).execute()
                         st.cache_data.clear(); st.rerun()
 
-        # D3. MANAGE SEQUENCE
         if not current_job_steps.empty:
-            valid_dates = pd.to_datetime(current_job_steps['planned_end_date'], errors='coerce').dropna()
-            if not valid_dates.empty:
-                edd = valid_dates.max().date()
-                st.info(f"📅 **Projected Completion (EDD): {edd.strftime('%d %b %Y')}**")
-
             with st.expander("📝 Manage Sequence & Dates", expanded=False):
                 for _, edit_row in current_job_steps.sort_values('step_order').iterrows():
                     e_id = edit_row['id']
@@ -191,7 +164,6 @@ with tab_plan:
                         if ec4.button("🗑️", key=f"dl_{e_id}"):
                             conn.table("job_planning").delete().eq("id", e_id).execute(); st.cache_data.clear(); st.rerun()
 
-            # E. EXECUTION FLOW
             st.subheader(f"🏁 Execution: {target_job}")
             for _, row in current_job_steps.sort_values('step_order').iterrows():
                 p_end = pd.to_datetime(row['planned_end_date']).date() if pd.notnull(row['planned_end_date']) else None
@@ -213,8 +185,7 @@ with tab_plan:
                         if col4.button("✅ Close", key=f"cl_{row['id']}"):
                             conn.table("job_planning").update({"current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
-                    else:
-                        col2.success("🏁 Completed")
+                    else: col2.success("🏁 Completed")
 
 # --- TAB 2: DAILY ENTRY ---
 with tab_entry:
@@ -235,67 +206,38 @@ with tab_entry:
                     st.cache_data.clear(); st.success("Logged!"); st.rerun()
 
     st.divider()
-    st.markdown("### 🕒 Recent Entries (IST)")
     if not df_logs.empty:
-        try:
-            display_logs = df_logs.copy()
-            display_logs['created_at_dt'] = pd.to_datetime(display_logs['created_at'], utc=True, errors='coerce')
-            display_logs = display_logs.dropna(subset=['created_at_dt'])
-            display_logs['Time (IST)'] = display_logs['created_at_dt'].dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
-            
-            with st.expander("🛠️ Correction Tools"):
-                last_row = display_logs.iloc[0]
-                c1, c2, c3 = st.columns([2, 2, 1])
-                c1.info(f"Last Log: {last_row['Worker']}")
-                if c2.button("✏️ Edit Last"):
-                    @st.dialog("Edit Log")
-                    def edit_log(item):
-                        nh = st.number_input("Hrs", value=float(item['Hours']))
-                        nq = st.number_input("Qty", value=float(item['Output']))
-                        if st.button("Save"):
-                            conn.table("production").update({"Hours": nh, "Output": nq}).eq("id", item['id']).execute()
-                            st.cache_data.clear(); st.rerun()
-                    edit_log(last_row)
-                if c3.button("🗑️ Delete", type="primary"):
-                    conn.table("production").delete().eq("id", last_row['id']).execute()
-                    st.cache_data.clear(); st.rerun()
-
-            st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit']].head(20), use_container_width=True, hide_index=True)
-        except Exception as e:
-            st.error(f"Display Error: {e}")
+        display_logs = df_logs.copy()
+        display_logs['dt'] = pd.to_datetime(display_logs['created_at'], utc=True, errors='coerce')
+        display_logs = display_logs.dropna(subset=['dt'])
+        display_logs['Time (IST)'] = display_logs['dt'].dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
+        
+        with st.expander("🛠️ Correction Tools"):
+            last_row = display_logs.iloc[0]
+            c1, c2, c3 = st.columns([2, 2, 1])
+            c1.info(f"Last Log: {last_row['Worker']}")
+            if c2.button("✏️ Edit Last"):
+                @st.dialog("Edit Log")
+                def edit_log(item):
+                    nh = st.number_input("Hrs", value=float(item['Hours']))
+                    nq = st.number_input("Qty", value=float(item['Output']))
+                    if st.button("Save"):
+                        conn.table("production").update({"Hours": nh, "Output": nq}).eq("id", item['id']).execute()
+                        st.cache_data.clear(); st.rerun()
+                edit_log(last_row)
+            if c3.button("🗑️ Delete", type="primary"):
+                conn.table("production").delete().eq("id", last_row['id']).execute()
+                st.cache_data.clear(); st.rerun()
+        st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit']].head(20), use_container_width=True, hide_index=True)
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     if not df_logs.empty:
-        df_logs['dt'] = pd.to_datetime(df_logs['created_at'], utc=True, errors='coerce')
-        df_logs = df_logs.dropna(subset=['dt'])
-        df_logs['dt'] = df_logs['dt'].dt.tz_convert(IST)
+        df_logs['dt'] = pd.to_datetime(df_logs['created_at'], utc=True, errors='coerce').dt.tz_convert(IST)
         df_logs['date_only'] = df_logs['dt'].dt.date
         df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce').fillna(0)
-        
-        with st.container(border=True):
-            f1, f2, f3 = st.columns(3)
-            today = date.today()
-            period = f1.selectbox("Period", ["Last 7 Days", "Current Month", "Custom"])
-            if period == "Last 7 Days": d_range = [today - timedelta(days=7), today]
-            elif period == "Current Month": d_range = [today.replace(day=1), today]
-            else: d_range = f1.date_input("Range", [today - timedelta(days=30), today])
-            
-            f_jobs = f2.multiselect("Jobs", all_jobs, default=all_jobs)
-            f_staff_sel = f3.multiselect("Workers", all_workers, default=all_workers)
-
-        if len(d_range) == 2:
-            mask = (df_logs['date_only'] >= d_range[0]) & (df_logs['date_only'] <= d_range[1]) & (df_logs['Job_Code'].isin(f_jobs)) & (df_logs['Worker'].isin(f_staff_sel))
-            rdf = df_logs.loc[mask]
-            if not rdf.empty:
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Total Hrs", f"{rdf['Hours'].sum():.1f}")
-                m2.metric("Workers", rdf['Worker'].nunique())
-                m3.metric("Jobs", rdf['Job_Code'].nunique())
-                st.bar_chart(rdf.groupby('Job_Code')['Hours'].sum())
-            else:
-                st.warning("No data found.")
+        st.bar_chart(df_logs.groupby('Job_Code')['Hours'].sum())
 
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
