@@ -32,7 +32,7 @@ master = st.session_state.get('master_data', {})
 def get_master_data():
     try:
         # FIXED: Removed 'po_date' as it does not exist in your Supabase table
-        p_res = conn.table("anchor_projects").select("job_no, status, po_delivery_date, revised_delivery_date").eq("status", "Won").execute()
+        p_res = conn.table("anchor_projects").select("job_no, status, po_no, po_date, po_delivery_date, revised_delivery_date").eq("status", "Won").execute()
         l_res = conn.table("production").select("*").order("created_at", desc=True).execute()
         m_res = conn.table("production_gates").select("*").order("step_order").execute()
         j_res = conn.table("job_planning").select("*").order("step_order").execute()
