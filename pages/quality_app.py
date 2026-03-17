@@ -11,32 +11,25 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G Quality Portal", layout="wide", page_icon="🔍")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS (Updated for Troubleshooting) ---
+# --- 2. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
-    # 1. Pull Jobs
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
-    
-    # 2. Pull Staff - Updated with error handling
     try:
-        # Check if your table is named 'master_staff' or 'staff_master'
         staff_res = conn.table("master_staff").select("name").execute()
         staff_list = sorted([s['name'] for s in staff_res.data]) if staff_res.data else []
     except Exception as e:
         st.error(f"⚠️ Master Staff Error: {e}")
-        staff_list = [] # Returns empty list if table not found
-    
+        staff_list = []
     return pd.DataFrame(plan_res.data or []), staff_list
 
 df_plan, authorized_inspectors = get_quality_context()
 
 # --- 3. UI: QUALITY INSPECTION FORM ---
 st.title("🔍 Quality Assurance Portal")
-st.info("Authorized Inspection & Evidence Upload")
 
 if not df_plan.empty:
     c1, c2 = st.columns(2)
-    
     unique_jobs = sorted(df_plan['job_no'].unique())
     sel_job = c1.selectbox("🏗️ Select Job Number", ["-- Select --"] + unique_jobs)
 
@@ -52,74 +45,64 @@ if not df_plan.empty:
             f_col1, f_col2 = st.columns(2)
             
             with f_col1:
-                q_status = st.segmented_control(
-                    "Inspection Result", 
-                    ["✅ Pass", "❌ Reject", "⚠️ Rework"], 
-                    default="✅ Pass"
-                )
-                # Inspector from Master Settings
+                q_status = st.segmented_control("Result", ["✅ Pass", "❌ Reject", "⚠️ Rework"], default="✅ Pass")
                 inspector = st.selectbox("Authorized Inspector", ["-- Select Name --"] + authorized_inspectors)
-                q_notes = st.text_area("Technical Observations", placeholder="Enter specific details about the weld, buffing, or fitment...")
+                q_notes = st.text_area("Technical Observations")
 
             with f_col2:
-                q_photo = st.file_uploader("Capture Photo (Max 60KB Auto-Resize)", type=['png', 'jpg', 'jpeg'])
-                st.caption("Upload will automatically resize to passport dimensions and compress to ~60KB.")
+                # UPDATED: Accept up to 4 files
+                q_photos = st.file_uploader("Upload Evidence (Max 4 photos, 60KB each)", 
+                                           type=['png', 'jpg', 'jpeg'], 
+                                           accept_multiple_files=True)
+                st.caption("Auto-resizing to Passport size and compressing...")
 
             if st.form_submit_button("🚀 Submit Quality Report", use_container_width=True):
                 if inspector == "-- Select Name --":
-                    st.error("Please select an authorized inspector name.")
+                    st.error("Please select an authorized inspector.")
+                elif len(q_photos) > 4:
+                    st.error("Maximum 4 photos allowed.")
                 else:
                     try:
-                        photo_url = None
+                        all_urls = []
                         
-                        # --- PHOTO PROCESSING & UPLOAD ---
-                        if q_photo is not None:
-                            # 1. Open and Resize (Passport Size Proportions)
-                            img = Image.open(q_photo)
-                            img.thumbnail((500, 500)) 
+                        # PROCESS EACH PHOTO
+                        for i, photo_file in enumerate(q_photos):
+                            img = Image.open(photo_file)
+                            img.thumbnail((400, 500)) # Passport size dimensions
                             
-                            # 2. Compress to Bytes
                             buffer = io.BytesIO()
-                            # Start with 70% quality
-                            img.save(buffer, format="JPEG", quality=70, optimize=True)
+                            img.save(buffer, format="JPEG", quality=60, optimize=True)
                             
-                            # 3. Aggressive compression if still > 60KB
+                            # Strict 60KB check
                             if buffer.tell() > 60 * 1024:
                                 buffer = io.BytesIO()
-                                img.save(buffer, format="JPEG", quality=50, optimize=True)
+                                img.save(buffer, format="JPEG", quality=40, optimize=True)
                             
-                            file_bytes = buffer.getvalue()
-                            clean_job = str(sel_job).replace("/", "-")
-                            file_name = f"{clean_job}_{sel_stage}_{datetime.now().strftime('%H%M%S')}.jpg"
+                            file_name = f"{str(sel_job).replace('/', '-')}_{sel_stage}_{i}_{datetime.now().strftime('%H%M%S')}.jpg"
                             
-                            # 4. Upload using conn.client.storage
                             conn.client.storage.from_("quality-photos").upload(
-                                path=file_name,
-                                file=file_bytes,
+                                path=file_name, file=buffer.getvalue(),
                                 file_options={"content-type": "image/jpeg"}
                             )
-                            photo_url = conn.client.storage.from_("quality-photos").get_public_url(file_name)
+                            url = conn.client.storage.from_("quality-photos").get_public_url(file_name)
+                            all_urls.append(url)
 
-                        # --- DATABASE UPDATE ---
+                        # UPDATE DATABASE (Save as Array)
                         conn.table("job_planning").update({
                             "quality_status": q_status,
                             "quality_notes": f"{datetime.now(IST).strftime('%d/%m %H:%M')}: {q_notes}",
                             "quality_by": inspector,
-                            "quality_photo_url": photo_url,
+                            "quality_photo_url": all_urls, # Sending list/array
                             "quality_updated_at": datetime.now(IST).isoformat()
                         }).eq("id", stage_record['id']).execute()
                         
-                        st.success(f"Quality Clearances Recorded for {sel_job}!")
+                        st.success(f"Successfully recorded with {len(all_urls)} photos!")
                         st.cache_data.clear()
                         st.rerun()
-                        
                     except Exception as e:
                         st.error(f"Submission Error: {e}")
 
-else:
-    st.warning("No active jobs found in the production plan.")
-
-# --- 4. SUMMARY VIEW & PHOTO PREVIEW ---
+# --- 4. SUMMARY VIEW & GALLERY ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
 
@@ -127,21 +110,17 @@ if not df_plan.empty:
     inspected_df = df_plan.dropna(subset=['quality_status']).sort_values(by='quality_updated_at', ascending=False)
     
     if not inspected_df.empty:
-        # Display as a clean list
-        st.dataframe(
-            inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']],
-            use_container_width=True, hide_index=True
-        )
+        st.dataframe(inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']], use_container_width=True, hide_index=True)
 
-        # Photo Previewer
-        st.markdown("### 🖼️ Evidence Preview")
-        photo_list = inspected_df[inspected_df['quality_photo_url'].notna()]
+        st.markdown("### 🖼️ Evidence Gallery")
+        # Filter rows that have photos (checking if list is not empty)
+        photo_rows = inspected_df[inspected_df['quality_photo_url'].apply(lambda x: len(x) > 0 if isinstance(x, list) else False)]
         
-        if not photo_list.empty:
-            options = photo_list.apply(lambda x: f"{x['job_no']} - {x['gate_name']}", axis=1).tolist()
-            selection = st.selectbox("Select record to view photo:", options)
+        if not photo_rows.empty:
+            sel_row_idx = st.selectbox("Select Job to View Photos", photo_rows.index, 
+                                      format_func=lambda x: f"{photo_rows.loc[x, 'job_no']} - {photo_rows.loc[x, 'gate_name']}")
             
-            selected_row = photo_list[photo_list.apply(lambda x: f"{x['job_no']} - {x['gate_name']}", axis=1) == selection].iloc[0]
-            st.image(selected_row['quality_photo_url'], caption=f"QC Proof: {selection}", use_container_width=True)
-        else:
-            st.info("No photos uploaded for recent inspections.")
+            urls = photo_rows.loc[sel_row_idx, 'quality_photo_url']
+            cols = st.columns(len(urls))
+            for i, url in enumerate(urls):
+                cols[i].image(url, use_container_width=True)
