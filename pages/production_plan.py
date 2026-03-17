@@ -132,6 +132,7 @@ with tab_plan:
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     
+    # --- FORM SECTION ---
     with st.container(border=True):
         f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
         if f_job != "-- Select --":
@@ -168,36 +169,58 @@ with tab_entry:
 
     st.divider()
 
-    # --- RECENT LOGS WITH DOWNLOAD ---
-    st.markdown("### 🕒 Recent Entries (IST)")
+    # --- RECENT LOGS WITH EDIT/DELETE ---
+    st.markdown("### 🕒 Recent Entries & Corrections")
     if not df_logs.empty:
         try:
             display_logs = df_logs.copy()
-            display_logs['created_at'] = pd.to_datetime(
+            # Standardize time
+            display_logs['created_at_ist'] = pd.to_datetime(
                 display_logs['created_at'], utc=True, format='ISO8601'
             ).dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
             
+            # 1. Quick Correction Area (Edits the most recent entry)
+            with st.expander("✏️ Quick Edit Last Entry"):
+                last_entry = display_logs.iloc[0]
+                with st.form("edit_form"):
+                    e1, e2 = st.columns(2)
+                    new_hrs = e1.number_input("Correct Hours", value=float(last_entry['Hours']), step=0.5)
+                    new_qty = e2.number_input("Correct Qty", value=float(last_entry['Output']), step=0.1)
+                    new_notes = st.text_input("Correct Remarks", value=last_entry['Notes'])
+                    if st.form_submit_button("Update Last Entry"):
+                        conn.table("production").update({
+                            "Hours": new_hrs, "Output": new_qty, "Notes": new_notes
+                        }).eq("id", last_entry['id']).execute()
+                        st.cache_data.clear()
+                        st.rerun()
+
+            # 2. Search and Download Row
             c1, c2 = st.columns([3, 1])
-            search_query = c1.text_input("🔍 Search Logs", "").lower()
+            search_query = c1.text_input("🔍 Search Logs", key="search_logs_entry").lower()
             
             if search_query:
                 mask = (display_logs['Worker'].str.lower().str.contains(search_query) |
-                        display_logs['Job_Code'].str.lower().str.contains(search_query) |
-                        display_logs['Activity'].str.lower().str.contains(search_query))
+                        display_logs['Job_Code'].str.lower().str.contains(search_query))
                 filtered_logs = display_logs[mask]
             else:
                 filtered_logs = display_logs
 
-            log_view = filtered_logs[['created_at', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(20)
-            log_view.columns = ['Time (IST)', 'Job', 'Process', 'Worker', 'Hrs', 'Qty', 'Unit', 'Remarks']
-            
-            # Download Logic
-            csv_data = log_view.to_csv(index=False).encode('utf-8')
-            c2.download_button(label="📥 Download CSV", data=csv_data, file_name=f"prod_logs_{date.today()}.csv", mime='text/csv')
-            
-            st.dataframe(log_view, use_container_width=True, hide_index=True)
+            # 3. List with Delete Action
+            for _, row in filtered_logs.head(10).iterrows():
+                with st.container(border=True):
+                    col_a, col_b, col_c = st.columns([4, 1, 1])
+                    col_a.markdown(f"**{row['Worker']}** | {row['Job_Code']} - {row['Activity']}  \n"
+                                   f"*{row['created_at_ist']}* — {row['Hours']} Hrs, {row['Output']} {row['Unit']}")
+                    
+                    if col_c.button("🗑️", key=f"del_{row['id']}", help="Delete this log"):
+                        conn.table("production").delete().eq("id", row['id']).execute()
+                        st.cache_data.clear()
+                        st.rerun()
+                        
         except Exception as e:
             st.error(f"Log Display Error: {e}")
+    else:
+        st.info("No logs found for today yet.")
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
