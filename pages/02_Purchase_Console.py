@@ -20,17 +20,28 @@ st.markdown("""
 
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS ---
+# --- 2. UPDATED DATA LOADERS ---
 @st.cache_data(ttl=5)
 def get_full_purchase_data():
-    # FIXED: Added safety check for .data to prevent AttributeError on failure
-    proj = conn.table("anchor_projects").select("*").eq("purchase_trigger", True).execute()
-    items = conn.table("purchase_orders").select("*").execute()
-    return pd.DataFrame(proj.data or []), pd.DataFrame(items.data or [])
-
-df_p, df_items = get_full_purchase_data()
-
-st.title("🛒 Purchase Integration Console")
+    # 1. Get all items from purchase_orders
+    items_res = conn.table("purchase_orders").select("*").execute()
+    df_items = pd.DataFrame(items_res.data or [])
+    
+    # 2. Get all projects that either have the flag OR have items in the list
+    proj_res = conn.table("anchor_projects").select("*").execute()
+    df_all_proj = pd.DataFrame(proj_res.data or [])
+    
+    if not df_items.empty and not df_all_proj.empty:
+        # Get unique job numbers that have pending purchase items
+        active_job_nos = df_items['job_no'].unique()
+        # Filter projects: show if flag is True OR if it has active items
+        df_p = df_all_proj[
+            (df_all_proj['purchase_trigger'] == True) | 
+            (df_all_proj['job_no'].isin(active_job_nos))
+        ]
+        return df_p, df_items
+        
+    return pd.DataFrame(proj_res.data or []), df_items
 
 # --- 3. ANALYTICS (Kept from earlier layout) ---
 if not df_p.empty:
