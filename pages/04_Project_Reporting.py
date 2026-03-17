@@ -6,8 +6,7 @@ import tempfile
 import os
 import pandas as pd
 
-# 1. SETUP
-st.set_page_config(page_title="B&G Hub 2.0", layout="wide", page_icon="📈")
+# 1. SETUP (st.set_page_config removed for Multi-page app compatibility)
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. MASTER MAPPING
@@ -25,7 +24,7 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- PDF ENGINE (WITH VISUAL PROGRESS BARS) ---
+# --- PDF ENGINE (FIXED FOR TYPEERROR) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -40,7 +39,6 @@ def generate_pdf(logs):
 
     for log in logs:
         pdf.add_page()
-        # Header Blue Background
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
         pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
@@ -60,17 +58,14 @@ def generate_pdf(logs):
                 pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
             else: pdf.ln(7)
 
-        # --- VISUAL OVERALL PROGRESS BAR ---
         pdf.ln(5)
         ov_p = int(log.get('overall_progress', 0))
-        pdf.set_font("Arial", "B", 10)
-        pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
+        pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
         pdf.set_fill_color(230, 230, 230); pdf.rect(65, pdf.get_y() + 2, 120, 4, 'F')
         if ov_p > 0:
             pdf.set_fill_color(0, 102, 204); pdf.rect(65, pdf.get_y() + 2, (ov_p/100)*120, 4, 'F')
         pdf.ln(10)
 
-        # Milestone Table
         pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
@@ -84,18 +79,20 @@ def generate_pdf(logs):
             pdf.cell(50, 10, f" {label}", 1)
             pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
             
-            # Mini Progress Bar inside Table Cell
             curr_x, curr_y = pdf.get_x(), pdf.get_y()
-            pdf.cell(30, 10, "", 1, 0) # Cell border
+            pdf.cell(30, 10, "", 1, 0)
             pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
             if m_p > 0:
                 pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (m_p/100)*24, 2, 'F')
             pdf.set_xy(curr_x + 30, curr_y)
-            
             pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-    if logo_path: os.unlink(logo_path)
-    return bytes(pdf.output())
+    if logo_path:
+        try: os.unlink(logo_path)
+        except: pass
+    
+    # FIX: Ensure byte conversion is safe for Streamlit download button
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- DATA FETCH ---
 @st.cache_data(ttl=600)
@@ -107,7 +104,6 @@ def get_master_data():
     except: return [], []
 
 customers, jobs = get_master_data()
-
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
 
 # --- TAB 1: NEW ENTRY ---
@@ -154,7 +150,6 @@ with tab1:
             
             prev_status = last_data.get(skey, "Pending")
             def_idx = opts.index(prev_status) if prev_status in opts else 0
-            
             prev_prog = int(last_data.get(pk, 0))
             prev_note = last_data.get(nkey, "") or ""
             
@@ -176,7 +171,6 @@ with tab1:
                     "overall_progress": f_progress, **m_responses
                 }
                 res = conn.table("progress_logs").insert(payload).execute()
-                
                 if cam_photo and res.data:
                     file_id = res.data[0]['id']
                     conn.client.storage.from_("progress-photos").upload(f"{file_id}.jpg", cam_photo.getvalue())
@@ -187,11 +181,18 @@ with tab1:
 # --- TAB 2: ARCHIVE ---
 with tab2:
     st.subheader("📂 Report Archive")
-    query = conn.table("progress_logs").select("*").order("id", desc=True).execute()
-    logs = query.data if query.data else []
+    # FIX: Cache the archive fetch or handle empty states
+    try:
+        query = conn.table("progress_logs").select("*").order("id", desc=True).limit(50).execute()
+        logs = query.data if query and query.data else []
+    except:
+        logs = []
     
     if logs:
-        st.download_button("📥 Download PDF Report", data=generate_pdf(logs), file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
+        # Generate PDF data for all filtered logs
+        pdf_bytes = generate_pdf(logs)
+        st.download_button("📥 Download Combined PDF Report", data=pdf_bytes, file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
+        
         for log in logs:
             with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')}"):
                 ov_p = int(log.get('overall_progress', 0))
@@ -208,20 +209,26 @@ with tab2:
                         st.progress(m_prog / 100.0)
                         st.caption(f"{m_prog}%")
                     c3.write(f"_{log.get(nkey, '-')}_")
+    else:
+        st.info("No records found in the archive.")
 
 # --- TAB 3: MASTERS ---
 with tab3:
     st.subheader("🛠️ Master Management")
     c1, c2 = st.columns(2)
     with c1:
-        with st.form("add_cust"):
-            nc = st.text_input("New Customer")
+        with st.form("add_cust", clear_on_submit=True):
+            nc = st.text_input("New Customer Name")
             if st.form_submit_button("Add Customer"):
-                conn.table("customer_master").insert({"name": nc}).execute()
-                st.cache_data.clear(); st.rerun()
+                if nc:
+                    conn.table("customer_master").insert({"name": nc}).execute()
+                    st.cache_data.clear(); st.success(f"Added {nc}"); st.rerun()
+                else: st.error("Enter a name")
     with c2:
-        with st.form("add_job"):
+        with st.form("add_job", clear_on_submit=True):
             nj = st.text_input("New Job Code")
             if st.form_submit_button("Add Job"):
-                conn.table("job_master").insert({"job_code": nj}).execute()
-                st.cache_data.clear(); st.rerun()
+                if nj:
+                    conn.table("job_master").insert({"job_code": nj}).execute()
+                    st.cache_data.clear(); st.success(f"Added {nj}"); st.rerun()
+                else: st.error("Enter a code")
