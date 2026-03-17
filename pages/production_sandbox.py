@@ -183,7 +183,7 @@ with tab_plan:
                         if ec4.button("🗑️", key=f"dl_{e_id}"):
                             conn.table("job_planning").delete().eq("id", e_id).execute(); st.cache_data.clear(); st.rerun()
 
-           st.subheader(f"🏁 Execution: {target_job}")
+            st.subheader(f"🏁 Execution: {target_job}")
             for _, row in current_job_steps.sort_values('step_order').iterrows():
                 # --- DATE EXTRACTION ---
                 p_start = pd.to_datetime(row['planned_start_date']).date() if pd.notnull(row['planned_start_date']) else None
