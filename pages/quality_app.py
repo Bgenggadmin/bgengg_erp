@@ -102,7 +102,7 @@ if not df_plan.empty:
                     except Exception as e:
                         st.error(f"Submission Error: {e}")
 
-# --- 4. SUMMARY VIEW & GALLERY ---
+# --- 4. SUMMARY VIEW & UPDATED GALLERY WITH DELETE ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
 
@@ -112,15 +112,41 @@ if not df_plan.empty:
     if not inspected_df.empty:
         st.dataframe(inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']], use_container_width=True, hide_index=True)
 
-        st.markdown("### 🖼️ Evidence Gallery")
-        # Filter rows that have photos (checking if list is not empty)
+        st.markdown("### 🖼️ Evidence Gallery & Management")
+        
+        # Filter rows that have photos
         photo_rows = inspected_df[inspected_df['quality_photo_url'].apply(lambda x: len(x) > 0 if isinstance(x, list) else False)]
         
         if not photo_rows.empty:
-            sel_row_idx = st.selectbox("Select Job to View Photos", photo_rows.index, 
+            sel_row_idx = st.selectbox("Select Job to Manage Photos", photo_rows.index, 
                                       format_func=lambda x: f"{photo_rows.loc[x, 'job_no']} - {photo_rows.loc[x, 'gate_name']}")
             
-            urls = photo_rows.loc[sel_row_idx, 'quality_photo_url']
-            cols = st.columns(len(urls))
-            for i, url in enumerate(urls):
-                cols[i].image(url, use_container_width=True)
+            current_urls = photo_rows.loc[sel_row_idx, 'quality_photo_url']
+            record_id = photo_rows.loc[sel_row_idx, 'id']
+            
+            # Display Gallery in Columns
+            cols = st.columns(4)
+            for i, url in enumerate(current_urls):
+                with cols[i]:
+                    st.image(url, use_container_width=True)
+                    # DELETE BUTTON FOR EACH PHOTO
+                    if st.button(f"🗑️ Remove {i+1}", key=f"del_{record_id}_{i}"):
+                        try:
+                            # 1. Identify filename from URL to delete from Storage
+                            # URL format is usually .../bucket/filename
+                            file_name = url.split("/")[-1]
+                            conn.client.storage.from_("quality-photos").remove([file_name])
+                            
+                            # 2. Update the Database Array (Remove this specific URL)
+                            updated_urls = [u for u in current_urls if u != url]
+                            conn.table("job_planning").update({
+                                "quality_photo_url": updated_urls
+                            }).eq("id", record_id).execute()
+                            
+                            st.toast(f"Photo {i+1} removed successfully!")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Delete failed: {e}")
+        else:
+            st.info("No photos uploaded for recent inspections.")
