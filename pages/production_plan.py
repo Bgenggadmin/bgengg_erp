@@ -217,25 +217,72 @@ with tab_entry:
             else:
                 st.warning("⚠️ No gates are 'Active' for this job.")
 
-# --- TAB 3: ANALYTICS & GANTT (Verified Fixes) ---
+# --- TAB 3: ANALYTICS & GANTT (Bulletproof Version) ---
 with tab_analytics:
     st.subheader("📊 Performance Analytics")
+    
     if not df_job_plans.empty:
         gantt_list = []
         for _, row in df_job_plans.iterrows():
-            if row.get('planned_start_date') and row.get('planned_end_date'):
-                gantt_list.append(dict(Job=row['job_no'], Start=row['planned_start_date'], Finish=row['planned_end_date'], Type='Planned', Gate=row['gate_name']))
-            if row.get('actual_start_date'):
-                a_finish = row['actual_end_date'] if row.get('actual_end_date') else datetime.now(IST).isoformat()
-                gantt_list.append(dict(Job=row['job_no'], Start=row['actual_start_date'], Finish=a_finish, Type='Actual', Gate=row['gate_name']))
+            # Ensure we have strings or dates to work with
+            p_start = row.get('planned_start_date')
+            p_end = row.get('planned_end_date')
+            a_start = row.get('actual_start_date')
+            a_end = row.get('actual_end_date')
+
+            # Add Planned Bars (Only if both dates exist)
+            if pd.notna(p_start) and pd.notna(p_end):
+                gantt_list.append(dict(
+                    Job=str(row['job_no']), 
+                    Start=p_start, 
+                    Finish=p_end, 
+                    Type='Planned', 
+                    Gate=row['gate_name']
+                ))
+            
+            # Add Actual Bars (If started)
+            if pd.notna(a_start):
+                # If not finished yet, use "Now" as the end point for the bar
+                finish_val = a_end if pd.notna(a_end) else datetime.now(IST).isoformat()
+                gantt_list.append(dict(
+                    Job=str(row['job_no']), 
+                    Start=a_start, 
+                    Finish=finish_val, 
+                    Type='Actual', 
+                    Gate=row['gate_name']
+                ))
         
         if gantt_list:
             df_g = pd.DataFrame(gantt_list)
-            df_g['Start'] = pd.to_datetime(df_g['Start']).dt.tz_localize(None)
-            df_g['Finish'] = pd.to_datetime(df_g['Finish']).dt.tz_localize(None)
-            fig = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Type", hover_data=["Gate"], color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"})
-            fig.update_layout(barmode='group')
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # Convert to datetime safely with errors='coerce'
+            df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce')
+            df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce')
+            
+            # Drop any rows where conversion failed (NaT)
+            df_g = df_g.dropna(subset=['Start', 'Finish'])
+            
+            # Now safely remove timezone info
+            df_g['Start'] = df_g['Start'].dt.tz_localize(None)
+            df_g['Finish'] = df_g['Finish'].dt.tz_localize(None)
+            
+            if not df_g.empty:
+                fig = px.timeline(
+                    df_g, 
+                    x_start="Start", 
+                    x_end="Finish", 
+                    y="Job", 
+                    color="Type", 
+                    hover_data=["Gate"], 
+                    color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"}
+                )
+                fig.update_layout(barmode='group')
+                fig.update_yaxes(autorange="reversed")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No valid date ranges found to display Gantt chart.")
+        else:
+            st.info("No planning data available yet.")
 
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
