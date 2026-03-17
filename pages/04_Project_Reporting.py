@@ -6,7 +6,8 @@ import tempfile
 import os
 import pandas as pd
 
-# 1. SETUP (st.set_page_config removed for Multi-page app compatibility)
+# 1. SETUP
+# Removed st.set_page_config for Multi-page app compatibility
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. MASTER MAPPING
@@ -50,7 +51,7 @@ def generate_pdf(logs):
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
         for i in range(0, len(HEADER_FIELDS), 2):
-            f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
+            f1, f2 = HEADER_FIELDS[i], HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
             pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
             if f2:
@@ -58,6 +59,7 @@ def generate_pdf(logs):
                 pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
             else: pdf.ln(7)
 
+        # Overall Progress Bar in PDF
         pdf.ln(5)
         ov_p = int(log.get('overall_progress', 0))
         pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
@@ -66,6 +68,7 @@ def generate_pdf(logs):
             pdf.set_fill_color(0, 102, 204); pdf.rect(65, pdf.get_y() + 2, (ov_p/100)*120, 4, 'F')
         pdf.ln(10)
 
+        # Milestone Table
         pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
@@ -79,20 +82,20 @@ def generate_pdf(logs):
             pdf.cell(50, 10, f" {label}", 1)
             pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
             
-            curr_x, curr_y = pdf.get_x(), pdf.get_y()
+            cx, cy = pdf.get_x(), pdf.get_y()
             pdf.cell(30, 10, "", 1, 0)
-            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
+            pdf.set_fill_color(240, 240, 240); pdf.rect(cx+3, cy+4, 24, 2, 'F')
             if m_p > 0:
-                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (m_p/100)*24, 2, 'F')
-            pdf.set_xy(curr_x + 30, curr_y)
+                pdf.set_fill_color(0, 153, 76); pdf.rect(cx+3, cy+4, (m_p/100)*24, 2, 'F')
+            pdf.set_xy(cx+30, cy)
             pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
 
     if logo_path:
         try: os.unlink(logo_path)
         except: pass
     
-    # FIX: Ensure byte conversion is safe for Streamlit download button
-    return pdf.output(dest='S').encode('latin-1')
+    # CRITICAL FIX: Return encoded latin-1 to avoid TypeError
+    return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- DATA FETCH ---
 @st.cache_data(ttl=600)
@@ -174,49 +177,62 @@ with tab1:
                 if cam_photo and res.data:
                     file_id = res.data[0]['id']
                     conn.client.storage.from_("progress-photos").upload(f"{file_id}.jpg", cam_photo.getvalue())
-                
-                st.success("✅ Saved!")
-                st.cache_data.clear(); st.rerun()
+                st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
 
-# --- TAB 2: ARCHIVE ---
+# --- TAB 2: ARCHIVE (RESTORED MISSING FILTERS) ---
 with tab2:
     st.subheader("📂 Report Archive")
-    # FIX: Cache the archive fetch or handle empty states
-    try:
-        query = conn.table("progress_logs").select("*").order("id", desc=True).limit(50).execute()
-        logs = query.data if query and query.data else []
-    except:
-        logs = []
+    af1, af2, af3 = st.columns(3)
+    sel_c = af1.selectbox("Filter Customer", ["All"] + customers, key="arch_cust")
+    report_type = af2.selectbox("📅 Report Duration", ["All Time", "Current Week", "Current Month", "Custom Range"], key="arch_dur")
     
-    if logs:
-        # Generate PDF data for all filtered logs
-        pdf_bytes = generate_pdf(logs)
-        st.download_button("📥 Download Combined PDF Report", data=pdf_bytes, file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
-        
-        for log in logs:
+    start_date, end_date = None, None
+    if report_type == "Custom Range":
+        c_date = af3.date_input("Select Range", [datetime.now().date(), datetime.now().date()], key="arch_custom_date")
+        if isinstance(c_date, list) and len(c_date) == 2: start_date, end_date = c_date
+
+    # Build Query
+    query = conn.table("progress_logs").select("*").order("id", desc=True)
+    if sel_c != "All": query = query.eq("customer", sel_c)
+    
+    res = query.execute()
+    data = res.data if res else []
+    
+    today = datetime.now().date()
+    filtered_data = []
+    for log in data:
+        try:
+            raw_date = log.get('created_at') or log.get('po_date')
+            log_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+            if report_type == "Current Week" and log_date.isocalendar()[1] != today.isocalendar()[1]: continue
+            if report_type == "Current Month" and log_date.month != today.month: continue
+            if report_type == "Custom Range" and not (start_date <= log_date <= end_date): continue
+            filtered_data.append(log)
+        except: continue
+
+    if filtered_data:
+        st.download_button("📥 Download PDF Report", data=generate_pdf(filtered_data), file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
+        for log in filtered_data:
             with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')}"):
                 ov_p = int(log.get('overall_progress', 0))
                 st.write(f"**Overall Progress: {ov_p}%**")
                 st.progress(ov_p / 100)
-                
                 for label, skey, nkey in MILESTONE_MAP:
                     pk = f"{skey}_prog"
                     m_prog = int(log.get(pk, 0))
                     c1, c2, c3 = st.columns([1.5, 1, 1.5])
                     c1.write(f"**{label}**")
                     c1.caption(f"Status: {log.get(skey, 'Pending')}")
-                    with c2:
-                        st.progress(m_prog / 100.0)
-                        st.caption(f"{m_prog}%")
+                    with c2: st.progress(m_prog / 100.0); st.caption(f"{m_prog}%")
                     c3.write(f"_{log.get(nkey, '-')}_")
     else:
-        st.info("No records found in the archive.")
+        st.info("No records match the selected filters.")
 
-# --- TAB 3: MASTERS ---
+# --- TAB 3: MASTERS (RESTORED FORM HANDLING) ---
 with tab3:
     st.subheader("🛠️ Master Management")
-    c1, c2 = st.columns(2)
-    with c1:
+    col1, col2 = st.columns(2)
+    with col1:
         with st.form("add_cust", clear_on_submit=True):
             nc = st.text_input("New Customer Name")
             if st.form_submit_button("Add Customer"):
@@ -224,7 +240,7 @@ with tab3:
                     conn.table("customer_master").insert({"name": nc}).execute()
                     st.cache_data.clear(); st.success(f"Added {nc}"); st.rerun()
                 else: st.error("Enter a name")
-    with c2:
+    with col2:
         with st.form("add_job", clear_on_submit=True):
             nj = st.text_input("New Job Code")
             if st.form_submit_button("Add Job"):
