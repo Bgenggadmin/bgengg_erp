@@ -183,28 +183,59 @@ with tab_plan:
                         if ec4.button("🗑️", key=f"dl_{e_id}"):
                             conn.table("job_planning").delete().eq("id", e_id).execute(); st.cache_data.clear(); st.rerun()
 
-            st.subheader(f"🏁 Execution: {target_job}")
+           st.subheader(f"🏁 Execution: {target_job}")
             for _, row in current_job_steps.sort_values('step_order').iterrows():
+                # --- DATE EXTRACTION ---
+                p_start = pd.to_datetime(row['planned_start_date']).date() if pd.notnull(row['planned_start_date']) else None
                 p_end = pd.to_datetime(row['planned_end_date']).date() if pd.notnull(row['planned_end_date']) else None
                 today = date.today()
+                
                 with st.container(border=True):
-                    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-                    col1.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
+                    # Increased column count to accommodate date display
+                    col1, col2, col3, col4 = st.columns([2.5, 1, 1, 1])
+                    
+                    # 1. Milestone Name & Planned Window
+                    with col1:
+                        st.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
+                        if p_start and p_end:
+                            # Visual "Planned Window" Badge
+                            st.caption(f"🗓️ Planned: {p_start.strftime('%d %b')} — {p_end.strftime('%d %b')}")
+                        else:
+                            st.caption("🗓️ No dates planned")
+
+                    # 2. Status Badge
                     if row['current_status'] == "Pending":
                         col2.warning("⏳ Pending")
-                        if col4.button("▶️ Start", key=f"st_{row['id']}"):
-                            conn.table("job_planning").update({"current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
+                        if col4.button("▶️ Start", key=f"st_{row['id']}", use_container_width=True):
+                            conn.table("job_planning").update({
+                                "current_status": "Active", 
+                                "actual_start_date": datetime.now(IST).isoformat()
+                            }).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
+                    
                     elif row['current_status'] == "Active":
                         col2.info("🚀 Active")
+                        # 3. Delay/On-Track Metric
                         if p_end:
                             diff = (today - p_end).days
-                            if diff > 0: col3.metric("Delay", f"{diff} Days", delta=f"-{diff}", delta_color="inverse")
-                            else: col3.success("On Track")
-                        if col4.button("✅ Close", key=f"cl_{row['id']}"):
-                            conn.table("job_planning").update({"current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
+                            if diff > 0: 
+                                col3.metric("Delay", f"{diff} Days", delta=f"-{diff}", delta_color="inverse")
+                            else: 
+                                col3.success("On Track")
+                        
+                        if col4.button("✅ Close", key=f"cl_{row['id']}", use_container_width=True):
+                            conn.table("job_planning").update({
+                                "current_status": "Completed", 
+                                "actual_end_date": datetime.now(IST).isoformat()
+                            }).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
-                    else: col2.success("🏁 Completed")
+                    
+                    else:
+                        col2.success("🏁 Completed")
+                        # Show Actual Completion if closed
+                        if pd.notnull(row.get('actual_end_date')):
+                            act_end = pd.to_datetime(row['actual_end_date']).date()
+                            col3.caption(f"Finished: {act_end.strftime('%d %b')}")
 
 # --- TAB 2: DAILY ENTRY ---
 with tab_entry:
