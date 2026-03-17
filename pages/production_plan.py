@@ -269,7 +269,7 @@ with tab_entry:
 
 # --- TAB 3: ANALYTICS & GANTT (FIXED SECTION) ---
 with tab_analytics:
-    with tab_analytics:
+    # Removed the duplicate 'with tab_analytics:' line that caused the error
     st.subheader("📊 Production Reports & Exports")
     
     # --- 1. FILTERS ---
@@ -304,45 +304,52 @@ with tab_analytics:
         with col_left:
             st.markdown("#### 🏗️ Job-Wise Effort")
             # Shows which processes are eating time on each job
-            job_summary = report_df.groupby(['Job_Code', 'Activity'])['Hours'].sum().unstack(fill_value=0)
-            st.dataframe(job_summary, use_container_width=True)
+            if not report_df.empty:
+                job_summary = report_df.groupby(['Job_Code', 'Activity'])['Hours'].sum().unstack(fill_value=0)
+                st.dataframe(job_summary, use_container_width=True)
 
         with col_right:
             st.markdown("#### 👷 Worker-Wise Effort")
             # Shows how workers are split across different jobs
-            worker_summary = report_df.groupby(['Worker', 'Job_Code'])['Hours'].sum().reset_index()
-            st.dataframe(worker_summary, use_container_width=True)
+            if not report_df.empty:
+                worker_summary = report_df.groupby(['Worker', 'Job_Code'])['Hours'].sum().reset_index()
+                st.dataframe(worker_summary, use_container_width=True)
 
         # --- 4. THE EXPORT BUTTONS ---
         st.markdown("### 📥 Download CSV Reports")
         d1, d2, d3 = st.columns(3)
 
         def to_csv(df):
+            # Preserving your exact CSV logic
             return df.to_csv(index=True if isinstance(df, pd.DataFrame) and not df.index.name is None else False).encode('utf-8')
 
-        d1.download_button(
-            "📄 Full Detailed Log (Includes Notes)", 
-            data=to_csv(report_df), 
-            file_name=f"Detailed_Logs_{d_range[0]}_to_{d_range[1]}.csv",
-            use_container_width=True
-        )
-        
-        d2.download_button(
-            "🏗️ Job Matrix Export", 
-            data=to_csv(job_summary), 
-            file_name=f"Job_Effort_Matrix_{today}.csv",
-            use_container_width=True
-        )
+        if not report_df.empty:
+            d1.download_button(
+                "📄 Full Detailed Log (Includes Notes)", 
+                data=to_csv(report_df), 
+                file_name=f"Detailed_Logs_{d_range[0]}_to_{d_range[1]}.csv",
+                use_container_width=True
+            )
+            
+            # Check if summary dataframes exist before allowing download
+            try:
+                d2.download_button(
+                    "🏗️ Job Matrix Export", 
+                    data=to_csv(job_summary), 
+                    file_name=f"Job_Effort_Matrix_{today}.csv",
+                    use_container_width=True
+                )
 
-        d3.download_button(
-            "👷 Worker Job-Split Export", 
-            data=to_csv(worker_summary), 
-            file_name=f"Worker_Job_Distribution_{today}.csv",
-            use_container_width=True
-        )
+                d3.download_button(
+                    "👷 Worker Job-Split Export", 
+                    data=to_csv(worker_summary), 
+                    file_name=f"Worker_Job_Distribution_{today}.csv",
+                    use_container_width=True
+                )
+            except NameError:
+                pass
     else:
         st.info("Please select a full date range (Start and End date) to see the reports.")
-
 # --- TAB 4: MASTER SETTINGS (Robust Version) ---
 with tab_master:
     st.subheader("⚙️ Shop Floor Gate Master")
