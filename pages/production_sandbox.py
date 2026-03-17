@@ -31,7 +31,8 @@ master = st.session_state.get('master_data', {})
 @st.cache_data(ttl=2)
 def get_master_data():
     try:
-        p_res = conn.table("anchor_projects").select("job_no, status, po_date, po_delivery_date, revised_delivery_date").eq("status", "Won").execute()
+        # FIXED: Removed 'po_date' as it does not exist in your Supabase table
+        p_res = conn.table("anchor_projects").select("job_no, status, po_delivery_date, revised_delivery_date").eq("status", "Won").execute()
         l_res = conn.table("production").select("*").order("created_at", desc=True).execute()
         m_res = conn.table("production_gates").select("*").order("step_order").execute()
         j_res = conn.table("job_planning").select("*").order("step_order").execute()
@@ -70,19 +71,18 @@ with tab_plan:
         if not proj_match.empty:
             p_data = proj_match.iloc[0]
             with st.container(border=True):
-                po_placed_dt = pd.to_datetime(p_data.get('po_date')).date() if pd.notnull(p_data.get('po_date')) else None
+                # Safe extraction of available anchor dates
                 po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) else None
                 rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) else None
                 
-                c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
-                c1.write(f"📅 **PO Date**\n{po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else 'Not Set'}")
-                c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else 'Not Set'}")
-                c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else 'None'}")
+                c1, c2, c3 = st.columns([2, 2, 2])
+                c1.write(f"🚚 **PO Dispatch Date**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else 'Not Set'}")
+                c2.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else 'None'}")
                 
                 final_target = rev_dt if rev_dt else po_disp_dt
                 if final_target:
                     days_left = (final_target - date.today()).days
-                    c4.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
+                    c3.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
 
                 if st.button("📝 Edit Schedule", key="edit_delivery"):
                     @st.dialog("Update Dates")
@@ -90,7 +90,10 @@ with tab_plan:
                         n_po_disp = st.date_input("Original PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
                         n_rev = st.date_input("Revised Delivery Date", value=rev_dt if rev_dt else n_po_disp)
                         if st.button("Save Changes"):
-                            conn.table("anchor_projects").update({"po_delivery_date": str(n_po_disp), "revised_delivery_date": str(n_rev)}).eq("job_no", target_job).execute()
+                            conn.table("anchor_projects").update({
+                                "po_delivery_date": str(n_po_disp), 
+                                "revised_delivery_date": str(n_rev)
+                            }).eq("job_no", target_job).execute()
                             st.cache_data.clear(); st.rerun()
                     update_dates()
 
@@ -109,7 +112,7 @@ with tab_plan:
                             "specs": f"URGENT (By {it_date.strftime('%d-%b')}): {it_specs} (Qty: {it_qty})",
                             "status": "Triggered", "created_at": datetime.now(IST).isoformat()
                         }).execute()
-                        st.cache_data.clear(); st.success("Sent!"); st.rerun()
+                        st.cache_data.clear(); st.success("Urgent request sent!"); st.rerun()
 
         # C. MATERIAL STATUS
         with st.expander("🛒 Current Material Status", expanded=False):
@@ -248,4 +251,5 @@ with tab_master:
         if st.form_submit_button("Add Gate"):
             conn.table("production_gates").insert({"gate_name": ng_name, "step_order": ng_order}).execute()
             st.cache_data.clear(); st.rerun()
-    st.dataframe(df_master_gates.sort_values('step_order')[['step_order', 'gate_name']], hide_index=True)
+    if not df_master_gates.empty:
+        st.dataframe(df_master_gates.sort_values('step_order')[['step_order', 'gate_name']], hide_index=True)
