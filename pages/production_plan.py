@@ -154,7 +154,9 @@ with tab_entry:
     with st.container(border=True):
         f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
         if f_job != "-- Select --":
+            # Fetches only gates marked as 'Active' in the Planning tab
             active_gates = df_job_plans[(df_job_plans['job_no'] == f_job) & (df_job_plans['current_status'] == 'Active')]['gate_name'].tolist()
+            
             if active_gates:
                 f_act = st.selectbox("🎯 Current Active Gate", active_gates)
                 with st.form("prod_form", clear_on_submit=True):
@@ -165,15 +167,21 @@ with tab_entry:
                     f_out_val = f3.number_input("Output Quantity", min_value=0.0, step=0.1)
                     f_unit = f3.selectbox("Unit of Measure", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Inches", "Joints"])
                     f_nts = st.text_area("Work Details / Remarks")
+                    
                     if st.form_submit_button("🚀 Log Progress"):
                         if f_wrk == "-- Select --":
                             st.error("Please select a Worker.")
                         else:
                             try:
                                 conn.table("production").insert({
-                                    "Supervisor": f_sup, "Worker": f_wrk, "Job_Code": f_job,
-                                    "Activity": f_act, "Hours": f_hrs, "Output": f_out_val,
-                                    "Unit": f_unit, "Notes": f_nts, 
+                                    "Supervisor": f_sup, 
+                                    "Worker": f_wrk, 
+                                    "Job_Code": f_job,
+                                    "Activity": f_act, 
+                                    "Hours": f_hrs, 
+                                    "Output": f_out_val,
+                                    "Unit": f_unit, 
+                                    "Notes": f_nts, 
                                     "created_at": datetime.now(IST).isoformat()
                                 }).execute()
                                 st.cache_data.clear()
@@ -189,15 +197,23 @@ with tab_entry:
     # --- RECENT LOGS AT BOTTOM ---
     st.markdown("### 🕒 Recent Entries (IST)")
     if not df_logs.empty:
-        # Convert UTC to IST and simplify display
-        display_logs = df_logs.copy()
-        display_logs['created_at'] = pd.to_datetime(display_logs['created_at']).dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
-        
-        # Select and Rename columns for clean view
-        log_view = display_logs[['created_at', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(10)
-        log_view.columns = ['Time (IST)', 'Job', 'Process', 'Worker', 'Hrs', 'Qty', 'Unit', 'Remarks']
-        
-        st.dataframe(log_view, use_container_width=True, hide_index=True)
+        try:
+            # Create a copy to avoid modifying the original dataframe
+            display_logs = df_logs.copy()
+            
+            # SAFE CONVERSION: Handling the ISO timestamp with utc=True to prevent ValueErrors
+            display_logs['created_at'] = pd.to_datetime(
+                display_logs['created_at'], 
+                utc=True
+            ).dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
+            
+            # Select and Rename columns for a clean shop-floor view
+            log_view = display_logs[['created_at', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(10)
+            log_view.columns = ['Time (IST)', 'Job', 'Process', 'Worker', 'Hrs', 'Qty', 'Unit', 'Remarks']
+            
+            st.dataframe(log_view, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"Log Display Error: {e}")
     else:
         st.info("No logs found for today yet.")
 
