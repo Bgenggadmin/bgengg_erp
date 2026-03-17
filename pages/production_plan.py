@@ -205,10 +205,11 @@ with tab_analytics:
     
     if not df_logs.empty:
         try:
-            # Standardize time for calculations
+            # Standardize time and ensure Hours is numeric
             df_logs['created_at_dt'] = pd.to_datetime(
                 df_logs['created_at'], utc=True, format='ISO8601'
             ).dt.tz_convert(IST)
+            df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce').fillna(0)
             
             clean_logs = df_logs.dropna(subset=['created_at_dt']).copy()
             clean_logs['date_only'] = clean_logs['created_at_dt'].dt.date
@@ -218,7 +219,6 @@ with tab_analytics:
                 f1, f2, f3 = st.columns([2, 2, 2])
                 today = date.today()
                 
-                # Date Presets
                 period = f1.selectbox("Quick Period", ["Last 7 Days", "Current Month", "Custom Range"])
                 if period == "Last 7 Days":
                     d_range = [today - timedelta(days=7), today]
@@ -238,58 +238,58 @@ with tab_analytics:
                 if not report_df.empty:
                     # --- 2. KEY METRICS ---
                     total_hrs = report_df['Hours'].sum()
-                    avg_daily = total_hrs / max((d_range[1] - d_range[0]).days, 1)
                     unique_workers = report_df['Worker'].nunique()
                     
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Total Man-Hours", f"{total_hrs:,.1f}")
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Total Man-Hours", f"{total_hrs:.1f}")
                     m2.metric("Active Workers", unique_workers)
-                    m3.metric("Avg Hrs/Day", f"{avg_daily:.1f}")
-                    m4.metric("Jobs Touched", report_df['Job_Code'].nunique())
+                    m3.metric("Jobs in Progress", report_df['Job_Code'].nunique())
 
                     st.divider()
 
-                    # --- 3. WORKER & JOB ANALYTICS ---
+                    # --- 3. VISUAL CHART ---
+                    st.markdown("#### 📈 Man-Hours Trend by Job")
+                    job_chart_data = report_df.groupby('Job_Code')['Hours'].sum().sort_values(ascending=False)
+                    st.bar_chart(job_chart_data, color="#1565C0")
+
+                    st.divider()
+
+                    # --- 4. WORKER & JOB ANALYTICS (CLEAN FORMAT) ---
                     col_left, col_right = st.columns(2)
 
                     with col_left:
                         st.markdown("#### 👷 Man-Hours by Worker")
                         worker_stats = report_df.groupby('Worker')['Hours'].sum().sort_values(ascending=False).reset_index()
-                        st.dataframe(
-                            worker_stats.style.highlight_max(axis=0, subset=['Hours'], color='#2E7D32'),
-                            use_container_width=True, hide_index=True
-                        )
+                        # Formatting to 1 decimal place and cleaning display
+                        worker_stats['Hours'] = worker_stats['Hours'].map('{:,.1f}'.format)
+                        st.dataframe(worker_stats, use_container_width=True, hide_index=True)
                         
                     with col_right:
                         st.markdown("#### 🏗️ Man-Hours by Job")
                         job_stats = report_df.groupby('Job_Code')['Hours'].sum().sort_values(ascending=False).reset_index()
-                        st.dataframe(
-                            job_stats.style.highlight_max(axis=0, subset=['Hours'], color='#1565C0'),
-                            use_container_width=True, hide_index=True
-                        )
+                        job_stats['Hours'] = job_stats['Hours'].map('{:,.1f}'.format)
+                        st.dataframe(job_stats, use_container_width=True, hide_index=True)
 
                     st.divider()
 
-                    # --- 4. DETAILED BREAKDOWN & EXPORT ---
+                    # --- 5. DETAILED BREAKDOWN & EXPORT ---
                     st.markdown("#### 🔍 Activity Deep-Dive")
-                    # Grouping by Worker and Job to see exactly who did what where
                     detailed_pivot = report_df.groupby(['Worker', 'Job_Code', 'Activity'])['Hours'].sum().reset_index()
+                    detailed_pivot['Hours'] = detailed_pivot['Hours'].map('{:,.1f}'.format)
                     st.dataframe(detailed_pivot, use_container_width=True, hide_index=True)
 
                     # Export Feature
                     full_csv = report_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label="📥 Download Detailed Report",
+                        label="📥 Download Detailed Report (CSV)",
                         data=full_csv,
-                        file_name=f"bg_production_report_{d_range[0]}_to_{d_range[1]}.csv",
+                        file_name=f"bg_production_report_{d_range[0]}.csv",
                         mime='text/csv',
                     )
                 else:
                     st.warning("No data found for the selected filters.")
         except Exception as e:
             st.error(f"Analytics Data Error: {e}")
-    else:
-        st.info("No production logs available yet to analyze.")
 
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
