@@ -66,46 +66,48 @@ with tab_plan:
     
    if target_job != "-- Select --":
     # A. DELIVERY DASHBOARD
-    proj_match = df_projects[df_projects['job_no'] == target_job]
-    if not proj_match.empty:
-        p_data = proj_match.iloc[0]
-        with st.container(border=True):
-            # Safe extraction of all three anchor dates
-            # 1. Date the PO was actually received/placed
-            po_placed_dt = pd.to_datetime(p_data.get('po_date')).date() if pd.notnull(p_data.get('po_date')) else None
-            # 2. Original delivery commitment from PO
-            po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) else None
-            # 3. Any internal revision made later
-            rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) else None
-            
-            # Adjusted columns to fit 3 dates + Metric
-            c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
-            
-            c1.write(f"📅 **PO Date**\n{po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else 'Not Set'}")
-            c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else 'Not Set'}")
-            c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else 'None'}")
-            
-            # Metric logic: Use Revised Date if exists, else Original PO Dispatch Date
-            final_target = rev_dt if rev_dt else po_disp_dt
-            if final_target:
-                days_left = (final_target - date.today()).days
-                c4.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
+        proj_match = df_projects[df_projects['job_no'] == target_job]
+        if not proj_match.empty:
+            p_data = proj_match.iloc[0]
+            with st.container(border=True):
+                # 1. Safely extract the three anchor dates
+                # Using .get() ensures it doesn't crash if a column is missing
+                po_placed_dt = pd.to_datetime(p_data.get('po_date')).date() if pd.notnull(p_data.get('po_date')) else None
+                po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) else None
+                rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) else None
+                
+                # 2. Layout: 4 Columns for Dates and Metrics
+                c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
+                
+                c1.write(f"📅 **PO Date**\n{po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else 'Not Set'}")
+                c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else 'Not Set'}")
+                c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else 'None'}")
+                
+                # 3. Calculation for Metric
+                final_target = rev_dt if rev_dt else po_disp_dt
+                if final_target:
+                    days_left = (final_target - date.today()).days
+                    c4.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
 
-            # Update Button
-            if st.button("📝 Edit Schedule", key="edit_delivery"):
-                @st.dialog("Update Dates")
-                def update_dates():
-                    # Allow editing both the commitment and the revision
-                    n_po_disp = st.date_input("Original PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
-                    n_rev = st.date_input("Revised Delivery Date", value=rev_dt if rev_dt else n_po_disp)
-                    if st.button("Save Changes"):
-                        conn.table("anchor_projects").update({
-                            "po_delivery_date": str(n_po_disp), 
-                            "revised_delivery_date": str(n_rev)
-                        }).eq("job_no", target_job).execute()
-                        st.cache_data.clear(); st.rerun()
-                update_dates()
-        # B. URGENT MATERIAL TRIGGER
+                # 4. Edit Schedule Dialog
+                if st.button("📝 Edit Schedule", key="edit_delivery"):
+                    @st.dialog("Update Dates")
+                    def update_dates():
+                        n_po_disp = st.date_input("Original PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
+                        n_rev = st.date_input("Revised Delivery Date", value=rev_dt if rev_dt else n_po_disp)
+                        if st.button("Save Changes"):
+                            try:
+                                conn.table("anchor_projects").update({
+                                    "po_delivery_date": str(n_po_disp), 
+                                    "revised_delivery_date": str(n_rev)
+                                }).eq("job_no", target_job).execute()
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Update failed: {e}")
+                    update_dates()
+       
+       # B. URGENT MATERIAL TRIGGER
         with st.expander("🚨 Trigger Urgent Purchase Requisition", expanded=False):
             with st.form("urgent_purchase_form", clear_on_submit=True):
                 r1, r2, r3 = st.columns([2, 1, 1])
