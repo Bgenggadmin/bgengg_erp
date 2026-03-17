@@ -158,56 +158,67 @@ with tab_entry:
                     conn.table("production").insert({"Job_Code": f_job, "Activity": f_act, "Worker": f_wrk, "Hours": f_hrs, "Output": f_out, "Unit": f_unit, "created_at": datetime.now(IST).isoformat()}).execute()
                     st.cache_data.clear(); st.success("Logged!"); st.rerun()
 
-# --- TAB 3: ANALYTICS & GANTT (BULLETPROOF VERSION) ---
+# --- TAB 3: ANALYTICS & GANTT (FIXED) ---
 with tab_analytics:
     st.subheader("📊 Performance Analytics")
+    
     if not df_job_plans.empty:
         gantt_list = []
         for _, row in df_job_plans.iterrows():
+            # Add Planned Bars
             if pd.notna(row.get('planned_start_date')) and pd.notna(row.get('planned_end_date')):
-                gantt_list.append(dict(Job=row['job_no'], Start=row['planned_start_date'], Finish=row['planned_end_date'], Type='Planned', Gate=row['gate_name']))
+                gantt_list.append(dict(
+                    Job=str(row['job_no']), 
+                    Start=row['planned_start_date'], 
+                    Finish=row['planned_end_date'], 
+                    Type='Planned', 
+                    Gate=row['gate_name']
+                ))
+            
+            # Add Actual Bars
             if pd.notna(row.get('actual_start_date')):
-                f_val = row['actual_end_date'] if pd.notna(row['actual_end_date']) else datetime.now(IST).isoformat()
-                gantt_list.append(dict(Job=row['job_no'], Start=row['actual_start_date'], Finish=f_val, Type='Actual', Gate=row['gate_name']))
-        
+                a_finish = row['actual_end_date'] if pd.notna(row['actual_end_date']) else datetime.now(IST).isoformat()
+                gantt_list.append(dict(
+                    Job=str(row['job_no']), 
+                    Start=row['actual_start_date'], 
+                    Finish=a_finish, 
+                    Type='Actual', 
+                    Gate=row['gate_name']
+                ))
+
         if gantt_list:
             df_g = pd.DataFrame(gantt_list)
+            
+            # Safe conversion to datetime
             df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce')
             df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce')
+            
+            # Drop invalid dates and strip timezones for Plotly compatibility
             df_g = df_g.dropna(subset=['Start', 'Finish'])
             df_g['Start'] = df_g['Start'].dt.tz_localize(None)
             df_g['Finish'] = df_g['Finish'].dt.tz_localize(None)
-            fig = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Type", barmode='group')
-            fig.update_yaxes(autorange="reversed")
-            st.plotly_chart(fig, use_container_width=True)
-# --- TAB 3: ANALYTICS & GANTT (FIXED PLOTLY LOGIC) ---
-if gantt_list:
-    df_g = pd.DataFrame(gantt_list)
-    
-    # 1. Clean the dates (Preventing your previous ValueError)
-    df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce')
-    df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce')
-    df_g = df_g.dropna(subset=['Start', 'Finish'])
-    df_g['Start'] = df_g['Start'].dt.tz_localize(None)
-    df_g['Finish'] = df_g['Finish'].dt.tz_localize(None)
-    
-    # 2. CREATE THE FIGURE (Notice barmode is REMOVED from here)
-    fig = px.timeline(
-        df_g, 
-        x_start="Start", 
-        x_end="Finish", 
-        y="Job", 
-        color="Type",
-        color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"}
-    )
-    
-    # 3. UPDATE THE LAYOUT (This is where barmode='group' belongs)
-    fig.update_layout(barmode='group')
-    
-    # 4. Reverse Y-axis so latest jobs are at the top
-    fig.update_yaxes(autorange="reversed")
-    
-    st.plotly_chart(fig, use_container_width=True)
+            
+            if not df_g.empty:
+                # FIX: Remove barmode='group' from the function call
+                fig = px.timeline(
+                    df_g, 
+                    x_start="Start", 
+                    x_end="Finish", 
+                    y="Job", 
+                    color="Type",
+                    hover_data=["Gate"], 
+                    color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"}
+                )
+                
+                # FIX: Apply barmode here instead
+                fig.update_layout(barmode='group')
+                fig.update_yaxes(autorange="reversed")
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No valid date ranges to display.")
+        else:
+            st.info("No planning data available.")
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
     st.subheader("⚙️ Gate Master")
