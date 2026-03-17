@@ -241,43 +241,74 @@ with tab_plan:
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
+    
     if f_job != "-- Select --":
-        active_gates = df_job_plans[(df_job_plans['job_no'] == f_job) & (df_job_plans['current_status'] == 'Active')]['gate_name'].tolist()
-        if active_gates:
+        # Get gates for the form
+        active_gates_df = df_job_plans[df_job_plans['job_no'] == f_job]
+        active_list = active_gates_df[active_gates_df['current_status'] == 'Active']['gate_name'].tolist()
+        fallback_list = active_gates_df['gate_name'].tolist()
+        
+        # We show Active gates by default, otherwise all planned gates
+        form_gates = active_list if active_list else fallback_list
+
+        if not form_gates:
+            st.warning("⚠️ No gates found in plan for this job.")
+        else:
             with st.form("prod_form", clear_on_submit=True):
                 f1, f2, f3 = st.columns(3)
-                f_act = f1.selectbox("Gate", active_gates)
+                f_act = f1.selectbox("Gate", form_gates)
                 f_wrk = f1.selectbox("Worker", ["-- Select --"] + all_workers)
+                
                 f_hrs = f2.number_input("Hrs", min_value=0.0, step=0.5)
+                f_unit = f2.selectbox("Unit", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Joints"])
+                
                 f_out = f3.number_input("Qty", min_value=0.0, step=0.1)
-                f_unit = f3.selectbox("Unit", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Joints"])
+                
                 if st.form_submit_button("🚀 Log Progress"):
-                    conn.table("production").insert({"Job_Code": f_job, "Activity": f_act, "Worker": f_wrk, "Hours": f_hrs, "Output": f_out, "Unit": f_unit, "created_at": datetime.now(IST).isoformat()}).execute()
-                    st.cache_data.clear(); st.success("Logged!"); st.rerun()
+                    if f_wrk != "-- Select --":
+                        conn.table("production").insert({
+                            "Job_Code": f_job, 
+                            "Activity": f_act, 
+                            "Worker": f_wrk, 
+                            "Hours": f_hrs, 
+                            "Output": f_out, 
+                            "Unit": f_unit, 
+                            "created_at": datetime.now(IST).isoformat()
+                        }).execute()
+                        st.cache_data.clear()
+                        st.success("Logged!")
+                        st.rerun()
+                    else:
+                        st.error("Please select a worker.")
 
     st.divider()
     if not df_logs.empty:
         display_logs = df_logs.copy()
+        if f_job != "-- Select --":
+            display_logs = display_logs[display_logs['Job_Code'] == f_job]
+            
         display_logs['dt'] = pd.to_datetime(display_logs['created_at'], utc=True, errors='coerce')
         display_logs = display_logs.dropna(subset=['dt'])
         display_logs['Time (IST)'] = display_logs['dt'].dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
         
         with st.expander("🛠️ Correction Tools"):
-            last_row = display_logs.iloc[0]
-            c1, c2, c3 = st.columns([2, 2, 1])
-            c1.info(f"Last Log: {last_row['Worker']}")
-            if c2.button("✏️ Edit Last"):
-                @st.dialog("Edit Log")
-                def edit_log(item):
-                    nh = st.number_input("Hrs", value=float(item['Hours']))
-                    nq = st.number_input("Qty", value=float(item['Output']))
-                    if st.button("Save"):
-                        conn.table("production").update({"Hours": nh, "Output": nq}).eq("id", item['id']).execute()
-                        st.cache_data.clear(); st.rerun()
-                edit_log(last_row)
-            if c3.button("🗑️ Delete", type="primary"):
-                conn.table("production").delete().eq("id", last_row['id']).execute()
-                st.cache_data.clear(); st.rerun()
+            if not display_logs.empty:
+                last_row = display_logs.iloc[0]
+                c1, c2, c3 = st.columns([2, 2, 1])
+                c1.info(f"Last Log: {last_row['Worker']}")
+                if c2.button("✏️ Edit Last"):
+                    @st.dialog("Edit Log")
+                    def edit_log(item):
+                        nh = st.number_input("Hrs", value=float(item['Hours']))
+                        nq = st.number_input("Qty", value=float(item['Output']))
+                        if st.button("Save"):
+                            conn.table("production").update({"Hours": nh, "Output": nq}).eq("id", item['id']).execute()
+                            st.cache_data.clear(); st.rerun()
+                    edit_log(last_row)
+                if c3.button("🗑️ Delete", type="primary"):
+                    conn.table("production").delete().eq("id", last_row['id']).execute()
+                    st.cache_data.clear(); st.rerun()
+        
         st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit']].head(20), use_container_width=True, hide_index=True)
 
 # --- TAB 3: ENHANCED ANALYTICS (WITH DOWNLOADS) ---
