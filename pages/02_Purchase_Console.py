@@ -146,22 +146,28 @@ if not df_p.empty:
                             }).eq("id", i_db_id).execute()
                             st.toast("Saved"); st.rerun()
             
-           # --- SECTION 2: ITEMIZED FULFILLMENT (Full Width) ---
+          # --- SECTION 2: ITEMIZED FULFILLMENT (Full Width) ---
 st.markdown(f'<div class="section-header">📋 Itemized Fulfillment ({len(job_items)})</div>', unsafe_allow_html=True)
 
 if job_items.empty:
     st.info("No specific material requests logged for this job.")
 else:
-    # IMPORTANT: .reset_index() ensures 'i' is always 0, 1, 2... for THIS job only.
-    for i, i_row in job_items.reset_index().iterrows():
+    # IMPORTANT: Ensure items are sorted so they don't jump around after updates
+    job_items_sorted = job_items.sort_values('id').reset_index(drop=True)
+    
+    for i, i_row in job_items_sorted.iterrows():
         i_db_id = i_row['id']
         
-        # FIX 1: ULTRA-UNIQUE KEY 
-        # Prevents DuplicateElementKey error by combining Project ID, Item ID, and Loop Index
+        # FIX 1: ULTRA-UNIQUE KEY (Uses p_db_id, i_db_id and index i)
         k_suffix = f"pur_{p_db_id}_{i_db_id}_{i}" 
         
-        # Identify if trigger came from Shop Floor (URGENT/SHOP) or Anchor
-        is_urgent_prod = "URGENT" in str(i_row.get('specs', '')).upper() or "SHOP" in str(i_row.get('item_name', '')).upper()
+        # FIX 2: IMPROVED PRODUCTION TRIGGER DETECTION
+        # Checks both Item Name and Specs for 'URGENT' or 'SHOP'
+        item_name_upper = str(i_row.get('item_name', '')).upper()
+        item_spec_upper = str(i_row.get('specs', '')).upper()
+        
+        is_urgent_prod = any(x in item_name_upper for x in ["SHOP", "URGENT"]) or \
+                         any(x in item_spec_upper for x in ["SHOP", "URGENT"])
         
         with st.container(border=True):
             ic1, ic2, ic3, ic4 = st.columns([1.5, 2.5, 1, 0.8])
@@ -170,28 +176,35 @@ else:
             with ic1:
                 if is_urgent_prod:
                     st.markdown('<span class="tag-prod">🏗️ FROM PRODUCTION</span>', unsafe_allow_html=True)
+                    # Visual cue for Purchase Team
+                    st.error("🚨 URGENT REQUISITION")
                 else:
                     st.markdown('<span class="tag-anchor">⚓ FROM ANCHOR</span>', unsafe_allow_html=True)
                 
                 st.write(f"**{i_row.get('item_name', 'Item')}**")
                 st.caption(f"Spec: {i_row.get('specs', '-')}")
             
-            # Column 2: Fulfillment Input (FIX 2: Safe handling of Nulls)
+            # Column 2: Fulfillment Input (Safe handling of Nulls)
             i_reply_val = i_row.get('purchase_reply', "")
             if i_reply_val is None: i_reply_val = ""
             
             i_reply = ic2.text_area(
-                "Purchase Action", 
+                "Purchase Action / Reply", 
                 value=i_reply_val, 
                 key=f"irep_{k_suffix}", 
-                height=80
+                height=80,
+                placeholder="Enter action taken, PO numbers, or ETAs..."
             )
             
             # Column 3: Item Status
             i_opts = ["Triggered", "Sourcing", "Ordered", "Received", "Urgent"]
-            curr_i_stat = i_row.get('status', 'Triggered')
-            # Safety check if status in DB is not in our list
-            def_i_idx = i_opts.index(curr_i_stat) if curr_i_stat in i_opts else 0
+            curr_i_stat = str(i_row.get('status', 'Triggered'))
+            
+            # Safe index finding
+            try:
+                def_i_idx = i_opts.index(curr_i_stat)
+            except ValueError:
+                def_i_idx = 0
             
             i_stat = ic3.selectbox(
                 "Status", 
@@ -201,15 +214,18 @@ else:
             )
             
             # Column 4: Save Action
-            if ic4.button("Update", key=f"isave_{k_suffix}", use_container_width=True):
-                conn.table("purchase_orders").update({
-                    "purchase_reply": i_reply,
-                    "status": i_stat,
-                    "updated_at": datetime.now(IST).isoformat()
-                }).eq("id", i_db_id).execute()
-                
-                st.toast(f"✅ Item '{i_row.get('item_name')}' Updated")
-                st.cache_data.clear() # Ensure the console reflects the change immediately
-                st.rerun()
+            if ic4.button("Update Item", key=f"isave_{k_suffix}", use_container_width=True):
+                try:
+                    conn.table("purchase_orders").update({
+                        "purchase_reply": i_reply,
+                        "status": i_stat,
+                        "updated_at": datetime.now(IST).isoformat()
+                    }).eq("id", i_db_id).execute()
+                    
+                    st.toast(f"✅ Saved: {i_row.get('item_name')}")
+                    st.cache_data.clear() 
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Update failed: {e}")
 
 st.write(" ") # Spacer
