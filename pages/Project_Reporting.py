@@ -8,9 +8,6 @@ from PIL import Image
 import tempfile
 import os
 
-# 1. SETUP
-st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
-
 # Set TTL globally to keep data fresh
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
