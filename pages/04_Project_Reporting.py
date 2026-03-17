@@ -9,6 +9,12 @@ from PIL import Image
 import io
 
 # 1. SETUP
+# NOTE: Only use set_page_config if this is the entry point. 
+# If running inside app.py navigation, ensure app.py handles this.
+if 'page_config_set' not in st.session_state:
+    st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
+    st.session_state.page_config_set = True
+
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. MASTER MAPPING
@@ -25,7 +31,7 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- PDF ENGINE (Optimized) ---
+# --- PDF ENGINE (Consolidated Logic) ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -71,7 +77,7 @@ def generate_pdf(logs):
         for label, s_key, n_key in MILESTONE_MAP:
             pk = f"{s_key}_prog"; m_p = int(log.get(pk, 0)); status = str(log.get(s_key, 'Pending'))
             if status in ["Completed", "Approved"]: pdf.set_fill_color(144, 238, 144)
-            elif status in ["In-Progress", "Hold"]: pdf.set_fill_color(255, 255, 204)
+            elif status in ["In-Progress", "Hold", "Ordered"]: pdf.set_fill_color(255, 255, 204)
             else: pdf.set_fill_color(255, 255, 255)
 
             pdf.cell(50, 8, f" {label}", 1); pdf.cell(30, 8, f" {status}", 1, 0, 'C', True)
@@ -95,7 +101,7 @@ def generate_pdf(logs):
         except: pass
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- DATA FETCH (Anchor + Masters) ---
+# --- DATA FETCH ---
 @st.cache_data(ttl=300)
 def get_reporting_masters():
     try:
@@ -108,34 +114,29 @@ all_job_codes = df_anchor['job_no'].unique().tolist() if not df_anchor.empty els
 
 tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
 
-# --- TAB 1: NEW ENTRY (FULL AUTOFILL LOGIC) ---
+# --- TAB 1: NEW ENTRY (WITH DUAL AUTOFILL) ---
 with tab1:
     st.subheader("📋 Project Update")
     f_job = st.selectbox("Select Job Code", [""] + all_job_codes, key="job_lookup")
     
-    # 1. Pull Anchor Data
     anchor_row = df_anchor[df_anchor['job_no'] == f_job].iloc[0] if f_job else {}
-    
-    # 2. Pull Last Progress Log Data (Crucial missing feature)
     last_log = {}
     if f_job:
         l_res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if l_res.data: 
             last_log = l_res.data[0]
-            st.toast("🔄 Autofilled Last Progress Data")
+            st.toast("🔄 Autofilled data from last update")
 
     with st.form("main_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         f_cust = c1.text_input("Customer", value=anchor_row.get('client_name', ""), disabled=True)
-        # Pull Equipment from Last Log
         f_eq = c2.text_input("Equipment Name", value=last_log.get('equipment', ""))
-        # Pull Engineer from Last Log, fallback to Anchor
-        f_eng = c3.text_input("Engineer", value=last_log.get('engineer') or anchor_row.get('anchor_person', ""))
+        f_eng = c3.text_input("Responsible Engineer", value=last_log.get('engineer') or anchor_row.get('anchor_person', ""))
 
         c4, c5, c6 = st.columns(3)
         f_po_n = c4.text_input("PO Number", value=anchor_row.get('po_no', ""), disabled=True)
         f_po_d = c5.text_input("PO Date", value=anchor_row.get('po_date', ""), disabled=True)
-        f_p_del = c6.text_input("Delivery Date", value=anchor_row.get('po_delivery_date', ""), disabled=True)
+        f_p_del = c6.text_input("Official Delivery Date", value=anchor_row.get('po_delivery_date', ""), disabled=True)
         
         f_exp_dispatch = st.date_input("Revised Expected Dispatch", value=datetime.now())
 
@@ -144,10 +145,8 @@ with tab1:
         
         for label, skey, nkey in MILESTONE_MAP:
             pk = f"{skey}_prog"; col1, col2, col3 = st.columns([1.5, 1, 2])
-            # Autofill status and progress from LAST LOG
-            def_stat = last_log.get(skey, "Pending")
-            def_idx = opts.index(def_stat) if def_stat in opts else 0
-            
+            prev_stat = last_log.get(skey, "Pending")
+            def_idx = opts.index(prev_stat) if prev_stat in opts else 0
             m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}")
             m_responses[pk] = col2.slider("Prog %", 0, 100, value=int(last_log.get(pk, 0)), key=f"p_{skey}")
             m_responses[nkey] = col3.text_input("Remarks", value=last_log.get(nkey, ""), key=f"n_{skey}")
@@ -156,7 +155,7 @@ with tab1:
         uploaded_photos = st.file_uploader("📸 Upload Photos (Max 4)", accept_multiple_files=True, type=['jpg','png'])
 
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
-            if not f_job: st.error("Select Job Code")
+            if not f_job: st.error("Please select a Job Code")
             else:
                 payload = {
                     "customer": anchor_row['client_name'], "job_code": f_job, "equipment": f_eq,
@@ -170,9 +169,9 @@ with tab1:
                         img = Image.open(photo); img.thumbnail((400, 400)); buf = io.BytesIO()
                         img.save(buf, format="JPEG", quality=50)
                         conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}_{idx}.jpg", buf.getvalue())
-                st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
+                st.success("✅ Update Saved!"); st.cache_data.clear(); st.rerun()
 
-# --- TAB 2: ARCHIVE ---
+# --- TAB 2: ARCHIVE (Full Performance & Filter Logic) ---
 with tab2:
     st.subheader("📂 Report Archive")
     af1, af2, af3 = st.columns(3)
@@ -206,7 +205,7 @@ with tab2:
                 m1, m2, m3 = st.columns(3)
                 m1.metric("Engineer", log.get('engineer', 'N/A'))
                 m2.metric("PO No", log.get('po_no', 'N/A'))
-                m3.metric("Revised Dispatch", log.get('exp_dispatch_date', 'N/A'))
+                m3.metric("Expected Dispatch", log.get('exp_dispatch_date', 'N/A'))
                 for label, skey, nkey in MILESTONE_MAP:
                     pk = f"{skey}_prog"; mp = int(log.get(pk, 0)); c1, c2, c3 = st.columns([1.5, 1, 1.5])
                     c1.write(f"**{label}**"); c1.caption(f"Status: {log.get(skey)}"); with c2: st.progress(mp/100); c3.write(f"_{log.get(nkey, '-')}_")
