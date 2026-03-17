@@ -233,14 +233,84 @@ with tab_entry:
                 st.cache_data.clear(); st.rerun()
         st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit']].head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 3: ANALYTICS ---
+# --- TAB 3: ENHANCED ANALYTICS ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
+    
     if not df_logs.empty:
+        # 1. CLEANING & LOCALIZING (Ensure IST)
         df_logs['dt'] = pd.to_datetime(df_logs['created_at'], utc=True, errors='coerce').dt.tz_convert(IST)
         df_logs['date_only'] = df_logs['dt'].dt.date
         df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce').fillna(0)
-        st.bar_chart(df_logs.groupby('Job_Code')['Hours'].sum())
+        df_logs['Output'] = pd.to_numeric(df_logs['Output'], errors='coerce').fillna(0)
+        
+        # 2. FILTER UI
+        with st.container(border=True):
+            c1, c2, c3 = st.columns(3)
+            today = date.today()
+            period = c1.selectbox("Timeframe", ["Today", "Last 7 Days", "Current Month", "Custom Range"], index=1)
+            
+            if period == "Today": d_range = [today, today]
+            elif period == "Last 7 Days": d_range = [today - timedelta(days=7), today]
+            elif period == "Current Month": d_range = [today.replace(day=1), today]
+            else: d_range = c1.date_input("Select Range", [today - timedelta(days=30), today])
+
+            f_jobs = c2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
+            f_workers = c3.multiselect("Filter Workers", all_workers, default=all_workers)
+
+        # 3. APPLY FILTERS
+        if len(d_range) == 2:
+            mask = (
+                (df_logs['date_only'] >= d_range[0]) & 
+                (df_logs['date_only'] <= d_range[1]) & 
+                (df_logs['Job_Code'].isin(f_jobs)) & 
+                (df_logs['Worker'].isin(f_workers))
+            )
+            rdf = df_logs.loc[mask].copy()
+
+            if not rdf.empty:
+                # --- KPI ROW ---
+                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+                total_hrs = rdf['Hours'].sum()
+                avg_efficiency = (rdf['Output'].sum() / total_hrs) if total_hrs > 0 else 0
+                
+                kpi1.metric("Total Man-Hours", f"{total_hrs:.1f} hrs")
+                kpi2.metric("Total Output", f"{rdf['Output'].sum():.0f} Units")
+                kpi3.metric("Productivity Index", f"{avg_efficiency:.2f} U/Hr")
+                kpi4.metric("Active Workforce", f"{rdf['Worker'].nunique()}")
+
+                st.divider()
+
+                # --- VISUALS ROW ---
+                v1, v2 = st.columns(2)
+                
+                with v1:
+                    st.markdown("##### 🕒 Hours per Job")
+                    job_data = rdf.groupby('Job_Code')['Hours'].sum().reset_index()
+                    fig_job = px.bar(job_data, x='Job_Code', y='Hours', 
+                                    color='Hours', color_continuous_scale='Blues',
+                                    text_auto='.1f')
+                    st.plotly_chart(fig_job, use_container_width=True)
+
+                with v2:
+                    st.markdown("##### 👷 Worker Contribution")
+                    worker_data = rdf.groupby('Worker')['Hours'].sum().reset_index()
+                    fig_worker = px.pie(worker_data, values='Hours', names='Worker', 
+                                       hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+                    st.plotly_chart(fig_worker, use_container_width=True)
+
+                # --- TABULAR SUMMARY ---
+                st.markdown("##### 📋 Deep-Dive Data")
+                st.dataframe(
+                    rdf.groupby(['Job_Code', 'Activity']).agg({
+                        'Hours': 'sum',
+                        'Output': 'sum',
+                        'Worker': 'nunique'
+                    }).rename(columns={'Worker': 'Worker Count'}).reset_index(),
+                    use_container_width=True, hide_index=True
+                )
+            else:
+                st.warning("No data matches the selected filters.")
 
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
