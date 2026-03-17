@@ -220,13 +220,17 @@ with tab_entry:
 with tab_analytics:
     st.subheader("📊 Production Reports & Exports")
     
-    # Timeline Table Replacement for Gantt
+    # Timeline Table
     st.markdown("#### 📅 Project Schedule Tracker")
     g_job = st.selectbox("Select Job for Schedule View", ["-- Select --"] + all_jobs, key="schedule_job_sel")
     if g_job != "-- Select --":
         job_plan = df_job_plans[df_job_plans['job_no'] == g_job].copy()
         if not job_plan.empty:
-            # Clean up dates for display
+            # Simplify date columns for clean view
+            date_cols = ['planned_start_date', 'planned_end_date', 'actual_start_date', 'actual_end_date']
+            for col in date_cols:
+                job_plan[col] = pd.to_datetime(job_plan[col], errors='coerce').dt.strftime('%d-%b-%Y')
+            
             display_cols = ['step_order', 'gate_name', 'planned_start_date', 'planned_end_date', 'actual_start_date', 'actual_end_date', 'current_status']
             schedule_view = job_plan[display_cols].sort_values('step_order')
             schedule_view.columns = ['Step', 'Gate Name', 'Planned Start', 'Planned End', 'Actual Start', 'Actual End', 'Status']
@@ -244,8 +248,13 @@ with tab_analytics:
 
     if not df_logs.empty and len(d_range) == 2:
         try:
-            df_logs['created_at_dt'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
+            # --- LOCAL TIME CONVERSION (IST) ---
+            # Convert UTC strings to IST objects
+            df_logs['created_at_dt'] = pd.to_datetime(df_logs['created_at'], errors='coerce').dt.tz_convert(IST)
             clean_logs = df_logs.dropna(subset=['created_at_dt']).copy()
+            
+            # Simple Column for Table View
+            clean_logs['Time (IST)'] = clean_logs['created_at_dt'].dt.strftime('%d-%b %I:%M %p')
             clean_logs['date_only'] = clean_logs['created_at_dt'].dt.date
             
             mask = ((clean_logs['date_only'] >= d_range[0]) & (clean_logs['date_only'] <= d_range[1]) &
@@ -253,6 +262,11 @@ with tab_analytics:
             report_df = clean_logs.loc[mask].copy()
 
             if not report_df.empty:
+                # Show Detailed Log with simplified time
+                with st.expander("🔍 View Detailed Activity Logs (IST)", expanded=False):
+                    view_df = report_df[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']]
+                    st.dataframe(view_df, use_container_width=True, hide_index=True)
+
                 col_left, col_right = st.columns(2)
                 with col_left:
                     st.markdown("#### 🏗️ Job-Wise Effort")
@@ -268,7 +282,7 @@ with tab_analytics:
                 def to_csv(df):
                     return df.to_csv(index=True if isinstance(df, pd.DataFrame) and not df.index.name is None else False).encode('utf-8')
 
-                d1.download_button("📄 Full Detailed Log", data=to_csv(report_df), file_name=f"Logs_{today}.csv", use_container_width=True)
+                d1.download_button("📄 Detailed Log (IST)", data=to_csv(report_df), file_name=f"Logs_IST_{today}.csv", use_container_width=True)
                 d2.download_button("🏗️ Job Matrix Export", data=to_csv(job_summary), file_name=f"Job_Matrix_{today}.csv", use_container_width=True)
                 d3.download_button("👷 Worker Export", data=to_csv(worker_summary), file_name=f"Worker_Split_{today}.csv", use_container_width=True)
             else:
