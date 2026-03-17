@@ -101,14 +101,14 @@ with tabs[1]:
                 # --- ADD THESE ENTRY FIELDS ---
                 pd1, pd2 = st.columns(2)
                 u_po_no = pd1.text_input("PO Number", value=row.get('po_no') or "", key=f"pono_{row['id']}")
-                u_po_date = pd2.date_input("PO Date", value=pd.to_datetime(row['po_date']).date() if pd.notnull(row.get('po_date')) else date.today(), key=f"podt_{row['id']}")
+                u_po_date_actual = pd2.date_input("PO Date", value=pd.to_datetime(row.get('po_date')).date() if pd.notnull(row.get('po_date')) else date.today(), key=f"podt_{row['id']}")
                 # --- NEW: DELIVERY DATES & DISPATCH METRIC ---
                 d1, d2, d3 = st.columns(3)
-                curr_po = pd.to_datetime(row['po_delivery_date']).date() if pd.notnull(row.get('po_delivery_date')) else None
-                curr_rev = pd.to_datetime(row['revised_delivery_date']).date() if pd.notnull(row.get('revised_delivery_date')) else None
+                curr_po_del = pd.to_datetime(row.get('po_delivery_date')).date() if pd.notnull(row.get('po_delivery_date')) else date.today()
+                curr_rev_del = pd.to_datetime(row.get('revised_delivery_date')).date() if pd.notnull(row.get('revised_delivery_date')) else curr_po_del
                 
-                u_po_date = d1.date_input("Original PO Del. Date", value=curr_po if curr_po else date.today(), key=f"po_date_{row['id']}")
-                u_rev_date = d2.date_input("Revised Del.Date", value=curr_rev if curr_rev else u_po_date, key=f"rev_date_{row['id']}")
+                u_po_del = d1.date_input("Original PO Del. Date", value=curr_po_del, key=f"po_del_date_{row['id']}")
+                u_rev_del = d2.date_input("Revised Del. Date", value=curr_rev_del, key=f"rev_del_date_{row['id']}")
                 
                 final_target = u_rev_date if u_rev_date else u_po_date
                 if final_target:
@@ -159,20 +159,21 @@ with tabs[1]:
                             st.dataframe(job_items_mini[['item_name', 'specs', 'status']], hide_index=True, use_container_width=True)
 
                 # --- UPDATE THIS BLOCK IN TAB 2 ---
-                    if st.button("Save Project Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
-                        conn.table("anchor_projects").update({
-                            "po_no": u_po_no,           # <--- ADD THIS
-                            "po_date": str(u_po_date),  # <--- ADD THIS
-                            "estimated_value": u_val, 
-                            "quote_ref": u_qref, 
-                            "quote_date": str(u_qdate),
-                            "status": new_status, 
-                            "job_no": u_job, 
-                            "purchase_trigger": u_trig,
-                            "po_delivery_date": u_po_date.isoformat(), # This uses the variable from the delivery section
-                            "revised_delivery_date": u_rev_date.isoformat()
-                        }).eq("id", row['id']).execute()
-                        st.rerun()
+            if st.button("Save Project Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                conn.table("anchor_projects").update({
+                    "po_no": u_po_no,
+                    "po_date": str(u_po_date_actual),        # Now unique
+                    "estimated_value": u_val, 
+                    "quote_ref": u_qref, 
+                    "quote_date": str(u_qdate),
+                    "status": new_status, 
+                    "job_no": u_job, 
+                    "purchase_trigger": u_trig,
+                    "po_delivery_date": str(u_po_del),       # Now unique
+                    "revised_delivery_date": str(u_rev_del)  # Now unique
+                }).eq("id", row['id']).execute()
+                st.cache_data.clear() 
+                st.rerun()
 
 # --- TAB 3: DRAWINGS ---
 with tabs[2]:
