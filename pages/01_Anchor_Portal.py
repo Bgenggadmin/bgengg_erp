@@ -158,13 +158,21 @@ with tabs[1]:
                             st.caption("Items already triggered:")
                             st.dataframe(job_items_mini[['item_name', 'specs', 'status']], hide_index=True, use_container_width=True)
 
-                if st.button("Save Project Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
-                    conn.table("anchor_projects").update({
-                        "estimated_value": u_val, "quote_ref": u_qref, "quote_date": str(u_qdate),
-                        "status": new_status, "job_no": u_job, "purchase_trigger": u_trig,
-                        "po_delivery_date": u_po_date.isoformat(),
-                        "revised_delivery_date": u_rev_date.isoformat()
-                    }).eq("id", row['id']).execute(); st.rerun()
+                # --- UPDATE THIS BLOCK IN TAB 2 ---
+                    if st.button("Save Project Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                        conn.table("anchor_projects").update({
+                            "po_no": u_po_no,           # <--- ADD THIS
+                            "po_date": str(u_po_date),  # <--- ADD THIS
+                            "estimated_value": u_val, 
+                            "quote_ref": u_qref, 
+                            "quote_date": str(u_qdate),
+                            "status": new_status, 
+                            "job_no": u_job, 
+                            "purchase_trigger": u_trig,
+                            "po_delivery_date": u_po_date.isoformat(), # This uses the variable from the delivery section
+                            "revised_delivery_date": u_rev_date.isoformat()
+                        }).eq("id", row['id']).execute()
+                        st.rerun()
 
 # --- TAB 3: DRAWINGS ---
 with tabs[2]:
