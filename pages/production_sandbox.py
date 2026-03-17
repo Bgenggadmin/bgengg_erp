@@ -180,7 +180,21 @@ with tab_entry:
 
     st.divider()
     st.markdown("### 🕒 Recent Entries (IST)")
+          # --- RECENT LOGS SECTION (CRASH PROOF) ---
     if not df_logs.empty:
+        try:
+            display_logs = df_logs.copy()
+        
+        # 1. Convert safely (errors='coerce' prevents the crash)
+        display_logs['created_at_dt'] = pd.to_datetime(display_logs['created_at'], utc=True, errors='coerce')
+        
+        # 2. Drop rows that failed to parse so they don't break tz_convert
+        display_logs = display_logs.dropna(subset=['created_at_dt'])
+        
+        # 3. Now safely convert to IST and Format
+        display_logs['Time (IST)'] = display_logs['created_at_dt'].dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
+        
+        # ... [Rest of your correction tools and dataframe code]
         display_logs = df_logs.copy()
         display_logs['Time (IST)'] = pd.to_datetime(display_logs['created_at'], utc=True).dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
         
@@ -207,7 +221,7 @@ with tab_entry:
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     if not df_logs.empty:
-        df_logs['created_at_dt'] = pd.to_datetime(df_logs['created_at'], utc=True).dt.tz_convert(IST)
+       df_logs['created_at_dt'] = pd.to_datetime(df_logs['created_at'], utc=True, errors='coerce')
         df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce').fillna(0)
         clean_logs = df_logs.dropna(subset=['created_at_dt']).copy()
         clean_logs['date_only'] = clean_logs['created_at_dt'].dt.date
