@@ -237,18 +237,15 @@ with tab_plan:
                             act_end = pd.to_datetime(row['actual_end_date']).date()
                             col3.caption(f"Finished: {act_end.strftime('%d %b')}")
 
-# --- TAB 2: DAILY ENTRY ---
+# --- TAB 2: DAILY ENTRY (WITH NOTES FIELD) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
     
     if f_job != "-- Select --":
-        # Get gates for the form
         active_gates_df = df_job_plans[df_job_plans['job_no'] == f_job]
         active_list = active_gates_df[active_gates_df['current_status'] == 'Active']['gate_name'].tolist()
         fallback_list = active_gates_df['gate_name'].tolist()
-        
-        # We show Active gates by default, otherwise all planned gates
         form_gates = active_list if active_list else fallback_list
 
         if not form_gates:
@@ -264,6 +261,9 @@ with tab_entry:
                 
                 f_out = f3.number_input("Qty", min_value=0.0, step=0.1)
                 
+                # --- NEW NOTES FIELD ---
+                f_notes = st.text_input("Remarks / Notes", placeholder="e.g., Machine maintenance, Material delay...")
+                
                 if st.form_submit_button("🚀 Log Progress"):
                     if f_wrk != "-- Select --":
                         conn.table("production").insert({
@@ -272,16 +272,18 @@ with tab_entry:
                             "Worker": f_wrk, 
                             "Hours": f_hrs, 
                             "Output": f_out, 
-                            "Unit": f_unit, 
+                            "Unit": f_unit,
+                            "notes": f_notes,  # SAVING THE NOTE
                             "created_at": datetime.now(IST).isoformat()
                         }).execute()
                         st.cache_data.clear()
-                        st.success("Logged!")
+                        st.success("Logged successfully!")
                         st.rerun()
                     else:
                         st.error("Please select a worker.")
 
     st.divider()
+    
     if not df_logs.empty:
         display_logs = df_logs.copy()
         if f_job != "-- Select --":
@@ -294,23 +296,28 @@ with tab_entry:
         with st.expander("🛠️ Correction Tools"):
             if not display_logs.empty:
                 last_row = display_logs.iloc[0]
-                c1, c2, c3 = st.columns([2, 2, 1])
-                c1.info(f"Last Log: {last_row['Worker']}")
-                if c2.button("✏️ Edit Last"):
+                # Added 'Notes' to the correction dialog
+                if st.button("✏️ Edit Last Entry"):
                     @st.dialog("Edit Log")
                     def edit_log(item):
                         nh = st.number_input("Hrs", value=float(item['Hours']))
                         nq = st.number_input("Qty", value=float(item['Output']))
+                        nn = st.text_input("Notes", value=item.get('notes', ""))
                         if st.button("Save"):
-                            conn.table("production").update({"Hours": nh, "Output": nq}).eq("id", item['id']).execute()
+                            conn.table("production").update({
+                                "Hours": nh, 
+                                "Output": nq, 
+                                "notes": nn
+                            }).eq("id", item['id']).execute()
                             st.cache_data.clear(); st.rerun()
                     edit_log(last_row)
-                if c3.button("🗑️ Delete", type="primary"):
-                    conn.table("production").delete().eq("id", last_row['id']).execute()
-                    st.cache_data.clear(); st.rerun()
         
-        st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit']].head(20), use_container_width=True, hide_index=True)
-
+        # DISPLAY TABLE (Including Notes)
+        st.dataframe(
+            display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'notes']].head(20), 
+            use_container_width=True, 
+            hide_index=True
+        )
 # --- TAB 3: ENHANCED ANALYTICS (WITH DOWNLOADS) ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
