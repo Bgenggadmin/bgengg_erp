@@ -283,70 +283,73 @@ with tab_analytics:
         f_jobs = f2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
         f_staff = f3.multiselect("Filter Workers", all_workers, default=all_workers)
 
-   # --- 2. GANTT CHART SECTION (RE-FIXED) ---
-st.divider()
-st.markdown("#### 📅 Project Timeline (Planned vs Actual)")
-g_job = st.selectbox("Select Job for Timeline View", ["-- Select --"] + all_jobs, key="gantt_job_sel")
+  # --- 2. GANTT CHART SECTION (FIXED) ---
+    st.divider()
+    st.markdown("#### 📅 Project Timeline (Planned vs Actual)")
+    g_job = st.selectbox("Select Job for Timeline View", ["-- Select --"] + all_jobs, key="gantt_job_sel")
 
-if g_job != "-- Select --":
-    job_plan = df_job_plans[df_job_plans['job_no'] == g_job].copy()
-    
-    if not job_plan.empty:
-        gantt_data = []
-        for _, row in job_plan.iterrows():
-            # Robust conversion: errors='coerce' turns invalid dates into NaT
-            p_start = pd.to_datetime(row['planned_start_date'], errors='coerce')
-            p_end = pd.to_datetime(row['planned_end_date'], errors='coerce')
-            a_start = pd.to_datetime(row['actual_start_date'], errors='coerce')
-            a_end = pd.to_datetime(row['actual_end_date'], errors='coerce')
+    if g_job != "-- Select --":
+        # Filter planning data for this specific job
+        job_plan = df_job_plans[df_job_plans['job_no'] == g_job].copy()
+        
+        if not job_plan.empty:
+            gantt_data = []
+            for _, row in job_plan.iterrows():
+                # FIX: Convert all dates to pandas datetime objects
+                # errors='coerce' turns invalid entries into NaT (Not a Time)
+                p_start = pd.to_datetime(row['planned_start_date'], errors='coerce')
+                p_end = pd.to_datetime(row['planned_end_date'], errors='coerce')
+                a_start = pd.to_datetime(row['actual_start_date'], errors='coerce')
+                a_end = pd.to_datetime(row['actual_end_date'], errors='coerce')
 
-            # 1. Add Planned Bar (Only if both dates are valid)
-            if pd.notnull(p_start) and pd.notnull(p_end):
-                gantt_data.append({
-                    "Task": f"{row['step_order']}. {row['gate_name']}",
-                    "Start": p_start,
-                    "Finish": p_end,
-                    "Type": "Planned",
-                    "Status": row.get('current_status', 'N/A')
-                })
-            
-            # 2. Add Actual Bar (Only if it has at least a start date)
-            if pd.notnull(a_start):
-                # If finished, use actual end. If still active, use current time.
-                finish_val = a_end if pd.notnull(a_end) else pd.Timestamp.now(tz=IST)
+                # 1. Add Planned Bar (Only if BOTH start and end exist)
+                if pd.notnull(p_start) and pd.notnull(p_end):
+                    gantt_data.append({
+                        "Task": f"{row['step_order']}. {row['gate_name']}",
+                        "Start": p_start,
+                        "Finish": p_end,
+                        "Type": "Planned",
+                        "Status": row['current_status']
+                    })
                 
-                # Ensure finish is always after start to avoid Plotly geometry errors
-                if finish_val < a_start:
-                    finish_val = a_start + pd.Timedelta(hours=1)
+                # 2. Add Actual Bar (Only if it has at least started)
+                if pd.notnull(a_start):
+                    # Use current time if the task is 'Active' but not yet finished
+                    finish_val = a_end if pd.notnull(a_end) else pd.to_datetime(datetime.now(IST))
+                    
+                    # Ensure finish is always after start to avoid Plotly errors
+                    if finish_val < a_start:
+                        finish_val = a_start + pd.Timedelta(hours=1)
 
-                gantt_data.append({
-                    "Task": f"{row['step_order']}. {row['gate_name']}",
-                    "Start": a_start,
-                    "Finish": finish_val,
-                    "Type": "Actual",
-                    "Status": row.get('current_status', 'N/A')
-                })
+                    gantt_data.append({
+                        "Task": f"{row['step_order']}. {row['gate_name']}",
+                        "Start": a_start,
+                        "Finish": finish_val,
+                        "Type": "Actual",
+                        "Status": row['current_status']
+                    })
 
-        if gantt_data:
-            df_gantt = pd.DataFrame(gantt_data)
-            
-            # FINAL SAFETY CHECK: Ensure no NaT values reached px.timeline
-            df_gantt = df_gantt.dropna(subset=['Start', 'Finish'])
-            
-            fig_gantt = px.timeline(
-                df_gantt, 
-                x_start="Start", 
-                x_end="Finish", 
-                y="Task", 
-                color="Type",
-                hover_data=["Status"],
-                # Standard blue/gray for Planned, Green for Actual
-                color_discrete_map={"Planned": "#BDC3C7", "Actual": "#2ECC71"}
-            )
-            fig_gantt.update_yaxes(autorange="reversed") 
-            st.plotly_chart(fig_gantt, use_container_width=True)
+            if gantt_data:
+                df_gantt = pd.DataFrame(gantt_data)
+                
+                # Final safeguard: px.timeline crashes if the dataframe is empty 
+                # or if 'Start'/'Finish' are not datetime64
+                fig_gantt = px.timeline(
+                    df_gantt, 
+                    x_start="Start", 
+                    x_end="Finish", 
+                    y="Task", 
+                    color="Type",
+                    hover_data=["Status"],
+                    # Updated colors for better contrast
+                    color_discrete_map={"Planned": "#BDC3C7", "Actual": "#2ECC71"}
+                )
+                fig_gantt.update_yaxes(autorange="reversed") 
+                st.plotly_chart(fig_gantt, use_container_width=True)
+            else:
+                st.info("No valid Start/End dates found for this job's plan.")
         else:
-            st.info("No valid dates found to display the Gantt chart.")
+            st.warning("No planning steps found for this job.")
 
     # --- 3. DATA PROCESSING (With ValueError Protection) ---
     st.divider()
