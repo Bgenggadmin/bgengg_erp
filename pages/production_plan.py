@@ -267,9 +267,9 @@ with tab_entry:
             else:
                 st.warning(f"⚠️ No gates are 'Active' for {f_job}. Start a gate in the Planning tab.")
 
-# --- TAB 3: ANALYTICS & GANTT ---
+# --- TAB 3: ANALYTICS & GANTT (FIXED SECTION) ---
 with tab_analytics:
-    st.subheader("📊 Production Reports & Analytics")
+    st.subheader("📊 Production Reports & Exports")
     
     # --- 1. FILTERS ---
     with st.container(border=True):
@@ -283,11 +283,11 @@ with tab_analytics:
         f_jobs = f2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
         f_staff = f3.multiselect("Filter Workers", all_workers, default=all_workers)
 
-    # --- 2. GANTT CHART (Planned vs Actual) ---
+    # --- 2. GANTT CHART SECTION (FIXED) ---
     st.divider()
-    st.markdown("#### 📅 Project Timeline (Gantt)")
-    g_job = st.selectbox("Select Job to Visualize Timeline", ["-- Select --"] + all_jobs, key="gantt_sel")
-    
+    st.markdown("#### 📅 Project Timeline (Planned vs Actual)")
+    g_job = st.selectbox("Select Job for Timeline View", ["-- Select --"] + all_jobs, key="gantt_job_sel")
+
     if g_job != "-- Select --":
         # Filter planning data for this specific job
         job_plan = df_job_plans[df_job_plans['job_no'] == g_job].copy()
@@ -295,55 +295,66 @@ with tab_analytics:
         if not job_plan.empty:
             gantt_data = []
             for _, row in job_plan.iterrows():
+                # FIX: Convert all dates to pandas datetime objects to prevent px.timeline TypeError
+                p_start = pd.to_datetime(row['planned_start_date'], errors='coerce')
+                p_end = pd.to_datetime(row['planned_end_date'], errors='coerce')
+                a_start = pd.to_datetime(row['actual_start_date'], errors='coerce')
+                a_end = pd.to_datetime(row['actual_end_date'], errors='coerce')
+
                 # 1. Add Planned Bar
-                if row['planned_start_date'] and row['planned_end_date']:
+                if pd.notnull(p_start) and pd.notnull(p_end):
                     gantt_data.append({
-                        "Task": f"Step {row['step_order']}: {row['gate_name']}",
-                        "Start": row['planned_start_date'],
-                        "Finish": row['planned_end_date'],
-                        "Resource": "Planned",
+                        "Task": f"{row['step_order']}. {row['gate_name']}",
+                        "Start": p_start,
+                        "Finish": p_end,
+                        "Type": "Planned",
                         "Status": row['current_status']
                     })
+                
                 # 2. Add Actual Bar (only if it has started)
-                if row['actual_start_date']:
-                    # If started but not finished, use 'today' as the end point for the bar
-                    a_finish = row['actual_end_date'] if row['actual_end_date'] else datetime.now(IST).isoformat()
+                if pd.notnull(a_start):
+                    # Use today's date if the task is still Active (not finished)
+                    finish_val = a_end if pd.notnull(a_end) else pd.to_datetime(datetime.now(IST))
                     gantt_data.append({
-                        "Task": f"Step {row['step_order']}: {row['gate_name']}",
-                        "Start": row['actual_start_date'],
-                        "Finish": a_finish,
-                        "Resource": "Actual",
+                        "Task": f"{row['step_order']}. {row['gate_name']}",
+                        "Start": a_start,
+                        "Finish": finish_val,
+                        "Type": "Actual",
                         "Status": row['current_status']
                     })
 
             if gantt_data:
                 df_gantt = pd.DataFrame(gantt_data)
+                # px.timeline handles the bars; barmode='overlay' is set by default for timelines
                 fig_gantt = px.timeline(
                     df_gantt, 
                     x_start="Start", 
                     x_end="Finish", 
                     y="Task", 
-                    color="Resource",
+                    color="Type",
                     hover_data=["Status"],
                     color_discrete_map={"Planned": "#E5ECF6", "Actual": "#00CC96"}
                 )
                 fig_gantt.update_yaxes(autorange="reversed") 
                 st.plotly_chart(fig_gantt, use_container_width=True)
             else:
-                st.info("No dates available for this job's Gantt view.")
+                st.info("No valid dates found to display the Gantt chart.")
         else:
             st.warning("No planning steps found for this job.")
 
-    # --- 3. DATA PROCESSING & TABLES ---
+    # --- 3. DATA PROCESSING (With ValueError Protection) ---
     st.divider()
     if not df_logs.empty and len(d_range) == 2:
         try:
-            # Robust Date Conversion
+            # ROBUST DATE CONVERSION: 
+            # errors='coerce' turns bad dates into NaT (Not a Time) instead of crashing
             df_logs['created_at_dt'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
+            
+            # Drop rows where dates are broken to prevent the ValueError you saw
             clean_logs = df_logs.dropna(subset=['created_at_dt']).copy()
             clean_logs['date_only'] = clean_logs['created_at_dt'].dt.date
             
-            # Filter Mask
+            # Filter logic using your mask
             mask = (
                 (clean_logs['date_only'] >= d_range[0]) & 
                 (clean_logs['date_only'] <= d_range[1]) &
@@ -353,6 +364,7 @@ with tab_analytics:
             report_df = clean_logs.loc[mask].copy()
 
             if not report_df.empty:
+                # --- 3. DUAL VIEW SUMMARIES ---
                 col_left, col_right = st.columns(2)
 
                 with col_left:
@@ -369,12 +381,12 @@ with tab_analytics:
                 st.markdown("### 📥 Download CSV Reports")
                 d1, d2, d3 = st.columns(3)
 
+                # Your custom CSV logic preserved
                 def to_csv(df):
-                    # Preserving your custom index logic
                     return df.to_csv(index=True if isinstance(df, pd.DataFrame) and not df.index.name is None else False).encode('utf-8')
 
                 d1.download_button(
-                    "📄 Full Detailed Log", 
+                    "📄 Full Detailed Log (Includes Notes)", 
                     data=to_csv(report_df), 
                     file_name=f"Detailed_Logs_{d_range[0]}_to_{d_range[1]}.csv",
                     use_container_width=True
@@ -394,12 +406,13 @@ with tab_analytics:
                     use_container_width=True
                 )
             else:
-                st.warning("No entry logs found for the selected filters.")
+                st.warning("No data found for the selected filters.")
                 
         except Exception as e:
             st.error(f"Analytics Error: {e}")
     else:
-        st.info("Please select a date range to load productivity reports.")
+        st.info("Please select a full date range (Start and End date) to see the reports.")
+
 # --- TAB 4: MASTER SETTINGS (Robust Version) ---
 with tab_master:
     st.subheader("⚙️ Shop Floor Gate Master")
