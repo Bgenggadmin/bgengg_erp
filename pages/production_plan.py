@@ -283,7 +283,7 @@ with tab_analytics:
         f_jobs = f2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
         f_staff = f3.multiselect("Filter Workers", all_workers, default=all_workers)
 
-    # --- 2. GANTT CHART SECTION (FIXED) ---
+   # --- 2. GANTT CHART SECTION (FIXED) ---
     st.divider()
     st.markdown("#### 📅 Project Timeline (Planned vs Actual)")
     g_job = st.selectbox("Select Job for Timeline View", ["-- Select --"] + all_jobs, key="gantt_job_sel")
@@ -295,13 +295,13 @@ with tab_analytics:
         if not job_plan.empty:
             gantt_data = []
             for _, row in job_plan.iterrows():
-                # FIX: Convert all dates to pandas datetime objects to prevent px.timeline TypeError
+                # FIX: Convert all dates and force errors to NaT
                 p_start = pd.to_datetime(row['planned_start_date'], errors='coerce')
                 p_end = pd.to_datetime(row['planned_end_date'], errors='coerce')
                 a_start = pd.to_datetime(row['actual_start_date'], errors='coerce')
                 a_end = pd.to_datetime(row['actual_end_date'], errors='coerce')
 
-                # 1. Add Planned Bar
+                # 1. Add Planned Bar (ONLY if both dates are valid)
                 if pd.notnull(p_start) and pd.notnull(p_end):
                     gantt_data.append({
                         "Task": f"{row['step_order']}. {row['gate_name']}",
@@ -311,34 +311,43 @@ with tab_analytics:
                         "Status": row['current_status']
                     })
                 
-                # 2. Add Actual Bar (only if it has started)
+                # 2. Add Actual Bar (ONLY if it has actually started)
                 if pd.notnull(a_start):
-                    # Use today's date if the task is still Active (not finished)
+                    # If it has started but not ended, use current time for the bar length
                     finish_val = a_end if pd.notnull(a_end) else pd.to_datetime(datetime.now(IST))
-                    gantt_data.append({
-                        "Task": f"{row['step_order']}. {row['gate_name']}",
-                        "Start": a_start,
-                        "Finish": finish_val,
-                        "Type": "Actual",
-                        "Status": row['current_status']
-                    })
+                    
+                    # Double check that finish_val is valid before appending
+                    if pd.notnull(finish_val):
+                        gantt_data.append({
+                            "Task": f"{row['step_order']}. {row['gate_name']}",
+                            "Start": a_start,
+                            "Finish": finish_val,
+                            "Type": "Actual",
+                            "Status": row['current_status']
+                        })
 
             if gantt_data:
                 df_gantt = pd.DataFrame(gantt_data)
-                # px.timeline handles the bars; barmode='overlay' is set by default for timelines
-                fig_gantt = px.timeline(
-                    df_gantt, 
-                    x_start="Start", 
-                    x_end="Finish", 
-                    y="Task", 
-                    color="Type",
-                    hover_data=["Status"],
-                    color_discrete_map={"Planned": "#E5ECF6", "Actual": "#00CC96"}
-                )
-                fig_gantt.update_yaxes(autorange="reversed") 
-                st.plotly_chart(fig_gantt, use_container_width=True)
+                
+                # FINAL SAFETY CHECK: Ensure no NaT values leaked into Start/Finish
+                df_gantt = df_gantt.dropna(subset=['Start', 'Finish'])
+                
+                if not df_gantt.empty:
+                    fig_gantt = px.timeline(
+                        df_gantt, 
+                        x_start="Start", 
+                        x_end="Finish", 
+                        y="Task", 
+                        color="Type",
+                        hover_data=["Status"],
+                        color_discrete_map={"Planned": "#E5ECF6", "Actual": "#00CC96"}
+                    )
+                    fig_gantt.update_yaxes(autorange="reversed") 
+                    st.plotly_chart(fig_gantt, use_container_width=True)
+                else:
+                    st.info("No valid date ranges available to draw the bars.")
             else:
-                st.info("No valid dates found to display the Gantt chart.")
+                st.info("No planning or actual dates found for this job.")
         else:
             st.warning("No planning steps found for this job.")
 
