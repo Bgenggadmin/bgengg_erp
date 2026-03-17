@@ -9,8 +9,7 @@ from PIL import Image
 import io
 
 # 1. SETUP
-# NOTE: Only use set_page_config if this is the entry point. 
-# If running inside app.py navigation, ensure app.py handles this.
+# Only set_page_config if not managed by a main app.py navigation
 if 'page_config_set' not in st.session_state:
     st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
     st.session_state.page_config_set = True
@@ -31,7 +30,7 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- PDF ENGINE (Consolidated Logic) ---
+# --- PDF ENGINE ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -171,7 +170,7 @@ with tab1:
                         conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}_{idx}.jpg", buf.getvalue())
                 st.success("✅ Update Saved!"); st.cache_data.clear(); st.rerun()
 
-# --- TAB 2: ARCHIVE (Full Performance & Filter Logic) ---
+# --- TAB 2: ARCHIVE ---
 with tab2:
     st.subheader("📂 Report Archive")
     af1, af2, af3 = st.columns(3)
