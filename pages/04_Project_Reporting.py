@@ -112,7 +112,7 @@ all_job_codes = df_anchor['job_no'].unique().tolist() if not df_anchor.empty els
 
 tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
 
-# --- 5. TAB 1: NEW ENTRY ---
+# --- 5. TAB 1: NEW ENTRY (WITH DUAL AUTOFILL) ---
 with tab1:
     st.subheader("📋 Project Update")
     f_job = st.selectbox("Select Job Code", [""] + all_job_codes, key="job_lookup")
@@ -123,7 +123,7 @@ with tab1:
         l_res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if l_res.data: 
             last_log = l_res.data[0]
-            st.toast("🔄 Autofilled from last update")
+            st.toast("🔄 Autofilled data from last update")
 
     with st.form("main_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
