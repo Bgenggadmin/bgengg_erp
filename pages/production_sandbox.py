@@ -180,7 +180,34 @@ with tab_analytics:
             fig = px.timeline(df_g, x_start="Start", x_end="Finish", y="Job", color="Type", barmode='group')
             fig.update_yaxes(autorange="reversed")
             st.plotly_chart(fig, use_container_width=True)
-
+# --- TAB 3: ANALYTICS & GANTT (FIXED PLOTLY LOGIC) ---
+if gantt_list:
+    df_g = pd.DataFrame(gantt_list)
+    
+    # 1. Clean the dates (Preventing your previous ValueError)
+    df_g['Start'] = pd.to_datetime(df_g['Start'], errors='coerce')
+    df_g['Finish'] = pd.to_datetime(df_g['Finish'], errors='coerce')
+    df_g = df_g.dropna(subset=['Start', 'Finish'])
+    df_g['Start'] = df_g['Start'].dt.tz_localize(None)
+    df_g['Finish'] = df_g['Finish'].dt.tz_localize(None)
+    
+    # 2. CREATE THE FIGURE (Notice barmode is REMOVED from here)
+    fig = px.timeline(
+        df_g, 
+        x_start="Start", 
+        x_end="Finish", 
+        y="Job", 
+        color="Type",
+        color_discrete_map={"Planned": "#E2E8F0", "Actual": "#3182CE"}
+    )
+    
+    # 3. UPDATE THE LAYOUT (This is where barmode='group' belongs)
+    fig.update_layout(barmode='group')
+    
+    # 4. Reverse Y-axis so latest jobs are at the top
+    fig.update_yaxes(autorange="reversed")
+    
+    st.plotly_chart(fig, use_container_width=True)
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
     st.subheader("⚙️ Gate Master")
