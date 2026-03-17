@@ -31,7 +31,6 @@ master = st.session_state.get('master_data', {})
 def get_master_data():
     try:
         plan_res = conn.table("anchor_projects").select("*").eq("status", "Won").order("id").execute()
-        # Increased limit to 100 so the search bar has more data to work with
         prod_res = conn.table("production").select("*").order("created_at", desc=True).limit(100).execute()
         gate_master_res = conn.table("production_gates").select("*").order("step_order").execute()
         job_plan_res = conn.table("job_planning").select("*").order("step_order").execute()
@@ -99,23 +98,6 @@ with tab_plan:
                 edd = valid_dates.max().date()
                 days_left = (edd - date.today()).days
                 st.info(f"📅 **Projected Completion (EDD): {edd.strftime('%d %b %Y')}** ({days_left} days remaining)")
-
-        with st.expander("➕ Add/Insert New Gate", expanded=False):
-            with st.form("add_schedule_form", clear_on_submit=True):
-                c1, c2, c3 = st.columns([2, 2, 1])
-                g_name = c1.selectbox("Process Gate", all_activities)
-                d_range = c2.date_input("Planned Window", [date.today(), date.today() + timedelta(days=5)])
-                g_order = c3.number_input("Step No.", min_value=1, value=len(current_job_steps)+1)
-                if st.form_submit_button("🚀 Add to Plan"):
-                    if len(d_range) == 2:
-                        conn.table("job_planning").insert({
-                            "job_no": target_job, "gate_name": g_name, "step_order": g_order,
-                            "planned_start_date": d_range[0].isoformat(),
-                            "planned_end_date": d_range[1].isoformat(),
-                            "current_status": "Pending"
-                        }).execute()
-                        st.cache_data.clear()
-                        st.rerun()
 
         st.divider()
 
@@ -186,65 +168,44 @@ with tab_entry:
 
     st.divider()
 
-    # --- RECENT LOGS WITH SEARCH ---
+    # --- RECENT LOGS WITH DOWNLOAD ---
     st.markdown("### 🕒 Recent Entries (IST)")
     if not df_logs.empty:
         try:
             display_logs = df_logs.copy()
-            # Standardizing all time formats to IST safely
             display_logs['created_at'] = pd.to_datetime(
                 display_logs['created_at'], utc=True, format='ISO8601'
             ).dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
             
-            # Simple Search Bar
-            search_query = st.text_input("🔍 Search Logs (Worker, Job, or Process)", "").lower()
+            c1, c2 = st.columns([3, 1])
+            search_query = c1.text_input("🔍 Search Logs", "").lower()
             
-            # Filtering Logic
             if search_query:
-                mask = (
-                    display_logs['Worker'].str.lower().str.contains(search_query) |
-                    display_logs['Job_Code'].str.lower().str.contains(search_query) |
-                    display_logs['Activity'].str.lower().str.contains(search_query)
-                )
+                mask = (display_logs['Worker'].str.lower().str.contains(search_query) |
+                        display_logs['Job_Code'].str.lower().str.contains(search_query) |
+                        display_logs['Activity'].str.lower().str.contains(search_query))
                 filtered_logs = display_logs[mask]
             else:
                 filtered_logs = display_logs
 
-            log_view = filtered_logs[['created_at', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(15)
+            log_view = filtered_logs[['created_at', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(20)
             log_view.columns = ['Time (IST)', 'Job', 'Process', 'Worker', 'Hrs', 'Qty', 'Unit', 'Remarks']
-            st.dataframe(log_view, use_container_width=True, hide_index=True)
             
+            # Download Logic
+            csv_data = log_view.to_csv(index=False).encode('utf-8')
+            c2.download_button(label="📥 Download CSV", data=csv_data, file_name=f"prod_logs_{date.today()}.csv", mime='text/csv')
+            
+            st.dataframe(log_view, use_container_width=True, hide_index=True)
         except Exception as e:
             st.error(f"Log Display Error: {e}")
-    else:
-        st.info("No logs found for today yet.")
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
     st.subheader("📊 Production Reports & Exports")
     
-    st.markdown("#### 📅 Project Schedule Tracker")
-    g_job = st.selectbox("Select Job for Schedule View", ["-- Select --"] + all_jobs, key="schedule_job_sel")
-    if g_job != "-- Select --":
-        job_plan = df_job_plans[df_job_plans['job_no'] == g_job].copy()
-        if not job_plan.empty:
-            date_cols = ['planned_start_date', 'planned_end_date', 'actual_start_date', 'actual_end_date']
-            for col in date_cols:
-                job_plan[col] = pd.to_datetime(job_plan[col], errors='coerce').dt.strftime('%d-%b-%Y')
-            
-            schedule_view = job_plan[['step_order', 'gate_name', 'planned_start_date', 'planned_end_date', 'actual_start_date', 'actual_end_date', 'current_status']].sort_values('step_order')
-            st.dataframe(schedule_view, use_container_width=True, hide_index=True)
-
-    st.divider()
-    with st.container(border=True):
-        f1, f2, f3 = st.columns([2, 2, 2])
-        today = date.today()
-        d_range = f1.date_input("Select Period", [today - timedelta(days=7), today])
-        f_jobs = f2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
-        f_staff = f3.multiselect("Filter Workers", all_workers, default=all_workers)
-
-    if not df_logs.empty and len(d_range) == 2:
+    if not df_logs.empty:
         try:
+            # Applying the ISO8601 fix to Analytics as well
             df_logs['created_at_dt'] = pd.to_datetime(
                 df_logs['created_at'], utc=True, format='ISO8601'
             ).dt.tz_convert(IST)
@@ -252,15 +213,27 @@ with tab_analytics:
             clean_logs = df_logs.dropna(subset=['created_at_dt']).copy()
             clean_logs['date_only'] = clean_logs['created_at_dt'].dt.date
             
-            mask = ((clean_logs['date_only'] >= d_range[0]) & (clean_logs['date_only'] <= d_range[1]) &
-                    (clean_logs['Job_Code'].isin(f_jobs)) & (clean_logs['Worker'].isin(f_staff)))
-            report_df = clean_logs.loc[mask].copy()
+            with st.container(border=True):
+                f1, f2, f3 = st.columns([2, 2, 2])
+                today = date.today()
+                d_range = f1.date_input("Select Period", [today - timedelta(days=7), today])
+                f_jobs = f2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
+                f_staff = f3.multiselect("Filter Workers", all_workers, default=all_workers)
 
-            if not report_df.empty:
-                st.markdown("#### 🏗️ Effort Summary")
-                c_left, c_right = st.columns(2)
-                c_left.dataframe(report_df.groupby(['Job_Code', 'Activity'])['Hours'].sum().unstack(fill_value=0), use_container_width=True)
-                c_right.dataframe(report_df.groupby(['Worker', 'Job_Code'])['Hours'].sum().reset_index(), use_container_width=True)
+            if len(d_range) == 2:
+                mask = ((clean_logs['date_only'] >= d_range[0]) & (clean_logs['date_only'] <= d_range[1]) &
+                        (clean_logs['Job_Code'].isin(f_jobs)) & (clean_logs['Worker'].isin(f_staff)))
+                report_df = clean_logs.loc[mask].copy()
+
+                if not report_df.empty:
+                    st.markdown("#### 🏗️ Effort Summary")
+                    # Export options for full report
+                    full_csv = report_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Export Full Report (CSV)", full_csv, "production_report.csv", "text/csv")
+                    
+                    c_left, c_right = st.columns(2)
+                    c_left.dataframe(report_df.groupby(['Job_Code', 'Activity'])['Hours'].sum().unstack(fill_value=0), use_container_width=True)
+                    c_right.dataframe(report_df.groupby(['Worker', 'Job_Code'])['Hours'].sum().reset_index(), use_container_width=True)
         except Exception as e:
             st.error(f"Analytics Data Error: {e}")
 
@@ -279,7 +252,6 @@ with tab_master:
                     st.cache_data.clear()
                     st.rerun()
     with col_m2:
-        st.markdown("### 📋 Existing Master Gates")
         if not df_master_gates.empty:
             for _, m_row in df_master_gates.sort_values('step_order').iterrows():
                 with st.container(border=True):
