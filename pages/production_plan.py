@@ -132,6 +132,7 @@ with tab_plan:
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     
+    # --- FORM SECTION ---
     with st.container(border=True):
         f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="entry_job_sel")
         if f_job != "-- Select --":
@@ -168,36 +169,67 @@ with tab_entry:
 
     st.divider()
 
-    # --- RECENT LOGS WITH DOWNLOAD ---
+    # --- RECENT LOGS SECTION ---
     st.markdown("### 🕒 Recent Entries (IST)")
     if not df_logs.empty:
         try:
             display_logs = df_logs.copy()
-            display_logs['created_at'] = pd.to_datetime(
+            # Standardize time
+            display_logs['Time (IST)'] = pd.to_datetime(
                 display_logs['created_at'], utc=True, format='ISO8601'
             ).dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
             
-            c1, c2 = st.columns([3, 1])
-            search_query = c1.text_input("🔍 Search Logs", "").lower()
+            # --- ACTION BAR (Edit/Delete/Download) ---
+            with st.expander("🛠️ Correction Tools (Edit/Delete Last Entry)"):
+                last_row = display_logs.iloc[0]
+                c1, c2, c3 = st.columns([2, 2, 1])
+                c1.info(f"Last Log: {last_row['Worker']} ({last_row['Hours']} hrs)")
+                
+                # Update logic for the very last entry
+                if c2.button("✏️ Edit Last Entry"):
+                    # This opens a small dialog to edit
+                    @st.dialog("Edit Last Log")
+                    def edit_dialog(item):
+                        new_h = st.number_input("Hours", value=float(item['Hours']), step=0.5)
+                        new_q = st.number_input("Qty", value=float(item['Output']), step=0.1)
+                        if st.button("Save Changes"):
+                            conn.table("production").update({"Hours": new_h, "Output": new_q}).eq("id", item['id']).execute()
+                            st.cache_data.clear()
+                            st.rerun()
+                    edit_dialog(last_row)
+
+                # Delete logic for the very last entry
+                if c3.button("🗑️ Delete Last", type="primary"):
+                    conn.table("production").delete().eq("id", last_row['id']).execute()
+                    st.cache_data.clear()
+                    st.rerun()
+
+            # --- SEARCH & DOWNLOAD ---
+            search_col, dl_col = st.columns([3, 1])
+            search_query = search_col.text_input("🔍 Search Worker or Job", "").lower()
             
             if search_query:
                 mask = (display_logs['Worker'].str.lower().str.contains(search_query) |
-                        display_logs['Job_Code'].str.lower().str.contains(search_query) |
-                        display_logs['Activity'].str.lower().str.contains(search_query))
+                        display_logs['Job_Code'].str.lower().str.contains(search_query))
                 filtered_logs = display_logs[mask]
             else:
                 filtered_logs = display_logs
 
-            log_view = filtered_logs[['created_at', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(20)
-            log_view.columns = ['Time (IST)', 'Job', 'Process', 'Worker', 'Hrs', 'Qty', 'Unit', 'Remarks']
+            # Prepare table for display
+            log_view = filtered_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'Notes']].head(20)
+            log_view.columns = ['Time', 'Job', 'Process', 'Worker', 'Hrs', 'Qty', 'Unit', 'Remarks']
             
-            # Download Logic
+            # Download Button
             csv_data = log_view.to_csv(index=False).encode('utf-8')
-            c2.download_button(label="📥 Download CSV", data=csv_data, file_name=f"prod_logs_{date.today()}.csv", mime='text/csv')
+            dl_col.download_button("📥 Download CSV", data=csv_data, file_name="recent_logs.csv", mime='text/csv')
             
+            # Table Display (The compact version you prefer)
             st.dataframe(log_view, use_container_width=True, hide_index=True)
+                        
         except Exception as e:
             st.error(f"Log Display Error: {e}")
+    else:
+        st.info("No logs found.")
 
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
