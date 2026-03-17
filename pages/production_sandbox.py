@@ -124,16 +124,31 @@ with tab_plan:
             st.divider()
             st.subheader(f"🏁 Execution: {target_job}")
             for _, row in current_job_steps.sort_values('step_order').iterrows():
+                # Define dates for status calculation
+                p_end = pd.to_datetime(row['planned_end_date']).date() if pd.notnull(row['planned_end_date']) else None
+                today = date.today()
+
                 with st.container(border=True):
                     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
                     col1.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
+                    
                     if row['current_status'] == "Pending":
                         col2.warning("⏳ Pending")
                         if col4.button("▶️ Start", key=f"st_{row['id']}"):
                             conn.table("job_planning").update({"current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
+                            
                     elif row['current_status'] == "Active":
                         col2.info("🚀 Active")
+                        
+                        # UPDATED DELAY LOGIC
+                        if p_end:
+                            delay_days = (today - p_end).days
+                            if delay_days > 0:
+                                col3.metric("Delay", f"{delay_days} Days", delta=f"-{delay_days}", delta_color="inverse")
+                            else:
+                                col3.success("On Track")
+                        
                         if col4.button("✅ Close", key=f"cl_{row['id']}"):
                             conn.table("job_planning").update({"current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()}).eq("id", row['id']).execute()
                             st.cache_data.clear(); st.rerun()
