@@ -8,14 +8,14 @@ import pandas as pd
 from PIL import Image
 import io
 
-# 1. SETUP
+# --- 1. SETUP ---
 if 'page_config_set' not in st.session_state:
     st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
     st.session_state.page_config_set = True
 
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
-# 2. MASTER MAPPING
+# --- 2. MASTER MAPPING ---
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 MILESTONE_MAP = [
     ("Drawing Submission", "draw_sub", "draw_sub_note"),
@@ -29,7 +29,7 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- PDF ENGINE ---
+# --- 3. PDF ENGINE ---
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -99,7 +99,7 @@ def generate_pdf(logs):
         except: pass
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- DATA FETCH ---
+# --- 4. DATA FETCH ---
 @st.cache_data(ttl=300)
 def get_reporting_masters():
     try:
@@ -112,7 +112,7 @@ all_job_codes = df_anchor['job_no'].unique().tolist() if not df_anchor.empty els
 
 tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
 
-# --- TAB 1: NEW ENTRY (WITH DUAL AUTOFILL) ---
+# --- 5. TAB 1: NEW ENTRY ---
 with tab1:
     st.subheader("📋 Project Update")
     f_job = st.selectbox("Select Job Code", [""] + all_job_codes, key="job_lookup")
@@ -169,7 +169,7 @@ with tab1:
                         conn.client.storage.from_("progress-photos").upload(f"{res.data[0]['id']}_{idx}.jpg", buf.getvalue())
                 st.success("✅ Update Saved!"); st.cache_data.clear(); st.rerun()
 
-# --- TAB 2: ARCHIVE ---
+# --- 6. TAB 2: ARCHIVE ---
 with tab2:
     st.subheader("📂 Report Archive")
     af1, af2, af3 = st.columns(3)
