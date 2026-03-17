@@ -66,29 +66,43 @@ with tab_plan:
     target_job = st.selectbox("Select Job to Manage", ["-- Select --"] + all_jobs)
     
     if target_job != "-- Select --":
-        # A. DELIVERY DASHBOARD
+       
+        # A. DELIVERY DASHBOARD (CRASH-PROOF)
         proj_match = df_projects[df_projects['job_no'] == target_job]
         if not proj_match.empty:
             p_data = proj_match.iloc[0]
             with st.container(border=True):
-                # Safe extraction of available anchor dates
-                po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) else None
-                rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) else None
+                # Safe extraction logic: If null, returns None; if missing, returns None
+                raw_po_date = p_data.get('po_date')
+                raw_disp_date = p_data.get('po_delivery_date')
+                raw_rev_date = p_data.get('revised_delivery_date')
+
+                # Process dates ONLY if they exist, otherwise keep as None
+                po_placed_dt = pd.to_datetime(raw_po_date).date() if pd.notnull(raw_po_date) else None
+                po_disp_dt = pd.to_datetime(raw_disp_date).date() if pd.notnull(raw_disp_date) else None
+                rev_dt = pd.to_datetime(raw_rev_date).date() if pd.notnull(raw_rev_date) else None
                 
-                c1, c2, c3 = st.columns([2, 2, 2])
-                c1.write(f"🚚 **PO Dispatch Date**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else 'Not Set'}")
-                c2.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else 'None'}")
+                c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
                 
+                # Show date if exists, otherwise show blank/Not Set
+                c1.write(f"📅 **PO Date**\n{po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else '---'}")
+                c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else '---'}")
+                c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else '---'}")
+                
+                # Calculate Metric safely
                 final_target = rev_dt if rev_dt else po_disp_dt
                 if final_target:
                     days_left = (final_target - date.today()).days
-                    c3.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
+                    c4.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
+                else:
+                    c4.caption("⏳ No target date set")
 
+                # Edit Dialog logic
                 if st.button("📝 Edit Schedule", key="edit_delivery"):
-                    @st.dialog("Update Dates")
+                    @st.dialog("Update Commitment")
                     def update_dates():
-                        n_po_disp = st.date_input("Original PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
-                        n_rev = st.date_input("Revised Delivery Date", value=rev_dt if rev_dt else n_po_disp)
+                        n_po_disp = st.date_input("PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
+                        n_rev = st.date_input("Revised Date", value=rev_dt if rev_dt else n_po_disp)
                         if st.button("Save Changes"):
                             conn.table("anchor_projects").update({
                                 "po_delivery_date": str(n_po_disp), 
