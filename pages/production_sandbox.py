@@ -67,29 +67,30 @@ with tab_plan:
     
     if target_job != "-- Select --":
        
-        # A. DELIVERY DASHBOARD (CRASH-PROOF)
+        # A. DELIVERY DASHBOARD (SYNCED WITH ANCHOR SCHEMA)
         proj_match = df_projects[df_projects['job_no'] == target_job]
         if not proj_match.empty:
             p_data = proj_match.iloc[0]
             with st.container(border=True):
-                # Safe extraction logic: If null, returns None; if missing, returns None
-                raw_po_date = p_data.get('po_date')
-                raw_disp_date = p_data.get('po_delivery_date')
-                raw_rev_date = p_data.get('revised_delivery_date')
-
-                # Process dates ONLY if they exist, otherwise keep as None
-                po_placed_dt = pd.to_datetime(raw_po_date).date() if pd.notnull(raw_po_date) else None
-                po_disp_dt = pd.to_datetime(raw_disp_date).date() if pd.notnull(raw_disp_date) else None
-                rev_dt = pd.to_datetime(raw_rev_date).date() if pd.notnull(raw_rev_date) else None
+                # 1. Extract PO Details & Dates
+                po_num = p_data.get('po_no') or "---"
+                po_placed_dt = pd.to_datetime(p_data.get('po_date')).date() if pd.notnull(p_data.get('po_date')) else None
+                po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) else None
+                rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) else None
                 
+                # 2. Layout: 4 Columns
                 c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
                 
-                # Show date if exists, otherwise show blank/Not Set
-                c1.write(f"📅 **PO Date**\n{po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else '---'}")
+                # Column 1: PO Reference
+                c1.write(f"📄 **PO No: {po_num}**\nDate: {po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else '---'}")
+                
+                # Column 2: Anchor Commitment
                 c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else '---'}")
+                
+                # Column 3: Shop Floor Revision
                 c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else '---'}")
                 
-                # Calculate Metric safely
+                # Column 4: Days to Dispatch Metric
                 final_target = rev_dt if rev_dt else po_disp_dt
                 if final_target:
                     days_left = (final_target - date.today()).days
@@ -97,18 +98,19 @@ with tab_plan:
                 else:
                     c4.caption("⏳ No target date set")
 
-                # Edit Dialog logic
-                if st.button("📝 Edit Schedule", key="edit_delivery"):
+                # 3. Edit Schedule Dialog
+                if st.button("📝 Update Schedule", key="edit_delivery"):
                     @st.dialog("Update Commitment")
                     def update_dates():
-                        n_po_disp = st.date_input("PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
-                        n_rev = st.date_input("Revised Date", value=rev_dt if rev_dt else n_po_disp)
+                        n_po_disp = st.date_input("Original PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
+                        n_rev = st.date_input("Revised Delivery Date", value=rev_dt if rev_dt else n_po_disp)
                         if st.button("Save Changes"):
                             conn.table("anchor_projects").update({
                                 "po_delivery_date": str(n_po_disp), 
                                 "revised_delivery_date": str(n_rev)
                             }).eq("job_no", target_job).execute()
-                            st.cache_data.clear(); st.rerun()
+                            st.cache_data.clear()
+                            st.rerun()
                     update_dates()
 
         # B. URGENT MATERIAL TRIGGER
