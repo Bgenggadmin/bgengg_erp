@@ -35,7 +35,6 @@ def get_master_data():
         l_res = conn.table("production").select("*").order("created_at", desc=True).execute()
         m_res = conn.table("production_gates").select("*").order("step_order").execute()
         j_res = conn.table("job_planning").select("*").order("step_order").execute()
-        # Purchase Integration fetch
         pur_res = conn.table("purchase_orders").select("*").execute()
         
         return (pd.DataFrame(p_res.data or []), 
@@ -90,14 +89,37 @@ with tab_plan:
                             st.cache_data.clear(); st.rerun()
                     update_dates()
 
-        # B. PURCHASE INTEGRATION
-        with st.expander("🛒 Material Status (from Anchor Portal)", expanded=False):
+        # B. URGENT MATERIAL TRIGGER (NEW FEATURE)
+        with st.expander("🚨 Trigger Urgent Purchase Requisition", expanded=False):
+            with st.form("urgent_purchase_form", clear_on_submit=True):
+                st.info("Direct alert will be sent to the Purchase Department.")
+                r1, r2 = st.columns(2)
+                item_name = r1.text_input("Material Item Name")
+                item_qty = r2.text_input("Required Quantity (with Unit)")
+                item_specs = st.text_area("Urgent Specs / Reason for Urgency")
+                
+                if st.form_submit_button("🔥 Send Urgent Request"):
+                    if item_name and item_qty:
+                        conn.table("purchase_orders").insert({
+                            "job_no": target_job,
+                            "item_name": item_name,
+                            "specs": f"URGENT: {item_specs} (Qty: {item_qty})",
+                            "status": "Triggered",
+                            "created_at": datetime.now(IST).isoformat()
+                        }).execute()
+                        st.success(f"Urgent request for {item_name} sent!")
+                        st.cache_data.clear(); st.rerun()
+                    else:
+                        st.error("Item Name and Quantity are required.")
+
+        # C. MATERIAL STATUS TRACKER
+        with st.expander("🛒 Current Material Status", expanded=False):
             job_purchase = df_purchase[df_purchase['job_no'] == target_job] if not df_purchase.empty else pd.DataFrame()
             if not job_purchase.empty:
                 for _, p_item in job_purchase.iterrows():
                     pc1, pc2, pc3 = st.columns([2, 2, 1])
                     pc1.write(f"🔹 **{p_item['item_name']}**")
-                    pc2.caption(f"Specs: {p_item['specs']}")
+                    pc2.caption(f"{p_item['specs']}")
                     status_val = p_item['status']
                     if status_val == "Received": pc3.success(status_val)
                     elif status_val == "Ordered": pc3.info(status_val)
@@ -107,7 +129,7 @@ with tab_plan:
 
         st.divider()
 
-        # C. CLONE LOGIC
+        # D. CLONE LOGIC
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
         if current_job_steps.empty:
             st.warning("⚠️ No Plan Detected")
@@ -119,7 +141,7 @@ with tab_plan:
                     conn.table("job_planning").insert(new_steps).execute()
                     st.cache_data.clear(); st.rerun()
 
-        # D. EXECUTION FLOW
+        # E. EXECUTION FLOW
         if not current_job_steps.empty:
             valid_dates = pd.to_datetime(current_job_steps['planned_end_date'], errors='coerce').dropna()
             if not valid_dates.empty:
@@ -150,6 +172,7 @@ with tab_plan:
                     else:
                         col2.success("🏁 Completed")
 
+# Rest of the tabs (Entry, Analytics, Master) remain exactly the same...
 # --- TAB 2: DAILY ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
