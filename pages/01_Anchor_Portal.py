@@ -110,7 +110,9 @@ with tabs[1]:
                 u_po_del = d1.date_input("Original PO Del. Date", value=curr_po_del, key=f"po_del_date_{row['id']}")
                 u_rev_del = d2.date_input("Revised Del. Date", value=curr_rev_del, key=f"rev_del_date_{row['id']}")
                 
-                final_target = u_rev_date if u_rev_date else u_po_date
+               # Updated to use the new unique variable names
+                final_target = u_rev_del if u_rev_del else u_po_del
+
                 if final_target:
                     days_to_go = (final_target - date.today()).days
                     d3.metric("Days to Dispatch", f"{days_to_go} Days", delta=days_to_go, delta_color="normal" if days_to_go > 7 else "inverse")
