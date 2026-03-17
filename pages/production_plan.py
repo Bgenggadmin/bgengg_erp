@@ -269,7 +269,7 @@ with tab_entry:
 
 # --- TAB 3: ANALYTICS & GANTT (FIXED SECTION) ---
 with tab_analytics:
-    # Removed the duplicate 'with tab_analytics:' line that caused the error
+    # Removed the duplicate 'with' line that caused indentation issues
     st.subheader("📊 Production Reports & Exports")
     
     # --- 1. FILTERS ---
@@ -285,54 +285,58 @@ with tab_analytics:
         f_jobs = f2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
         f_staff = f3.multiselect("Filter Workers", all_workers, default=all_workers)
 
-    # --- 2. DATA PROCESSING ---
+    # --- 2. DATA PROCESSING (With ValueError Protection) ---
     if not df_logs.empty and len(d_range) == 2:
-        # Filter logic
-        df_logs['date_only'] = pd.to_datetime(df_logs['created_at']).dt.date
-        mask = (
-            (df_logs['date_only'] >= d_range[0]) & 
-            (df_logs['date_only'] <= d_range[1]) &
-            (df_logs['Job_Code'].isin(f_jobs)) &
-            (df_logs['Worker'].isin(f_staff))
-        )
-        report_df = df_logs.loc[mask].copy()
-
-        # --- 3. DUAL VIEW SUMMARIES ---
-        st.divider()
-        col_left, col_right = st.columns(2)
-
-        with col_left:
-            st.markdown("#### 🏗️ Job-Wise Effort")
-            # Shows which processes are eating time on each job
-            if not report_df.empty:
-                job_summary = report_df.groupby(['Job_Code', 'Activity'])['Hours'].sum().unstack(fill_value=0)
-                st.dataframe(job_summary, use_container_width=True)
-
-        with col_right:
-            st.markdown("#### 👷 Worker-Wise Effort")
-            # Shows how workers are split across different jobs
-            if not report_df.empty:
-                worker_summary = report_df.groupby(['Worker', 'Job_Code'])['Hours'].sum().reset_index()
-                st.dataframe(worker_summary, use_container_width=True)
-
-        # --- 4. THE EXPORT BUTTONS ---
-        st.markdown("### 📥 Download CSV Reports")
-        d1, d2, d3 = st.columns(3)
-
-        def to_csv(df):
-            # Preserving your exact CSV logic
-            return df.to_csv(index=True if isinstance(df, pd.DataFrame) and not df.index.name is None else False).encode('utf-8')
-
-        if not report_df.empty:
-            d1.download_button(
-                "📄 Full Detailed Log (Includes Notes)", 
-                data=to_csv(report_df), 
-                file_name=f"Detailed_Logs_{d_range[0]}_to_{d_range[1]}.csv",
-                use_container_width=True
-            )
+        try:
+            # ROBUST DATE CONVERSION: 
+            # errors='coerce' turns bad dates into NaT (Not a Time) instead of crashing
+            df_logs['created_at_dt'] = pd.to_datetime(df_logs['created_at'], errors='coerce')
             
-            # Check if summary dataframes exist before allowing download
-            try:
+            # Drop rows where dates are broken to prevent the ValueError you saw
+            clean_logs = df_logs.dropna(subset=['created_at_dt']).copy()
+            clean_logs['date_only'] = clean_logs['created_at_dt'].dt.date
+            
+            # Filter logic using your mask
+            mask = (
+                (clean_logs['date_only'] >= d_range[0]) & 
+                (clean_logs['date_only'] <= d_range[1]) &
+                (clean_logs['Job_Code'].isin(f_jobs)) &
+                (clean_logs['Worker'].isin(f_staff))
+            )
+            report_df = clean_logs.loc[mask].copy()
+
+            if not report_df.empty:
+                # --- 3. DUAL VIEW SUMMARIES ---
+                st.divider()
+                col_left, col_right = st.columns(2)
+
+                with col_left:
+                    st.markdown("#### 🏗️ Job-Wise Effort")
+                    # Grouping logic exactly as you had it
+                    job_summary = report_df.groupby(['Job_Code', 'Activity'])['Hours'].sum().unstack(fill_value=0)
+                    st.dataframe(job_summary, use_container_width=True)
+
+                with col_right:
+                    st.markdown("#### 👷 Worker-Wise Effort")
+                    # Worker distribution logic exactly as you had it
+                    worker_summary = report_df.groupby(['Worker', 'Job_Code'])['Hours'].sum().reset_index()
+                    st.dataframe(worker_summary, use_container_width=True)
+
+                # --- 4. THE EXPORT BUTTONS ---
+                st.markdown("### 📥 Download CSV Reports")
+                d1, d2, d3 = st.columns(3)
+
+                # Your custom CSV logic preserved
+                def to_csv(df):
+                    return df.to_csv(index=True if isinstance(df, pd.DataFrame) and not df.index.name is None else False).encode('utf-8')
+
+                d1.download_button(
+                    "📄 Full Detailed Log (Includes Notes)", 
+                    data=to_csv(report_df), 
+                    file_name=f"Detailed_Logs_{d_range[0]}_to_{d_range[1]}.csv",
+                    use_container_width=True
+                )
+                
                 d2.download_button(
                     "🏗️ Job Matrix Export", 
                     data=to_csv(job_summary), 
@@ -346,10 +350,14 @@ with tab_analytics:
                     file_name=f"Worker_Job_Distribution_{today}.csv",
                     use_container_width=True
                 )
-            except NameError:
-                pass
+            else:
+                st.warning("No data found for the selected filters.")
+                
+        except Exception as e:
+            st.error(f"Analytics Error: {e}")
     else:
         st.info("Please select a full date range (Start and End date) to see the reports.")
+
 # --- TAB 4: MASTER SETTINGS (Robust Version) ---
 with tab_master:
     st.subheader("⚙️ Shop Floor Gate Master")
