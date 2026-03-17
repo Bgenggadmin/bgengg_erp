@@ -104,8 +104,8 @@ with tabs[1]:
                 curr_po = pd.to_datetime(row['po_delivery_date']).date() if pd.notnull(row.get('po_delivery_date')) else None
                 curr_rev = pd.to_datetime(row['revised_delivery_date']).date() if pd.notnull(row.get('revised_delivery_date')) else None
                 
-                u_po_date = d1.date_input("Original PO Date", value=curr_po if curr_po else date.today(), key=f"po_date_{row['id']}")
-                u_rev_date = d2.date_input("Revised Date", value=curr_rev if curr_rev else u_po_date, key=f"rev_date_{row['id']}")
+                u_po_date = d1.date_input("Original PO Del. Date", value=curr_po if curr_po else date.today(), key=f"po_date_{row['id']}")
+                u_rev_date = d2.date_input("Revised Del.Date", value=curr_rev if curr_rev else u_po_date, key=f"rev_date_{row['id']}")
                 
                 final_target = u_rev_date if u_rev_date else u_po_date
                 if final_target:
