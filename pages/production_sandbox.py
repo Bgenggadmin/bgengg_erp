@@ -233,7 +233,7 @@ with tab_entry:
                 st.cache_data.clear(); st.rerun()
         st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit']].head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 3: ENHANCED ANALYTICS ---
+# --- TAB 3: ENHANCED ANALYTICS (WITH DOWNLOADS) ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     
@@ -269,46 +269,48 @@ with tab_analytics:
             rdf = df_logs.loc[mask].copy()
 
             if not rdf.empty:
-                # --- KPI ROW ---
-                kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-                total_hrs = rdf['Hours'].sum()
-                avg_efficiency = (rdf['Output'].sum() / total_hrs) if total_hrs > 0 else 0
+                # --- KPI ROW & TOP LEVEL DOWNLOAD ---
+                kpi_col, dl_col = st.columns([3, 1])
                 
-                kpi1.metric("Total Man-Hours", f"{total_hrs:.1f} hrs")
-                kpi2.metric("Total Output", f"{rdf['Output'].sum():.0f} Units")
-                kpi3.metric("Productivity Index", f"{avg_efficiency:.2f} U/Hr")
-                kpi4.metric("Active Workforce", f"{rdf['Worker'].nunique()}")
+                with kpi_col:
+                    k1, k2, k3 = st.columns(3)
+                    total_hrs = rdf['Hours'].sum()
+                    k1.metric("Total Man-Hours", f"{total_hrs:.1f} hrs")
+                    k2.metric("Total Output", f"{rdf['Output'].sum():.0f} Units")
+                    k3.metric("Productivity Index", f"{(rdf['Output'].sum() / total_hrs if total_hrs > 0 else 0):.2f} U/Hr")
+                
+                with dl_col:
+                    # RETAINED: Download button for the raw filtered data
+                    csv_raw = rdf.to_csv(index=False).encode('utf-8')
+                    st.download_button("📂 Export Filtered Logs", data=csv_raw, file_name=f"bg_logs_{period}.csv", mime="text/csv", use_container_width=True)
 
                 st.divider()
 
                 # --- VISUALS ROW ---
                 v1, v2 = st.columns(2)
-                
                 with v1:
                     st.markdown("##### 🕒 Hours per Job")
                     job_data = rdf.groupby('Job_Code')['Hours'].sum().reset_index()
-                    fig_job = px.bar(job_data, x='Job_Code', y='Hours', 
-                                    color='Hours', color_continuous_scale='Blues',
-                                    text_auto='.1f')
-                    st.plotly_chart(fig_job, use_container_width=True)
-
+                    st.plotly_chart(px.bar(job_data, x='Job_Code', y='Hours', color='Hours', text_auto='.1f'), use_container_width=True)
                 with v2:
                     st.markdown("##### 👷 Worker Contribution")
                     worker_data = rdf.groupby('Worker')['Hours'].sum().reset_index()
-                    fig_worker = px.pie(worker_data, values='Hours', names='Worker', 
-                                       hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                    st.plotly_chart(fig_worker, use_container_width=True)
+                    st.plotly_chart(px.pie(worker_data, values='Hours', names='Worker', hole=0.4), use_container_width=True)
 
-                # --- TABULAR SUMMARY ---
-                st.markdown("##### 📋 Deep-Dive Data")
-                st.dataframe(
-                    rdf.groupby(['Job_Code', 'Activity']).agg({
-                        'Hours': 'sum',
-                        'Output': 'sum',
-                        'Worker': 'nunique'
-                    }).rename(columns={'Worker': 'Worker Count'}).reset_index(),
-                    use_container_width=True, hide_index=True
-                )
+                # --- TABULAR SUMMARY & SUMMARY DOWNLOAD ---
+                st.markdown("##### 📋 Process Deep-Dive")
+                summary_df = rdf.groupby(['Job_Code', 'Activity']).agg({
+                    'Hours': 'sum',
+                    'Output': 'sum',
+                    'Worker': 'nunique'
+                }).reset_index()
+                
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                
+                # RETAINED: Secondary download for the summarized view
+                csv_sum = summary_df.to_csv(index=False).encode('utf-8')
+                st.download_button("📊 Export Summary Table", data=csv_sum, file_name=f"bg_summary_{period}.csv", mime="text/csv")
+                
             else:
                 st.warning("No data matches the selected filters.")
 
