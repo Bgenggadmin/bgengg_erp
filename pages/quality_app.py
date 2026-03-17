@@ -14,6 +14,7 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
+    # Only pull stages that are Active or Completed (Skip Pending)
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
     try:
         staff_res = conn.table("master_staff").select("name").execute()
@@ -50,11 +51,11 @@ if not df_plan.empty:
                 q_notes = st.text_area("Technical Observations")
 
             with f_col2:
-                # UPDATED: Accept up to 4 files
+                # Accept up to 4 files
                 q_photos = st.file_uploader("Upload Evidence (Max 4 photos, 60KB each)", 
                                            type=['png', 'jpg', 'jpeg'], 
                                            accept_multiple_files=True)
-                st.caption("Auto-resizing to Passport size and compressing...")
+                st.caption("Auto-resizing and strict 60KB compression enabled.")
 
             if st.form_submit_button("🚀 Submit Quality Report", use_container_width=True):
                 if inspector == "-- Select Name --":
@@ -92,7 +93,7 @@ if not df_plan.empty:
                             "quality_status": q_status,
                             "quality_notes": f"{datetime.now(IST).strftime('%d/%m %H:%M')}: {q_notes}",
                             "quality_by": inspector,
-                            "quality_photo_url": all_urls, # Sending list/array
+                            "quality_photo_url": all_urls,
                             "quality_updated_at": datetime.now(IST).isoformat()
                         }).eq("id", stage_record['id']).execute()
                         
@@ -107,6 +108,7 @@ st.divider()
 st.subheader("📋 Recent Quality Clearances")
 
 if not df_plan.empty:
+    # Filter only inspected rows
     inspected_df = df_plan.dropna(subset=['quality_status']).sort_values(by='quality_updated_at', ascending=False)
     
     if not inspected_df.empty:
@@ -114,7 +116,7 @@ if not df_plan.empty:
 
         st.markdown("### 🖼️ Evidence Gallery & Management")
         
-        # Filter rows that have photos
+        # Filter rows that have photos (check if list is not empty)
         photo_rows = inspected_df[inspected_df['quality_photo_url'].apply(lambda x: len(x) > 0 if isinstance(x, list) else False)]
         
         if not photo_rows.empty:
@@ -124,29 +126,28 @@ if not df_plan.empty:
             current_urls = photo_rows.loc[sel_row_idx, 'quality_photo_url']
             record_id = photo_rows.loc[sel_row_idx, 'id']
             
-            # Display Gallery in Columns
             cols = st.columns(4)
             for i, url in enumerate(current_urls):
-                with cols[i]:
+                with cols[i % 4]:
                     st.image(url, use_container_width=True)
-                    # DELETE BUTTON FOR EACH PHOTO
                     if st.button(f"🗑️ Remove {i+1}", key=f"del_{record_id}_{i}"):
                         try:
-                            # 1. Identify filename from URL to delete from Storage
-                            # URL format is usually .../bucket/filename
+                            # 1. Identify filename from URL
                             file_name = url.split("/")[-1]
                             conn.client.storage.from_("quality-photos").remove([file_name])
                             
-                            # 2. Update the Database Array (Remove this specific URL)
+                            # 2. Update Database (Remove specific URL from array)
                             updated_urls = [u for u in current_urls if u != url]
                             conn.table("job_planning").update({
                                 "quality_photo_url": updated_urls
                             }).eq("id", record_id).execute()
                             
-                            st.toast(f"Photo {i+1} removed successfully!")
+                            st.toast(f"Photo removed!")
                             st.cache_data.clear()
                             st.rerun()
                         except Exception as e:
                             st.error(f"Delete failed: {e}")
         else:
-            st.info("No photos uploaded for recent inspections.")
+            st.info("No photos found for recent inspections.")
+else:
+    st.warning("No project planning data found.")
