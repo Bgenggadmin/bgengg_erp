@@ -71,43 +71,80 @@ if not df_p.empty:
 
 st.divider()
 
-# --- 4. STACKED ACTION CENTER ---
+# --- 4. STACKED ACTION CENTER (ENHANCED SOURCE TRACKING) ---
 if not df_p.empty:
     for p_idx, p_row in df_p.iterrows():
         p_db_id = p_row['id']
         job_no = str(p_row.get('job_no', 'N/A')).strip().upper()
         
-        # FIXED: Added .str.upper() comparison to prevent missing items due to case-mismatch
         job_items = pd.DataFrame()
         if not df_items.empty and 'job_no' in df_items.columns:
             job_items = df_items[df_items['job_no'].astype(str).str.upper() == job_no]
         
-        with st.expander(f"📋 JOB: {job_no} | {p_row.get('client_name', 'Client')} | Items: {len(job_items)}", expanded=True):
-            
-            # --- SECTION 1: ANCHOR CONTEXT (Full Width) ---
-            st.markdown('<div class="section-header">🚩 Procurement Context (Sales/Anchor)</div>', unsafe_allow_html=True)
-            
+        # Count triggers for the header summary
+        # We assume "SHOP" in the name or specific flags identify Production triggers
+        prod_count = len(job_items[job_items['item_name'].str.contains("URGENT|SHOP", case=False, na=False)])
+        anchor_count = len(job_items) - prod_count
+
+        header_label = f"📋 JOB: {job_no} | {p_row.get('client_name', 'Client')} | ⚓ {anchor_count} | 🏗️ {prod_count}"
+        
+        with st.expander(header_label, expanded=True):
+            # --- SECTION 1: ANCHOR CONTEXT ---
+            st.markdown('<div class="section-header">🚩 Logistics Summary</div>', unsafe_allow_html=True)
             ac1, ac2, ac3 = st.columns([1, 2, 1])
             ac1.write(f"**Anchor Person:**\n{p_row.get('anchor_person', 'N/A')}")
             ac2.info(f"**Critical Requirements:**\n{p_row.get('critical_materials', 'N/A')}")
             
-            # Context Update Controls
             stat_opts = ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"]
             curr_p_stat = p_row.get('purchase_status', "Pending Review")
-            
-            # FIXED: Added safety index check to prevent ValueError if DB status isn't in stat_opts
             def_stat_idx = stat_opts.index(curr_p_stat) if curr_p_stat in stat_opts else 0
+            new_p_stat = ac3.selectbox("Overall Status", stat_opts, index=def_stat_idx, key=f"h_stat_{p_db_id}")
             
-            new_p_stat = ac3.selectbox("Logistics Status", stat_opts, 
-                                      index=def_stat_idx,
-                                      key=f"h_stat_{p_db_id}")
-            
-            if ac3.button("Update Context", key=f"h_btn_{p_db_id}", type="primary", use_container_width=True):
+            if ac3.button("Update Overall", key=f"h_btn_{p_db_id}", type="primary", use_container_width=True):
                 conn.table("anchor_projects").update({"purchase_status": new_p_stat}).eq("id", p_db_id).execute()
-                st.toast("Project Status Updated")
-                st.rerun()
+                st.toast("Updated"); st.rerun()
 
-            st.write(" ") # Spacer
+            # --- SECTION 2: ITEMIZED FULFILLMENT ---
+            st.markdown(f'<div class="section-header">📦 Material Request Breakdown</div>', unsafe_allow_html=True)
+            
+            if job_items.empty:
+                st.info("No specific material requests logged.")
+            else:
+                for i, i_row in job_items.reset_index().iterrows():
+                    i_db_id = i_row['id']
+                    k_suffix = f"p{p_db_id}_i{i_db_id}_idx{i}" 
+                    
+                    # LOGIC: Identify if trigger came from Shop Floor or Anchor Portal
+                    # Looking for "URGENT" prefix typically added by your Production script
+                    is_urgent_prod = "URGENT" in str(i_row.get('specs', '')).upper() or "SHOP" in str(i_row.get('item_name', '')).upper()
+                    
+                    with st.container(border=True):
+                        ic1, ic2, ic3, ic4 = st.columns([1.5, 2.5, 1, 0.8])
+                        
+                        with ic1:
+                            if is_urgent_prod:
+                                st.markdown('<span class="tag-prod">🏗️ FROM PRODUCTION</span>', unsafe_allow_html=True)
+                                st.error("🚨 HIGH URGENCY")
+                            else:
+                                st.markdown('<span class="tag-anchor">⚓ FROM ANCHOR</span>', unsafe_allow_html=True)
+                            
+                            st.write(f"**{i_row.get('item_name', 'Item')}**")
+                            st.caption(f"Details: {i_row.get('specs', '-')}")
+                        
+                        i_reply_val = i_row.get('purchase_reply', "") or ""
+                        i_reply = ic2.text_area("Purchase Action", value=i_reply_val, key=f"irep_{k_suffix}", height=80)
+                        
+                        i_opts = ["Triggered", "Sourcing", "Ordered", "Received", "Urgent"]
+                        curr_i_stat = i_row.get('status', 'Triggered')
+                        def_i_idx = i_opts.index(curr_i_stat) if curr_i_stat in i_opts else 0
+                        i_stat = ic3.selectbox("Status", i_opts, index=def_i_idx, key=f"istat_{k_suffix}")
+                        
+                        if ic4.button("Update", key=f"isave_{k_suffix}", use_container_width=True):
+                            conn.table("purchase_orders").update({
+                                "purchase_reply": i_reply, "status": i_stat,
+                                "updated_at": datetime.now(IST).isoformat()
+                            }).eq("id", i_db_id).execute()
+                            st.toast("Saved"); st.rerun()
             
             # --- SECTION 2: ITEMIZED FULFILLMENT (Full Width) ---
             st.markdown(f'<div class="section-header">📋 Itemized Fulfillment ({len(job_items)})</div>', unsafe_allow_html=True)
