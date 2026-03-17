@@ -7,8 +7,10 @@ import os
 import pandas as pd
 from PIL import Image
 import io
+import requests
 
-# 1. SETUP
+# 1. SETUP (st.set_page_config kept for standalone, remove if in navigation hub)
+st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. MASTER MAPPING
@@ -30,7 +32,6 @@ MILESTONE_MAP = [
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
-    
     logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
@@ -50,7 +51,6 @@ def generate_pdf(logs):
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
         
-        # Grid Fields (Master logic restored)
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         for i in range(0, len(HEADER_FIELDS), 2):
             f1, f2 = HEADER_FIELDS[i], HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
@@ -61,14 +61,12 @@ def generate_pdf(logs):
                 pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
             else: pdf.ln(7)
 
-        # Overall Progress Bar
         pdf.ln(5); ov_p = int(log.get('overall_progress', 0))
         pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Progress: {ov_p}%")
         pdf.set_fill_color(230, 230, 230); pdf.rect(65, pdf.get_y() + 2, 120, 4, 'F')
         if ov_p > 0:
             pdf.set_fill_color(0, 102, 204); pdf.rect(65, pdf.get_y() + 2, (ov_p/100)*120, 4, 'F')
         
-        # Milestone Table
         pdf.ln(10); pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True); pdf.cell(30, 8, " Status", 1, 0, 'C', True)
         pdf.cell(30, 8, " Progress", 1, 0, 'C', True); pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
@@ -84,7 +82,7 @@ def generate_pdf(logs):
                 pdf.set_fill_color(0, 153, 76); pdf.rect(cx+3, cy+3, (m_p/100)*24, 2, 'F')
             pdf.set_xy(cx+30, cy); pdf.cell(80, 8, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # --- PHOTO ROW IN PDF (PASSPORT SIZE: 35x45mm) ---
+        # --- PHOTO ROW IN PDF (PASSPORT SIZE) ---
         pdf.ln(10); pdf.set_font("Arial", "B", 10); pdf.cell(0, 10, "Progress Photos:", 0, 1)
         x_start, y_pos = 10, pdf.get_y()
         for i in range(4):
@@ -103,52 +101,82 @@ def generate_pdf(logs):
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- DATA FETCH ---
-customers, jobs = [], []
-try:
-    c_res = conn.table("customer_master").select("name").execute()
-    j_res = conn.table("job_master").select("job_code").execute()
-    customers, jobs = sorted([d['name'] for d in c_res.data]), sorted([d['job_code'] for d in j_res.data])
-except: pass
+@st.cache_data(ttl=600)
+def get_master_data():
+    try:
+        c_res = conn.table("customer_master").select("name").execute()
+        j_res = conn.table("job_master").select("job_code").execute()
+        return sorted([d['name'] for d in (c_res.data or [])]), sorted([d['job_code'] for d in (j_res.data or [])])
+    except: return [], []
 
+customers, jobs = get_master_data()
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
 
-# --- TAB 1: NEW ENTRY (WITH PASSPORT COMPRESSION) ---
+# --- TAB 1: NEW ENTRY (WITH FULL AUTO-FILL) ---
 with tab1:
     st.subheader("📋 Project Update")
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
     last_data = {}
     if f_job:
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        if res and res.data: last_data = res.data[0]; st.toast("🔄 Autofilled")
+        if res and res.data: 
+            last_data = res.data[0]
+            st.toast(f"🔄 Autofilled from {f_job}")
 
     with st.form("main_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        f_cust = c1.selectbox("Customer", [""] + customers)
+        c1, c2, c3 = st.columns(3)
+        # Fix: Safely handle index for customer lookup
+        try:
+            c_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
+        except: c_idx = 0
+
+        f_cust = c1.selectbox("Customer", [""] + customers, index=c_idx)
         f_eq = c2.text_input("Equipment", value=last_data.get('equipment', ""))
+        f_eng = c3.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
+
+        c4, c5, c6 = st.columns(3)
+        f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
+        
+        def safe_date(field):
+            val = last_data.get(field)
+            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
+            except: return datetime.now()
+
+        f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
+        f_p_del = c6.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
+
         st.divider()
         m_responses = {}
         for label, skey, nkey in MILESTONE_MAP:
             pk = f"{skey}_prog"
             col1, col2, col3 = st.columns([1.5, 1, 2])
-            m_responses[skey] = col1.selectbox(label, ["Pending", "NA", "In-Progress", "Completed", "Hold", "Approved", "Scheduled"], key=f"s_{skey}")
+            opts = ["Pending", "NA", "In-Progress", "Completed", "Hold", "Approved", "Scheduled"]
+            prev_status = last_data.get(skey, "Pending")
+            def_idx = opts.index(prev_status) if prev_status in opts else 0
+            
+            m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}")
             m_responses[pk] = col2.slider("Prog %", 0, 100, value=int(last_data.get(pk, 0)), key=f"p_{skey}")
             m_responses[nkey] = col3.text_input("Remarks", value=last_data.get(nkey, ""), key=f"n_{skey}")
 
         f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0)))
-        uploaded_photos = st.file_uploader("Upload Photos (0-4)", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
+        uploaded_photos = st.file_uploader("📸 Upload Photos (Passport Size, Max 4, Total < 50KB recommended)", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
 
         if st.form_submit_button("🚀 SUBMIT UPDATE"):
-            payload = {"customer": f_cust, "job_code": f_job, "equipment": f_eq, "overall_progress": f_progress, **m_responses}
+            payload = {
+                "customer": f_cust, "job_code": f_job, "equipment": f_eq, "po_no": f_po_n, 
+                "po_date": str(f_po_d), "engineer": f_eng, "po_delivery_date": str(f_p_del),
+                "overall_progress": f_progress, **m_responses
+            }
             res = conn.table("progress_logs").insert(payload).execute()
             if res.data and uploaded_photos:
                 log_id = res.data[0]['id']
                 for idx, photo in enumerate(uploaded_photos[:4]):
-                    img = Image.open(photo); img.thumbnail((400, 400)) # PASSPORT SCALE
-                    buf = io.BytesIO(); img.save(buf, format="JPEG", quality=50) # 50KB LIMIT COMPRESSION
+                    img = Image.open(photo); img.thumbnail((400, 400)) 
+                    buf = io.BytesIO(); img.save(buf, format="JPEG", quality=50) 
                     conn.client.storage.from_("progress-photos").upload(f"{log_id}_{idx}.jpg", buf.getvalue())
-            st.success("✅ Saved!"); st.rerun()
+            st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
 
-# --- TAB 2: ARCHIVE (RESTORED FILTERS & MILESTONE DETAILS) ---
+# --- TAB 2: ARCHIVE ---
 with tab2:
     st.subheader("📂 Report Archive")
     af1, af2, af3 = st.columns(3)
@@ -165,7 +193,6 @@ with tab2:
     res = query.execute()
     data = res.data if res else []
     
-    # Filter by Date logic restored
     today = datetime.now().date()
     filtered_data = []
     for log in data:
@@ -179,22 +206,25 @@ with tab2:
         except: continue
 
     if filtered_data:
-        st.download_button("📥 Download Combined PDF", data=generate_pdf(filtered_data), file_name="BG_Archive.pdf", mime="application/pdf")
+        st.download_button("📥 Download PDF", data=generate_pdf(filtered_data), file_name="BG_Archive.pdf", mime="application/pdf")
         for log in filtered_data:
             with st.expander(f"📦 {log['job_code']} - {log['customer']}"):
                 ov_p = int(log.get('overall_progress', 0))
-                st.progress(ov_p/100); st.write(f"**Overall Progress: {ov_p}%**")
+                st.progress(ov_p/100); st.write(f"**Overall: {ov_p}%**")
                 
-                # Restore Milestone Progress Preview
+                # --- Metrics Grid restored ---
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Engineer", log.get('engineer', 'N/A'))
+                m2.metric("PO No", log.get('po_no', 'N/A'))
+                m3.metric("Dispatch date", log.get('po_delivery_date', 'N/A'))
+
                 for label, skey, nkey in MILESTONE_MAP:
-                    pk = f"{skey}_prog"
-                    mp = int(log.get(pk, 0))
+                    pk = f"{skey}_prog"; mp = int(log.get(pk, 0))
                     c1, c2, c3 = st.columns([1.5, 1, 1.5])
                     c1.write(f"**{label}**"); c1.caption(f"Status: {log.get(skey)}")
                     with c2: st.progress(mp/100); st.caption(f"{mp}%")
                     c3.write(f"_{log.get(nkey, '-')}_")
 
-                # Photo Row Preview
                 cols = st.columns(4)
                 for i in range(4):
                     try:
@@ -202,7 +232,7 @@ with tab2:
                         cols[i].image(p_url, use_container_width=True)
                     except: pass
 
-# --- TAB 3: MASTERS (RESTORED) ---
+# --- TAB 3: MASTERS ---
 with tab3:
     st.subheader("🛠️ Master Management")
     mc1, mc2 = st.columns(2)
