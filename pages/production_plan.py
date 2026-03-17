@@ -92,23 +92,19 @@ with tab_plan:
         # B. URGENT MATERIAL TRIGGER
         with st.expander("🚨 Trigger Urgent Purchase Requisition", expanded=False):
             with st.form("urgent_purchase_form", clear_on_submit=True):
-                st.info("Priority request will be sent to the Purchase Department.")
                 r1, r2, r3 = st.columns([2, 1, 1])
-                item_name = r1.text_input("Material Item Name")
-                item_qty = r2.text_input("Qty")
-                req_date = r3.date_input("Required By", value=date.today() + timedelta(days=2))
-                item_specs = st.text_area("Specs / Reason for Urgency")
-                
+                it_name = r1.text_input("Material Item Name")
+                it_qty = r2.text_input("Qty")
+                it_date = r3.date_input("Required By", value=date.today() + timedelta(days=2))
+                it_specs = st.text_area("Specs / Reason for Urgency")
                 if st.form_submit_button("🔥 Send Urgent Request"):
-                    if item_name and item_qty:
+                    if it_name and it_qty:
                         conn.table("purchase_orders").insert({
-                            "job_no": target_job, "item_name": item_name,
-                            "specs": f"URGENT (Need by {req_date.strftime('%d-%b')}): {item_specs} (Qty: {item_qty})",
+                            "job_no": target_job, "item_name": it_name,
+                            "specs": f"URGENT (Need by {it_date.strftime('%d-%b')}): {it_specs} (Qty: {it_qty})",
                             "status": "Triggered", "created_at": datetime.now(IST).isoformat()
                         }).execute()
                         st.cache_data.clear(); st.success("Urgent request sent!"); st.rerun()
-                    else:
-                        st.error("Item Name and Quantity are required.")
 
         # C. MATERIAL STATUS CHECKLIST
         with st.expander("🛒 Current Material Status", expanded=False):
@@ -127,9 +123,10 @@ with tab_plan:
 
         st.divider()
 
-        # D. PLANNING & SEQUENCE MANAGEMENT (RESTORED)
+        # D. PLANNING TOOLS
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
         
+        # D1. CLONE SEQUENCE (Only shown if plan is empty)
         if current_job_steps.empty:
             st.warning("⚠️ No Plan Detected")
             src_job = st.selectbox("Clone from Job Template:", ["-- Select --"] + all_jobs, key="clone_src")
@@ -140,6 +137,23 @@ with tab_plan:
                     conn.table("job_planning").insert(new_steps).execute()
                     st.cache_data.clear(); st.rerun()
 
+        # D2. ADD NEW GATE (RESTORED IMPORTANT FEATURE - ALWAYS AVAILABLE)
+        with st.expander("➕ Add Single Gate to Plan", expanded=False):
+            with st.form("add_gate_form", clear_on_submit=True):
+                sc1, sc2, sc3 = st.columns([2, 2, 1])
+                ng_gate = sc1.selectbox("Process Gate", all_activities)
+                ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
+                ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
+                if st.form_submit_button("🚀 Add to Plan"):
+                    if len(ng_dates) == 2:
+                        conn.table("job_planning").insert({
+                            "job_no": target_job, "gate_name": ng_gate, "step_order": ng_order,
+                            "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(),
+                            "current_status": "Pending"
+                        }).execute()
+                        st.cache_data.clear(); st.rerun()
+
+        # D3. MANAGE SEQUENCE
         if not current_job_steps.empty:
             valid_dates = pd.to_datetime(current_job_steps['planned_end_date'], errors='coerce').dropna()
             if not valid_dates.empty:
