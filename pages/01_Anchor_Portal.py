@@ -98,7 +98,10 @@ with tabs[1]:
         for index, row in df_display.iterrows():
             with st.expander(f"💼 {row['client_name']} | Job: {row['job_no'] or 'N/A'}"):
                 st.info(f"📝 **Description:** {row['project_description']}")
-                
+                # --- ADD THESE ENTRY FIELDS ---
+                pd1, pd2 = st.columns(2)
+                u_po_no = pd1.text_input("PO Number", value=row.get('po_no') or "", key=f"pono_{row['id']}")
+                u_po_date = pd2.date_input("PO Date", value=pd.to_datetime(row['po_date']).date() if pd.notnull(row.get('po_date')) else date.today(), key=f"podt_{row['id']}")
                 # --- NEW: DELIVERY DATES & DISPATCH METRIC ---
                 d1, d2, d3 = st.columns(3)
                 curr_po = pd.to_datetime(row['po_delivery_date']).date() if pd.notnull(row.get('po_delivery_date')) else None
