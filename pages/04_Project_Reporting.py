@@ -9,7 +9,7 @@ from PIL import Image
 import io
 
 # 1. SETUP
-# Only set_page_config if not managed by a main app.py navigation
+# Configuration is handled only once to prevent API exceptions
 if 'page_config_set' not in st.session_state:
     st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
     st.session_state.page_config_set = True
