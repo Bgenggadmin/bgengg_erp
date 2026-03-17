@@ -148,7 +148,6 @@ with tab_entry:
     if not df_logs.empty:
         try:
             display_logs = df_logs.copy()
-            # CRASH PROOF PARSING
             display_logs['created_at_dt'] = pd.to_datetime(display_logs['created_at'], utc=True, errors='coerce')
             display_logs = display_logs.dropna(subset=['created_at_dt'])
             display_logs['Time (IST)'] = display_logs['created_at_dt'].dt.tz_convert(IST).dt.strftime('%d-%b %I:%M %p')
@@ -178,7 +177,6 @@ with tab_entry:
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     if not df_logs.empty:
-        # SYNCED IST LOGIC
         df_logs['dt'] = pd.to_datetime(df_logs['created_at'], utc=True, errors='coerce')
         df_logs = df_logs.dropna(subset=['dt'])
         df_logs['dt'] = df_logs['dt'].dt.tz_convert(IST)
