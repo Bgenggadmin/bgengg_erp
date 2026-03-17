@@ -23,25 +23,37 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. UPDATED DATA LOADERS ---
 @st.cache_data(ttl=5)
 def get_full_purchase_data():
-    # 1. Get all items from purchase_orders
-    items_res = conn.table("purchase_orders").select("*").execute()
-    df_items = pd.DataFrame(items_res.data or [])
-    
-    # 2. Get all projects that either have the flag OR have items in the list
-    proj_res = conn.table("anchor_projects").select("*").execute()
-    df_all_proj = pd.DataFrame(proj_res.data or [])
-    
-    if not df_items.empty and not df_all_proj.empty:
-        # Get unique job numbers that have pending purchase items
-        active_job_nos = df_items['job_no'].unique()
-        # Filter projects: show if flag is True OR if it has active items
-        df_p = df_all_proj[
-            (df_all_proj['purchase_trigger'] == True) | 
-            (df_all_proj['job_no'].isin(active_job_nos))
-        ]
-        return df_p, df_items
+    try:
+        # 1. Fetch data from both tables
+        proj_res = conn.table("anchor_projects").select("*").execute()
+        items_res = conn.table("purchase_orders").select("*").execute()
         
-    return pd.DataFrame(proj_res.data or []), df_items
+        df_all_proj = pd.DataFrame(proj_res.data or [])
+        df_items = pd.DataFrame(items_res.data or [])
+        
+        # 2. Logic to identify which projects to show
+        if not df_all_proj.empty:
+            # If we have items, find jobs that are linked to those items
+            active_item_jobs = []
+            if not df_items.empty:
+                active_item_jobs = df_items['job_no'].astype(str).str.upper().unique()
+            
+            # Filter: Show if Anchor flagged it OR if Production added items
+            df_p = df_all_proj[
+                (df_all_proj.get('purchase_trigger') == True) | 
+                (df_all_proj['job_no'].astype(str).str.upper().isin(active_item_jobs))
+            ]
+            return df_p, df_items
+            
+        # Fallback for empty projects table
+        return pd.DataFrame(), df_items
+        
+    except Exception as e:
+        st.error(f"Data Load Error: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+# This ensures the variables are ALWAYS created
+df_p, df_items = get_full_purchase_data()
 
 # --- 3. ANALYTICS (Kept from earlier layout) ---
 if not df_p.empty:
