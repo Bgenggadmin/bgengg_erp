@@ -4,12 +4,12 @@ import streamlit as st
 st.set_page_config(page_title="B&G Test Bench", layout="centered")
 
 # --- DATA INTAKE (THE MANIFOLD) ---
-st.title("⚙️ Engineering: Test Bench Session")
+st.title("⚙️ Engineering Test Bench Session")
 st.header("Sub-System: The Import")
 
 # --- THE SENSOR CHECK ---
 # We are checking if the 'Streamlit' valve is pressurized and flowing
-status = "SYSTEM ACTIVE"
+status = "SYSTEM N ACTIVE"
 
 # --- THE OUTPUT GAUGE ---
 st.metric(label="Manifold Status", value=status)
