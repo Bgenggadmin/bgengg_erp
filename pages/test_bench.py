@@ -4,7 +4,7 @@ import streamlit as st
 st.set_page_config(page_title="B&G Test Bench", layout="centered")
 
 # --- DATA INTAKE (THE MANIFOLD) ---
-st.title("⚙️ Engineering Test Bench: Session 1")
+st.title("⚙️ Engineering Test Bench: Session")
 st.header("Sub-System: The Import")
 
 # --- THE SENSOR CHECK ---
