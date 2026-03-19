@@ -190,7 +190,7 @@ with tab1:
         f_eng = c5.text_input("Responsible Engineer", value=last_log.get('engineer', ""))
 
         d1, d2 = st.columns(2)
-        f_p_del = d1.date_input("Contract Delivery", value=safe_dt(anchor_data.get('po_delivery_date')))
+        f_p_del = d1.date_input("po_delivery_date", value=safe_dt(anchor_data.get('po_delivery_date')))
         f_e_disp = d2.date_input("Exp Dispatch", value=safe_dt(anchor_data.get('revised_delivery_date') or last_log.get('exp_dispatch_date')))
 
         st.divider(); st.subheader("📊 Milestone Tracking")
