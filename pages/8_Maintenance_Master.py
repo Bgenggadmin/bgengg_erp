@@ -16,18 +16,57 @@ try:
 except Exception as e:
     st.error("❌ Supabase Connection Failed!"); st.stop()
 
-# --- 2. DYNAMIC MASTER DATA ---
+# --- ADDED TO DYNAMIC MASTER DATA SECTION ---
 @st.cache_data(ttl=600)
-def get_mdm_list(table, col):
+def get_spares_by_category(machine_name):
     try:
-        res = conn.table(table).select(col).order(col).execute()
-        return [item[col] for item in res.data] if res.data else []
+        # 1. Find the category of the selected machine
+        m_res = conn.table("master_machines").select("category").eq("name", machine_name).execute()
+        category = m_res.data[0]['category'] if m_res.data else "ALL"
+        
+        # 2. Get spares for that category + 'ALL' purpose spares
+        s_res = conn.table("master_spares").select("part_name").or_(f"machine_category.eq.{category},machine_category.eq.ALL").execute()
+        return [item['part_name'] for item in s_res.data] if s_res.data else []
     except: return []
 
-machine_list = get_mdm_list("master_machines", "name")
-staff_list = get_mdm_list("master_staff", "name")
+# --- UPDATED FORM SECTION ---
+with tab_entry:
+    with st.form("maint_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            equipment = st.selectbox("Select Machine", machine_list)
+            technician = st.selectbox("Technician", staff_list)
+        
+        # NEW: Dynamic Spares Suggestion
+        suggested_spares = get_spares_by_category(equipment)
+        spares_used = st.multiselect("🔧 Select Spares Used (Suggested)", suggested_spares)
+        
+        with col2:
+            m_type = st.selectbox("Type", ["Breakdown Repair", "Preventive (PM)", "Spare Replacement"])
+            status = st.radio("Post-Service Status", ["🟢 Operational", "🔴 Down"], horizontal=True)
+        
+        # We append the selected spares to the remarks automatically
+        remarks_input = st.text_area("Work Details / Additional Notes")
+        
+        cam_photo = st.camera_input("Capture Proof")
 
-st.title("🔧 B&G Maintenance Master")
+        if st.form_submit_button("🚀 Submit Log"):
+            if equipment and (remarks_input or spares_used):
+                # Format remarks to include spares for the DB
+                final_remarks = f"SPARES: {', '.join(spares_used)} | NOTES: {remarks_input}"
+                
+                # ... (Rest of your Image processing and Insert logic stays the same) ...
+                new_row = {
+                    "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
+                    "equipment": equipment, 
+                    "technician": technician,
+                    "m_type": m_type, 
+                    "status": status, 
+                    "remarks": final_remarks, 
+                    "photo": img_str
+                }
+                conn.table("maintenance_logs").insert(new_row).execute()
+                st.cache_data.clear(); st.success("✅ Log Saved with Spares!"); st.rerun()
 
 # --- 3. TABS STRUCTURE ---
 tab_entry, tab_history = st.tabs(["📝 New Log Entry", "📜 History & Alerts"])
