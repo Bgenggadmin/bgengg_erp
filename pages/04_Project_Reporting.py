@@ -364,9 +364,14 @@ with tab3:
                 conn.table("customer_master").insert({"name": nc}).execute()
                 st.cache_data.clear(); st.rerun()
     with j_col:
-        st.write("**Current Job Codes:**", ", ".join(jobs) if jobs else "None")
-        with st.form("add_job"):
-            nj = st.text_input("New Job Code")
-            if st.form_submit_button("Add Job") and nj:
-                conn.table("job_master").insert({"job_code": nj}).execute()
-                st.cache_data.clear(); st.rerun()
+    # Convert dict_keys to a list of strings so .join() works correctly
+    job_display_list = [str(j) for j in jobs] 
+    st.write("**Current Job Codes:**", ", ".join(job_display_list) if job_display_list else "None")
+    
+    with st.form("add_job"):
+        nj = st.text_input("New Job Code")
+        if st.form_submit_button("Add Job") and nj:
+            # Note: You should now insert into anchor_projects to stay synced
+            conn.table("anchor_projects").insert({"job_no": nj}).execute()
+            st.cache_data.clear()
+            st.rerun()
