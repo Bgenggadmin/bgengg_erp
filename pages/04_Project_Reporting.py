@@ -1,6 +1,6 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
-from datetime import datetime
+from datetime import datetime, timedelta
 from fpdf import FPDF
 from io import BytesIO
 from PIL import Image
@@ -60,9 +60,7 @@ def generate_pdf(logs):
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        job_val = str(log.get('job_code', 'N/A'))
-        id_val = str(log.get('id', 'N/A'))
-        pdf.cell(0, 8, f" JOB: {job_val} | ID: {id_val}", "B", 1, "L")
+        pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 1, "L")
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
         for i in range(0, len(HEADER_FIELDS), 2):
@@ -124,7 +122,6 @@ def get_master_data():
     try:
         c_res = conn.table("customer_master").select("name").execute()
         j_res = conn.table("job_master").select("job_code").execute()
-        # FIXED: Extracting correctly from data list
         c_list = [d['name'] for d in c_res.data] if c_res.data else []
         j_list = [d['job_code'] for d in j_res.data] if j_res.data else []
         return sorted(c_list), sorted(j_list)
@@ -216,25 +213,54 @@ with tab2:
     st.subheader("📂 Report Archive")
     f1, f2, f3 = st.columns(3)
     sel_c = f1.selectbox("Filter Customer", ["All"] + customers)
-    # Filter Logic Simplified for Speed
-    res = conn.table("progress_logs").select("*").order("id", desc=True).execute()
-    data = res.data if res.data else []
-    if sel_c != "All":
-        data = [d for d in data if d.get('customer') == sel_c]
+    report_type = f2.selectbox("📅 Period", ["All Time", "Current Week", "Current Month", "Custom Range"])
     
+    # Date Filtering Logic
+    start_date, end_date = None, None
+    now = datetime.now()
+    if report_type == "Current Week":
+        start_date = (now - timedelta(days=now.weekday())).date()
+    elif report_type == "Current Month":
+        start_date = now.replace(day=1).date()
+    elif report_type == "Custom Range":
+        dates = f3.date_input("Select Range", [now, now])
+        if len(dates) == 2:
+            start_date, end_date = dates[0], dates[1]
+
+    # Database query
+    query = conn.table("progress_logs").select("*").order("id", desc=True)
+    if sel_c != "All":
+        query = query.eq("customer", sel_c)
+    
+    res = query.execute()
+    data = res.data if res.data else []
+
+    # Local Time Filtering (on 'created_at' or 'po_date')
+    if start_date:
+        filtered_data = []
+        for d in data:
+            try:
+                # Use created_at timestamp or po_date as fallback
+                d_date = datetime.strptime(d.get('created_at', d.get('po_date'))[:10], "%Y-%m-%d").date()
+                if end_date:
+                    if start_date <= d_date <= end_date: filtered_data.append(d)
+                else:
+                    if d_date >= start_date: filtered_data.append(d)
+            except: filtered_data.append(d)
+        data = filtered_data
+
     if data:
         pdf_bytes = generate_pdf(data)
-        st.download_button("📥 Download PDF Report", data=pdf_bytes, file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
+        st.download_button("📥 Download PDF Report", data=pdf_bytes, file_name=f"BG_Report_{report_type}.pdf", mime="application/pdf", use_container_width=True)
         for log in data:
-            with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')}"):
+            with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')} ({log.get('created_at', log.get('po_date'))[:10]})"):
                 st.write(f"**Overall Progress: {log.get('overall_progress', 0)}%**")
                 st.progress(int(log.get('overall_progress', 0) or 0) / 100)
     else:
-        st.info("No records found.")
+        st.info("No records found for this period.")
 
 with tab3:
     st.subheader("🛠️ Master Management")
-    # FIXED: Added view of current lists to ensure they aren't "Empty"
     c_col, j_col = st.columns(2)
     with c_col:
         st.write("**Current Customers:**", ", ".join(customers) if customers else "None")
