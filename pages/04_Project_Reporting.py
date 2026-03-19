@@ -9,7 +9,6 @@ import os
 
 # 1. SETUP & CONSTANTS
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
-conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 # --- PASSWORD PROTECTION ---
 def check_password():
     """Returns True if the user had the correct password."""
@@ -35,6 +34,8 @@ def check_password():
 
 if not check_password():
     st.stop()  # Do not run the rest of the app if password isn't correct
+conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
+
 
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 
