@@ -7,7 +7,7 @@ import pandas as pd
 st.set_page_config(page_title="Cut & Weld Hub", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# Custom CSS for that shop-floor "Button" look
+# Custom UI styling
 st.markdown("""<style>div.stButton > button { border-radius: 50px; font-weight: 600; }</style>""", unsafe_allow_html=True)
 
 # --- HUB SELECTION ---
@@ -18,14 +18,13 @@ DB_TABLE = "fabrication_logs"
 OP_MASTER = "master_workers"
 MACH_MASTER = "master_machines"
 
-# Logic for dynamic labels
 if hub_choice == "Cutting Hub":
     RES_LABEL, ACTIVITIES = "CNC/Cutting Machine", ["Laser Cutting", "Plasma Cutting", "Oxygen Cutting", "Waterjet"]
 else:
     RES_LABEL, ACTIVITIES = "Welding Bay/Station", ["TIG Welding", "MIG Welding", "ARC Welding", "Grinding"]
 
-# 2. Optimized Data Fetching (Caching added for Master Lists)
-@st.cache_data(ttl=300) # Only refresh masters every 5 mins to save API calls
+# 2. Data Fetching
+@st.cache_data(ttl=300)
 def get_master_data():
     try:
         m_data = conn.table(MACH_MASTER).select("name").execute().data or []
@@ -35,13 +34,11 @@ def get_master_data():
         return ["Error"], ["Error"]
 
 def get_logs():
-    # Only fetch what is needed for the current Hub
+    # Only fetch records for the active hub to keep things fast
     return conn.table(DB_TABLE).select("*").eq("hub_name", hub_choice).order("created_at", desc=True).execute().data or []
 
-# Execute Fetching
 resource_list, operator_list = get_master_data()
-raw_logs = get_logs()
-df_main = pd.DataFrame(raw_logs)
+df_main = pd.DataFrame(get_logs())
 
 # 3. UI Layout
 st.title(f"⚡ {hub_choice.upper()}")
@@ -51,64 +48,75 @@ tabs = st.tabs(["📝 New Request", "👨‍🏭 Incharge Desk", "📊 Live Boar
 with tabs[0]:
     with st.form("cut_weld_req", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        u_no = c1.selectbox("Unit", [1, 2, 3])
-        j_code = c1.text_input("Job Code (Required)")
+        u_no = c1.selectbox("Unit", ["1", "2", "3"]) # Using strings to match your DB 'text' type
+        j_no = c1.text_input("Job Number (Required)") # Refined variable name
         part = c2.text_input("Part Name")
         act = c2.selectbox("Activity", ACTIVITIES)
         req_d = c3.date_input("Required Date")
         prio = c3.selectbox("Priority", ["Normal", "Urgent", "Critical"])
         notes = st.text_area("Special Notes / Dimensions")
         
-        if st.form_submit_button("Submit to Shop Floor") and j_code and part:
+        if st.form_submit_button("Submit to Shop Floor") and j_no and part:
             conn.table(DB_TABLE).insert({
-                "hub_name": hub_choice, "unit_no": u_no, "part_name": part, 
-                "required_date": str(req_d), "job_code": j_code, "activity_type": act, 
-                "priority": prio, "special_notes": notes, 
-                "status": "Pending", "request_date": str(datetime.date.today())
+                "hub_name": hub_choice, 
+                "unit_no": u_no, 
+                "part_name": part, 
+                "required_date": str(req_d), 
+                "job_no": j_no,  # FIX: Matches DB column
+                "activity_type": act, 
+                "priority": prio, 
+                "special_notes": notes, 
+                "status": "Pending", 
+                "request_date": str(datetime.date.today())
             }).execute()
             st.rerun()
 
     st.divider()
-    if not df_main.empty:
+    # Defensive Column Check for Recent Entries
+    display_cols = ["job_no", "part_name", "priority", "status"]
+    if not df_main.empty and all(c in df_main.columns for c in display_cols):
         st.subheader("Recent Entries")
-        st.dataframe(df_main[["job_code", "part_name", "priority", "status"]].head(5), use_container_width=True, hide_index=True)
+        st.dataframe(df_main[display_cols].head(5), use_container_width=True, hide_index=True)
 
 # --- TAB 2: INCHARGE DESK ---
 with tabs[1]:
-    # Simplified filtering logic
-    active_df = df_main[df_main['status'] != "Finished"] if not df_main.empty else pd.DataFrame()
-    
-    if active_df.empty: 
-        st.info(f"All {hub_choice} tasks are completed.")
+    if not df_main.empty:
+        active_df = df_main[df_main['status'] != "Finished"]
+        if active_df.empty:
+            st.info(f"All {hub_choice} tasks are completed.")
+        else:
+            for _, job in active_df.iterrows():
+                with st.expander(f"📦 {job['job_no']} - {job['part_name']} | Unit {job['unit_no']}"):
+                    if job['status'] == "Pending":
+                        c1, c2 = st.columns(2)
+                        m = c1.selectbox(f"Select {RES_LABEL}", resource_list, key=f"m_{job['id']}")
+                        o = c2.selectbox("Assign Personnel", operator_list, key=f"o_{job['id']}")
+                        if st.button("🚀 Start Task", key=f"go_{job['id']}", use_container_width=True):
+                            conn.table(DB_TABLE).update({"status": "In-Progress", "machine_id": m, "operator_name": o}).eq("id", job['id']).execute()
+                            st.rerun()
+                    
+                    elif job['status'] == "In-Progress":
+                        st.success(f"Work in Progress: {job.get('machine_id')} | Operator: {job.get('operator_name')}")
+                        dr = st.text_input("Reason for Delay (if any)", key=f"dr_{job['id']}")
+                        if st.button("🏁 Mark as Finished", key=f"f_{job['id']}", use_container_width=True):
+                            conn.table(DB_TABLE).update({"status": "Finished", "delay_reason": dr}).eq("id", job['id']).execute()
+                            st.rerun()
     else:
-        for _, job in active_df.iterrows():
-            with st.expander(f"📦 {job['job_code']} - {job['part_name']} | Unit {job['unit_no']}"):
-                if job['status'] == "Pending":
-                    c1, c2 = st.columns(2)
-                    m = c1.selectbox(f"Select {RES_LABEL}", resource_list, key=f"m_{job['id']}")
-                    o = c2.selectbox("Assign Personnel", operator_list, key=f"o_{job['id']}")
-                    if st.button("🚀 Start Task", key=f"go_{job['id']}", use_container_width=True):
-                        conn.table(DB_TABLE).update({"status": "In-Progress", "machine_id": m, "operator_name": o}).eq("id", job['id']).execute()
-                        st.rerun()
-                
-                elif job['status'] == "In-Progress":
-                    st.success(f"Work in Progress: {job.get('machine_id')} | User: {job.get('operator_name')}")
-                    dr = st.text_input("Reason for Delay (if any)", key=f"dr_{job['id']}")
-                    if st.button("🏁 Mark as Finished", key=f"f_{job['id']}", use_container_width=True):
-                        conn.table(DB_TABLE).update({"status": "Finished", "delay_reason": dr}).eq("id", job['id']).execute()
-                        st.rerun()
+        st.info("No active tasks.")
 
 # --- TAB 3: LIVE BOARD ---
 with tabs[2]:
     if not df_main.empty:
         df_viz = df_main.copy()
+        # Convert dates safely
         df_viz['required_date'] = pd.to_datetime(df_viz['required_date'], errors='coerce')
-        # Optimized date math: avoids pd.Timestamp errors in some Streamlit environments
         today = pd.to_datetime(datetime.date.today())
         df_viz['Days Left'] = (df_viz['required_date'] - today).dt.days
         
-        cols = ["job_code", "part_name", "status", "priority", "Days Left", "machine_id", "operator_name", "special_notes"]
-        st.dataframe(df_viz[cols], use_container_width=True, hide_index=True)
+        # Display with proper column names
+        cols = ["job_no", "part_name", "status", "priority", "Days Left", "machine_id", "operator_name", "special_notes"]
+        existing_cols = [c for c in cols if c in df_viz.columns]
+        st.dataframe(df_viz[existing_cols], use_container_width=True, hide_index=True)
     else:
         st.info("No records found.")
 
@@ -117,6 +125,6 @@ with tabs[3]:
     st.caption("Resources are managed in the Master Setup page.")
     col_a, col_b = st.columns(2)
     col_a.write(f"**Current {RES_LABEL}s:**")
-    col_a.dataframe(resource_list, hide_index=True) # Table changed to dataframe for cleaner look
+    col_a.dataframe(pd.DataFrame(resource_list, columns=["Machine Name"]), hide_index=True)
     col_b.write("**Current Operators:**")
-    col_b.dataframe(operator_list, hide_index=True)
+    col_b.dataframe(pd.DataFrame(operator_list, columns=["Worker Name"]), hide_index=True)
