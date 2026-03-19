@@ -72,11 +72,43 @@ with tabs[0]:
             st.rerun()
 
     st.divider()
-    # Defensive Column Check for Recent Entries
-    display_cols = ["job_no", "part_name", "priority", "status"]
-    if not df_main.empty and all(c in df_main.columns for c in display_cols):
-        st.subheader("Recent Entries")
-        st.dataframe(df_main[display_cols].head(5), use_container_width=True, hide_index=True)
+    if not df_main.empty:
+        st.subheader("📋 Recent Production Entries")
+        
+        # Pulling the specific columns you requested
+        display_cols = [
+            "job_no", "unit_no", "request_date", 
+            "required_date", "priority", "status", "special_notes"
+        ]
+        
+        # Verify columns exist to prevent KeyError
+        existing_display = [c for c in display_cols if c in df_main.columns]
+        st.dataframe(df_main[existing_display].head(10), use_container_width=True, hide_index=True)
+
+        # --- CSV DOWNLOAD LOGIC ---
+        st.markdown("### 📥 Export Logs")
+        c1, c2 = st.columns(2)
+        
+        # 1. Quick Download (Current View)
+        csv_data = df_main.to_csv(index=False).encode('utf-8')
+        c1.download_button(
+            label="Download Current Hub CSV",
+            data=csv_data,
+            file_name=f"{hub_choice}_logs_{datetime.date.today()}.csv",
+            mime="text/csv",
+        )
+        
+        # 2. Filtered Export (Senior Dev Touch: Search by Job)
+        search_job = c2.text_input("Filter by Job No for Export", placeholder="Enter Job Code...")
+        if search_job:
+            filtered_df = df_main[df_main['job_no'].str.contains(search_job, case=False, na=False)]
+            if not filtered_df.empty:
+                c2.download_button(
+                    label=f"Download Job {search_job} CSV",
+                    data=filtered_df.to_csv(index=False).encode('utf-8'),
+                    file_name=f"Job_{search_job}_Report.csv",
+                    mime="text/csv",
+                )
 
 # --- TAB 2: INCHARGE DESK ---
 with tabs[1]:
