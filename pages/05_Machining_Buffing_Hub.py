@@ -2,7 +2,12 @@ import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
 import datetime
+import pytz
+IST = pytz.timezone('Asia/Kolkata')
 
+def get_today_ist():
+    return datetime.datetime.now(IST).date()
+    
 # 1. Setup & Style
 st.set_page_config(page_title="B&G ERP BETA", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -56,14 +61,16 @@ with tabs[0]:
         part, act = c2.text_input("Part Name"), c2.selectbox("Activity", ACTIVITIES)
         req_d, prio = c3.date_input("Required Date"), c3.selectbox("Priority", ["Low", "Medium", "High", "URGENT"])
         if st.form_submit_button("Submit Request") and j_code and part:
-            conn.table(DB_TABLE).insert({"unit_no": u_no, "job_code": j_code, "part_name": part, "activity_type": act, "required_date": str(req_d), "request_date": str(datetime.date.today()), "status": "Pending", "priority": prio}).execute(); st.rerun()
+            today_ist = get_today_ist()
+            conn.table(DB_TABLE).insert({"unit_no": u_no, "job_code": j_code, "part_name": part, "activity_type": act, "required_date": str(req_d), "request_date": str(today_ist)), "status": "Pending", "priority": prio}).execute(); st.rerun()
 
     st.divider()
     st.subheader("🚦 Live Summary Table")
     if not df_main.empty:
         df_sum = df_main.copy()
         df_sum['required_date'] = pd.to_datetime(df_sum['required_date'], errors='coerce')
-        df_sum['Days Left'] = (df_sum['required_date'] - pd.Timestamp(datetime.date.today())).dt.days
+        today_timestamp = pd.Timestamp(get_today_ist())
+        df_sum['Days Left'] = (df_sum['required_date'] - today_timestamp).dt.days
         u_filt = st.radio("Unit Filter", [1, 2, 3], horizontal=True)
         st.dataframe(df_sum[df_sum['unit_no'] == u_filt][['job_code', 'part_name', 'status', 'priority', 'required_date', 'Days Left']], use_container_width=True, hide_index=True)
 
