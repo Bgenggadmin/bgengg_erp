@@ -6,6 +6,8 @@ from io import BytesIO
 from PIL import Image
 import tempfile
 import os
+import pytz
+IST = pytz.timezone('Asia/Kolkata')
 
 # 1. SETUP & CONSTANTS
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
@@ -88,15 +90,29 @@ def generate_pdf(logs):
 
     for log in logs:
         pdf.add_page()
+        # Lock the current report date in IST
+        report_date = datetime.now(IST).strftime('%d-%m-%Y')
+
+        # Blue Header Bar
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
+    
         pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
-        
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 1, "L")
-        pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
+    
+    # --- JOB ID & REPORT DATE BAR ---
+    pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+    
+    # 1. Left Aligned Job Info (Note: ln=0 keeps us on the same line)
+    pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 0, "L")
+    
+    # 2. Right Aligned Report Date (Reset X and use 'R' alignment)
+    pdf.set_xy(10, 30)
+    pdf.cell(0, 8, f"Report Date: {report_date} ", 0, 1, "R")
+    
+    # Resume Standard Layout
+    pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
         for i in range(0, len(HEADER_FIELDS), 2):
             f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
