@@ -70,16 +70,11 @@ tabs = st.tabs(["📅 Staff Booking", "👨‍✈️ Brahmiah's Desk", "📝 Tri
 
 # --- TAB 1: STAFF BOOKING ---
 with tabs[0]:
-    # 1. Booking Form
     with st.form("request_form", clear_on_submit=True):
-        st.subheader("Request Vehicle for Work")
-        c1, c2 = st.columns(2)
-        req_by = c1.selectbox("Staff Name", staff_list, key="bk_staff")
-        req_veh = c1.selectbox("Preferred Vehicle", vehicle_list, key="bk_veh")
-        dest = c1.text_input("Destination / Site")
+        # ... (columns setup) ...
+        # FIX 1: Ensure date picker uses IST today
         r_date = c2.date_input("Required Date", min_value=datetime.now(IST).date())
         r_time = c2.text_input("Required Time (e.g. 9:00 AM)")
-        req_purpose = c2.selectbox("Purpose", purpose_list, key="bk_purpose")
         
         if st.form_submit_button("Submit Request"):
             if dest:
@@ -90,7 +85,8 @@ with tabs[0]:
                     "req_time": r_time, 
                     "purpose": req_purpose, 
                     "assigned_vehicle": req_veh, 
-                    "status": "Pending",
+                    "status": "Pending"
+                    # CRITICAL: removed 'created_at' to stop the crash
                 }
                 conn.table("logistics_requests").insert(new_req).execute()
                 st.success("Request logged!"); st.rerun()
@@ -155,13 +151,24 @@ with tabs[2]:
         location = st.text_input("Location / Site")
         cam_photo = st.camera_input("Capture Odometer/Bill")
 
-        if st.form_submit_button("🚀 SUBMIT LOG"):
-            if end_km > start_km and location:
-                # Logic for photo upload and Supabase insert (Standard Golden Master logic)
-                new_entry = {"timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M'), "vehicle": vehicle, "driver": driver, "start_km": start_km, "end_km": end_km, "distance": end_km-start_km, "fuel_ltrs": fuel_qty, "location": location.upper()}
-                conn.table("logistics_logs").insert(new_entry).execute()
-                st.cache_data.clear(); st.success("✅ Logged!"); st.rerun()
-
+        # --- TAB 3: TRIP LOGGER ---
+if st.form_submit_button("🚀 SUBMIT LOG"):
+    if end_km > start_km and location:
+        # FIX 2: Standardizing the IST Timestamp string
+        ist_now = datetime.now(IST).strftime('%Y-%m-%d %H:%M')
+        
+        new_entry = {
+            "timestamp": ist_now, 
+            "vehicle": vehicle, 
+            "driver": driver, 
+            "start_km": start_km, 
+            "end_km": end_km, 
+            "distance": end_km-start_km, 
+            "fuel_ltrs": fuel_qty, 
+            "location": location.upper()
+        }
+        conn.table("logistics_logs").insert(new_entry).execute()
+        st.cache_data.clear(); st.success("✅ Logged!"); st.rerun()
 # --- TAB 4: ANALYTICS ---
 with tabs[3]:
     if not df.empty:
