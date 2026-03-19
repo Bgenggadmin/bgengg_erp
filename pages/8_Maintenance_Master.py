@@ -1,7 +1,7 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import base64
 from io import BytesIO
@@ -16,46 +16,64 @@ try:
 except Exception as e:
     st.error("❌ Supabase Connection Failed!"); st.stop()
 
-# --- ADDED TO DYNAMIC MASTER DATA SECTION ---
+# --- 2. DYNAMIC MASTER DATA ---
+@st.cache_data(ttl=600)
+def get_mdm_list(table, col):
+    try:
+        res = conn.table(table).select(col).order(col).execute()
+        return [item[col] for item in res.data] if res.data else []
+    except: return []
+
 @st.cache_data(ttl=600)
 def get_spares_by_category(machine_name):
     try:
-        # 1. Find the category of the selected machine
         m_res = conn.table("master_machines").select("category").eq("name", machine_name).execute()
         category = m_res.data[0]['category'] if m_res.data else "ALL"
-        
-        # 2. Get spares for that category + 'ALL' purpose spares
         s_res = conn.table("master_spares").select("part_name").or_(f"machine_category.eq.{category},machine_category.eq.ALL").execute()
         return [item['part_name'] for item in s_res.data] if s_res.data else []
     except: return []
 
-# --- UPDATED FORM SECTION ---
+# Fetch Master Lists once at the start
+machine_list = get_mdm_list("master_machines", "name")
+staff_list = get_mdm_list("master_staff", "name")
+
+st.title("🔧 B&G Maintenance Master")
+
+# --- 3. TABS STRUCTURE (MOVED TO TOP) ---
+tab_entry, tab_history = st.tabs(["📝 New Log Entry", "📜 History & Alerts"])
+
+# --- 4. TAB: NEW LOG ENTRY ---
 with tab_entry:
     with st.form("maint_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            equipment = st.selectbox("Select Machine", machine_list)
-            technician = st.selectbox("Technician", staff_list)
-        
-        # NEW: Dynamic Spares Suggestion
-        suggested_spares = get_spares_by_category(equipment)
-        spares_used = st.multiselect("🔧 Select Spares Used (Suggested)", suggested_spares)
-        
+            equipment = st.selectbox("Select Machine", machine_list if machine_list else ["No Machines Found"])
+            technician = st.selectbox("Technician", staff_list if staff_list else ["Select Staff"])
+            
+            # Dynamic Spares
+            suggested_spares = get_spares_by_category(equipment)
+            spares_used = st.multiselect("🔧 Select Spares Used (Suggested)", suggested_spares)
+            
         with col2:
             m_type = st.selectbox("Type", ["Breakdown Repair", "Preventive (PM)", "Spare Replacement"])
             status = st.radio("Post-Service Status", ["🟢 Operational", "🔴 Down"], horizontal=True)
         
-        # We append the selected spares to the remarks automatically
         remarks_input = st.text_area("Work Details / Additional Notes")
-        
         cam_photo = st.camera_input("Capture Proof")
 
         if st.form_submit_button("🚀 Submit Log"):
             if equipment and (remarks_input or spares_used):
-                # Format remarks to include spares for the DB
+                # 1. Image Logic
+                img_str = "" 
+                if cam_photo:
+                    img = Image.open(cam_photo); img.thumbnail((400, 400))
+                    buf = BytesIO(); img.save(buf, format="JPEG", quality=50)
+                    img_str = base64.b64encode(buf.getvalue()).decode()
+
+                # 2. Combine Spares and Notes
                 final_remarks = f"SPARES: {', '.join(spares_used)} | NOTES: {remarks_input}"
-                
-                # ... (Rest of your Image processing and Insert logic stays the same) ...
+
+                # 3. Database Insert
                 new_row = {
                     "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
                     "equipment": equipment, 
@@ -65,42 +83,16 @@ with tab_entry:
                     "remarks": final_remarks, 
                     "photo": img_str
                 }
-                conn.table("maintenance_logs").insert(new_row).execute()
-                st.cache_data.clear(); st.success("✅ Log Saved with Spares!"); st.rerun()
+                
+                try:
+                    conn.table("maintenance_logs").insert(new_row).execute()
+                    st.cache_data.clear()
+                    st.success("✅ Log Saved Successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
 
-# --- 3. TABS STRUCTURE ---
-tab_entry, tab_history = st.tabs(["📝 New Log Entry", "📜 History & Alerts"])
-
-with tab_entry:
-    with st.form("maint_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            equipment = st.selectbox("Select Machine", machine_list if machine_list else ["No Machines Found"])
-            technician = st.selectbox("Technician", staff_list if staff_list else ["Select Staff"])
-        with col2:
-            m_type = st.selectbox("Type", ["Breakdown Repair", "Preventive (PM)", "Spare Replacement"])
-            status = st.radio("Post-Service Status", ["🟢 Operational", "🔴 Down"], horizontal=True)
-        
-        remarks = st.text_area("Work Details / Spares Used")
-        cam_photo = st.camera_input("Capture Proof")
-
-        if st.form_submit_button("🚀 Submit Log"):
-            if equipment and remarks:
-                img_str = ""
-                if cam_photo:
-                    img = Image.open(cam_photo); img.thumbnail((400, 400))
-                    buf = BytesIO(); img.save(buf, format="JPEG", quality=50)
-                    img_str = base64.b64encode(buf.getvalue()).decode()
-
-                new_row = {
-                    "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
-                    "equipment": equipment, "technician": technician,
-                    "m_type": m_type, "status": status, 
-                    "remarks": remarks, "photo": img_str
-                }
-                conn.table("maintenance_logs").insert(new_row).execute()
-                st.cache_data.clear(); st.success("✅ Log Saved!"); st.rerun()
-
+# --- 5. TAB: HISTORY & ALERTS ---
 with tab_history:
     try:
         res = conn.table("maintenance_logs").select("*").order("created_at", desc=True).execute()
@@ -108,10 +100,8 @@ with tab_history:
             df = pd.DataFrame(res.data)
             df['created_at'] = pd.to_datetime(df['created_at'])
 
-            # --- SMART ALERTS: MAINTENANCE DUE ---
+            # Alerts
             st.subheader("⚠️ Maintenance Alerts")
-            alert_cols = st.columns(1)
-            
             pm_data = df[df['m_type'] == 'Preventive (PM)']
             overdue_machines = []
             
@@ -126,12 +116,12 @@ with tab_history:
                         overdue_machines.append({"Machine": m, "Last PM": last_date.strftime('%Y-%m-%d'), "Days": days_since})
 
             if overdue_machines:
-                st.warning(f"Found {len(overdue_machines)} machines requiring Preventive Maintenance (30+ days since last PM).")
+                st.warning(f"Found {len(overdue_machines)} machines overdue for PM.")
                 st.dataframe(pd.DataFrame(overdue_machines), use_container_width=True, hide_index=True)
             else:
-                st.success("All machines have had PM within the last 30 days.")
+                st.success("All machines are up to date.")
 
-            # --- SUMMARY METRICS ---
+            # Metrics
             st.divider()
             st.subheader("📊 Performance Summary")
             s1, s2, s3, s4 = st.columns(4)
@@ -139,15 +129,15 @@ with tab_history:
             s2.metric("Breakdowns", len(df[df['m_type'] == 'Breakdown Repair']))
             s3.metric("PMs Done", len(pm_data))
             
-            # Current Status logic
             current_down = len(df.sort_values('created_at').groupby('equipment').tail(1).query("status == '🔴 Down'"))
             s4.metric("Currently Down", current_down, delta_color="inverse")
 
-            # --- EXPORT & TABLE ---
+            # CSV & Table
             csv = df.drop(columns=['photo', 'id']).to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download CSV Report", csv, "maint_report.csv", "text/csv")
-            
             st.dataframe(df.drop(columns=["photo", "id"]), use_container_width=True, hide_index=True)
             
+        else:
+            st.info("No records found.")
     except Exception as e:
         st.error(f"Error loading history: {e}")
