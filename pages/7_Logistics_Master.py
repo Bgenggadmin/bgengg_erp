@@ -43,10 +43,19 @@ def load_logistics_data():
     return pd.DataFrame(columns=["timestamp", "vehicle", "end_km", "distance", "fuel_ltrs"])
 
 def get_last_km(veh_name, dataframe):
-    if not dataframe.empty and 'vehicle' in dataframe.columns:
-        veh_logs = dataframe[dataframe['vehicle'] == veh_name]
-        if not veh_logs.empty: return int(veh_logs.iloc[0]['end_km'])
-    return 0
+    """Safely retrieves the last recorded KM for a vehicle."""
+    try:
+        if not dataframe.empty and 'vehicle' in dataframe.columns:
+            # Filter logs for this specific vehicle
+            veh_logs = dataframe[dataframe['vehicle'] == veh_name]
+            if not veh_logs.empty:
+                last_val = veh_logs.iloc[0]['end_km']
+                # Check if the value is actually a number before converting
+                if pd.notnull(last_val):
+                    return int(float(last_val)) 
+    except Exception as e:
+        print(f"KM Lookup Warning: {e}") # Silent log for debugging
+    return 0 # Default for brand new vehicles with no history
 
 # Initialize Global Data
 staff_list = get_staff_master()
