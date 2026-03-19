@@ -238,6 +238,8 @@ with tab2:
     sel_c = f1.selectbox("Filter Customer", ["All"] + customers)
     report_type = f2.selectbox("📅 Period", ["All Time", "Current Week", "Current Month", "Custom Range"])
     
+    # ... [Keep your existing Date Filtering Logic here] ...
+    
     # Date Filtering Logic
     start_date, end_date = None, None
     now = datetime.now()
@@ -250,7 +252,7 @@ with tab2:
         if len(dates) == 2:
             start_date, end_date = dates[0], dates[1]
 
-    # Database query
+    # Database query (Fast - only fetches text)
     query = conn.table("progress_logs").select("*").order("id", desc=True)
     if sel_c != "All":
         query = query.eq("customer", sel_c)
@@ -273,19 +275,37 @@ with tab2:
     else:
         data = raw_data
 
-    # --- NEW: SUMMARY DASHBOARD ---
-    if data:
+   # --- SUMMARY DASHBOARD (Fast) ---
         total_jobs = len(data)
         completed = len([d for d in data if int(d.get('overall_progress', 0) or 0) == 100])
         pending = total_jobs - completed
-        avg_prog = sum([int(d.get('overall_progress', 0) or 0) for d in data]) / total_jobs
-
-        s1, s2, s3, s4 = st.columns(4)
+        
+        s1, s2, s3 = st.columns(3)
         s1.metric("Total Reports", total_jobs)
-        s2.metric("Completed", completed, delta=f"{(completed/total_jobs)*100:.0f}%" if total_jobs > 0 else "0%")
+        s2.metric("Completed", completed)
         s3.metric("Pending", pending)
-        s4.metric("Avg. Progress", f"{avg_prog:.1f}%")
         st.divider()
+
+        # --- OPTIMIZED DOWNLOAD (Lazy Loading) ---
+        # We only generate the PDF when the user actually wants it
+        if st.button("📥 Prepare PDF for Download", use_container_width=True):
+            with st.spinner(f"Fetching photos and compiling {len(data)} reports..."):
+                pdf_bytes = generate_pdf(data)
+                st.download_button(
+                    label="✅ PDF Ready - Click to Save",
+                    data=pdf_bytes,
+                    file_name=f"BG_Report_{report_type}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        
+        # --- PREVIEW LIST (Fast) ---
+        for log in data:
+            with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')} ({log.get('created_at', log.get('po_date'))[:10]})"):
+                st.write(f"**Overall Progress: {log.get('overall_progress', 0)}%**")
+                st.progress(int(log.get('overall_progress', 0) or 0) / 100)
+    else:
+        st.info(f"No records found for the selected period.")
 
         # PDF & LISTING
         pdf_bytes = generate_pdf(data)
