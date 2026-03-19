@@ -114,7 +114,7 @@ def generate_pdf(logs):
             except: continue
 
     if logo_path: os.unlink(logo_path)
-    return pdf.output(dest='S')
+    return bytes(pdf.output(dest='S'), encoding='latin-1')
 
 # --- 3. DATA FETCH ---
 @st.cache_data(ttl=600)
