@@ -18,31 +18,58 @@ except Exception as e:
     st.error("❌ Supabase Connection Failed. Check your Secrets!")
     st.stop()
 
-# --- 2. DATA UTILITIES (Optimized) ---
-@st.cache_data(ttl=60) # Increased TTL to 1 min; use refresh button for manual sync
+# --- 2. DATA UTILITIES (Updated for Auto-KM & Financials) ---
+
+@st.cache_data(ttl=60)
 def load_data():
     try:
-        # Fetching only necessary columns to keep the payload small
+        # Fetching all columns, ordered by timestamp DESC
+        # This order is CRITICAL for the get_last_km function to work correctly
         res = conn.table("logistics_logs").select("*").order("timestamp", desc=True).execute()
+        
         if res.data:
-            return pd.DataFrame(res.data)
+            _df = pd.DataFrame(res.data)
+            
+            # Defensive check: Ensure numeric columns are actually numeric
+            # This prevents math errors in the Analytics cards
+            numeric_cols = ['distance', 'fuel_ltrs', 'fuel_rate', 'total_fuel_cost', 'start_km', 'end_km']
+            for col in numeric_cols:
+                if col in _df.columns:
+                    _df[col] = pd.to_numeric(_df[col], errors='coerce').fillna(0)
+            
+            return _df
     except Exception as e:
-        st.error(f"Data Fetch Error: {e}")
-    return pd.DataFrame()
+        st.error(f"Cloud Sync Error: {e}")
+    
+    # Return empty DF with expected columns if fetch fails to prevent UI crashes
+    return pd.DataFrame(columns=["timestamp", "vehicle", "end_km", "distance", "fuel_ltrs"])
 
+# Load data once at the start
 df = load_data()
 
 # Sidebar Tools
 with st.sidebar:
     st.title("🚛 Fleet Control")
-    if st.button("🔄 Sync Cloud Data"):
+    
+    # Force refresh button
+    if st.button("🔄 Sync Cloud Data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
     
-    # SENIOR DEV ADDITION: CSV Export
+    st.divider()
+    
+    # Export Utility
     if not df.empty:
+        st.subheader("Data Export")
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Export Logistics CSV", data=csv, file_name=f"logistics_export_{datetime.now().date()}.csv")
+        st.download_button(
+            label="📥 Export Logistics CSV",
+            data=csv,
+            file_name=f"B&G_Logistics_{datetime.now().strftime('%Y-%m-%d')}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        st.caption("Includes fuel costs and distances.")
 
 # --- 3. INPUT FORM ---
 
