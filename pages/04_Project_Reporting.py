@@ -54,15 +54,26 @@ def generate_pdf(logs):
 
     for log in logs:
         pdf.add_page()
-        # 1. HEADER RE-INSERTED
+        # 1. NEW: Define the date at the start of the page
+        report_date = datetime.now().strftime('%d-%m-%Y')
+
+        # [Keep your blue header rect and logo code exactly as they are]
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
         pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
+        # 2. UPDATED: Job Code Row with Date on Right
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 1, "L")
+        
+        # Change '1' to '0' at the end of this cell to stay on the same line
+        pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 0, "L")
+        
+        # Add this line to print the date on the far right of the same bar
+        pdf.set_xy(10, 30)
+        pdf.cell(0, 8, f"Report Date: {report_date} ", 0, 1, "R")
+        
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
         # 2. JOB DETAILS TABLE RE-INSERTED
