@@ -103,7 +103,7 @@ with tabs[0]:
     try:
         # Fetching last 10 requests to keep it fast
         status_data = conn.table("logistics_requests").select(
-            "requested_by, destination, req_date, assigned_vehicle, status"
+            "requested_by, destination, purpose, req_date, req_time, assigned_vehicle, status"
         ).order("created_at", desc=True).limit(10).execute().data
         
         if status_data:
