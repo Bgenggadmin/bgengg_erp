@@ -1,8 +1,9 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, date
+import datetime
 import pytz
+IST = pytz.timezone('Asia/Kolkata')
 from io import BytesIO
 from PIL import Image
 import urllib.parse
@@ -71,9 +72,7 @@ tabs = st.tabs(["📅 Staff Booking", "👨‍✈️ Brahmiah's Desk", "📝 Tri
 # --- TAB 1: STAFF BOOKING ---
 with tabs[0]:
     with st.form("request_form", clear_on_submit=True):
-        # ... (columns setup) ...
-        # FIX 1: Ensure date picker uses IST today
-        r_date = c2.date_input("Required Date", min_value=datetime.now(IST).date())
+        r_date = c2.date_input("Required Date", min_value=datetime.datetime.now(IST).date())
         r_time = c2.text_input("Required Time (e.g. 9:00 AM)")
         
         if st.form_submit_button("Submit Request"):
