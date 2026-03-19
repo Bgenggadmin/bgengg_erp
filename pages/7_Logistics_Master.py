@@ -96,6 +96,48 @@ with tabs[0]:
                 st.success(f"Request for {req_by} sent!")
                 # Add WhatsApp link logic here if needed
 
+# --- TAB 2: BRAHMIAH'S DESK ---
+with tabs[1]:
+    st.subheader("📬 Pending Vehicle Requests")
+    
+    # SENIOR FIX: Use .ilike() for case-insensitive matching 
+    # and .execute() to pull fresh data
+    try:
+        req_res = conn.table("logistics_requests").select("*").ilike("status", "Pending").execute()
+        requests = req_res.data if req_res.data else []
+    except Exception as e:
+        st.error(f"Error fetching requests: {e}")
+        requests = []
+
+    if requests:
+        for r in requests:
+            # Clean display for Brahmiah
+            with st.expander(f"🚩 {r.get('requested_by', 'Unknown')} to {r.get('destination', 'No Dest')}"):
+                col_a, col_b = st.columns(2)
+                col_a.write(f"**Date:** {r.get('req_date')}")
+                col_a.write(f"**Time:** {r.get('req_time')}")
+                col_b.write(f"**Purpose:** {r.get('purpose', 'N/A')}")
+                
+                # Dynamic Vehicle Dropdown from Master
+                v_assign = st.selectbox("Assign Vehicle", vehicle_list, key=f"assign_{r['id']}")
+                
+                if st.button("✅ Approve & Assign", key=f"btn_{r['id']}"):
+                    try:
+                        conn.table("logistics_requests").update({
+                            "status": "Assigned", 
+                            "assigned_vehicle": v_assign
+                        }).eq("id", r['id']).execute()
+                        st.success(f"Assigned {v_assign} successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Update failed: {e}")
+    else:
+        st.info("No pending requests found.")
+        # DEBUG SECTION: Only shows if the tab is empty but SQL says data exists
+        if st.sidebar.checkbox("Show Debug Info"):
+            st.write("Current Pending Count in DB:", len(requests))
+            st.write("Raw Data:", requests)
+
 # --- TAB 3: TRIP LOGGER ---
 with tabs[2]:
     with st.form("logistics_form", clear_on_submit=True):
