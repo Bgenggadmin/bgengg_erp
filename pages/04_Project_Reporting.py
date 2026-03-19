@@ -207,11 +207,11 @@ with tab1:
         # Use file_uploader for multiple photos (faster for bulk than camera_input)
         uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
 
-if uploaded_photos:
-    processed_list = process_photos(uploaded_photos)
-    cols = st.columns(4) # Single horizontal row
-    for idx, img_bytes in enumerate(processed_list):
-        cols[idx].image(img_bytes, caption=f"Photo {idx+1}", use_container_width=True)
+        if uploaded_photos:
+            processed_list = process_photos(uploaded_photos)
+            cols = st.columns(4) # Single horizontal row
+            for idx, img_bytes in enumerate(processed_list):
+            cols[idx].image(img_bytes, caption=f"Photo {idx+1}", use_container_width=True)
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job:
                 st.error("Please select Customer and Job Code")
@@ -223,9 +223,15 @@ if uploaded_photos:
                 }
                 res = conn.table("progress_logs").insert(payload).execute()
                 
-                if cam_photo and res.data:
+                if uploaded_photos and res.data:
                     file_id = res.data[0]['id']
-                    conn.client.storage.from_("progress-photos").upload(f"{file_id}.jpg", cam_photo.getvalue())
+                    processed_list = process_photos(uploaded_photos)
+                    for i, img_data in enumerate(processed_list):
+                        conn.client.storage.from_("progress-photos").upload(
+                            f"{file_id}_{i}.jpg", 
+                            img_data,
+                            file_options={"content-type": "image/jpeg"}
+                        )
                 
                 st.success("✅ Saved!")
                 st.cache_data.clear()
