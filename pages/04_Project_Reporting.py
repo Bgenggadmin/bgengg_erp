@@ -83,10 +83,7 @@ def generate_pdf(logs):
         ov_p = int(log.get('overall_progress', 0))
         pdf.set_font("Arial", "B", 10)
         pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
-        # Background Bar
-        pdf.set_fill_color(230, 230, 230)
-        pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
-        # Filled Bar (Dark Blue)
+        pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
         if ov_p > 0:
             pdf.set_fill_color(0, 82, 164)
             pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
@@ -96,7 +93,7 @@ def generate_pdf(logs):
         pdf.ln(2); pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
-        pdf.cell(30, 8, " Progress", 1, 0, 'C', True) # NEW COLUMN
+        pdf.cell(30, 8, " Progress", 1, 0, 'C', True) 
         pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
         
         # Milestone Rows
@@ -104,26 +101,39 @@ def generate_pdf(logs):
         for label, s_key, n_key in MILESTONE_MAP:
             pk = f"{s_key}_prog"
             m_p = int(log.get(pk, 0))
-            
             pdf.cell(50, 10, f" {label}", 1)
             pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
-            
-            # --- MINI PROGRESS BAR PER MILESTONE ---
-            curr_x = pdf.get_x()
-            curr_y = pdf.get_y()
-            pdf.cell(30, 10, "", 1, 0) # Empty cell for border
-            pdf.set_fill_color(240, 240, 240) # Background
-            pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
+            curr_x, curr_y = pdf.get_x(), pdf.get_y()
+            pdf.cell(30, 10, "", 1, 0) 
+            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
             if m_p > 0:
-                pdf.set_fill_color(0, 153, 76) # Green fill
-                pdf.rect(curr_x + 3, curr_y + 4, (m_p / 100) * 24, 2, 'F')
-            pdf.set_xy(curr_x + 30, curr_y) # Reset cursor position
-            
+                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (m_p / 100) * 24, 2, 'F')
+            pdf.set_xy(curr_x + 30, curr_y)
             pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-    if logo_path: os.unlink(logo_path)
-    return bytes(pdf.output())
+        # --- NEW: PASSPORT PHOTO ROW (Surgical Addition) ---
+        pdf.ln(5)
+        pdf.set_font("Arial", "B", 10); pdf.cell(0, 10, "Progress Photos:", 0, 1, "L")
+        img_x = 10
+        for i in range(4):
+            try:
+                # Fetching the 0-4 photos stored as {id}_{index}.jpg
+                img_data = conn.client.storage.from_("progress-photos").download(f"{log.get('id')}_{i}.jpg")
+                if img_data:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+                        tmp_img.write(img_data)
+                        # Placing 4 photos side-by-side (approx 45mm width each)
+                        pdf.image(tmp_img.name, x=img_x, y=pdf.get_y(), w=45)
+                        img_x += 48 # Gap between photos
+                        os.unlink(tmp_img.name)
+            except: continue
 
+    if logo_path: 
+        try: os.unlink(logo_path)
+        except: pass
+    
+    # RECTIFICATION: Returns bytes directly, fixing the Download Button crash
+    return pdf.output(dest='S')
 # --- DATA FETCH ---
 @st.cache_data(ttl=600)
 def get_master_data():
