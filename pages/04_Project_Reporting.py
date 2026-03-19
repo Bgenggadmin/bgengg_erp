@@ -238,9 +238,7 @@ with tab2:
     sel_c = f1.selectbox("Filter Customer", ["All"] + customers)
     report_type = f2.selectbox("📅 Period", ["All Time", "Current Week", "Current Month", "Custom Range"])
     
-    # ... [Keep your existing Date Filtering Logic here] ...
-    
-    # Date Filtering Logic
+    # --- Date Filtering Logic ---
     start_date, end_date = None, None
     now = datetime.now()
     if report_type == "Current Week":
@@ -252,7 +250,7 @@ with tab2:
         if len(dates) == 2:
             start_date, end_date = dates[0], dates[1]
 
-    # Database query (Fast - only fetches text)
+    # --- Database Query ---
     query = conn.table("progress_logs").select("*").order("id", desc=True)
     if sel_c != "All":
         query = query.eq("customer", sel_c)
@@ -260,68 +258,60 @@ with tab2:
     res = query.execute()
     raw_data = res.data if res.data else []
 
-    # Local Time Filtering
+    # --- Local Time Filtering ---
     data = []
     if start_date:
         for d in raw_data:
             try:
-                # Use created_at timestamp (first 10 chars for YYYY-MM-DD)
-                d_date = datetime.strptime(d.get('created_at', d.get('po_date'))[:10], "%Y-%m-%d").date()
+                # Parse date from created_at or po_date
+                raw_ts = d.get('created_at') or d.get('po_date')
+                d_date = datetime.strptime(raw_ts[:10], "%Y-%m-%d").date()
                 if end_date:
                     if start_date <= d_date <= end_date: data.append(d)
                 else:
                     if d_date >= start_date: data.append(d)
-            except: data.append(d)
+            except:
+                # Fallback: if date parsing fails, keep the record
+                data.append(d)
     else:
         data = raw_data
 
-   # --- SUMMARY DASHBOARD (Fast) ---
+    # --- UI Rendering ---
+    if data:
+        # Summary Metrics
         total_jobs = len(data)
         completed = len([d for d in data if int(d.get('overall_progress', 0) or 0) == 100])
         pending = total_jobs - completed
         
-        s1, s2, s3 = st.columns(3)
-        s1.metric("Total Reports", total_jobs)
-        s2.metric("Completed", completed)
-        s3.metric("Pending", pending)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Reports", total_jobs)
+        m2.metric("Completed", completed)
+        m3.metric("Pending", pending)
         st.divider()
 
-        # --- OPTIMIZED DOWNLOAD (Lazy Loading) ---
-        # We only generate the PDF when the user actually wants it
+        # LAZY LOAD PDF: This button prevents the slow load times
         if st.button("📥 Prepare PDF for Download", use_container_width=True):
-            with st.spinner(f"Fetching photos and compiling {len(data)} reports..."):
+            with st.spinner("Generating PDF... This may take a moment for large reports."):
                 pdf_bytes = generate_pdf(data)
-                st.download_button(
-                    label="✅ PDF Ready - Click to Save",
-                    data=pdf_bytes,
-                    file_name=f"BG_Report_{report_type}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
+                if pdf_bytes:
+                    st.download_button(
+                        label="✅ Click here to Save PDF",
+                        data=pdf_bytes,
+                        file_name=f"BG_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
         
-        # --- PREVIEW LIST (Fast) ---
+        # Fast Preview List
         for log in data:
-            with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')} ({log.get('created_at', log.get('po_date'))[:10]})"):
-                st.write(f"**Overall Progress: {log.get('overall_progress', 0)}%**")
-                st.progress(int(log.get('overall_progress', 0) or 0) / 100)
+            job_info = f"📦 {log.get('job_code')} - {log.get('customer')}"
+            with st.expander(job_info):
+                prog = int(log.get('overall_progress', 0) or 0)
+                st.write(f"**Current Progress: {prog}%**")
+                st.progress(prog / 100)
+                st.write(f"Engineer: {log.get('engineer', 'N/A')}")
     else:
-        st.info(f"No records found for the selected period.")
-
-        # PDF & LISTING
-        pdf_bytes = generate_pdf(data)
-        st.download_button("📥 Download PDF Report", data=pdf_bytes, file_name=f"BG_Report_{report_type}.pdf", mime="application/pdf", use_container_width=True)
-        
-        for log in data:
-            with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')} ({log.get('created_at', log.get('po_date'))[:10]})"):
-                st.write(f"**Overall Progress: {log.get('overall_progress', 0)}%**")
-                st.progress(int(log.get('overall_progress', 0) or 0) / 100)
-                # Show individual milestone statuses briefly
-                cols = st.columns(3)
-                cols[0].write(f"**Fab:** {log.get('fab_status', 'N/A')}")
-                cols[1].write(f"**QC:** {log.get('qc_stat', 'N/A')}")
-                cols[2].write(f"**Testing:** {log.get('testing', 'N/A')}")
-    else:
-        st.info(f"No records found for {sel_c} in the {report_type} period.")
+        st.info("No records found for the selected filters.")
 
 with tab3:
     st.subheader("🛠️ Master Management")
