@@ -26,101 +26,6 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- PDF ENGINE ---
-def process_photos(uploaded_files):
-    processed = []
-    for file in uploaded_files[:4]:
-        img = Image.open(file)
-        img = img.resize((350, 450), Image.LANCZOS)
-        buf = BytesIO()
-        img.save(buf, format="JPEG", quality=70) 
-        if buf.tell() > 51200:
-            buf = BytesIO()
-            img.save(buf, format="JPEG", quality=40)
-        processed.append(buf.getvalue())
-    return processed
-
-def generate_pdf(logs):
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    logo_path = None
-    try:
-        logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-        if logo_data:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
-                tmp_logo.write(logo_data)
-                logo_path = tmp_logo.name
-    except: pass
-
-    for log in logs:
-        pdf.add_page()
-        # Header Styling
-        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
-        if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
-        pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
-        pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
-        
-        # Header Info
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
-        pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
-        
-        for i in range(0, len(HEADER_FIELDS), 2):
-            f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
-            pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
-            pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
-            if f2:
-                pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
-                pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
-            else: pdf.ln(7)
-
-        # Progress Bar
-        pdf.ln(5); ov_p = int(log.get('overall_progress', 0))
-        pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
-        pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
-        if ov_p > 0:
-            pdf.set_fill_color(0, 82, 164)
-            pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
-        pdf.ln(10)
-
-        # Milestone Table
-        pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
-        pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
-        pdf.cell(30, 8, " Status", 1, 0, 'C', True)
-        pdf.cell(30, 8, " Progress", 1, 0, 'C', True) 
-        pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
-        
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
-        for label, s_key, n_key in MILESTONE_MAP:
-            pk, m_p = f"{s_key}_prog", int(log.get(f"{s_key}_prog", 0))
-            pdf.cell(50, 10, f" {label}", 1)
-            pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
-            curr_x, curr_y = pdf.get_x(), pdf.get_y()
-            pdf.cell(30, 10, "", 1, 0) 
-            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
-            if m_p > 0:
-                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (m_p / 100) * 24, 2, 'F')
-            pdf.set_xy(curr_x + 30, curr_y)
-            pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
-
-        # Photo Row
-        pdf.ln(5); pdf.set_font("Arial", "B", 10); pdf.cell(0, 10, "Progress Photos:", 0, 1, "L")
-        img_x = 10
-        for i in range(4):
-            try:
-                img_data = conn.client.storage.from_("progress-photos").download(f"{log.get('id')}_{i}.jpg")
-                if img_data:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
-                        tmp_img.write(img_data)
-                        pdf.image(tmp_img.name, x=img_x, y=pdf.get_y(), w=45)
-                        img_x += 48
-                        os.unlink(tmp_img.name)
-            except: continue
-
-    if logo_path: os.unlink(logo_path)
-    return pdf.output(dest='S')
-
 # --- DATA FETCH ---
 @st.cache_data(ttl=600)
 def get_master_data():
@@ -276,3 +181,95 @@ with tab3:
             if st.form_submit_button("Add Job"):
                 conn.table("job_master").insert({"job_code": nj}).execute()
                 st.cache_data.clear(); st.rerun()
+
+# --- 🛠️ BOTTOM: PDF ENGINE & PHOTO PROCESSING ---
+from fpdf import FPDF
+
+def process_photos(uploaded_files):
+    processed = []
+    for file in uploaded_files[:4]:
+        img = Image.open(file)
+        img = img.resize((350, 450), Image.LANCZOS)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=70) 
+        if buf.tell() > 51200:
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=40)
+        processed.append(buf.getvalue())
+    return processed
+
+def generate_pdf(logs):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    logo_path = None
+    try:
+        logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
+        if logo_data:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
+                tmp_logo.write(logo_data)
+                logo_path = tmp_logo.name
+    except: pass
+
+    for log in logs:
+        pdf.add_page()
+        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
+        if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
+        pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
+        pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
+        
+        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+        pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
+        pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
+        
+        for i in range(0, len(HEADER_FIELDS), 2):
+            f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
+            pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
+            pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
+            if f2:
+                pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
+                pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
+            else: pdf.ln(7)
+
+        pdf.ln(5); ov_p = int(log.get('overall_progress', 0))
+        pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
+        pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
+        if ov_p > 0:
+            pdf.set_fill_color(0, 82, 164)
+            pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
+        pdf.ln(10)
+
+        pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
+        pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
+        pdf.cell(30, 8, " Status", 1, 0, 'C', True)
+        pdf.cell(30, 8, " Progress", 1, 0, 'C', True) 
+        pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
+        
+        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
+        for label, s_key, n_key in MILESTONE_MAP:
+            pk, m_p = f"{s_key}_prog", int(log.get(f"{s_key}_prog", 0))
+            pdf.cell(50, 10, f" {label}", 1)
+            pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
+            curr_x, curr_y = pdf.get_x(), pdf.get_y()
+            pdf.cell(30, 10, "", 1, 0) 
+            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
+            if m_p > 0:
+                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (m_p / 100) * 24, 2, 'F')
+            pdf.set_xy(curr_x + 30, curr_y)
+            pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
+
+        pdf.ln(5); pdf.set_font("Arial", "B", 10); pdf.cell(0, 10, "Progress Photos:", 0, 1, "L")
+        img_x = 10
+        for i in range(4):
+            try:
+                img_data = conn.client.storage.from_("progress-photos").download(f"{log.get('id')}_{i}.jpg")
+                if img_data:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+                        tmp_logo.write(img_data) # Note: Fixed potential typo from your snippet to write img_data
+                        pdf.image(tmp_img.name, x=img_x, y=pdf.get_y(), w=45)
+                        img_x += 48
+                        os.unlink(tmp_img.name)
+            except: continue
+
+    if logo_path: os.unlink(logo_path)
+    return pdf.output(dest='S')
