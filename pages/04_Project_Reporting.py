@@ -139,97 +139,137 @@ def generate_pdf(logs):
         os.unlink(logo_path)
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
-# --- 3. DATA FETCH ---
+# --- 3. DATA FETCH (Updated for Anchor Portal) ---
 @st.cache_data(ttl=600)
 def get_master_data():
     try:
+        # Pulling Customers from existing master
         c_res = conn.table("customer_master").select("name").execute()
-        j_res = conn.table("job_master").select("job_code").execute()
+        # Pulling Jobs from the NEW Anchor Portal master
+        j_res = conn.table("anchor_projects").select("job_no, client_name, project_description").order("job_no").execute()
+        
         c_list = [d['name'] for d in c_res.data] if c_res.data else []
-        j_list = [d['job_code'] for d in j_res.data] if j_res.data else []
-        return sorted(c_list), sorted(j_list)
-    except: return [], []
+        # Create a mapping for the search description
+        j_map = {d['job_no']: f"{d['job_no']} | {d.get('client_name', 'N/A')}" for d in j_res.data} if j_res.data else {}
+        
+        return sorted(c_list), j_map
+    except: return [], {}
 
-customers, jobs = get_master_data()
+def get_anchor_details(job_code):
+    """Fetches audited columns from Anchor Portal."""
+    try:
+        res = conn.table("anchor_projects").select(
+            "client_name, project_description, po_no, po_date, po_delivery_date, revised_delivery_date"
+        ).eq("job_no", job_code).limit(1).execute()
+        return res.data[0] if res.data else {}
+    except: return {}
+
+def get_prev_photos(log_id):
+    """Downloads last 4 photos safely."""
+    images = []
+    try:
+        for i in range(4):
+            img_data = conn.client.storage.from_("progress-photos").download(f"{log_id}_{i}.jpg")
+            if img_data: images.append(img_data)
+    except: pass
+    return images
+
+customers, job_map = get_master_data()
+jobs = list(job_map.keys())
 
 # --- 4. MAIN UI ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
 
 with tab1:
     st.subheader("📋 Project Update")
-    f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
-    last_data = {}
+    
+    # 1. Searchable Selection
+    job_display_list = list(job_map.values())
+    f_job_display = st.selectbox("Search Job Code or Customer", [""] + job_display_list, key="job_lookup")
+    f_job = f_job_display.split(" | ")[0] if f_job_display else ""
+    
+    anchor_data = {}
+    last_log = {}
     
     if f_job:
-        res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        if res and res.data: 
-            last_data = res.data[0]
-            st.toast(f"🔄 Autofilled latest data for {f_job}")
+        # Fetch Master & Log Data
+        anchor_data = get_anchor_details(f_job)
+        log_res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
+        
+        # UI: Description & Last Update Info
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.info(f"📝 **Description:** {anchor_data.get('project_description', 'N/A')}")
+        with c2:
+            if log_res.data:
+                last_log = log_res.data[0]
+                ts = datetime.strptime(last_log['created_at'][:16], "%Y-%m-%dT%H:%M").strftime("%d %b, %I:%M %p")
+                st.warning(f"🕒 **Last Update:** {ts} ({last_log.get('overall_progress', 0)}%)")
+                if st.button("🖼️ View Last Photos"):
+                    imgs = get_prev_photos(last_log['id'])
+                    if imgs:
+                        cols = st.columns(len(imgs))
+                        for idx, im in enumerate(imgs): cols[idx].image(im, use_container_width=True)
+                    else: st.error("No photos found.")
+            else:
+                st.success("🆕 **Status:** New Project")
 
     with st.form("main_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        try:
-            c_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
-        except: c_idx = 0
-
-        f_cust = c1.selectbox("Customer", [""] + customers, index=c_idx)
-        f_eq = c2.text_input("Equipment", value=last_data.get('equipment', ""))
+        
+        # Logic: Priority to Anchor Portal, then last log
+        def_cust = anchor_data.get('client_name', last_log.get('customer', ""))
+        f_cust = c1.text_input("Customer", value=def_cust)
+        f_eq = c2.text_input("Equipment", value=last_log.get('equipment', ""))
         
         c3, c4, c5 = st.columns(3)
-        f_po_n = c3.text_input("PO Number", value=last_data.get('po_no', ""))
+        f_po_n = c3.text_input("PO Number", value=anchor_data.get('po_no', last_log.get('po_no', "")))
         
-        def safe_date(field):
-            val = last_data.get(field)
-            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
+        def safe_dt(val):
+            try: return datetime.strptime(val[:10], "%Y-%m-%d") if val else datetime.now()
             except: return datetime.now()
 
-        f_po_d = c4.date_input("PO Date", value=safe_date('po_date'))
-        f_eng = c5.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
+        f_po_d = c4.date_input("PO Date", value=safe_dt(anchor_data.get('po_date') or last_log.get('po_date')))
+        f_eng = c5.text_input("Responsible Engineer", value=last_log.get('engineer', ""))
+
+        # Planning Dates
+        d1, d2 = st.columns(2)
+        f_p_del = d1.date_input("Contract Delivery", value=safe_dt(anchor_data.get('po_delivery_date')))
+        f_e_disp = d2.date_input("Exp Dispatch", value=safe_dt(anchor_data.get('revised_delivery_date') or last_log.get('exp_dispatch_date')))
 
         st.divider()
-        st.subheader("📊 Milestone Tracking")
+        # --- MILESTONE LOOP (UNCHANGED FROM YOUR SCRIPT) ---
         m_responses = {}
         opts = ["Pending", "NA", "In-Progress", "Submitted", "Approved", "Ordered", "Received", "Hold", "Completed", "Planning", "Scheduled"]
-        job_suffix = str(f_job) if f_job else "initial"
-
+        job_suffix = str(f_job) if f_job else "init"
+        
         for label, skey, nkey in MILESTONE_MAP:
             pk = f"{skey}_prog"
             col1, col2, col3 = st.columns([1.5, 1, 2])
-            prev_status = last_data.get(skey, "Pending")
-            def_idx = opts.index(prev_status) if prev_status in opts else 0
-            raw_prog = last_data.get(pk, 0)
-            prev_prog = int(raw_prog) if raw_prog is not None else 0
-            prev_note = last_data.get(nkey, "") or ""
-            
-            m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}_{job_suffix}")
-            m_responses[pk] = col2.slider("Prog %", 0, 100, value=prev_prog, key=f"p_{skey}_{job_suffix}")
-            m_responses[nkey] = col3.text_input("Remarks", value=prev_note, key=f"n_{skey}_{job_suffix}")
+            m_responses[skey] = col1.selectbox(label, opts, index=opts.index(last_log.get(skey, "Pending")) if last_log.get(skey) in opts else 0, key=f"s_{skey}_{job_suffix}")
+            m_responses[pk] = col2.slider("Prog %", 0, 100, value=int(last_log.get(pk, 0) or 0), key=f"p_{skey}_{job_suffix}")
+            m_responses[nkey] = col3.text_input("Remarks", value=last_log.get(nkey, "") or "", key=f"n_{skey}_{job_suffix}")
 
         st.divider()
-        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
-        
-        st.subheader("📸 Progress Documentation (Max 4 Photos)")
+        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_log.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
         uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
 
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job:
-                st.error("Please select Customer and Job Code")
+                st.error("Missing Data")
             else:
                 payload = {
                     "customer": f_cust, "job_code": f_job, "equipment": f_eq,
                     "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
+                    "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_e_disp),
                     "overall_progress": f_progress, **m_responses
                 }
                 res = conn.table("progress_logs").insert(payload).execute()
-                
                 if uploaded_photos and res.data:
-                    file_id = res.data[0]['id']
-                    processed_list = process_photos(uploaded_photos)
-                    for i, img_data in enumerate(processed_list):
-                        conn.client.storage.from_("progress-photos").upload(
-                            f"{file_id}_{i}.jpg", img_data,
-                            file_options={"content-type": "image/jpeg"}
-                        )
+                    f_id = res.data[0]['id']
+                    imgs = process_photos(uploaded_photos)
+                    for i, d in enumerate(imgs):
+                        conn.client.storage.from_("progress-photos").upload(f"{f_id}_{i}.jpg", d, file_options={"content-type":"image/jpeg"})
                 st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
 
 with tab2:
