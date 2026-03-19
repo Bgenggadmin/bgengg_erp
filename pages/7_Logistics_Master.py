@@ -91,7 +91,6 @@ with tabs[0]:
                     "purpose": req_purpose, 
                     "assigned_vehicle": req_veh, 
                     "status": "Pending",
-                    "created_at": datetime.now(IST).isoformat() # <--- Add this for precise tracking
                 }
                 conn.table("logistics_requests").insert(new_req).execute()
                 st.success("Request logged!"); st.rerun()
