@@ -25,7 +25,7 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- 2. PDF & PHOTO ENGINE (Defined here to prevent NameError) ---
+# --- 2. ENGINE ---
 def process_photos(uploaded_files):
     processed = []
     for file in uploaded_files[:4]:
@@ -60,19 +60,21 @@ def generate_pdf(logs):
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        pdf.cell(0, 8, f" JOB: {log.get('job_code','')} | ID: {log.get('id','')}", "B", 1, "L")
+        job_val = str(log.get('job_code', 'N/A'))
+        id_val = str(log.get('id', 'N/A'))
+        pdf.cell(0, 8, f" JOB: {job_val} | ID: {id_val}", "B", 1, "L")
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
         for i in range(0, len(HEADER_FIELDS), 2):
             f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
-            pdf.cell(65, 7, f" {str(log.get(f1,''))}", 1, 0, 'L')
+            pdf.cell(65, 7, f" {str(log.get(f1,'-'))}", 1, 0, 'L')
             if f2:
                 pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
-                pdf.cell(65, 7, f" {str(log.get(f2,''))}", 1, 1, 'L')
+                pdf.cell(65, 7, f" {str(log.get(f2,'-'))}", 1, 1, 'L')
             else: pdf.ln(7)
 
-        pdf.ln(5); ov_p = int(log.get('overall_progress', 0))
+        pdf.ln(5); ov_p = int(log.get('overall_progress', 0) or 0)
         pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
         pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
         if ov_p > 0:
@@ -88,14 +90,15 @@ def generate_pdf(logs):
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
         for label, s_key, n_key in MILESTONE_MAP:
-            pk, m_p = f"{s_key}_prog", int(log.get(f"{s_key}_prog", 0))
+            pk = f"{s_key}_prog"
+            m_p = int(log.get(pk, 0) or 0)
             pdf.cell(50, 10, f" {label}", 1)
             pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
             curr_x, curr_y = pdf.get_x(), pdf.get_y()
             pdf.cell(30, 10, "", 1, 0) 
             pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
             if m_p > 0:
-                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (m_p / 100) * 24, 2, 'F')
+                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (min(m_p, 100) / 100) * 24, 2, 'F')
             pdf.set_xy(curr_x + 30, curr_y)
             pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
 
@@ -121,7 +124,10 @@ def get_master_data():
     try:
         c_res = conn.table("customer_master").select("name").execute()
         j_res = conn.table("job_master").select("job_code").execute()
-        return sorted([d['name'] for d in c_res.data]), sorted([d['job_code'] for d in j_res.data])
+        # FIXED: Extracting correctly from data list
+        c_list = [d['name'] for d in c_res.data] if c_res.data else []
+        j_list = [d['job_code'] for d in j_res.data] if j_res.data else []
+        return sorted(c_list), sorted(j_list)
     except: return [], []
 
 customers, jobs = get_master_data()
@@ -180,7 +186,7 @@ with tab1:
             m_responses[nkey] = col3.text_input("Remarks", value=prev_note, key=f"n_{skey}_{job_suffix}")
 
         st.divider()
-        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0)), key=f"ov_{job_suffix}")
+        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
         
         st.subheader("📸 Progress Documentation (Max 4 Photos)")
         uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
@@ -210,31 +216,35 @@ with tab2:
     st.subheader("📂 Report Archive")
     f1, f2, f3 = st.columns(3)
     sel_c = f1.selectbox("Filter Customer", ["All"] + customers)
-    report_type = f2.selectbox("📅 Report Duration", ["All Time", "Current Week", "Current Month", "Custom Range"])
-    
-    query = conn.table("progress_logs").select("*").order("id", desc=True)
-    if sel_c != "All": query = query.eq("customer", sel_c)
-    res = query.execute()
-    data = res.data if res else []
+    # Filter Logic Simplified for Speed
+    res = conn.table("progress_logs").select("*").order("id", desc=True).execute()
+    data = res.data if res.data else []
+    if sel_c != "All":
+        data = [d for d in data if d.get('customer') == sel_c]
     
     if data:
-        st.download_button("📥 Download PDF Report", data=generate_pdf(data), file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
-        # Detailed Archive view follows...
+        pdf_bytes = generate_pdf(data)
+        st.download_button("📥 Download PDF Report", data=pdf_bytes, file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
         for log in data:
             with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')}"):
                 st.write(f"**Overall Progress: {log.get('overall_progress', 0)}%**")
-                st.progress(int(log.get('overall_progress', 0)) / 100)
+                st.progress(int(log.get('overall_progress', 0) or 0) / 100)
+    else:
+        st.info("No records found.")
 
 with tab3:
     st.subheader("🛠️ Master Management")
-    col1, col2 = st.columns(2)
-    with col1:
+    # FIXED: Added view of current lists to ensure they aren't "Empty"
+    c_col, j_col = st.columns(2)
+    with c_col:
+        st.write("**Current Customers:**", ", ".join(customers) if customers else "None")
         with st.form("add_cust"):
             nc = st.text_input("New Customer")
             if st.form_submit_button("Add Customer") and nc:
                 conn.table("customer_master").insert({"name": nc}).execute()
                 st.cache_data.clear(); st.rerun()
-    with col2:
+    with j_col:
+        st.write("**Current Job Codes:**", ", ".join(jobs) if jobs else "None")
         with st.form("add_job"):
             nj = st.text_input("New Job Code")
             if st.form_submit_button("Add Job") and nj:
