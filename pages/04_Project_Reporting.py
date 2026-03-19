@@ -43,7 +43,6 @@ def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    # 1. Logo Handling (unchanged but wrapped in safety)
     logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
@@ -55,14 +54,62 @@ def generate_pdf(logs):
 
     for log in logs:
         pdf.add_page()
-        # ... [Header and Table logic remains exactly the same] ...
+        # 1. HEADER RE-INSERTED
+        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
+        if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
+        pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
+        pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # --- FIXED PHOTO SECTION ---
+        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
+        pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 1, "L")
+        pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
+        
+        # 2. JOB DETAILS TABLE RE-INSERTED
+        for i in range(0, len(HEADER_FIELDS), 2):
+            f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
+            pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
+            pdf.cell(65, 7, f" {str(log.get(f1,'-'))}", 1, 0, 'L')
+            if f2:
+                pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
+                pdf.cell(65, 7, f" {str(log.get(f2,'-'))}", 1, 1, 'L')
+            else: pdf.ln(7)
+
+        # 3. OVERALL PROGRESS BAR RE-INSERTED
+        pdf.ln(5); ov_p = int(log.get('overall_progress', 0) or 0)
+        pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
+        pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
+        if ov_p > 0:
+            pdf.set_fill_color(0, 82, 164)
+            pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
+        pdf.ln(10)
+
+        # 4. MILESTONE TABLE RE-INSERTED
+        pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
+        pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
+        pdf.cell(30, 8, " Status", 1, 0, 'C', True)
+        pdf.cell(30, 8, " Progress", 1, 0, 'C', True) 
+        pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
+        
+        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
+        for label, s_key, n_key in MILESTONE_MAP:
+            pk = f"{s_key}_prog"
+            m_p = int(log.get(pk, 0) or 0)
+            pdf.cell(50, 10, f" {label}", 1)
+            pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
+            curr_x, curr_y = pdf.get_x(), pdf.get_y()
+            pdf.cell(30, 10, "", 1, 0) 
+            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
+            if m_p > 0:
+                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (min(m_p, 100) / 100) * 24, 2, 'F')
+            pdf.set_xy(curr_x + 30, curr_y)
+            pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
+
+        # 5. FIXED PHOTO SECTION
         pdf.ln(10) 
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, "Progress Documentation Photos:", 0, 1, "L")
         
-        # Capture the Y position once for the whole row
         start_y = pdf.get_y() 
         img_x = 10
         photo_count = 0
@@ -71,35 +118,25 @@ def generate_pdf(logs):
             try:
                 img_path = f"{log.get('id')}_{i}.jpg"
                 img_data = conn.client.storage.from_("progress-photos").download(img_path)
-                
                 if img_data:
-                    # delete=False is correct, but we must handle the lifecycle
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
                         tmp_img.write(img_data)
-                        tmp_img.flush()  # CRITICAL: Ensure data is written to disk
-                        
-                        # Use start_y to keep them all in one row
+                        tmp_img.flush()
                         pdf.image(tmp_img.name, x=img_x, y=start_y, w=45)
-                        
                         img_x += 48
                         photo_count += 1
-                        tmp_name = tmp_img.name # Store for unlinking
-                    
-                    os.unlink(tmp_name) # Clean up after image is added to PDF buffer
-            except:
-                continue
+                        t_name = tmp_img.name
+                    os.unlink(t_name)
+            except: continue
 
-        # CRITICAL: Move the cursor DOWN after the images are placed
-        # Each image is 45w, roughly 50-60h depending on aspect ratio
         if photo_count > 0:
             pdf.set_y(start_y + 55) 
         else:
             pdf.set_font("Arial", "I", 8)
-            pdf.cell(0, 10, "No progress photos available for this update.", 0, 1, "L")
+            pdf.cell(0, 10, "No progress photos available.", 0, 1, "L")
 
     if logo_path and os.path.exists(logo_path):
         os.unlink(logo_path)
-        
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
 # --- 3. DATA FETCH ---
