@@ -45,6 +45,16 @@ with st.sidebar:
         st.download_button("📥 Export Logistics CSV", data=csv, file_name=f"logistics_export_{datetime.now().date()}.csv")
 
 # --- 3. INPUT FORM ---
+
+# Helper function to get last KM (Must be defined before the form)
+def get_last_km(veh_name, dataframe):
+    if not dataframe.empty and 'vehicle' in dataframe.columns:
+        # Filter logs for this vehicle and get the most recent 'end_km'
+        veh_logs = dataframe[dataframe['vehicle'] == veh_name]
+        if not veh_logs.empty:
+            return int(veh_logs.iloc[0]['end_km'])
+    return 0
+
 with st.form("logistics_form", clear_on_submit=True):
     st.subheader("📝 Log Vehicle Movement & Fuel")
     col1, col2, col3 = st.columns(3)
@@ -55,44 +65,59 @@ with st.form("logistics_form", clear_on_submit=True):
         purpose = st.selectbox("Purpose", ["Inter-Unit (500m)", "Pickup", "Site Delivery", "Fueling"])
 
     with col2:
-        start_km = st.number_input("Start KM Reading", min_value=0, step=1)
+        # AUTOMATION: Pulls last End KM from database based on the selection in col1
+        last_recorded = get_last_km(vehicle, df)
+        
+        start_km = st.number_input("Start KM Reading", min_value=0, value=last_recorded, step=1)
         end_km = st.number_input("End KM Reading", min_value=0, step=1)
         fuel_qty = st.number_input("Fuel Added (Litres)", min_value=0.0, step=0.1)
+        # Default fuel rate for Hyderabad/Telangana area
+        fuel_rate = st.number_input("Fuel Rate (₹/Litre)", min_value=0.0, value=94.5, step=0.1)
 
     with col3:
         auth_by = st.text_input("Authorized By (Required)", placeholder="Manager Name")
         location = st.text_input("Location (Required)", placeholder="e.g. Unit 2")
+        
+        # UI Financial Calculation
+        total_fuel_cost = round(fuel_qty * fuel_rate, 2)
+        if fuel_qty > 0:
+            st.info(f"💰 Fuel Cost: ₹{total_fuel_cost}")
 
     items = st.text_area("Item Details / Remarks")
     cam_photo = st.camera_input("Capture Bill / Odometer Photo")
 
     if st.form_submit_button("🚀 SUBMIT LOG"):
-        if end_km < start_km and end_km != 0:
-            st.error("❌ End KM cannot be less than Start KM!")
+        # VALIDATION LOGIC
+        if end_km != 0 and end_km < start_km:
+            st.error("❌ Error: End KM cannot be less than Start KM!")
         elif not auth_by or not location:
-            st.error("❌ Authorization and Location are mandatory.")
+            st.error("❌ Error: Authorization and Location are mandatory.")
+        elif end_km == 0 and fuel_qty == 0:
+            st.error("❌ Error: You must enter either End KM or Fuel Quantity.")
         else:
+            # 1. Image Processing
             photo_filename = ""
             if cam_photo:
-                # Efficient Image Compression
-                img = Image.open(cam_photo)
-                img.thumbnail((600, 600)) # Slightly better res for bills
-                buf = BytesIO()
-                img.save(buf, format="JPEG", quality=50, optimize=True) # Quality 50 is sweet spot
-                
-                photo_filename = f"log_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.jpg"
-                
                 try:
+                    img = Image.open(cam_photo)
+                    img.thumbnail((600, 600)) 
+                    buf = BytesIO()
+                    img.save(buf, format="JPEG", quality=50, optimize=True)
+                    
+                    photo_filename = f"log_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}.jpg"
+                    
                     conn.client.storage.from_("logistics-photos").upload(
                         path=photo_filename,
                         file=buf.getvalue(),
                         file_options={"content-type": "image/jpeg"}
                     )
                 except Exception as e:
-                    st.warning(f"Photo upload failed: {e}")
+                    st.warning(f"Photo upload failed, but saving log: {e}")
 
+            # 2. Distance Calculation
             trip_distance = end_km - start_km if end_km > start_km else 0
 
+            # 3. Data Preparation
             new_entry = {
                 "timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
                 "vehicle": vehicle, 
@@ -102,16 +127,19 @@ with st.form("logistics_form", clear_on_submit=True):
                 "end_km": end_km, 
                 "distance": trip_distance,
                 "fuel_ltrs": fuel_qty, 
+                "fuel_rate": fuel_rate,
+                "total_fuel_cost": total_fuel_cost,
                 "purpose": purpose, 
                 "location": location.upper(), 
                 "items": items.upper(), 
                 "photo_path": photo_filename
             }
             
+            # 4. Database Insert
             try:
                 conn.table("logistics_logs").insert(new_entry).execute()
                 st.cache_data.clear() 
-                st.success("✅ Entry Saved Successfully!")
+                st.success(f"✅ Logged {trip_distance} KM trip for {vehicle}!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Database Error: {e}")
