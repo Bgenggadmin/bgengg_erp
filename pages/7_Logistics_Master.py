@@ -56,7 +56,7 @@ def get_last_km(veh_name, dataframe):
 staff_list = get_staff_master()
 vehicle_list = get_vehicle_master()
 df = load_logistics_data()
-purpose_list = ["Site Delivery", "Inter-Unit Transfer", "Client Pickup", "Vendor Visit", "Fueling", "Maintenance", "Other"]
+purpose_list = ["Site Delivery", "Material pickup","Material droping","Material Pickup & Drop","Inter-Unit Transfer", "Client Pickup & Drop", "Vendor Visit", "Fueling", "Maintenance", "Other"]
 
 # --- 3. UI LAYOUT ---
 st.title("🚛 B&G Logistics Management System")
