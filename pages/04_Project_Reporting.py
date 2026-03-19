@@ -233,31 +233,52 @@ with tab2:
         query = query.eq("customer", sel_c)
     
     res = query.execute()
-    data = res.data if res.data else []
+    raw_data = res.data if res.data else []
 
-    # Local Time Filtering (on 'created_at' or 'po_date')
+    # Local Time Filtering
+    data = []
     if start_date:
-        filtered_data = []
-        for d in data:
+        for d in raw_data:
             try:
-                # Use created_at timestamp or po_date as fallback
+                # Use created_at timestamp (first 10 chars for YYYY-MM-DD)
                 d_date = datetime.strptime(d.get('created_at', d.get('po_date'))[:10], "%Y-%m-%d").date()
                 if end_date:
-                    if start_date <= d_date <= end_date: filtered_data.append(d)
+                    if start_date <= d_date <= end_date: data.append(d)
                 else:
-                    if d_date >= start_date: filtered_data.append(d)
-            except: filtered_data.append(d)
-        data = filtered_data
+                    if d_date >= start_date: data.append(d)
+            except: data.append(d)
+    else:
+        data = raw_data
 
+    # --- NEW: SUMMARY DASHBOARD ---
     if data:
+        total_jobs = len(data)
+        completed = len([d for d in data if int(d.get('overall_progress', 0) or 0) == 100])
+        pending = total_jobs - completed
+        avg_prog = sum([int(d.get('overall_progress', 0) or 0) for d in data]) / total_jobs
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Total Reports", total_jobs)
+        s2.metric("Completed", completed, delta=f"{(completed/total_jobs)*100:.0f}%" if total_jobs > 0 else "0%")
+        s3.metric("Pending", pending)
+        s4.metric("Avg. Progress", f"{avg_prog:.1f}%")
+        st.divider()
+
+        # PDF & LISTING
         pdf_bytes = generate_pdf(data)
         st.download_button("📥 Download PDF Report", data=pdf_bytes, file_name=f"BG_Report_{report_type}.pdf", mime="application/pdf", use_container_width=True)
+        
         for log in data:
             with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')} ({log.get('created_at', log.get('po_date'))[:10]})"):
                 st.write(f"**Overall Progress: {log.get('overall_progress', 0)}%**")
                 st.progress(int(log.get('overall_progress', 0) or 0) / 100)
+                # Show individual milestone statuses briefly
+                cols = st.columns(3)
+                cols[0].write(f"**Fab:** {log.get('fab_status', 'N/A')}")
+                cols[1].write(f"**QC:** {log.get('qc_stat', 'N/A')}")
+                cols[2].write(f"**Testing:** {log.get('testing', 'N/A')}")
     else:
-        st.info("No records found for this period.")
+        st.info(f"No records found for {sel_c} in the {report_type} period.")
 
 with tab3:
     st.subheader("🛠️ Master Management")
