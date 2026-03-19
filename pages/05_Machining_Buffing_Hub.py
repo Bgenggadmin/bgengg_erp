@@ -62,8 +62,17 @@ with tabs[0]:
         req_d, prio = c3.date_input("Required Date"), c3.selectbox("Priority", ["Low", "Medium", "High", "URGENT"])
         if st.form_submit_button("Submit Request") and j_code and part:
             today_ist = get_today_ist()
-            conn.table(DB_TABLE).insert({"unit_no": u_no, "job_code": j_code, "part_name": part, "activity_type": act, "required_date": str(req_d), "request_date": str(today_ist)), "status": "Pending", "priority": prio}).execute(); st.rerun()
-
+            # CORRECTED LINE:
+            conn.table(DB_TABLE).insert({
+                "unit_no": u_no, 
+                "job_code": j_code, 
+                "part_name": part, 
+                "activity_type": act, 
+                "required_date": str(req_d), 
+                "request_date": str(today_ist),  # Fixed: Removed ) and added ,
+                "status": "Pending", 
+                "priority": prio
+            }).execute()
     st.divider()
     st.subheader("🚦 Live Summary Table")
     if not df_main.empty:
