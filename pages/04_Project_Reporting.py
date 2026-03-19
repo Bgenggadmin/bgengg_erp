@@ -211,7 +211,7 @@ with tab1:
             processed_list = process_photos(uploaded_photos)
             cols = st.columns(4) # Single horizontal row
             for idx, img_bytes in enumerate(processed_list):
-            cols[idx].image(img_bytes, caption=f"Photo {idx+1}", use_container_width=True)
+                cols[idx].image(img_bytes, caption=f"Photo {idx+1}", use_container_width=True)
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job:
                 st.error("Please select Customer and Job Code")
