@@ -78,6 +78,7 @@ with tabs[0]:
     if not df_main.empty:
         df_sum = df_main.copy()
         df_sum['required_date'] = pd.to_datetime(df_sum['required_date'], errors='coerce')
+        df_sum['required_date'] = df_sum['required_date'].dt.date
         today_timestamp = pd.Timestamp(get_today_ist())
         df_sum['Days Left'] = (df_sum['required_date'] - today_timestamp).dt.days
         u_filt = st.radio("Unit Filter", [1, 2, 3], horizontal=True)
