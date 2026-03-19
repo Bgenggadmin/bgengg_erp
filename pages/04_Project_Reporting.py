@@ -118,9 +118,7 @@ def generate_pdf(logs):
                         os.unlink(tmp_img.name)
             except: continue
 
-    if logo_path:
-        try: os.unlink(logo_path)
-        except: pass
+    if logo_path: os.unlink(logo_path)
     return pdf.output(dest='S')
 
 # --- DATA FETCH ---
@@ -232,10 +230,14 @@ with tab2:
         c_date = f3.date_input("Select Range", [datetime.now().date(), datetime.now().date()])
         if isinstance(c_date, list) and len(c_date) == 2: start_date, end_date = c_date
 
-    query = conn.table("progress_logs").select("*").order("id", desc=True)
-    if sel_c != "All": query = query.eq("customer", sel_c)
-    res = query.execute()
-    data = res.data if res else []
+    try:
+        query = conn.table("progress_logs").select("*").order("id", desc=True)
+        if sel_c != "All": query = query.eq("customer", sel_c)
+        res = query.execute()
+        data = res.data if res else []
+    except:
+        data = []
+        st.error("Could not reach database.")
     
     today = datetime.now().date()
     filtered_data = []
@@ -253,15 +255,10 @@ with tab2:
         st.download_button("📥 Download PDF Report", data=generate_pdf(filtered_data), file_name="BG_Archive.pdf", mime="application/pdf", use_container_width=True)
         for log in filtered_data:
             with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')}"):
-                ov_p = int(log.get('overall_progress', 0))
-                st.write(f"**Overall Progress: {ov_p}%**")
-                st.progress(ov_p / 100)
-                for label, skey, nkey in MILESTONE_MAP:
-                    pk, m_prog = f"{skey}_prog", int(log.get(f"{skey}_prog", 0))
-                    c_status, c_bar, c_note = st.columns([1.5, 1, 1.5])
-                    c_status.write(f"**{label}**"); c_status.caption(f"Status: {log.get(skey, 'Pending')}")
-                    with c_bar: st.progress(m_prog / 100.0); st.caption(f"{m_prog}%")
-                    c_note.write(f"_{log.get(nkey, '-')}_")
+                st.write(f"**Overall Progress: {log.get('overall_progress', 0)}%**")
+                st.progress(int(log.get('overall_progress', 0)) / 100)
+    else:
+        st.info("No records found for the selected criteria.")
 
 # --- TAB 3: MASTERS ---
 with tab3:
