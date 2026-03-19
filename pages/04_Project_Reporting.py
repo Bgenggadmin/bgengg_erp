@@ -14,7 +14,7 @@ conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 def check_password():
     """Returns True if the user had the correct password."""
     def password_entered():
-        if st.session_state["password"] == "BG_ENGG_2026": # You can change this!
+        if st.session_state["password"] == "1234": # You can change this!
             st.session_state["password_correct"] = True
             del st.session_state["password"]  # don't store password
         else:
