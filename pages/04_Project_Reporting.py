@@ -6,8 +6,6 @@ from io import BytesIO
 from PIL import Image
 import tempfile
 import os
-import pytz
-IST = pytz.timezone('Asia/Kolkata')
 
 # 1. SETUP & CONSTANTS
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
