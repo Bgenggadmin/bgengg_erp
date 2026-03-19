@@ -49,13 +49,13 @@ tab_entry, tab_history = st.tabs(["📝 New Log Entry", "📜 History & Alerts"]
 
 # --- 4. TAB: NEW LOG ENTRY ---
 with tab_entry:
+    # --- FORM SECTION ---
     with st.form("maint_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
             equipment = st.selectbox("Select Machine", machine_list if machine_list else ["No Machines Found"])
             technician = st.selectbox("Technician", staff_list if staff_list else ["Select Staff"])
             
-            # Stock-Aware Suggestions
             suggested_spares = get_spares_with_stock(equipment)
             spares_used = st.multiselect("🔧 Select Spares Used", suggested_spares)
             
@@ -68,18 +68,15 @@ with tab_entry:
 
         if st.form_submit_button("🚀 Submit Log"):
             if equipment and (remarks_input or spares_used):
-                # 1. Image Processing
                 img_str = "" 
                 if cam_photo:
                     img = Image.open(cam_photo); img.thumbnail((400, 400))
                     buf = BytesIO(); img.save(buf, format="JPEG", quality=50)
                     img_str = base64.b64encode(buf.getvalue()).decode()
 
-                # 2. Remark Formatting
                 clean_spares = [s.split(" (")[0] for s in spares_used]
                 final_remarks = f"SPARES: {', '.join(clean_spares)} | NOTES: {remarks_input}"
 
-                # 3. Single Database Insert (FIXED: Removed duplicate logic)
                 new_row = {
                     "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
                     "equipment": equipment, 
@@ -97,8 +94,34 @@ with tab_entry:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Save failed: {e}")
-            else:
-                st.warning("Please provide machine name and work details.")
+
+    # --- NEW: RECENT LOGS SUMMARY (Under the Form) ---
+    st.divider()
+    st.subheader("📋 Recent Submissions")
+    try:
+        # Fetch only the last 5 entries for a quick preview
+        recent_res = conn.table("maintenance_logs").select("created_at, equipment, technician, m_type, status")\
+            .order("created_at", desc=True).limit(5).execute()
+        
+        if recent_res.data:
+            summary_df = pd.DataFrame(recent_res.data)
+            # Display as a clean table
+            st.dataframe(
+                summary_df, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "created_at": "Date/Time",
+                    "equipment": "Machine",
+                    "technician": "Staff",
+                    "m_type": "Type",
+                    "status": "Final Status"
+                }
+            )
+        else:
+            st.info("No recent logs to display.")
+    except Exception as e:
+        st.caption(f"Could not load quick summary: {e}")
 
 # --- 5. TAB: HISTORY & ALERTS ---
 with tab_history:
