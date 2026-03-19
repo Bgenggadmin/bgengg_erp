@@ -9,6 +9,31 @@ import os
 
 # 1. SETUP & CONSTANTS
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
+# --- PASSWORD PROTECTION ---
+def check_password():
+    """Returns True if the user had the correct password."""
+    def password_entered():
+        if st.session_state["password"] == "1234": # You can change this!
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        st.text_input("🔑 Enter Master Password", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password not correct, show input + error.
+        st.text_input("🔑 Enter Master Password", type="password", on_change=password_entered, key="password")
+        st.error("😕 Password incorrect")
+        return False
+    else:
+        # Password correct.
+        return True
+
+if not check_password():
+    st.stop()  # Do not run the rest of the app if password isn't correct
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
