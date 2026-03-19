@@ -77,7 +77,7 @@ with tabs[0]:
         req_by = c1.selectbox("Staff Name", staff_list, key="bk_staff")
         req_veh = c1.selectbox("Preferred Vehicle", vehicle_list, key="bk_veh")
         dest = c1.text_input("Destination / Site")
-        r_date = c2.date_input("Required Date", min_value=date.today())
+        r_date = c2.date_input("Required Date", min_value=datetime.now(IST).date())
         r_time = c2.text_input("Required Time (e.g. 9:00 AM)")
         req_purpose = c2.selectbox("Purpose", purpose_list, key="bk_purpose")
         
@@ -90,7 +90,8 @@ with tabs[0]:
                     "req_time": r_time, 
                     "purpose": req_purpose, 
                     "assigned_vehicle": req_veh, 
-                    "status": "Pending"
+                    "status": "Pending",
+                    "created_at": datetime.now(IST).isoformat() # <--- Add this for precise tracking
                 }
                 conn.table("logistics_requests").insert(new_req).execute()
                 st.success("Request logged!"); st.rerun()
