@@ -24,56 +24,38 @@ def get_mdm_list(table, col):
         return [item[col] for item in res.data] if res.data else []
     except: return []
 
-@st.cache_data(ttl=600)
-def get_spares_by_category(machine_name):
+@st.cache_data(ttl=60) 
+def get_spares_with_stock(machine_name):
+    if not machine_name: return []
     try:
         m_res = conn.table("master_machines").select("category").eq("name", machine_name).execute()
         category = m_res.data[0]['category'] if m_res.data else "ALL"
-        s_res = conn.table("master_spares").select("part_name").or_(f"machine_category.eq.{category},machine_category.eq.ALL").execute()
-        return [item['part_name'] for item in s_res.data] if s_res.data else []
+        s_res = conn.table("master_spares").select("part_name, stock_qty")\
+            .or_(f"machine_category.eq.{category},machine_category.eq.ALL").execute()
+        if s_res.data:
+            return [f"{item['part_name']} (Qty: {item['stock_qty']})" if item['stock_qty'] > 0 
+                    else f"{item['part_name']} (OUT OF STOCK)" for item in s_res.data]
+        return []
     except: return []
 
-# Fetch Master Lists once at the start
+# Pre-fetch lists
 machine_list = get_mdm_list("master_machines", "name")
 staff_list = get_mdm_list("master_staff", "name")
 
 st.title("🔧 B&G Maintenance Master")
 
-# --- 3. TABS STRUCTURE (MOVED TO TOP) ---
+# --- 3. TABS STRUCTURE ---
 tab_entry, tab_history = st.tabs(["📝 New Log Entry", "📜 History & Alerts"])
 
-# --- UPDATED DYNAMIC SPARES FUNCTION ---
-@st.cache_data(ttl=60) # Reduced TTL to 60s for fresher stock data
-def get_spares_with_stock(machine_name):
-    try:
-        # 1. Get Machine Category
-        m_res = conn.table("master_machines").select("category").eq("name", machine_name).execute()
-        category = m_res.data[0]['category'] if m_res.data else "ALL"
-        
-        # 2. Get Spares + Stock Quantity
-        s_res = conn.table("master_spares").select("part_name, stock_qty")\
-            .or_(f"machine_category.eq.{category},machine_category.eq.ALL").execute()
-        
-        if s_res.data:
-            # Format: "Part Name (Qty: X)"
-            return [
-                f"{item['part_name']} (Qty: {item['stock_qty']})" if item['stock_qty'] > 0 
-                else f"{item['part_name']} (OUT OF STOCK)" 
-                for item in s_res.data
-            ]
-        return []
-    except Exception as e:
-        return []
-
-# --- UPDATED FORM LOGIC ---
+# --- 4. TAB: NEW LOG ENTRY ---
 with tab_entry:
     with st.form("maint_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            equipment = st.selectbox("Select Machine", machine_list)
-            technician = st.selectbox("Technician", staff_list)
+            equipment = st.selectbox("Select Machine", machine_list if machine_list else ["No Machines Found"])
+            technician = st.selectbox("Technician", staff_list if staff_list else ["Select Staff"])
             
-            # NEW: Stock-Aware Suggestions
+            # Stock-Aware Suggestions
             suggested_spares = get_spares_with_stock(equipment)
             spares_used = st.multiselect("🔧 Select Spares Used", suggested_spares)
             
@@ -86,33 +68,18 @@ with tab_entry:
 
         if st.form_submit_button("🚀 Submit Log"):
             if equipment and (remarks_input or spares_used):
+                # 1. Image Processing
                 img_str = "" 
                 if cam_photo:
                     img = Image.open(cam_photo); img.thumbnail((400, 400))
                     buf = BytesIO(); img.save(buf, format="JPEG", quality=50)
                     img_str = base64.b64encode(buf.getvalue()).decode()
 
-                # Clean the part names (remove the "(Qty: X)" suffix before saving to DB)
+                # 2. Remark Formatting
                 clean_spares = [s.split(" (")[0] for s in spares_used]
                 final_remarks = f"SPARES: {', '.join(clean_spares)} | NOTES: {remarks_input}"
 
-                new_row = {
-                    "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
-                    "equipment": equipment, "technician": technician,
-                    "m_type": m_type, "status": status, 
-                    "remarks": final_remarks, "photo": img_str
-                }
-                
-                conn.table("maintenance_logs").insert(new_row).execute()
-                
-                # OPTIONAL: Deduct stock here if you want automatic inventory management
-                # for spare in clean_spares:
-                #    conn.rpc('deduct_stock', {'p_name': spare}).execute()
-
-                st.cache_data.clear()
-                st.success("✅ Log Saved! Inventory data refreshed.")
-                st.rerun()
-                # 3. Database Insert
+                # 3. Single Database Insert (FIXED: Removed duplicate logic)
                 new_row = {
                     "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
                     "equipment": equipment, 
@@ -130,6 +97,8 @@ with tab_entry:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Save failed: {e}")
+            else:
+                st.warning("Please provide machine name and work details.")
 
 # --- 5. TAB: HISTORY & ALERTS ---
 with tab_history:
@@ -139,7 +108,7 @@ with tab_history:
             df = pd.DataFrame(res.data)
             df['created_at'] = pd.to_datetime(df['created_at'])
 
-            # Alerts
+            # --- ALERTS ---
             st.subheader("⚠️ Maintenance Alerts")
             pm_data = df[df['m_type'] == 'Preventive (PM)']
             overdue_machines = []
@@ -160,7 +129,7 @@ with tab_history:
             else:
                 st.success("All machines are up to date.")
 
-            # Metrics
+            # --- METRICS ---
             st.divider()
             st.subheader("📊 Performance Summary")
             s1, s2, s3, s4 = st.columns(4)
@@ -168,10 +137,11 @@ with tab_history:
             s2.metric("Breakdowns", len(df[df['m_type'] == 'Breakdown Repair']))
             s3.metric("PMs Done", len(pm_data))
             
+            # Machine Status Logic
             current_down = len(df.sort_values('created_at').groupby('equipment').tail(1).query("status == '🔴 Down'"))
             s4.metric("Currently Down", current_down, delta_color="inverse")
 
-            # CSV & Table
+            # --- EXPORT & TABLE ---
             csv = df.drop(columns=['photo', 'id']).to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download CSV Report", csv, "maint_report.csv", "text/csv")
             st.dataframe(df.drop(columns=["photo", "id"]), use_container_width=True, hide_index=True)
