@@ -157,3 +157,42 @@ with tabs[2]:
         if st.form_submit_button("🚀 SUBMIT LOG"):
             # Insert logic here
             pass
+
+# --- TAB 4: ANALYTICS ---
+with tabs[3]:
+    st.subheader("📊 Fleet Performance Analytics")
+    
+    if not df.empty:
+        # SENIOR FIX: Ensure data types are numeric before calculating
+        # This prevents the "Empty/Zero" error if DB returns strings
+        df['distance'] = pd.to_numeric(df['distance'], errors='coerce').fillna(0)
+        df['fuel_ltrs'] = pd.to_numeric(df['fuel_ltrs'], errors='coerce').fillna(0)
+        df['total_fuel_cost'] = pd.to_numeric(df['total_fuel_cost'], errors='coerce').fillna(0)
+
+        # 1. Top Level Metrics
+        c1, c2, c3, c4 = st.columns(4)
+        total_km = df['distance'].sum()
+        total_fuel = df['fuel_ltrs'].sum()
+        total_cost = df['total_fuel_cost'].sum()
+        
+        c1.metric("Total Distance", f"{total_km:,} KM")
+        c2.metric("Total Fuel", f"{total_fuel:,} L")
+        c3.metric("Total Spend", f"₹{total_cost:,}")
+        
+        # Avoid division by zero
+        avg_mileage = total_km / total_fuel if total_fuel > 0 else 0
+        c4.metric("Avg Mileage", f"{avg_mileage:.2f} KM/L")
+
+        st.divider()
+
+        # 2. History Table
+        st.subheader("📜 Recent Trip Logs")
+        # Display only relevant columns for clarity
+        display_cols = ["timestamp", "vehicle", "driver", "distance", "fuel_ltrs", "location"]
+        st.dataframe(
+            df[display_cols].head(20), 
+            use_container_width=True, 
+            hide_index=True
+        )
+    else:
+        st.warning("No trip logs found in the database. Start logging trips in Tab 3 to see analytics.")
