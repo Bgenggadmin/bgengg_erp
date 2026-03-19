@@ -75,20 +75,28 @@ with tabs[1]:
             c1, c2 = st.columns(2)
             dr = c1.text_input("Delay Reason", value=job['delay_reason'] or '', key=f"dr_{job['id']}")
             inote = c2.text_area("Incharge Note", value=job['intervention_note'] or '', key=f"in_{job['id']}")
+            
             if job['status'] == "Pending":
-                mode = st.radio("Allotment", ["In-House", "Outsource"], key=f"m_{job['id']}", horizontal=True)
+                # CHANGED: Added 'rad_' prefix to the radio key
+                mode = st.radio("Allotment", ["In-House", "Outsource"], key=f"rad_{job['id']}", horizontal=True)
+                
                 if mode == "In-House":
-                    m = st.selectbox(f"Assign {RES_LABEL}", res_list, key=f"m_{job['id']}")
+                    # CHANGED: Added 'sel_' prefix to the selectbox key
+                    m = st.selectbox(f"Assign {RES_LABEL}", res_list, key=f"sel_{job['id']}")
                     o = st.selectbox("Assign Operator", op_list, key=f"o_{job['id']}")
+                    
                     if st.button("🚀 Start", key=f"btn_{job['id']}"):
-                        conn.table(DB_TABLE).update({"status": "In-House", "machine_id": m, "operator_id": o, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute(); st.rerun()
+                        conn.table(DB_TABLE).update({"status": "In-House", "machine_id": m, "operator_id": o, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
+                        st.rerun()
                 else:
                     v = st.selectbox("Vendor", vn_list, key=f"v_{job['id']}")
                     if st.button("🚚 Dispatch", key=f"d_{job['id']}"):
-                        conn.table(DB_TABLE).update({"status": "Outsourced", "vendor_id": v, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute(); st.rerun()
+                        conn.table(DB_TABLE).update({"status": "Outsourced", "vendor_id": v, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
+                        st.rerun()
+            
             elif st.button("🏁 Finish", key=f"f_{job['id']}", use_container_width=True):
-                conn.table(DB_TABLE).update({"status": "Finished", "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute(); st.rerun()
-
+                conn.table(DB_TABLE).update({"status": "Finished", "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
+                st.rerun()
 # --- TAB 3: ANALYTICS ---
 with tabs[2]:
     if not df_main.empty:
