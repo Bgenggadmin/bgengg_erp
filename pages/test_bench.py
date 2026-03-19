@@ -1,5 +1,20 @@
 import streamlit as st
+from datetime import datetime
+import pytz
 
+# --- 1. CLOCK CALIBRATION ---
+IST = pytz.timezone('Asia/Kolkata')
+time_now = datetime.now(IST).strftime('%H:%M:%S')
+
+# --- 2. THE INTERFACE ---
+st.title("B&G System Control")
+st.metric(label="Current Shift Time (IST)", value=time_now)
+
+# --- 3. THE LOGGING LOGIC ---
+if st.button("Log Production Entry"):
+    # This captures the EXACT moment the button (valve) is pressed
+    exact_log_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
+    st.write(f"Entry recorded at: {exact_log_time}")
 # --- SYSTEM CONFIGURATION ---
 st.set_page_config(page_title="B&G Test Bench", layout="centered")
 # --- PASSWORD PROTECTION ---
