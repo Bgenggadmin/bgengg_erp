@@ -42,17 +42,40 @@ st.title("🔧 B&G Maintenance Master")
 # --- 3. TABS STRUCTURE (MOVED TO TOP) ---
 tab_entry, tab_history = st.tabs(["📝 New Log Entry", "📜 History & Alerts"])
 
-# --- 4. TAB: NEW LOG ENTRY ---
+# --- UPDATED DYNAMIC SPARES FUNCTION ---
+@st.cache_data(ttl=60) # Reduced TTL to 60s for fresher stock data
+def get_spares_with_stock(machine_name):
+    try:
+        # 1. Get Machine Category
+        m_res = conn.table("master_machines").select("category").eq("name", machine_name).execute()
+        category = m_res.data[0]['category'] if m_res.data else "ALL"
+        
+        # 2. Get Spares + Stock Quantity
+        s_res = conn.table("master_spares").select("part_name, stock_qty")\
+            .or_(f"machine_category.eq.{category},machine_category.eq.ALL").execute()
+        
+        if s_res.data:
+            # Format: "Part Name (Qty: X)"
+            return [
+                f"{item['part_name']} (Qty: {item['stock_qty']})" if item['stock_qty'] > 0 
+                else f"{item['part_name']} (OUT OF STOCK)" 
+                for item in s_res.data
+            ]
+        return []
+    except Exception as e:
+        return []
+
+# --- UPDATED FORM LOGIC ---
 with tab_entry:
     with st.form("maint_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         with col1:
-            equipment = st.selectbox("Select Machine", machine_list if machine_list else ["No Machines Found"])
-            technician = st.selectbox("Technician", staff_list if staff_list else ["Select Staff"])
+            equipment = st.selectbox("Select Machine", machine_list)
+            technician = st.selectbox("Technician", staff_list)
             
-            # Dynamic Spares
-            suggested_spares = get_spares_by_category(equipment)
-            spares_used = st.multiselect("🔧 Select Spares Used (Suggested)", suggested_spares)
+            # NEW: Stock-Aware Suggestions
+            suggested_spares = get_spares_with_stock(equipment)
+            spares_used = st.multiselect("🔧 Select Spares Used", suggested_spares)
             
         with col2:
             m_type = st.selectbox("Type", ["Breakdown Repair", "Preventive (PM)", "Spare Replacement"])
@@ -63,16 +86,32 @@ with tab_entry:
 
         if st.form_submit_button("🚀 Submit Log"):
             if equipment and (remarks_input or spares_used):
-                # 1. Image Logic
                 img_str = "" 
                 if cam_photo:
                     img = Image.open(cam_photo); img.thumbnail((400, 400))
                     buf = BytesIO(); img.save(buf, format="JPEG", quality=50)
                     img_str = base64.b64encode(buf.getvalue()).decode()
 
-                # 2. Combine Spares and Notes
-                final_remarks = f"SPARES: {', '.join(spares_used)} | NOTES: {remarks_input}"
+                # Clean the part names (remove the "(Qty: X)" suffix before saving to DB)
+                clean_spares = [s.split(" (")[0] for s in spares_used]
+                final_remarks = f"SPARES: {', '.join(clean_spares)} | NOTES: {remarks_input}"
 
+                new_row = {
+                    "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
+                    "equipment": equipment, "technician": technician,
+                    "m_type": m_type, "status": status, 
+                    "remarks": final_remarks, "photo": img_str
+                }
+                
+                conn.table("maintenance_logs").insert(new_row).execute()
+                
+                # OPTIONAL: Deduct stock here if you want automatic inventory management
+                # for spare in clean_spares:
+                #    conn.rpc('deduct_stock', {'p_name': spare}).execute()
+
+                st.cache_data.clear()
+                st.success("✅ Log Saved! Inventory data refreshed.")
+                st.rerun()
                 # 3. Database Insert
                 new_row = {
                     "created_at": datetime.now(IST).strftime('%Y-%m-%d %H:%M'),
