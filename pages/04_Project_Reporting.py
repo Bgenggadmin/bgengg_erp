@@ -28,6 +28,21 @@ MILESTONE_MAP = [
 ]
 
 # --- PDF ENGINE (WITH PROGRESS BARS) ---
+def process_photos(uploaded_files):
+    """Resizes to passport-ish ratio, compresses to <50kb, and returns bytes."""
+    processed = []
+    for file in uploaded_files[:4]: # Limit to 4
+        img = Image.open(file)
+        # Passport Ratio (e.g., 3.5 x 4.5) -> Standardizing to 350x450px
+        img = img.resize((350, 450), Image.LANCZOS)
+        buf = BytesIO()
+        # Compress to meet 50kb limit
+        img.save(buf, format="JPEG", quality=70) 
+        if buf.tell() > 51200: # Final check if > 50kb
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=40)
+        processed.append(buf.getvalue())
+    return processed
 def generate_pdf(logs):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -187,8 +202,16 @@ with tab1:
         prev_overall = int(raw_overall) if raw_overall is not None else 0
         
         f_progress = st.slider("📈 Overall Completion %", 0, 100, value=prev_overall, key=f"ov_{job_suffix}")
-        cam_photo = st.camera_input("📸 Take Progress Photo")
+        st.divider()
+        st.subheader("📸 Progress Documentation (Max 4 Photos)")
+        # Use file_uploader for multiple photos (faster for bulk than camera_input)
+        uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
 
+if uploaded_photos:
+    processed_list = process_photos(uploaded_photos)
+    cols = st.columns(4) # Single horizontal row
+    for idx, img_bytes in enumerate(processed_list):
+        cols[idx].image(img_bytes, caption=f"Photo {idx+1}", use_container_width=True)
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job:
                 st.error("Please select Customer and Job Code")
