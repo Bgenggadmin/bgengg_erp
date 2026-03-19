@@ -70,6 +70,7 @@ tabs = st.tabs(["📅 Staff Booking", "👨‍✈️ Brahmiah's Desk", "📝 Tri
 
 # --- TAB 1: STAFF BOOKING ---
 with tabs[0]:
+    # 1. Booking Form
     with st.form("request_form", clear_on_submit=True):
         st.subheader("Request Vehicle for Work")
         c1, c2 = st.columns(2)
@@ -82,9 +83,46 @@ with tabs[0]:
         
         if st.form_submit_button("Submit Request"):
             if dest:
-                new_req = {"requested_by": req_by, "destination": dest.upper(), "req_date": str(r_date), "req_time": r_time, "purpose": req_purpose, "assigned_vehicle": req_veh, "status": "Pending"}
+                new_req = {
+                    "requested_by": req_by, 
+                    "destination": dest.upper(), 
+                    "req_date": str(r_date), 
+                    "req_time": r_time, 
+                    "purpose": req_purpose, 
+                    "assigned_vehicle": req_veh, 
+                    "status": "Pending"
+                }
                 conn.table("logistics_requests").insert(new_req).execute()
                 st.success("Request logged!"); st.rerun()
+            else:
+                st.error("Please provide a destination.")
+
+    # 2. ADDED: Status Summary Table (Below the form)
+    st.divider()
+    st.subheader("📋 Your Recent Request Status")
+    try:
+        # Fetching last 10 requests to keep it fast
+        status_data = conn.table("logistics_requests").select(
+            "requested_by, destination, req_date, assigned_vehicle, status"
+        ).order("created_at", desc=True).limit(10).execute().data
+        
+        if status_data:
+            status_df = pd.DataFrame(status_data)
+            
+            # Apply styling for better readability
+            def color_status(val):
+                color = '#FFA500' if val == 'Pending' else '#008000'
+                return f'color: {color}; font-weight: bold'
+
+            st.dataframe(
+                status_df.style.applymap(color_status, subset=['status']),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("No recent requests found.")
+    except Exception as e:
+        st.error(f"Status Load Error: {e}")
 
 # --- TAB 2: BRAHMIAH'S DESK ---
 with tabs[1]:
