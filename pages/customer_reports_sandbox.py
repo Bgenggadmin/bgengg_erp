@@ -341,18 +341,22 @@ with tab2:
 
 with tab3:
     st.subheader("🛠️ Master Management")
+    
+    # Re-fetch inside the tab to ensure freshness if global variables are empty
+    c_list_fresh, j_list_fresh = get_master_data()
+    
     c_col, j_col = st.columns(2)
     with c_col:
-        st.write("**Current Customers:**", ", ".join(customers) if customers else "None")
-        with st.form("add_cust"):
-            nc = st.text_input("New Customer")
+        st.write("**Current Customers:**")
+        if c_list_fresh:
+            st.info(", ".join(c_list_fresh))
+        else:
+            st.warning("No customers found in database.")
+            
+        with st.form("add_cust", clear_on_submit=True):
+            nc = st.text_input("New Customer Name")
             if st.form_submit_button("Add Customer") and nc:
                 conn.table("customer_master").insert({"name": nc}).execute()
-                st.cache_data.clear(); st.rerun()
-    with j_col:
-        st.write("**Current Job Codes:**", ", ".join(jobs) if jobs else "None")
-        with st.form("add_job"):
-            nj = st.text_input("New Job Code")
-            if st.form_submit_button("Add Job") and nj:
-                conn.table("job_master").insert({"job_code": nj}).execute()
-                st.cache_data.clear(); st.rerun()
+                st.cache_data.clear()
+                st.success(f"Added {nc}")
+                st.rerun()
