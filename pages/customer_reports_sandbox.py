@@ -11,20 +11,6 @@ import os
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
-HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
-
-MILESTONE_MAP = [
-    ("Drawing Submission", "draw_sub", "draw_sub_note"),
-    ("Drawing Approval", "draw_app", "draw_app_note"),
-    ("RM Status", "rm_status", "rm_note"),
-    ("Sub-deliveries", "sub_del", "sub_del_note"),
-    ("Fabrication Status", "fab_status", "remarks"),
-    ("Buffing Status", "buff_stat", "buff_note"),
-    ("Testing Status", "testing", "test_note"),
-    ("Dispatch Status", "qc_stat", "qc_note"),
-    ("FAT Status", "fat_stat", "fat_note")
-]
-
 # --- 2. ENGINE ---
 def process_photos(uploaded_files):
     processed = []
@@ -149,6 +135,20 @@ def generate_pdf(logs):
     if logo_path and os.path.exists(logo_path):
         os.unlink(logo_path)
     return bytes(pdf.output(dest='S'), encoding='latin-1')
+
+HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
+
+MILESTONE_MAP = [
+    ("Drawing Submission", "draw_sub", "draw_sub_note"),
+    ("Drawing Approval", "draw_app", "draw_app_note"),
+    ("RM Status", "rm_status", "rm_note"),
+    ("Sub-deliveries", "sub_del", "sub_del_note"),
+    ("Fabrication Status", "fab_status", "remarks"),
+    ("Buffing Status", "buff_stat", "buff_note"),
+    ("Testing Status", "testing", "test_note"),
+    ("Dispatch Status", "qc_stat", "qc_note"),
+    ("FAT Status", "fat_stat", "fat_note")
+]
 
 # --- 3. DATA FETCH ---
 @st.cache_data(ttl=600)
