@@ -164,7 +164,7 @@ def get_master_data():
 customers, jobs = get_master_data()
 
 # --- 4. MAIN UI ---
-tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
+tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
 
 with tab1:
     st.subheader("📋 Project Update")
