@@ -158,65 +158,66 @@ tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"]
 
 with tab1:
     st.subheader("📋 Project Update")
-    f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
     
-    # Initialize last_data with defaults to avoid KeyErrors
-    last_data = {
-        "customer": "", "equipment": "", "po_no": "", 
-        "engineer": "", "overall_progress": 0
-    }
+    # Use the job list from your Master Data
+    f_job = st.selectbox("Job Code", [""] + jobs, key="job_selector_main")
     
-    if f_job:
-        # 1. Fetch from BOTH tables
-        master_res = conn.table("job_master").select("*").eq("job_code", f_job).maybe_single().execute()
-        log_res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        
-        master_info = master_res.data if master_res.data else {}
-        latest_log = log_res.data[0] if (log_res and log_res.data) else {}
-        
-        # 2. STRATEGIC MERGE
-        # Start with the latest log data (milestones, progress)
-        last_data.update(latest_log)
-        
-        # Overwrite ONLY specific header fields from Master (The Anchor)
-        # This ensures the "Source of Truth" comes from the Master Table
-        for field in ["customer", "equipment", "po_no", "po_date", "engineer", "po_delivery_date"]:
-            if master_info.get(field):
-                last_data[field] = master_info[field]
-        
-        if master_info:
-            st.toast(f"✅ Anchor Data Active: {f_job}")
+    # 1. Initialize a clean dictionary for the form
+    if "form_data" not in st.session_state or st.session_state.get('last_selected_job') != f_job:
+        st.session_state.form_data = {
+            "customer": "", "equipment": "", "po_no": "", 
+            "engineer": "", "overall_progress": 0, "po_date": None,
+            "po_delivery_date": None, "exp_dispatch_date": None
+        }
+        st.session_state.last_selected_job = f_job
 
-    # Use a dynamic form key so it resets properly when a new job is selected
-    form_key = f"main_form_{f_job}" if f_job else "main_form_empty"
-    
-    with st.form(form_key, clear_on_submit=True):
+    if f_job:
+        # 2. PULL FROM JOB MASTER (The Anchor)
+        # We use execute().data to be safe across different Supabase versions
+        m_query = conn.table("job_master").select("*").eq("job_code", f_job).execute()
+        l_query = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
+        
+        master_info = m_query.data[0] if m_query.data else {}
+        latest_log = l_query.data[0] if l_query.data else {}
+
+        # 3. MERGE LOGIC: Master Info takes priority for header fields
+        # Start with latest log (to get milestones/remarks)
+        st.session_state.form_data.update(latest_log)
+        
+        # Force Anchor fields from Master
+        anchor_fields = ["customer", "equipment", "po_no", "po_date", "engineer", "po_delivery_date"]
+        for field in anchor_fields:
+            if field in master_info and master_info[field]:
+                st.session_state.form_data[field] = master_info[field]
+
+    # 4. THE FORM (Using session_state for all 'value' parameters)
+    with st.form(key=f"form_{f_job}"):
         c1, c2 = st.columns(2)
         
-        # Calculate Customer Index
+        # Sync Customer Selectbox
+        cust_val = st.session_state.form_data.get('customer', "")
         try:
-            current_cust = last_data.get('customer', "")
-            c_idx = customers.index(current_cust) + 1 if current_cust in customers else 0
+            c_idx = customers.index(cust_val) + 1 if cust_val in customers else 0
         except: c_idx = 0
 
         f_cust = c1.selectbox("Customer", [""] + customers, index=c_idx)
-        f_eq = c2.text_input("Equipment", value=last_data.get('equipment', ""))
+        f_eq = c2.text_input("Equipment", value=st.session_state.form_data.get('equipment', ""))
         
         c3, c4, c5 = st.columns(3)
-        f_po_n = c3.text_input("PO Number", value=last_data.get('po_no', ""))
+        f_po_n = c3.text_input("PO Number", value=st.session_state.form_data.get('po_no', ""))
         
-        def safe_date(field):
-            val = last_data.get(field)
-            if not val: return datetime.now()
-            try:
-                # Handle both string and date objects
-                if isinstance(val, str):
-                    return datetime.strptime(val[:10], "%Y-%m-%d")
-                return val
-            except: return datetime.now()
+        def get_date_val(field):
+            d = st.session_state.form_data.get(field)
+            if not d: return datetime.now()
+            if isinstance(d, str):
+                try: return datetime.strptime(d[:10], "%Y-%m-%d")
+                except: return datetime.now()
+            return d
 
-        f_po_d = c4.date_input("PO Date", value=safe_date('po_date'))
-        f_eng = c5.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
+        f_po_d = c4.date_input("PO Date", value=get_date_val('po_date'))
+        f_eng = c5.text_input("Engineer", value=st.session_state.form_data.get('engineer', ""))
+        
+        # ... Rest of your form (Milestones/Submit) using the same pattern ...
         
         c6, c7 = st.columns(2)
         f_po_del = c6.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
