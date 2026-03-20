@@ -56,6 +56,7 @@ def generate_pdf(logs):
         pdf.add_page()
         report_date = datetime.now().strftime('%d-%m-%Y')
 
+        # Header Setup
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
         pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
@@ -64,21 +65,33 @@ def generate_pdf(logs):
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 0, "L")
-        
-        pdf.set_xy(10, 30)
         pdf.cell(0, 8, f"Report Date: {report_date} ", 0, 1, "R")
         
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
+        # --- FIXED SECTION: HANDLING 'NONE' IN HEADER ---
         for i in range(0, len(HEADER_FIELDS), 2):
-            f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
+            f1 = HEADER_FIELDS[i]
+            f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
+            
+            # Label 1
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
-            pdf.cell(65, 7, f" {str(log.get(f1,'-'))}", 1, 0, 'L')
+            # Data 1: Check for None/Empty
+            val1 = log.get(f1)
+            txt1 = str(val1) if val1 not in [None, "", "None"] else "-"
+            pdf.cell(65, 7, f" {txt1}", 1, 0, 'L')
+            
             if f2:
+                # Label 2
                 pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
-                pdf.cell(65, 7, f" {str(log.get(f2,'-'))}", 1, 1, 'L')
-            else: pdf.ln(7)
+                # Data 2: Check for None/Empty
+                val2 = log.get(f2)
+                txt2 = str(val2) if val2 not in [None, "", "None"] else "-"
+                pdf.cell(65, 7, f" {txt2}", 1, 1, 'L')
+            else: 
+                pdf.ln(7)
 
+        # Progress Bar
         pdf.ln(5); ov_p = int(log.get('overall_progress', 0) or 0)
         pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
         pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
@@ -87,6 +100,7 @@ def generate_pdf(logs):
             pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
         pdf.ln(10)
 
+        # Milestone Table
         pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
@@ -97,24 +111,30 @@ def generate_pdf(logs):
         for label, s_key, n_key in MILESTONE_MAP:
             pk = f"{s_key}_prog"
             m_p = int(log.get(pk, 0) or 0)
+            
+            # Status Check
+            s_val = log.get(s_key)
+            s_txt = str(s_val) if s_val not in [None, "", "None"] else "Pending"
+            
             pdf.cell(50, 10, f" {label}", 1)
-            pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
+            pdf.cell(30, 10, f" {s_txt}", 1, 0, 'C')
+            
             curr_x, curr_y = pdf.get_x(), pdf.get_y()
             pdf.cell(30, 10, "", 1, 0) 
             pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
             if m_p > 0:
                 pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (min(m_p, 100) / 100) * 24, 2, 'F')
+            
             pdf.set_xy(curr_x + 30, curr_y)
-            pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
+            n_val = log.get(n_key)
+            n_txt = str(n_val) if n_val not in [None, "", "None"] else "-"
+            pdf.cell(80, 10, f" {n_txt}", 1, 1)
 
-        pdf.ln(10) 
-        pdf.set_font("Arial", "B", 10)
+        # Photos
+        pdf.ln(10); pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, "Progress Documentation Photos:", 0, 1, "L")
         
-        start_y = pdf.get_y() 
-        img_x = 10
-        photo_count = 0
-
+        start_y = pdf.get_y(); img_x = 10; photo_count = 0
         for i in range(4):
             try:
                 img_path = f"{log.get('id')}_{i}.jpg"
@@ -124,20 +144,17 @@ def generate_pdf(logs):
                         tmp_img.write(img_data)
                         tmp_img.flush()
                         pdf.image(tmp_img.name, x=img_x, y=start_y, w=45)
-                        img_x += 48
-                        photo_count += 1
+                        img_x += 48; photo_count += 1
                         t_name = tmp_img.name
                     os.unlink(t_name)
             except: continue
 
-        if photo_count > 0:
-            pdf.set_y(start_y + 55) 
+        if photo_count > 0: pdf.set_y(start_y + 55) 
         else:
             pdf.set_font("Arial", "I", 8)
             pdf.cell(0, 10, "No progress photos available.", 0, 1, "L")
 
-    if logo_path and os.path.exists(logo_path):
-        os.unlink(logo_path)
+    if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
 # --- 3. DATA FETCH ---
