@@ -205,20 +205,3 @@ with tab2:
     else:
         st.info("No records found for the selected filters.")
 
-with tab3:
-    st.subheader("🛠️ Master Management")
-    c_col, j_col = st.columns(2)
-    with c_col:
-        st.write("**Current Customers:**", ", ".join(customers) if customers else "None")
-        with st.form("add_cust"):
-            nc = st.text_input("New Customer")
-            if st.form_submit_button("Add Customer") and nc:
-                conn.table("customer_master").insert({"name": nc}).execute()
-                st.cache_data.clear(); st.rerun()
-    with j_col:
-        st.write("**Current Job Codes:**", ", ".join(jobs) if jobs else "None")
-        with st.form("add_job"):
-            nj = st.text_input("New Job Code")
-            if st.form_submit_button("Add Job") and nj:
-                conn.table("job_master").insert({"job_code": nj}).execute()
-                st.cache_data.clear(); st.rerun()
