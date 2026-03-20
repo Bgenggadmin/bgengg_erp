@@ -151,7 +151,7 @@ MILESTONE_MAP = [
 ]
 
 # --- 3. DATA FETCH ---
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=0)
 def get_master_data():
     try:
         c_res = conn.table("customer_master").select("name").execute()
