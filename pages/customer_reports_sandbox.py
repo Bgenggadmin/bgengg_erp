@@ -163,19 +163,24 @@ with tab1:
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_selector_main")
 
     # 2. THE FETCH ENGINE (Fills the 'current_data' bucket)
+    # 2. THE FETCH ENGINE
     if f_job and st.session_state.get('last_selected_job') != f_job:
         m_query = conn.table("job_master").select("*").eq("job_code", f_job).execute()
         l_query = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         
         master_info = m_query.data[0] if m_query.data else {}
         latest_log = l_query.data[0] if l_query.data else {}
-        new_data = {**latest_log}
-        anchor_fields = [
-            "customer", "equipment", "po_no", "po_date", 
-            "engineer", "po_delivery_date", "exp_dispatch_date"
-        ]
-        for f in anchor_fields:
-            if f in master_info and master_info[f]: 
+
+        # MERGE LOGIC: Start with history, then carefully add master specs
+        new_data = {**latest_log} 
+        
+        # Fields we want to pull specifically
+        check_fields = ["customer", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
+        
+        for f in check_fields:
+            # ONLY overwrite if the Master table has an ACTUAL value
+            # This prevents a blank Master record from wiping out your progress log history
+            if f in master_info and master_info[f] not in [None, "", "None"]:
                 new_data[f] = master_info[f]
         
         st.session_state.form_data = new_data
