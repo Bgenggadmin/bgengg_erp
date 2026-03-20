@@ -9,7 +9,7 @@ import os
 
 # 1. SETUP & CONSTANTS
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
-conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
+conn = st.connection("supabase", type=SupabaseConnection, ttl=5)
 
 # --- 2. ENGINE ---
 def process_photos(uploaded_files):
