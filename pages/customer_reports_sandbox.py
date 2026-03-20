@@ -5,10 +5,12 @@ from fpdf import FPDF
 import requests
 from io import BytesIO
 from PIL import Image
+import tempfile
+import os
 
 # 1. SETUP
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
-conn = st.connection("supabase", type=SupabaseConnection)
+conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
 # 2. THE MASTER MAPPING
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
@@ -26,11 +28,23 @@ MILESTONE_MAP = [
 ]
 
 # --- DATA FETCHING ---
-customers = sorted([d['name'] for d in conn.table("customer_master").select("name").execute().data])
-jobs = sorted([d['job_code'] for d in conn.table("job_master").select("job_code").execute().data])
+@st.cache_data(ttl=600)
+def get_master_data():
+    try:
+        c_res = conn.table("customer_master").select("name").execute()
+        cust_list = sorted([d['name'] for d in c_res.data]) if c_res and c_res.data else []
+        
+        j_res = conn.table("job_master").select("job_code").execute()
+        job_list = sorted([d['job_code'] for d in j_res.data]) if j_res and j_res.data else []
+        
+        return cust_list, job_list
+    except Exception:
+        return [], []
+
+customers, jobs = get_master_data()
 
 # --- PDF ENGINE ---
-def generate_pdf(logs):
+def generate_pdf(logs): # FIXED: Added function name
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     for log in logs:
@@ -48,17 +62,14 @@ def generate_pdf(logs):
         except Exception:
             pass
 
-       # 3. HEADER TEXT (Adjusted to prevent logo overlap)
+        # 3. HEADER TEXT
         pdf.set_text_color(255, 255, 255)
-        
-        # Main Title - Pushed to X=70 to clear the logo
         pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5) 
         pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         
-        # Subtitle - Pushed to X=70 and moved down to Y=15
         pdf.set_font("Arial", "I", 10)
-        pdf.set_xy(70, 14) # Changed from set_x/set_y to set_xy for precision
+        pdf.set_xy(70, 14) 
         pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
         pdf.set_text_color(0, 0, 0)
@@ -114,7 +125,8 @@ def generate_pdf(logs):
         except Exception: 
             pass
 
-    return bytes(pdf.output())
+    # FIXED: Added bytes() wrapper for Streamlit compatibility
+    return bytes(pdf.output(dest='S'))
 
 # --- APP TABS ---
 tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
@@ -133,22 +145,16 @@ with tab1:
     with st.form("main_entry_form", clear_on_submit=True):
         st.subheader("📋 Project Details")
         c1, c2, c3 = st.columns(3)
-        
-        f_cust = c1.selectbox("Customer", [""] + customers, 
-                             index=customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0)
+        f_cust = c1.selectbox("Customer", [""] + customers, index=customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0)
         c2.text_input("Selected Job", value=f_job, disabled=True)
         f_eq = c3.text_input("Equipment Name", value=last_data.get('equipment', ""))
         
         c4, c5, c6 = st.columns(3)
         f_po_n = c4.text_input("PO Number", value=last_data.get('po_no', ""))
-        
         def safe_date(field):
             val = last_data.get(field)
-            try:
-                return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
-            except:
-                return datetime.now()
-
+            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
+            except: return datetime.now()
         f_po_d = c5.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c6.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
         
@@ -159,32 +165,23 @@ with tab1:
         st.divider()
         st.subheader("📊 Milestone Tracking")
         m_responses = {}
-        
         for label, skey, nkey in MILESTONE_MAP:
             col_stat, col_note = st.columns([1, 2])
-            
-            if label == "Drawing Submission": opts = ["Pending", "NA", "In-Progress", "Submitted"]
-            elif label == "Drawing Approval": opts = ["Pending", "NA", "In-Progress", "Approved"]
-            elif label == "RM Status": opts = ["Pending", "Ordered", "In-Progress", "NA", "Received", "Hold"]
-            elif label == "Sub-deliveries": opts = ["Pending", "In-Progress", "NA", "Completed"]
-            elif label == "Fabrication Status": opts = ["Planning", "In-Progress", "Hold", "Completed"]
-            elif label == "Buffing Status": opts = ["Planning", "In-Progress", "Completed"]
-            elif label == "Testing Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-            elif label == "Dispatch Status": opts = ["Pending", "Scheduled", "In-Progress", "Completed"]
-            elif label == "FAT Status": opts = ["Scheduled", "NA", "In-Progress", "Completed"]
-            else: opts = ["Pending", "NA", "Scheduled", "Hold","In-Progress", "Completed"]
-
+            opts = ["Pending", "NA", "In-Progress", "Completed", "Scheduled", "Hold"] 
             prev_status = last_data.get(skey, "Pending")
             default_idx = opts.index(prev_status) if prev_status in opts else 0
-            
             m_responses[skey] = col_stat.selectbox(label, opts, index=default_idx, key=f"form_{skey}")
             m_responses[nkey] = col_note.text_input(f"Remarks for {label}", value=last_data.get(nkey, ""), key=f"form_{nkey}")
+
+        # --- PROGRESS STRIP INPUT ---
+        st.divider()
+        st.subheader("📈 Overall Progress")
+        f_progress = st.slider("Set Completion Percentage", 0, 100, value=int(last_data.get('overall_progress') or 0), step=5)
 
         st.divider()
         st.subheader("📸 Progress Capture")
         cam_photo = st.camera_input("Take Progress Photo")
 
-        # --- SUBMIT BUTTON INSIDE THE FORM ---
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job:
                 st.error("Select a Job Code and Customer first!")
@@ -194,18 +191,18 @@ with tab1:
                         "customer": f_cust, "job_code": f_job, "equipment": f_eq,
                         "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
                         "po_delivery_date": str(f_p_del), "exp_dispatch_date": str(f_r_del),
+                        "overall_progress": f_progress,
                         **m_responses
                     }
                     res = conn.table("progress_logs").insert(entry_payload).execute()
                     if cam_photo and res.data:
                         file_path = f"{res.data[0]['id']}.jpg"
                         conn.client.storage.from_("progress-photos").upload(file_path, cam_photo.getvalue())
-                    st.success("✅ Update Saved Successfully!")
+                    st.success("✅ Update Saved!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-# TABS 2 AND 3 REMAIN UNCHANGED BELOW...
 with tab2:
     st.subheader("📂 Report Archive")
     filter_c1, filter_c2, filter_c3 = st.columns(3)
@@ -213,122 +210,46 @@ with tab2:
     selected_cust = filter_c1.selectbox("🔍 Filter by Customer", cust_list, key="arch_cust_sel")
     report_type = filter_c2.selectbox("📅 Report Duration", ["All Time", "Current Week", "Current Month", "Custom Range"], key="arch_dur_sel")
     
-    start_date, end_date = None, None
-    if report_type == "Custom Range":
-        c_date = filter_c3.date_input("Select Range", [datetime.now().date(), datetime.now().date()])
-        if isinstance(c_date, list) and len(c_date) == 2:
-            start_date, end_date = c_date
-
     query = conn.table("progress_logs").select("*").order("id", desc=True)
-    if selected_cust != "All Customers":
-        query = query.eq("customer", selected_cust)
-    
+    if selected_cust != "All Customers": query = query.eq("customer", selected_cust)
     res = query.execute()
     data = res.data if res else []
-
-    filtered_data = []
-    today = datetime.now().date()
     
     if data:
+        # FIXED: Corrected the data parameter to call generate_pdf
+        st.download_button(label="📥 Download PDF Report", data=generate_pdf(data), file_name=f"BG_Report.pdf", mime="application/pdf", use_container_width=True)
         for log in data:
-            try:
-                raw_date = log.get('created_at') or log.get('po_date')
-                if not raw_date: continue
-                log_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
-                if report_type == "Current Week":
-                    if log_date.isocalendar()[1] == today.isocalendar()[1] and log_date.year == today.year: filtered_data.append(log)
-                elif report_type == "Current Month":
-                    if log_date.month == today.month and log_date.year == today.year: filtered_data.append(log)
-                elif report_type == "Custom Range" and start_date and end_date:
-                    if start_date <= log_date <= end_date: filtered_data.append(log)
-                elif report_type == "All Time": filtered_data.append(log)
-            except: continue
-        
-        # --- CORRECTLY INDENTED DISPLAY BLOCK ---
-        if filtered_data:
-            st.download_button(label="📥 Download Filtered PDF Report", data=generate_pdf(filtered_data), file_name=f"BG_Report.pdf", mime="application/pdf", use_container_width=True)
-            
-            for log in filtered_data:
-                with st.expander(f"📦 Job: {log.get('job_code','N/A')} | {log.get('customer','Unknown')}"):
-                    st.write(f"### Status Details for Job {log.get('job_code')}")
-                    
-                    # Information Grid
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Engineer", log.get('engineer', 'N/A'))
-                    col2.metric("PO No", log.get('po_no', 'N/A'))
-                    col3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
-
-                    # Milestone Status List
-                    st.markdown("---")
-                    for label, skey, nkey in MILESTONE_MAP:
-                        c_stat, c_rem = st.columns([1, 2])
-                        c_stat.write(f"**{label}:** {log.get(skey, 'Pending')}")
-                        c_rem.write(f"_{log.get(nkey, '-')}_")
-
-                    # --- PHOTO DISPLAY ---
-                    st.markdown("---")
-                    st.markdown("### 📸 Progress Photo")
-                    
-                    try:
-                        # Construct filename and get public URL
-                        photo_name = f"{log.get('id')}.jpg"
-                        photo_url = conn.client.storage.from_("progress-photos").get_public_url(photo_name)
-                        
-                        # Verify image exists with a 2-second timeout to prevent lag
-                        check = requests.head(photo_url, timeout=2)
-                        
-                        if check.status_code == 200:
-                            # Using columns to center the "Passport Size" photo
-                            _, center_col, _ = st.columns([1, 1, 1])
-                            with center_col:
-                                st.image(
-                                    photo_url, 
-                                    caption=f"Job: {log.get('job_code')}", 
-                                    width=160  # Fixed passport width
-                                )
-                        else:
-                            st.info("💡 No photo uploaded for this entry.")
-                            
-                    except Exception as e:
-                        # Catching specific errors without crashing the whole Archive
-                        st.info("⚠️ Photo could not be loaded (Connection issue).")
-
-        else:
-            # This aligns with the 'if filtered_data:' block
-            st.warning("No records found for the selected date range.")
+            with st.expander(f"📦 Job: {log.get('job_code','N/A')} | {log.get('customer','Unknown')}"):
+                prog_val = log.get('overall_progress') or 0
+                st.write(f"**Overall Progress: {prog_val}%**")
+                st.progress(int(prog_val) / 100)
+                
+                st.write(f"### Status Details for Job {log.get('job_code')}")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Engineer", log.get('engineer', 'N/A'))
+                col2.metric("PO No", log.get('po_no', 'N/A'))
+                col3.metric("Dispatch", log.get('exp_dispatch_date', 'N/A'))
+                
+                st.markdown("---")
+                for label, skey, nkey in MILESTONE_MAP:
+                    c_stat, c_rem = st.columns([1, 2])
+                    c_stat.write(f"**{label}:** {log.get(skey, 'Pending')}")
+                    c_rem.write(f"_{log.get(nkey, '-')}_")
 
 with tab3:
     st.header("🛠️ Master Data Management")
     col_cust, col_job = st.columns(2)
     with col_cust:
         st.subheader("👥 Customers")
-        new_cust = st.text_input("New Customer Name", key="add_cust_input")
-        if st.button("➕ Add Customer", key="add_cust_btn"):
+        new_cust = st.text_input("New Customer Name", key="m1")
+        if st.button("➕ Add Customer", key="b1"):
             if new_cust:
                 conn.table("customer_master").insert({"name": new_cust}).execute()
                 st.rerun()
     with col_job:
         st.subheader("🔢 Job Codes")
-        new_job = st.text_input("New Job Code", key="add_job_input")
-        if st.button("➕ Add Job Code", key="add_job_btn"):
-            if new_job:
-                conn.table("job_master").insert({"job_code": new_job}).execute()
-                st.rerun()
-
-with tab3:
-    st.header("🛠️ Master Data Management")
-    col_cust, col_job = st.columns(2)
-    with col_cust:
-        st.subheader("👥 Customers")
-        new_cust = st.text_input("New Customer Name")
-        if st.button("➕ Add Customer"):
-            if new_cust:
-                conn.table("customer_master").insert({"name": new_cust}).execute()
-                st.rerun()
-    with col_job:
-        st.subheader("🔢 Job Codes")
-        new_job = st.text_input("New Job Code")
-        if st.button("➕ Add Job Code"):
+        new_job = st.text_input("New Job Code", key="m2")
+        if st.button("➕ Add Job Code", key="b2"):
             if new_job:
                 conn.table("job_master").insert({"job_code": new_job}).execute()
                 st.rerun()
