@@ -159,64 +159,68 @@ tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"]
 with tab1:
     st.subheader("📋 Project Update")
     
-    # Use the job list from your Master Data
+    # 1. Job Selection
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_selector_main")
-    
-    # 1. Initialize a clean dictionary for the form
-    if "form_data" not in st.session_state or st.session_state.get('last_selected_job') != f_job:
-        st.session_state.form_data = {
-            "customer": "", "equipment": "", "po_no": "", 
-            "engineer": "", "overall_progress": 0, "po_date": None,
-            "po_delivery_date": None, "exp_dispatch_date": None
-        }
-        st.session_state.last_selected_job = f_job
 
-    if f_job:
-        # 2. PULL FROM JOB MASTER (The Anchor)
-        # We use execute().data to be safe across different Supabase versions
+    # 2. Trigger Data Fetch on Job Change
+    if f_job and st.session_state.get('last_selected_job') != f_job:
+        # Fetch from Supabase
         m_query = conn.table("job_master").select("*").eq("job_code", f_job).execute()
         l_query = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         
         master_info = m_query.data[0] if m_query.data else {}
         latest_log = l_query.data[0] if l_query.data else {}
 
-        # 3. MERGE LOGIC: Master Info takes priority for header fields
-        # Start with latest log (to get milestones/remarks)
-        st.session_state.form_data.update(latest_log)
+        # Build the specific dataset for this job
+        new_form_data = {**latest_log} # Start with latest log data
         
-        # Force Anchor fields from Master
+        # Override with Anchor (Master) data
         anchor_fields = ["customer", "equipment", "po_no", "po_date", "engineer", "po_delivery_date"]
         for field in anchor_fields:
             if field in master_info and master_info[field]:
-                st.session_state.form_data[field] = master_info[field]
+                new_form_data[field] = master_info[field]
+        
+        # Save to state and update tracker
+        st.session_state.form_data = new_form_data
+        st.session_state.last_selected_job = f_job
+        
+        # IMPORTANT: Force rerun so the form below sees the NEW session_state immediately
+        st.rerun()
 
-    # 4. THE FORM (Using session_state for all 'value' parameters)
+    # 3. Handle Empty Selection
+    if not f_job:
+        st.session_state.form_data = {}
+        st.session_state.last_selected_job = ""
+        st.info("Select a Job Code to begin.")
+        st.stop() # Prevents the form from rendering without data
+
+    # 4. THE FORM (Now guaranteed to have st.session_state.form_data populated)
     with st.form(key=f"form_{f_job}"):
         c1, c2 = st.columns(2)
         
-        # Sync Customer Selectbox
-        cust_val = st.session_state.form_data.get('customer', "")
-        try:
-            c_idx = customers.index(cust_val) + 1 if cust_val in customers else 0
-        except: c_idx = 0
+        current_data = st.session_state.get('form_data', {})
 
+        # Sync Customer
+        cust_val = current_data.get('customer', "")
+        c_idx = customers.index(cust_val) + 1 if cust_val in customers else 0
         f_cust = c1.selectbox("Customer", [""] + customers, index=c_idx)
-        f_eq = c2.text_input("Equipment", value=st.session_state.form_data.get('equipment', ""))
+        
+        f_eq = c2.text_input("Equipment", value=current_data.get('equipment', ""))
         
         c3, c4, c5 = st.columns(3)
-        f_po_n = c3.text_input("PO Number", value=st.session_state.form_data.get('po_no', ""))
+        f_po_n = c3.text_input("PO Number", value=current_data.get('po_no', ""))
         
-        def get_date_val(field):
-            d = st.session_state.form_data.get(field)
-            if not d: return datetime.now()
-            if isinstance(d, str):
-                try: return datetime.strptime(d[:10], "%Y-%m-%d")
-                except: return datetime.now()
-            return d
+        # Date helper
+        def get_date_obj(field):
+            val = current_data.get(field)
+            if not val: return datetime.now()
+            try: return datetime.strptime(val[:10], "%Y-%m-%d")
+            except: return datetime.now()
 
-        f_po_d = c4.date_input("PO Date", value=get_date_val('po_date'))
-        f_eng = c5.text_input("Engineer", value=st.session_state.form_data.get('engineer', ""))
-        
+        f_po_d = c4.date_input("PO Date", value=get_date_obj('po_date'))
+        f_eng = c5.text_input("Engineer", value=current_data.get('engineer', ""))
+
+           
         # ... Rest of your form (Milestones/Submit) using the same pattern ...
         
         c6, c7 = st.columns(2)
