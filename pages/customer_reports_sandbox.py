@@ -150,16 +150,23 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- 3. DATA FETCH ---
-@st.cache_data(ttl=0)
+# --- 3. DATA FETCH (Updated for Anchor Portal) ---
+@st.cache_data(ttl=0) # Set to 0 to see Anchor Portal updates instantly
 def get_master_data():
     try:
-        c_res = conn.table("customer_master").select("name").execute()
-        j_res = conn.table("job_master").select("job_code").execute()
-        c_list = [d['name'] for d in c_res.data] if c_res.data else []
-        j_list = [d['job_code'] for d in j_res.data] if j_res.data else []
-        return sorted(c_list), sorted(j_list)
-    except: return [], []
+        # Fetch data from the anchor_projects table
+        # We fetch 'client_name' (for Customer) and 'job_no' (for Job Code)
+        res = conn.table("anchor_projects").select("client_name, job_no").execute()
+        
+        if res.data:
+            # Using set() to remove duplicates if the same client/job appears twice
+            c_list = list(set([d['client_name'] for d in res.data if d.get('client_name')]))
+            j_list = list(set([d['job_no'] for d in res.data if d.get('job_no')]))
+            return sorted(c_list), sorted(j_list)
+        return [], []
+    except Exception as e:
+        st.error(f"Database Sync Error: {e}")
+        return [], []
 
 customers, jobs = get_master_data()
 
