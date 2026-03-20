@@ -196,7 +196,10 @@ with tab1:
 
         f_po_d = c4.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c5.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
-
+        c6, c7 = st.columns(2)
+        f_po_del = c6.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
+        f_exp_dis = c7.date_input("Expected Dispatch Date", value=safe_date('exp_dispatch_date'))
+        
         st.divider()
         st.subheader("📊 Milestone Tracking")
         m_responses = {}
@@ -227,9 +230,17 @@ with tab1:
                 st.error("Please select Customer and Job Code")
             else:
                 payload = {
-                    "customer": f_cust, "job_code": f_job, "equipment": f_eq,
-                    "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
-                    "overall_progress": f_progress, **m_responses
+                    "customer": f_cust, 
+                    "job_code": f_job, 
+                    "equipment": f_eq,
+                    "po_no": f_po_n, 
+                    "po_date": str(f_po_d), 
+                    "engineer": f_eng,
+                    # --- ADD THESE TWO LINES TO THE PAYLOAD ---
+                    "po_delivery_date": str(f_po_del),
+                    "exp_dispatch_date": str(f_exp_dis),
+                    "overall_progress": f_progress, 
+                    **m_responses
                 }
                 res = conn.table("progress_logs").insert(payload).execute()
                 
