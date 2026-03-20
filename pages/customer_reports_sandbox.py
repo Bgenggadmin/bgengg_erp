@@ -169,12 +169,11 @@ with tab1:
         
         master_info = m_query.data[0] if m_query.data else {}
         latest_log = l_query.data[0] if l_query.data else {}
-
-        # Merge: Latest Log + Master Overwrite
         new_data = {**latest_log}
         anchor_fields = [
             "customer", "equipment", "po_no", "po_date", 
             "engineer", "po_delivery_date", "exp_dispatch_date"
+        ]
         for f in anchor_fields:
             if f in master_info and master_info[f]: 
                 new_data[f] = master_info[f]
