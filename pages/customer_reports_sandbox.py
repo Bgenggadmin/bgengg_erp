@@ -5,7 +5,50 @@ from fpdf import FPDF
 from io import BytesIO
 import tempfile
 import os
+# --- PDF GENERATION ENGINE (Add this at the top) ---
+def generate_pdf(logs):
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        
+        for log in logs:
+            pdf.add_page()
+            # Header
+            pdf.set_fill_color(0, 51, 102)
+            pdf.rect(0, 0, 210, 20, 'F')
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_font("Arial", "B", 14)
+            pdf.set_xy(10, 5)
+            pdf.cell(0, 10, "B&G ENGINEERING INDUSTRIES - PROGRESS REPORT", 0, 1, 'C')
+            
+            # Job Details
+            pdf.set_text_color(0, 0, 0)
+            pdf.set_font("Arial", "B", 10)
+            pdf.ln(10)
+            pdf.cell(40, 8, f"Job Code: {log.get('job_code')}", 0, 0)
+            pdf.cell(80, 8, f"Customer: {log.get('customer')}", 0, 1)
+            pdf.cell(40, 8, f"Engineer: {log.get('engineer')}", 0, 0)
+            pdf.cell(80, 8, f"Overall: {log.get('overall_progress')}%", 0, 1)
+            
+            # Milestones
+            pdf.ln(5)
+            pdf.set_fill_color(240, 240, 240)
+            pdf.cell(60, 8, "Milestone", 1, 0, 'L', True)
+            pdf.cell(40, 8, "Status", 1, 0, 'C', True)
+            pdf.cell(90, 8, "Remarks", 1, 1, 'L', True)
+            
+            pdf.set_font("Arial", "", 9)
+            # This loop uses your MILESTONE_MAP to fill the table
+            for label, skey, nkey in MILESTONE_MAP:
+                pdf.cell(60, 8, f" {label}", 1)
+                pdf.cell(40, 8, f" {log.get(skey, 'Pending')}", 1, 0, 'C')
+                pdf.cell(90, 8, f" {log.get(nkey, '-')}", 1, 1)
 
+        # Return the PDF as bytes
+        return pdf.output(dest='S').encode('latin-1')
+    except Exception as e:
+        st.error(f"PDF Error: {e}")
+        return None
 # 1. SETUP
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
