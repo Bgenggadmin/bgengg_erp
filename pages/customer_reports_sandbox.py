@@ -171,19 +171,13 @@ with tab1:
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
     last_data = {}
     
-   if f_job:
+if f_job:
         # 1. PULL ANCHOR DATA (From job_master)
         # Assumes job_master has columns: customer, equipment, po_no, po_date, engineer
         master_res = conn.table("job_master").select("*").eq("job_code", f_job).limit(1).execute()
-    
-        # 2. PULL LATEST PROGRESS (From progress_logs)
         log_res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-    
-        # Merge them: Master data takes priority for header fields, Log data for progress
         master_info = master_res.data[0] if master_res.data else {}
         latest_log = log_res.data[0] if log_res.data else {}
-    
-        # This combines both, favoring the master table for fixed project info
         last_data = {**latest_log, **master_info} 
     
         if master_info:
