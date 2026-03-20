@@ -171,9 +171,12 @@ with tab1:
         latest_log = l_query.data[0] if l_query.data else {}
 
         # Merge: Latest Log + Master Overwrite
-        new_data = {**latest_log} 
-        for f in ["customer", "equipment", "po_no", "po_date", "engineer", "po_delivery_date"]:
-            if f in master_info and master_info[f]:
+        new_data = {**latest_log}
+        anchor_fields = [
+            "customer", "equipment", "po_no", "po_date", 
+            "engineer", "po_delivery_date", "exp_dispatch_date"
+        for f in anchor_fields:
+            if f in master_info and master_info[f]: 
                 new_data[f] = master_info[f]
         
         st.session_state.form_data = new_data
