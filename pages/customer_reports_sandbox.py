@@ -54,29 +54,22 @@ def generate_pdf(logs):
 
     for log in logs:
         pdf.add_page()
-        # 1. NEW: Define the date at the start of the page
         report_date = datetime.now().strftime('%d-%m-%Y')
 
-        # [Keep your blue header rect and logo code exactly as they are]
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
         pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # 2. UPDATED: Job Code Row with Date on Right
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        
-        # Change '1' to '0' at the end of this cell to stay on the same line
         pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 0, "L")
         
-        # Add this line to print the date on the far right of the same bar
         pdf.set_xy(10, 30)
         pdf.cell(0, 8, f"Report Date: {report_date} ", 0, 1, "R")
         
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
-        # 2. JOB DETAILS TABLE RE-INSERTED
         for i in range(0, len(HEADER_FIELDS), 2):
             f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
@@ -86,7 +79,6 @@ def generate_pdf(logs):
                 pdf.cell(65, 7, f" {str(log.get(f2,'-'))}", 1, 1, 'L')
             else: pdf.ln(7)
 
-        # 3. OVERALL PROGRESS BAR RE-INSERTED
         pdf.ln(5); ov_p = int(log.get('overall_progress', 0) or 0)
         pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
         pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
@@ -95,7 +87,6 @@ def generate_pdf(logs):
             pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
         pdf.ln(10)
 
-        # 4. MILESTONE TABLE RE-INSERTED
         pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
@@ -116,7 +107,6 @@ def generate_pdf(logs):
             pdf.set_xy(curr_x + 30, curr_y)
             pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # 5. FIXED PHOTO SECTION
         pdf.ln(10) 
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, "Progress Documentation Photos:", 0, 1, "L")
@@ -171,15 +161,17 @@ with tab1:
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
     last_data = {}
     
-if f_job:
-        # 1. PULL ANCHOR DATA (From job_master)
-        # Assumes job_master has columns: customer, equipment, po_no, po_date, engineer
+    if f_job:
+        # PULL ANCHOR DATA + LATEST LOG
         master_res = conn.table("job_master").select("*").eq("job_code", f_job).limit(1).execute()
         log_res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        master_info = master_res.data[0] if master_res.data else {}
-        latest_log = log_res.data[0] if log_res.data else {}
+        
+        master_info = master_res.data[0] if (master_res and master_res.data) else {}
+        latest_log = log_res.data[0] if (log_res and log_res.data) else {}
+        
+        # Merge: log data provides progress, master data provides fixed info
         last_data = {**latest_log, **master_info} 
-    
+        
         if master_info:
             st.toast(f"✅ Loaded Master Info for {f_job}")
         elif latest_log:
@@ -244,7 +236,6 @@ if f_job:
                     "po_no": f_po_n, 
                     "po_date": str(f_po_d), 
                     "engineer": f_eng,
-                    # --- ADD THESE TWO LINES TO THE PAYLOAD ---
                     "po_delivery_date": str(f_po_del),
                     "exp_dispatch_date": str(f_exp_dis),
                     "overall_progress": f_progress, 
@@ -262,13 +253,13 @@ if f_job:
                         )
                 st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
 
+# [Keep Archive and Masters tabs as they were]
 with tab2:
     st.subheader("📂 Report Archive")
     f1, f2, f3 = st.columns(3)
     sel_c = f1.selectbox("Filter Customer", ["All"] + customers)
     report_type = f2.selectbox("📅 Period", ["All Time", "Current Week", "Current Month", "Custom Range"])
     
-    # --- Date Filtering Logic ---
     start_date, end_date = None, None
     now = datetime.now()
     if report_type == "Current Week":
@@ -280,7 +271,6 @@ with tab2:
         if len(dates) == 2:
             start_date, end_date = dates[0], dates[1]
 
-    # --- Database Query ---
     query = conn.table("progress_logs").select("*").order("id", desc=True)
     if sel_c != "All":
         query = query.eq("customer", sel_c)
@@ -288,12 +278,10 @@ with tab2:
     res = query.execute()
     raw_data = res.data if res.data else []
 
-    # --- Local Time Filtering ---
     data = []
     if start_date:
         for d in raw_data:
             try:
-                # Parse date from created_at or po_date
                 raw_ts = d.get('created_at') or d.get('po_date')
                 d_date = datetime.strptime(raw_ts[:10], "%Y-%m-%d").date()
                 if end_date:
@@ -301,14 +289,11 @@ with tab2:
                 else:
                     if d_date >= start_date: data.append(d)
             except:
-                # Fallback: if date parsing fails, keep the record
                 data.append(d)
     else:
         data = raw_data
 
-    # --- UI Rendering ---
     if data:
-        # Summary Metrics
         total_jobs = len(data)
         completed = len([d for d in data if int(d.get('overall_progress', 0) or 0) == 100])
         pending = total_jobs - completed
@@ -319,9 +304,8 @@ with tab2:
         m3.metric("Pending", pending)
         st.divider()
 
-        # LAZY LOAD PDF: This button prevents the slow load times
         if st.button("📥 Prepare PDF for Download", use_container_width=True):
-            with st.spinner("Generating PDF... This may take a moment for large reports."):
+            with st.spinner("Generating PDF..."):
                 pdf_bytes = generate_pdf(data)
                 if pdf_bytes:
                     st.download_button(
@@ -332,7 +316,6 @@ with tab2:
                         use_container_width=True
                     )
         
-        # Fast Preview List
         for log in data:
             job_info = f"📦 {log.get('job_code')} - {log.get('customer')}"
             with st.expander(job_info):
@@ -341,7 +324,7 @@ with tab2:
                 st.progress(prog / 100)
                 st.write(f"Engineer: {log.get('engineer', 'N/A')}")
     else:
-        st.info("No records found for the selected filters.")
+        st.info("No records found.")
 
 with tab3:
     st.subheader("🛠️ Master Management")
