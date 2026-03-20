@@ -29,15 +29,23 @@ MILESTONE_MAP = [
     ("FAT Status", "fat_stat", "fat_note")
 ]
 
-# --- 2. DATA FETCH ---
+# --- DATA FETCH ---
 @st.cache_data(ttl=300)
 def get_anchor_data():
     try:
+        # Pulling ONLY from the Anchor Portal (job_master)
         j_res = conn.table("job_master").select("job_code").execute()
-        # Fallback for customers if job_master is empty
+        
+        # Pulling customers (if you have a separate customer_master, otherwise pull unique from job_master)
         c_res = conn.table("customer_master").select("name").execute()
-        return sorted([d['job_code'] for d in j_res.data]), sorted([d['name'] for d in c_res.data])
-    except: return [], []
+        
+        jobs_list = sorted([d['job_code'] for d in j_res.data]) if j_res.data else []
+        cust_list = sorted([d['name'] for d in c_res.data]) if c_res.data else []
+        
+        return jobs_list, cust_list
+    except Exception as e:
+        st.error(f"Error connecting to Anchor Portal: {e}")
+        return [], []
 
 jobs, customers = get_anchor_data()
 
