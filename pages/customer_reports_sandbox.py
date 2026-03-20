@@ -40,93 +40,145 @@ def process_photos(uploaded_files):
     return processed
 
 def generate_pdf(logs):
+    from datetime import datetime
+    from fpdf import FPDF
+    import tempfile, os
+
+    def format_date(val):
+        if not val:
+            return "-"
+        try:
+            return str(val)[:10]
+        except:
+            return str(val)
+
     pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    
+    pdf.set_auto_page_break(auto=True, margin=12)
+
+    # --- LOGO LOAD ---
     logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
         if logo_data:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
-                tmp_logo.write(logo_data)
-                logo_path = tmp_logo.name
-    except: pass
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                tmp.write(logo_data)
+                logo_path = tmp.name
+    except:
+        pass
 
     for log in logs:
         pdf.add_page()
+
+        # ================= HEADER =================
+        pdf.set_fill_color(0, 51, 102)
+        pdf.rect(0, 0, 210, 22, 'F')
+
+        if logo_path:
+            pdf.image(logo_path, x=10, y=4, h=14)
+
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("Arial", "B", 14)
+        pdf.set_xy(60, 5)
+        pdf.cell(0, 6, "B&G ENGINEERING INDUSTRIES", 0, 1)
+
+        pdf.set_font("Arial", "", 9)
+        pdf.set_x(60)
+        pdf.cell(0, 5, "PROJECT PROGRESS REPORT", 0, 1)
+
+        pdf.ln(4)
+
+        # ================= JOB INFO =================
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Arial", "B", 10)
+
         report_date = datetime.now().strftime('%d-%m-%Y')
 
-        # Header Setup
-        pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
-        if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
-        pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
-        pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-        pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
-        
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 0, "L")
-        pdf.cell(0, 8, f"Report Date: {report_date} ", 0, 1, "R")
-        
-        pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
-        
-        for i in range(0, len(HEADER_FIELDS), 2):
-            f1 = HEADER_FIELDS[i]
-            f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
-            
-            pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
-            val1 = log.get(f1)
-            txt1 = str(val1) if val1 not in [None, "", "None"] else "-"
-            pdf.cell(65, 7, f" {txt1}", 1, 0, 'L')
-            
-            if f2:
-                pdf.cell(30, 7, f" {f2.replace('_',' ').title()}", 1, 0, 'L', True)
-                val2 = log.get(f2)
-                txt2 = str(val2) if val2 not in [None, "", "None"] else "-"
-                pdf.cell(65, 7, f" {txt2}", 1, 1, 'L')
-            else: 
-                pdf.ln(7)
+        pdf.cell(100, 6, f"Job Code: {log.get('job_code','-')}")
+        pdf.cell(0, 6, f"Report Date: {report_date}", 0, 1, "R")
 
-        # Progress Bar
-        pdf.ln(5); ov_p = int(log.get('overall_progress', 0) or 0)
-        pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
-        pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
-        if ov_p > 0:
-            pdf.set_fill_color(0, 82, 164)
-            pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
+        pdf.set_font("Arial", "", 9)
+        pdf.ln(2)
+
+        # ================= SUMMARY BOX =================
+        pdf.set_fill_color(245, 245, 245)
+        pdf.set_draw_color(200, 200, 200)
+
+        start_x = pdf.get_x()
+        start_y = pdf.get_y()
+
+        pdf.multi_cell(0, 6,
+            f"Customer: {log.get('customer','-')}\n"
+            f"Equipment: {log.get('equipment','-')}\n"
+            f"PO No: {log.get('po_no','-')}    PO Date: {format_date(log.get('po_date'))}\n"
+            f"Engineer: {log.get('engineer','-')}\n"
+            f"PO Delivery: {format_date(log.get('po_delivery_date'))}    Expected Dispatch: {format_date(log.get('exp_dispatch_date'))}",
+            border=1
+        )
+
+        pdf.ln(3)
+
+        # ================= PROGRESS BAR =================
+        progress = int(log.get('overall_progress', 0) or 0)
+
+        pdf.set_font("Arial", "B", 10)
+        pdf.cell(0, 6, f"Overall Completion: {progress}%", 0, 1)
+
+        # background
+        pdf.set_fill_color(220, 220, 220)
+        pdf.rect(10, pdf.get_y(), 190, 5, 'F')
+
+        # progress fill
+        pdf.set_fill_color(0, 102, 204)
+        pdf.rect(10, pdf.get_y(), (progress/100)*190, 5, 'F')
+
         pdf.ln(10)
 
-        # Milestone Table
-        pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
-        pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
-        pdf.cell(30, 8, " Status", 1, 0, 'C', True)
-        pdf.cell(30, 8, " Progress", 1, 0, 'C', True) 
-        pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
-        
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
+        # ================= MILESTONE TABLE =================
+        pdf.set_font("Arial", "B", 9)
+        pdf.set_fill_color(0, 51, 102)
+        pdf.set_text_color(255, 255, 255)
+
+        pdf.cell(60, 8, "Milestone", 1, 0, 'L', True)
+        pdf.cell(30, 8, "Status", 1, 0, 'C', True)
+        pdf.cell(30, 8, "Progress", 1, 0, 'C', True)
+        pdf.cell(70, 8, "Remarks", 1, 1, 'L', True)
+
+        pdf.set_text_color(0, 0, 0)
+        pdf.set_font("Arial", "", 8)
+
         for label, s_key, n_key in MILESTONE_MAP:
-            pk = f"{s_key}_prog"
-            m_p = int(log.get(pk, 0) or 0)
-            s_val = log.get(s_key)
-            s_txt = str(s_val) if s_val not in [None, "", "None"] else "Pending"
-            
-            pdf.cell(50, 10, f" {label}", 1)
-            pdf.cell(30, 10, f" {s_txt}", 1, 0, 'C')
-            
-            curr_x, curr_y = pdf.get_x(), pdf.get_y()
-            pdf.cell(30, 10, "", 1, 0) 
-            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
-            if m_p > 0:
-                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (min(m_p, 100) / 100) * 24, 2, 'F')
-            
-            pdf.set_xy(curr_x + 30, curr_y)
-            n_val = log.get(n_key)
-            n_txt = str(n_val) if n_val not in [None, "", "None"] else "-"
-            pdf.cell(80, 10, f" {n_txt}", 1, 1)
+            prog_key = f"{s_key}_prog"
 
-        # Cleanup/Photos section (remains same)
-        # ... [Photo logic remains identical to your pasted code]
+            status = log.get(s_key, "Pending")
+            prog = int(log.get(prog_key, 0) or 0)
+            remarks = log.get(n_key, "-") or "-"
 
-    if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
+            pdf.cell(60, 8, f" {label}", 1)
+            pdf.cell(30, 8, f"{status}", 1, 0, 'C')
+
+            # Progress bar cell
+            x = pdf.get_x()
+            y = pdf.get_y()
+            pdf.cell(30, 8, "", 1)
+
+            pdf.set_fill_color(230, 230, 230)
+            pdf.rect(x+2, y+3, 26, 2, 'F')
+
+            pdf.set_fill_color(0, 153, 76)
+            pdf.rect(x+2, y+3, (min(prog,100)/100)*26, 2, 'F')
+
+            pdf.set_xy(x+30, y)
+            pdf.multi_cell(70, 8, remarks, 1)
+
+        # ================= FOOTER =================
+        pdf.set_y(-15)
+        pdf.set_font("Arial", "I", 8)
+        pdf.set_text_color(120, 120, 120)
+        pdf.cell(0, 5, "B&G Engineering Industries | Internal Progress Report", 0, 0, "C")
+
+    if logo_path and os.path.exists(logo_path):
+        os.unlink(logo_path)
+
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
 # --- 3. DATA FETCH (PULLING FROM ANCHOR PORTAL TABLES) ---
