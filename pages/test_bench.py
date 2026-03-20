@@ -25,3 +25,4 @@ with col1:
 with col2:
     st.metric("Accumulator (Session State)", st.session_state.accumulator)
     st.caption("Stays pressurized")
+st.write(material_grade)
