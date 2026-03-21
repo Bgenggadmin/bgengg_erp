@@ -23,5 +23,6 @@ else:
     # NOMINAL OPERATION
     st.success("✅ NOMINAL: System operating within design parameters.")
     st.info(f"Flow Rate: {pressure_reading * 0.8} m³/h") 
-    # Showing a 'Delta' (Comparison)
-    st.metric(label="Internal Pressure", value=f"{pressure_reading} PSI", delta="5 PSI")
+    st.metric(label="Calculated Flow Rate", value=f"{flow_rate} m³/h")
+    
+    st.info("System optimized for continuous flow.")
