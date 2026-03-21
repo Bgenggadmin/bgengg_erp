@@ -24,7 +24,7 @@ MACH_MASTER = "master_machines"
 
 # --- DYNAMIC CONFIG ---
 if hub_choice == "Cutting Hub":
-    RES_LABEL, ACTIVITIES = "CNC/Cutting Machine", ["Laser Cutting", "Plasma Cutting", "Oxygen Cutting", "Waterjet"]
+    RES_LABEL, ACTIVITIES = "CNC/Cutting Machine", ["Laser Cutting", "Plasma Cutting", "Oxygen Cutting", "Cnc cutting"]
 else:
     RES_LABEL, ACTIVITIES = "Welding Bay/Station", ["TIG Welding", "MIG Welding", "ARC Welding", "Grinding"]
 
