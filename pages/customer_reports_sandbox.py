@@ -226,27 +226,27 @@ with tab1:
         job_suffix = str(f_job) if f_job else "initial"
 
         for label, skey, nkey in MILESTONE_MAP:
-    pk = f"{skey}_prog"
-    col1, col2, col3 = st.columns([1.5, 1, 2])
+            pk = f"{skey}_prog"
+            col1, col2, col3 = st.columns([1.5, 1, 2])
     
-    # 1. Hardened Status Retrieval
-    prev_status = str(last_data.get(skey, "Pending")).strip()
-    def_idx = opts.index(prev_status) if prev_status in opts else 0
+            # 1. Hardened Status Retrieval
+            prev_status = str(last_data.get(skey, "Pending")).strip()
+            def_idx = opts.index(prev_status) if prev_status in opts else 0
     
-    # 2. Hardened Progress Retrieval (Handles None and Strings)
-    try:
-        raw_prog = last_data.get(pk, 0)
-        prev_prog = int(raw_prog) if raw_prog is not None else 0
-    except (ValueError, TypeError):
-        prev_prog = 0
+            # 2. Hardened Progress Retrieval (Handles None and Strings)
+            try:
+            raw_prog = last_data.get(pk, 0)
+            prev_prog = int(raw_prog) if raw_prog is not None else 0
+            except (ValueError, TypeError):
+            prev_prog = 0
     
-    # 3. Hardened Note Retrieval
-    prev_note = str(last_data.get(nkey) or "")
+            # 3. Hardened Note Retrieval
+            prev_note = str(last_data.get(nkey) or "")
     
-    # 4. Rendering
-    m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}_{job_suffix}")
-    m_responses[pk] = col2.slider("Prog %", 0, 100, value=prev_prog, key=f"p_{skey}_{job_suffix}")
-    m_responses[nkey] = col3.text_input("Remarks", value=prev_note, key=f"n_{skey}_{job_suffix}")
+            # 4. Rendering
+            m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}_{job_suffix}")
+            m_responses[pk] = col2.slider("Prog %", 0, 100, value=prev_prog, key=f"p_{skey}_{job_suffix}")
+            m_responses[nkey] = col3.text_input("Remarks", value=prev_note, key=f"n_{skey}_{job_suffix}")
 
         st.divider()
         f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
