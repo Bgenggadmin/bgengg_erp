@@ -1,34 +1,24 @@
 import streamlit as st
 
-st.title("Week 2: Control Logic")
-st.header("Sub-system: Pressure Monitor")
+st.title("Week 2, Session 2: The Loop")
 
-# --- 1. THE SENSOR (Input) ---
-# We simulate a pressure gauge from 0 to 150 PSI
-pressure_reading = st.slider("Current System Pressure (PSI)", 0, 150, 85)
+# --- 1. THE BATCH (The List) ---
+# A list of machines in the B&G shop
+workshop_machines = ["CNC Lathe", "Hydraulic Press", "Milling Machine", "Arc Welder"]
+
+st.subheader("Automated Inspection Cycle")
+
+# --- 2. THE ASSEMBLY LINE (The For Loop) ---
+# 'machine' is our temporary robotic arm picking up one item at a time
+for machine in workshop_machines:
+    # Everything indented here happens for EVERY machine in the list
+    st.write(f"🔍 Inspecting: **{machine}**...")
+    
+    # Logic inside the loop: Check if it's the welder to add a safety warning
+    if machine == "Arc Welder":
+        st.warning(f"  -> Check electrode wear on {machine}")
+    else:
+        st.success(f"  -> {machine} status: OPERATIONAL")
 
 st.divider()
-
-# --- 2. THE CHECK VALVE (Logic) ---
-if pressure_reading > 120:
-    # CRITICAL CONDITION
-    st.error("🚨 CRITICAL FAULT: Pressure exceeds safety limit!")
-    st.button("Activate Emergency Vent")
-    
-elif pressure_reading < 30:
-    # LOW FLOW CONDITION
-    st.warning("⚠️ LOW PRESSURE: System in Standby Mode.")
-    
-else:
-    # NOMINAL OPERATION
-    st.success("✅ NOMINAL: System operating within design parameters.")
-    
-    # Calculate the flow rate first (The Logic)
-    flow_rate = pressure_reading * 0.8
-    
-    # 3. THE UPDATED GAUGE (The Fix)
-    # We provide the 'Label' and the 'Value'
-    # Showing a 'Delta' (Comparison)
-    st.metric(label="Internal Pressure", value=f"{pressure_reading} PSI", delta="5 PSI")
-    
-    st.info("System optimized for continuous flow.")
+st.info("✅ Batch Inspection Complete.")
