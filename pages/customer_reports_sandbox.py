@@ -176,79 +176,94 @@ tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
 with tab1:
     st.subheader("📋 Project Update")
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
+    
+    # Initialize last_data as an empty dictionary
     last_data = {}
     
     if f_job:
-    # 1. First, check for previous progress history
-    res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-    
-    if res and res.data: 
-        last_data = res.data[0] # History found!
-        st.toast(f"🔄 Filled from Last History")
-    else:
-        # 2. No history? Check Anchor Portal for setup details
-        anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
-        if anchor_res and anchor_res.data:
-            anchor_info = anchor_res.data[0]
-            last_data = {
-                "customer": anchor_info.get("client_name"),
-                "equipment": anchor_info.get("equipment_name"),
-                "po_no": anchor_info.get("po_no"),
-                "po_date": anchor_info.get("po_date")
-            }
-            st.toast(f"✨ New Job: Initial Details Pulled")
+        # 1. PRIORITY: Check for previous progress history
+        res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
+        
+        if res and res.data: 
+            last_data = res.data[0]
+            st.toast(f"🔄 Filled from Last History")
+        else:
+            # 2. FALLBACK: Fetch initial details from Anchor Portal if NO history exists
+            anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
+            if anchor_res and anchor_res.data:
+                anchor_info = anchor_res.data[0]
+                # Map Anchor columns to your form's expected keys
+                last_data = {
+                    "customer": anchor_info.get("client_name"),
+                    "equipment": anchor_info.get("equipment_name"), 
+                    "po_no": anchor_info.get("po_no"),
+                    "po_date": anchor_info.get("po_date")
+                }
+                st.toast(f"✨ New Job: Initial Details Pulled")
+
+    # The Unique Suffix is the "Reset Switch" for Streamlit widgets
+    job_suffix = str(f_job) if f_job else "initial"
 
     with st.form("main_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
+        
+        # Safe Index for Customer Dropdown
         try:
             c_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
-        except: c_idx = 0
+        except: 
+            c_idx = 0
 
         f_cust = c1.selectbox("Customer", [""] + customers, index=c_idx)
-        f_eq = c2.text_input("Equipment", value=last_data.get('equipment', ""))
+        f_eq = c2.text_input("Equipment", value=str(last_data.get('equipment') or ""))
         
         c3, c4, c5 = st.columns(3)
-        f_po_n = c3.text_input("PO Number", value=last_data.get('po_no', ""))
+        f_po_n = c3.text_input("PO Number", value=str(last_data.get('po_no') or ""))
         
+        # Helper for Date formatting
         def safe_date(field):
             val = last_data.get(field)
-            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
-            except: return datetime.now()
+            try: 
+                return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
+            except: 
+                return datetime.now()
 
         f_po_d = c4.date_input("PO Date", value=safe_date('po_date'))
-        f_eng = c5.text_input("Responsible Engineer", value=last_data.get('engineer', ""))
+        f_eng = c5.text_input("Responsible Engineer", value=str(last_data.get('engineer') or ""))
 
         st.divider()
         st.subheader("📊 Milestone Tracking")
         m_responses = {}
         opts = ["Pending", "NA", "In-Progress", "Submitted", "Approved", "Ordered", "Received", "Hold", "Completed", "Planning", "Scheduled"]
-        job_suffix = str(f_job) if f_job else "initial"
 
+        # --- THE HARDENED MILESTONE LOOP ---
         for label, skey, nkey in MILESTONE_MAP:
-            pk = f"{skey}_prog"  # This creates keys like 'draw_sub_prog'
+            pk = f"{skey}_prog"
             col1, col2, col3 = st.columns([1.5, 1, 2])
-    
-            # --- 1. STATUS DROP DOWN ---
-            prev_status = last_data.get(skey, "Pending")
-            # This finds where "Approved" or "In-Progress" is in your opts list
+            
+            # 1. Status with Null-Safety
+            prev_status = str(last_data.get(skey) or "Pending").strip()
             def_idx = opts.index(prev_status) if prev_status in opts else 0
-    
-            # --- 2. PROGRESS SLIDER ---
+            
+            # 2. Progress with Type-Safety (Ensures Integer for Slider)
             raw_prog = last_data.get(pk, 0)
-            # Important: Convert to int and handle None values so the slider doesn't crash
-            prev_prog = int(raw_prog) if raw_prog is not None else 0
-    
-            # --- 3. REMARKS TEXT ---
-            prev_note = last_data.get(nkey, "") or ""
-    
-            # --- 4. RENDER WIDGETS ---
-            # Using job_suffix ensures widgets refresh when you change the Job Code
+            try:
+                prev_prog = int(raw_prog) if raw_prog is not None else 0
+            except (ValueError, TypeError):
+                prev_prog = 0
+            
+            # 3. Remarks with String-Safety
+            prev_note = str(last_data.get(nkey) or "")
+            
+            # 4. Rendering Widgets with unique keys per job
             m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}_{job_suffix}")
             m_responses[pk] = col2.slider("Prog %", 0, 100, value=prev_prog, key=f"p_{skey}_{job_suffix}")
             m_responses[nkey] = col3.text_input("Remarks", value=prev_note, key=f"n_{skey}_{job_suffix}")
+
+        st.divider()
         
-    st.divider()
-        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
+        # Overall progress also needs to be job-specific
+        ov_val = last_data.get('overall_progress', 0)
+        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(ov_val or 0), key=f"ov_{job_suffix}")
         
         st.subheader("📸 Progress Documentation (Max 4 Photos)")
         uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
