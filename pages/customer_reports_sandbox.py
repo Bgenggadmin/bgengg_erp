@@ -179,25 +179,24 @@ with tab1:
     last_data = {}
     
     if f_job:
-        # 1. First, check for previous progress history
-        res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        
-        if res and res.data: 
-            last_data = res.data[0]
-            st.toast(f"🔄 Filled from Last History")
-        else:
-            # 2. If NO history, fetch initial details from Anchor Portal
-            anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
-            if anchor_res and anchor_res.data:
-                anchor_info = anchor_res.data[0]
-                # Map Anchor columns to form fields
-                last_data = {
-                    "customer": anchor_info.get("client_name"),
-                    "equipment": anchor_info.get("equipment_name"), # Check your actual column name
-                    "po_no": anchor_info.get("po_no"),
-                    "po_date": anchor_info.get("po_date")
-                }
-                st.toast(f"✨ New Job: Initial Details Pulled")
+    # 1. First, check for previous progress history
+    res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
+    
+    if res and res.data: 
+        last_data = res.data[0] # History found!
+        st.toast(f"🔄 Filled from Last History")
+    else:
+        # 2. No history? Check Anchor Portal for setup details
+        anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
+        if anchor_res and anchor_res.data:
+            anchor_info = anchor_res.data[0]
+            last_data = {
+                "customer": anchor_info.get("client_name"),
+                "equipment": anchor_info.get("equipment_name"),
+                "po_no": anchor_info.get("po_no"),
+                "po_date": anchor_info.get("po_date")
+            }
+            st.toast(f"✨ New Job: Initial Details Pulled")
 
     with st.form("main_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
