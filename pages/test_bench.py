@@ -8,12 +8,12 @@ equipment_list = ["Lathe", "Milling Machine", "Drill Press", "Welding Rig"]
 
 # --- 2. THE DICTIONARY (The Spec Sheet) ---
 # Labeled data for a specific 'Job'
-job_spec = {
+job_spec = [
     "Job_ID": "BG-2026-001",
     "Client": "Local Industrial Corp",
     "Material": "Mild Steel",
     "Quantity": 50
-}
+]
 
 # --- 3. THE INTERFACE (The Warehouse Manager) ---
 st.header("Inventory Overview")
