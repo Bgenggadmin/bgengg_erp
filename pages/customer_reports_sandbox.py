@@ -9,7 +9,22 @@ import os
 
 # 1. SETUP & CONSTANTS
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
-conn = st.connection("supabase", type=SupabaseConnection, ttl=0)
+conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
+
+# HEADER_FIELDS matches the keys we will use in our last_data dictionary
+HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date"]
+
+MILESTONE_MAP = [
+    ("Drawing Submission", "draw_sub", "draw_sub_note"),
+    ("Drawing Approval", "draw_app", "draw_app_note"),
+    ("RM Status", "rm_status", "rm_note"),
+    ("Sub-deliveries", "sub_del", "sub_del_note"),
+    ("Fabrication Status", "fab_status", "remarks"),
+    ("Buffing Status", "buff_stat", "buff_note"),
+    ("Testing Status", "testing", "test_note"),
+    ("Dispatch Status", "qc_stat", "qc_note"),
+    ("FAT Status", "fat_stat", "fat_note")
+]
 
 # --- 2. ENGINE ---
 def process_photos(uploaded_files):
@@ -40,29 +55,22 @@ def generate_pdf(logs):
 
     for log in logs:
         pdf.add_page()
-        # 1. NEW: Define the date at the start of the page
         report_date = datetime.now().strftime('%d-%m-%Y')
 
-        # [Keep your blue header rect and logo code exactly as they are]
         pdf.set_fill_color(0, 51, 102); pdf.rect(0, 0, 210, 25, 'F')
         if logo_path: pdf.image(logo_path, x=12, y=5, h=15)
         pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", "B", 16)
         pdf.set_xy(70, 5); pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
         pdf.set_font("Arial", "I", 10); pdf.set_xy(70, 14); pdf.cell(130, 5, "PROJECT PROGRESS REPORT", 0, 1, "L")
         
-        # 2. UPDATED: Job Code Row with Date on Right
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
-        
-        # Change '1' to '0' at the end of this cell to stay on the same line
         pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 0, "L")
         
-        # Add this line to print the date on the far right of the same bar
         pdf.set_xy(10, 30)
         pdf.cell(0, 8, f"Report Date: {report_date} ", 0, 1, "R")
         
         pdf.ln(2); pdf.set_font("Arial", "B", 8); pdf.set_fill_color(240, 240, 240)
         
-        # 2. JOB DETAILS TABLE RE-INSERTED
         for i in range(0, len(HEADER_FIELDS), 2):
             f1 = HEADER_FIELDS[i]; f2 = HEADER_FIELDS[i+1] if i+1 < len(HEADER_FIELDS) else None
             pdf.cell(30, 7, f" {f1.replace('_',' ').title()}", 1, 0, 'L', True)
@@ -72,7 +80,6 @@ def generate_pdf(logs):
                 pdf.cell(65, 7, f" {str(log.get(f2,'-'))}", 1, 1, 'L')
             else: pdf.ln(7)
 
-        # 3. OVERALL PROGRESS BAR RE-INSERTED
         pdf.ln(5); ov_p = int(log.get('overall_progress', 0) or 0)
         pdf.set_font("Arial", "B", 10); pdf.cell(50, 8, f"Overall Completion: {ov_p}%", 0, 0, 'L')
         pdf.set_fill_color(230, 230, 230); pdf.rect(60, pdf.get_y() + 2, 130, 4, 'F')
@@ -81,7 +88,6 @@ def generate_pdf(logs):
             pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
         pdf.ln(10)
 
-        # 4. MILESTONE TABLE RE-INSERTED
         pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
@@ -102,7 +108,6 @@ def generate_pdf(logs):
             pdf.set_xy(curr_x + 30, curr_y)
             pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
 
-        # 5. FIXED PHOTO SECTION
         pdf.ln(10) 
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, "Progress Documentation Photos:", 0, 1, "L")
@@ -136,82 +141,53 @@ def generate_pdf(logs):
         os.unlink(logo_path)
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
-HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
-
-MILESTONE_MAP = [
-    ("Drawing Submission", "draw_sub", "draw_sub_note"),
-    ("Drawing Approval", "draw_app", "draw_app_note"),
-    ("RM Status", "rm_status", "rm_note"),
-    ("Sub-deliveries", "sub_del", "sub_del_note"),
-    ("Fabrication Status", "fab_status", "remarks"),
-    ("Buffing Status", "buff_stat", "buff_note"),
-    ("Testing Status", "testing", "test_note"),
-    ("Dispatch Status", "qc_stat", "qc_note"),
-    ("FAT Status", "fat_stat", "fat_note")
-]
-
-# --- 3. DATA FETCH (Updated for Anchor Portal) ---
-@st.cache_data(ttl=0) # Set to 0 to see Anchor Portal updates instantly
+# --- 3. DATA FETCH ---
+@st.cache_data(ttl=60)
 def get_master_data():
     try:
-        # Fetch data from the anchor_projects table
-        # We fetch 'client_name' (for Customer) and 'job_no' (for Job Code)
-        res = conn.table("anchor_projects").select("client_name, job_no").execute()
-        
-        if res.data:
-            # Using set() to remove duplicates if the same client/job appears twice
-            c_list = list(set([d['client_name'] for d in res.data if d.get('client_name')]))
-            j_list = list(set([d['job_no'] for d in res.data if d.get('job_no')]))
-            return sorted(c_list), sorted(j_list)
-        return [], []
-    except Exception as e:
-        st.error(f"Database Sync Error: {e}")
-        return [], []
+        c_res = conn.table("customer_master").select("name").execute()
+        j_res = conn.table("job_master").select("job_code").execute()
+        c_list = [d['name'] for d in c_res.data] if c_res.data else []
+        j_list = [d['job_code'] for d in j_res.data] if j_res.data else []
+        return sorted(c_list), sorted(j_list)
+    except: return [], []
 
 customers, jobs = get_master_data()
 
 # --- 4. MAIN UI ---
-tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
+tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
 
 with tab1:
     st.subheader("📋 Project Update")
     f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
-    
-    # Initialize last_data as an empty dictionary
     last_data = {}
     
     if f_job:
-        # 1. PRIORITY: Check for previous progress history
+        # Step 1: Check existing progress history
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        
         if res and res.data: 
             last_data = res.data[0]
-            st.toast(f"🔄 Filled from Last History")
+            st.toast(f"🔄 Autofilled history for {f_job}")
         else:
-            # 2. FALLBACK: Fetch initial details from Anchor Portal if NO history exists
+            # Step 2: FALLBACK to anchor_projects (using your SQL schema names)
             anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
             if anchor_res and anchor_res.data:
-                anchor_info = anchor_res.data[0]
-                # Map Anchor columns to your form's expected keys
+                a_info = anchor_res.data[0]
                 last_data = {
-                    "customer": anchor_info.get("client_name"),
-                    "equipment": anchor_info.get("equipment_name"), 
-                    "po_no": anchor_info.get("po_no"),
-                    "po_date": anchor_info.get("po_date")
+                    "customer": a_info.get("client_name"),
+                    "equipment": a_info.get("project_description"), # Corrected per SQL
+                    "engineer": a_info.get("anchor_person"),        # Corrected per SQL
+                    "po_no": a_info.get("po_no"),
+                    "po_date": a_info.get("po_date"),
+                    "po_delivery_date": a_info.get("po_delivery_date")
                 }
-                st.toast(f"✨ New Job: Initial Details Pulled")
-
-    # The Unique Suffix is the "Reset Switch" for Streamlit widgets
-    job_suffix = str(f_job) if f_job else "initial"
+                st.toast(f"✨ New Job: Details pulled from Anchor")
 
     with st.form("main_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        
-        # Safe Index for Customer Dropdown
         try:
             c_idx = customers.index(last_data['customer']) + 1 if last_data.get('customer') in customers else 0
-        except: 
-            c_idx = 0
+        except: c_idx = 0
 
         f_cust = c1.selectbox("Customer", [""] + customers, index=c_idx)
         f_eq = c2.text_input("Equipment", value=str(last_data.get('equipment') or ""))
@@ -219,13 +195,10 @@ with tab1:
         c3, c4, c5 = st.columns(3)
         f_po_n = c3.text_input("PO Number", value=str(last_data.get('po_no') or ""))
         
-        # Helper for Date formatting
         def safe_date(field):
             val = last_data.get(field)
-            try: 
-                return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
-            except: 
-                return datetime.now()
+            try: return datetime.strptime(val, "%Y-%m-%d") if val else datetime.now()
+            except: return datetime.now()
 
         f_po_d = c4.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c5.text_input("Responsible Engineer", value=str(last_data.get('engineer') or ""))
@@ -234,36 +207,23 @@ with tab1:
         st.subheader("📊 Milestone Tracking")
         m_responses = {}
         opts = ["Pending", "NA", "In-Progress", "Submitted", "Approved", "Ordered", "Received", "Hold", "Completed", "Planning", "Scheduled"]
+        job_suffix = str(f_job) if f_job else "initial"
 
-        # --- THE HARDENED MILESTONE LOOP ---
         for label, skey, nkey in MILESTONE_MAP:
             pk = f"{skey}_prog"
             col1, col2, col3 = st.columns([1.5, 1, 2])
-            
-            # 1. Status with Null-Safety
-            prev_status = str(last_data.get(skey) or "Pending").strip()
+            prev_status = str(last_data.get(skey) or "Pending")
             def_idx = opts.index(prev_status) if prev_status in opts else 0
-            
-            # 2. Progress with Type-Safety (Ensures Integer for Slider)
             raw_prog = last_data.get(pk, 0)
-            try:
-                prev_prog = int(raw_prog) if raw_prog is not None else 0
-            except (ValueError, TypeError):
-                prev_prog = 0
-            
-            # 3. Remarks with String-Safety
+            prev_prog = int(raw_prog or 0)
             prev_note = str(last_data.get(nkey) or "")
             
-            # 4. Rendering Widgets with unique keys per job
             m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}_{job_suffix}")
             m_responses[pk] = col2.slider("Prog %", 0, 100, value=prev_prog, key=f"p_{skey}_{job_suffix}")
             m_responses[nkey] = col3.text_input("Remarks", value=prev_note, key=f"n_{skey}_{job_suffix}")
 
         st.divider()
-        
-        # Overall progress also needs to be job-specific
-        ov_val = last_data.get('overall_progress', 0)
-        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(ov_val or 0), key=f"ov_{job_suffix}")
+        f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
         
         st.subheader("📸 Progress Documentation (Max 4 Photos)")
         uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
@@ -277,6 +237,10 @@ with tab1:
                     "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
                     "overall_progress": f_progress, **m_responses
                 }
+                # Include delivery date in logs if pulled from anchor
+                if last_data.get('po_delivery_date'):
+                    payload['po_delivery_date'] = str(last_data['po_delivery_date'])
+                
                 res = conn.table("progress_logs").insert(payload).execute()
                 
                 if uploaded_photos and res.data:
@@ -289,13 +253,13 @@ with tab1:
                         )
                 st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
 
+# --- TAB 2 & 3 as originally provided ---
 with tab2:
     st.subheader("📂 Report Archive")
     f1, f2, f3 = st.columns(3)
     sel_c = f1.selectbox("Filter Customer", ["All"] + customers)
     report_type = f2.selectbox("📅 Period", ["All Time", "Current Week", "Current Month", "Custom Range"])
     
-    # --- Date Filtering Logic ---
     start_date, end_date = None, None
     now = datetime.now()
     if report_type == "Current Week":
@@ -307,7 +271,6 @@ with tab2:
         if len(dates) == 2:
             start_date, end_date = dates[0], dates[1]
 
-    # --- Database Query ---
     query = conn.table("progress_logs").select("*").order("id", desc=True)
     if sel_c != "All":
         query = query.eq("customer", sel_c)
@@ -315,12 +278,10 @@ with tab2:
     res = query.execute()
     raw_data = res.data if res.data else []
 
-    # --- Local Time Filtering ---
     data = []
     if start_date:
         for d in raw_data:
             try:
-                # Parse date from created_at or po_date
                 raw_ts = d.get('created_at') or d.get('po_date')
                 d_date = datetime.strptime(raw_ts[:10], "%Y-%m-%d").date()
                 if end_date:
@@ -328,14 +289,11 @@ with tab2:
                 else:
                     if d_date >= start_date: data.append(d)
             except:
-                # Fallback: if date parsing fails, keep the record
                 data.append(d)
     else:
         data = raw_data
 
-    # --- UI Rendering ---
     if data:
-        # Summary Metrics
         total_jobs = len(data)
         completed = len([d for d in data if int(d.get('overall_progress', 0) or 0) == 100])
         pending = total_jobs - completed
@@ -346,9 +304,8 @@ with tab2:
         m3.metric("Pending", pending)
         st.divider()
 
-        # LAZY LOAD PDF: This button prevents the slow load times
         if st.button("📥 Prepare PDF for Download", use_container_width=True):
-            with st.spinner("Generating PDF... This may take a moment for large reports."):
+            with st.spinner("Generating PDF..."):
                 pdf_bytes = generate_pdf(data)
                 if pdf_bytes:
                     st.download_button(
@@ -359,7 +316,6 @@ with tab2:
                         use_container_width=True
                     )
         
-        # Fast Preview List
         for log in data:
             job_info = f"📦 {log.get('job_code')} - {log.get('customer')}"
             with st.expander(job_info):
@@ -370,3 +326,20 @@ with tab2:
     else:
         st.info("No records found for the selected filters.")
 
+with tab3:
+    st.subheader("🛠️ Master Management")
+    c_col, j_col = st.columns(2)
+    with c_col:
+        st.write("**Current Customers:**", ", ".join(customers) if customers else "None")
+        with st.form("add_cust"):
+            nc = st.text_input("New Customer")
+            if st.form_submit_button("Add Customer") and nc:
+                conn.table("customer_master").insert({"name": nc}).execute()
+                st.cache_data.clear(); st.rerun()
+    with j_col:
+        st.write("**Current Job Codes:**", ", ".join(jobs) if jobs else "None")
+        with st.form("add_job"):
+            nj = st.text_input("New Job Code")
+            if st.form_submit_button("Add Job") and nj:
+                conn.table("job_master").insert({"job_code": nj}).execute()
+                st.cache_data.clear(); st.rerun()
