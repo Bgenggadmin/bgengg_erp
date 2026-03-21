@@ -22,7 +22,12 @@ elif pressure_reading < 30:
 else:
     # NOMINAL OPERATION
     st.success("✅ NOMINAL: System operating within design parameters.")
-    st.info(f"Flow Rate: {pressure_reading * 0.8} m³/h") 
+    
+    # Calculate the flow rate first (The Logic)
+    flow_rate = pressure_reading * 0.8
+    
+    # 3. THE UPDATED GAUGE (The Fix)
+    # We provide the 'Label' and the 'Value'
     st.metric(label="Calculated Flow Rate", value=f"{flow_rate} m³/h")
     
     st.info("System optimized for continuous flow.")
