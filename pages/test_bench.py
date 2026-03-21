@@ -28,6 +28,7 @@ else:
     
     # 3. THE UPDATED GAUGE (The Fix)
     # We provide the 'Label' and the 'Value'
-    st.metric(label="Calculated Flow Rate", value=f"{flow_rate} m³/h")
+    # Showing a 'Delta' (Comparison)
+    st.metric(label="Internal Pressure", value=f"{pressure_reading} PSI", delta="5 PSI")
     
     st.info("System optimized for continuous flow.")
