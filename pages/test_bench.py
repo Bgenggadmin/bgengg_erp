@@ -1,38 +1,33 @@
 import streamlit as st
 
-st.title("Session 2: Tank Level Monitor")
+st.title("Session 3: The Warehouse")
 
-# --- NEW: MATERIAL SPECIFICATION (Variable Initialization) ---
-# We define these 'Tanks' at the top so the rest of the script can 'see' them.
-material_grade = "SS304"  # This is a String (Text)
-plate_thickness = 12.5    # This is a Float (Decimal)
-batch_count = 5           # This is an Integer (Whole Number)
+# --- 1. THE LIST (The Conveyor Belt) ---
+# Ordered collection of equipment
+equipment_list = ["Lathe", "Milling Machine", "Drill Press", "Welding Rig"]
 
-# --- 1. THE LEAKY TANK (Standard Variable) ---
-leaky_tank = 0
-leaky_tank += 1 
+# --- 2. THE DICTIONARY (The Spec Sheet) ---
+# Labeled data for a specific 'Job'
+job_spec = {
+    "Job_ID": "BG-2026-001",
+    "Client": "Local Industrial Corp",
+    "Material": "Mild Steel",
+    "Quantity": 50
+}
 
-# --- 2. THE ACCUMULATOR (Session State) ---
-if 'accumulator' not in st.session_state:
-    st.session_state.accumulator = 0
+# --- 3. THE INTERFACE (The Warehouse Manager) ---
+st.header("Inventory Overview")
 
-if st.button("Pump Fluid (Add 10 Units)"):
-    st.session_state.accumulator += 10
+# Displaying the List (The Belt)
+st.subheader("Equipment on Floor")
+st.write(f"Primary Tool: {equipment_list[0]}") # Accessing the 1st item
+st.write(f"Backup Tool: {equipment_list[3]}")  # Accessing the 4th item
 
-# --- 3. THE GAUGES (Output) ---
-col1, col2 = st.columns(2)
-
-with col1:
-    st.metric("Leaky Tank", leaky_tank)
-    st.caption("Resets every run")
-
-with col2:
-    st.metric("Accumulator", st.session_state.accumulator)
-    st.caption("Stays pressurized")
-
-# --- 4. MATERIAL READOUT ---
 st.divider()
-st.subheader("Material Log")
-# Now the 'Gauge' works because the 'Tank' was defined above
-st.write(f"Current Material: **{material_grade}**")
-st.write(f"Thickness: {plate_thickness} mm | Batch: {batch_count}")
+
+# Displaying the Dictionary (The Bin)
+st.subheader("Active Job Specifications")
+st.json(job_spec) # .json() is a great way to view 'Spec Sheets' clearly
+
+# Accessing a specific 'Bin' by its 'Label'
+st.info(f"Currently Processing: {job_spec['Material']}")
