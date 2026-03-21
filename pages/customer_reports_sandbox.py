@@ -11,8 +11,8 @@ import os
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
-# HEADER_FIELDS matches the keys we will use in our last_data dictionary
-HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date"]
+# Added the new date fields to the header list for the PDF
+HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 
 MILESTONE_MAP = [
     ("Drawing Submission", "draw_sub", "draw_sub_note"),
@@ -65,7 +65,6 @@ def generate_pdf(logs):
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "B", 10); pdf.set_xy(10, 30)
         pdf.cell(0, 8, f" JOB: {log.get('job_code','N/A')} | ID: {log.get('id','N/A')}", "B", 0, "L")
-        
         pdf.set_xy(10, 30)
         pdf.cell(0, 8, f"Report Date: {report_date} ", 0, 1, "R")
         
@@ -163,25 +162,26 @@ with tab1:
     last_data = {}
     
     if f_job:
-        # Step 1: Check existing progress history
+        # Check for history first
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res and res.data: 
             last_data = res.data[0]
-            st.toast(f"🔄 Autofilled history for {f_job}")
+            st.toast(f"🔄 Autofilled latest data for {f_job}")
         else:
-            # Step 2: FALLBACK to anchor_projects (using your SQL schema names)
+            # FALLBACK to anchor_projects for new jobs
             anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
             if anchor_res and anchor_res.data:
                 a_info = anchor_res.data[0]
                 last_data = {
                     "customer": a_info.get("client_name"),
-                    "equipment": a_info.get("project_description"), # Corrected per SQL
-                    "engineer": a_info.get("anchor_person"),        # Corrected per SQL
+                    "equipment": a_info.get("project_description"),
                     "po_no": a_info.get("po_no"),
                     "po_date": a_info.get("po_date"),
-                    "po_delivery_date": a_info.get("po_delivery_date")
+                    "engineer": a_info.get("anchor_person"),
+                    "po_delivery_date": a_info.get("po_delivery_date"),
+                    "exp_dispatch_date": a_info.get("revised_delivery_date")
                 }
-                st.toast(f"✨ New Job: Details pulled from Anchor")
+                st.toast(f"✨ New Job: Pulled from Anchor Portal")
 
     with st.form("main_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -202,6 +202,11 @@ with tab1:
 
         f_po_d = c4.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c5.text_input("Responsible Engineer", value=str(last_data.get('engineer') or ""))
+
+        # Extra dates for production planning
+        c6, c7 = st.columns(2)
+        f_po_del = c6.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
+        f_exp_disp = c7.date_input("Expected Dispatch Date", value=safe_date('exp_dispatch_date'))
 
         st.divider()
         st.subheader("📊 Milestone Tracking")
@@ -235,12 +240,9 @@ with tab1:
                 payload = {
                     "customer": f_cust, "job_code": f_job, "equipment": f_eq,
                     "po_no": f_po_n, "po_date": str(f_po_d), "engineer": f_eng,
+                    "po_delivery_date": str(f_po_del), "exp_dispatch_date": str(f_exp_disp),
                     "overall_progress": f_progress, **m_responses
                 }
-                # Include delivery date in logs if pulled from anchor
-                if last_data.get('po_delivery_date'):
-                    payload['po_delivery_date'] = str(last_data['po_delivery_date'])
-                
                 res = conn.table("progress_logs").insert(payload).execute()
                 
                 if uploaded_photos and res.data:
@@ -253,7 +255,7 @@ with tab1:
                         )
                 st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
 
-# --- TAB 2 & 3 as originally provided ---
+# Tab 2 & 3 remain the same as your provided code
 with tab2:
     st.subheader("📂 Report Archive")
     f1, f2, f3 = st.columns(3)
