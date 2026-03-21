@@ -129,33 +129,26 @@ def generate_pdf(logs):
                     os.unlink(t_name)
             except: continue
 
-        if photo_count <= 0:
-            pdf.set_font("Arial", "I", 8)
-            pdf.cell(0, 10, "No progress photos available.", 0, 1, "L")
-
     if logo_path and os.path.exists(logo_path):
         os.unlink(logo_path)
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
-# --- 3. DATA FETCH (DISCONNECTED FROM MANUAL MASTERS) ---
+# --- 3. DATA FETCH ---
 @st.cache_data(ttl=60)
 def get_master_data():
     try:
-        # Fetching everything from anchor_projects
         res = conn.table("anchor_projects").select("client_name, job_no").execute()
         if res.data:
             c_list = list(set([d['client_name'] for d in res.data if d.get('client_name')]))
             j_list = list(set([d['job_no'] for d in res.data if d.get('job_no')]))
             return sorted(c_list), sorted(j_list)
         return [], []
-    except Exception as e:
-        st.error(f"Error fetching anchor data: {e}")
-        return [], []
+    except: return [], []
 
 customers, jobs = get_master_data()
 
 # --- 4. MAIN UI ---
-tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
+tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🧬 System Schema"])
 
 with tab1:
     st.subheader("📋 Project Update")
@@ -163,13 +156,11 @@ with tab1:
     last_data = {}
     
     if f_job:
-        # Check history first
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res and res.data: 
             last_data = res.data[0]
             st.toast(f"🔄 Autofilled latest data for {f_job}")
         else:
-            # Fallback to anchor_projects
             anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
             if anchor_res and anchor_res.data:
                 a_info = anchor_res.data[0]
@@ -229,7 +220,6 @@ with tab1:
         st.divider()
         f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
         
-        st.subheader("📸 Progress Documentation")
         uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
 
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
@@ -260,17 +250,6 @@ with tab2:
     sel_c = f1.selectbox("Filter Customer", ["All"] + customers)
     report_type = f2.selectbox("📅 Period", ["All Time", "Current Week", "Current Month", "Custom Range"])
     
-    start_date, end_date = None, None
-    now = datetime.now()
-    if report_type == "Current Week":
-        start_date = (now - timedelta(days=now.weekday())).date()
-    elif report_type == "Current Month":
-        start_date = now.replace(day=1).date()
-    elif report_type == "Custom Range":
-        dates = f3.date_input("Select Range", [now, now])
-        if len(dates) == 2:
-            start_date, end_date = dates[0], dates[1]
-
     query = conn.table("progress_logs").select("*").order("id", desc=True)
     if sel_c != "All":
         query = query.eq("customer", sel_c)
@@ -283,20 +262,41 @@ with tab2:
             with st.spinner("Generating PDF..."):
                 pdf_bytes = generate_pdf(data)
                 if pdf_bytes:
-                    st.download_button(
-                        label="✅ Click here to Save PDF",
-                        data=pdf_bytes,
-                        file_name=f"BG_Report_{datetime.now().strftime('%Y%m%d')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
-                    )
+                    st.download_button(label="✅ Click here to Save PDF", data=pdf_bytes, file_name=f"BG_Report.pdf", mime="application/pdf")
         
         for log in data:
-            job_info = f"📦 {log.get('job_code')} - {log.get('customer')}"
-            with st.expander(job_info):
-                prog = int(log.get('overall_progress', 0) or 0)
-                st.write(f"**Current Progress: {prog}%**")
-                st.progress(prog / 100)
-                st.write(f"Engineer: {log.get('engineer', 'N/A')}")
-    else:
-        st.info("No records found.")
+            with st.expander(f"📦 {log.get('job_code')} - {log.get('customer')}"):
+                st.write(f"**Overall: {log.get('overall_progress')}%**")
+                st.progress(int(log.get('overall_progress') or 0) / 100)
+
+with tab3:
+    st.subheader("🧬 System Database Mapping")
+    st.info("This tab shows which Supabase resources are currently powering this application.")
+    
+    col_a, col_b = st.columns(2)
+    
+    with col_a:
+        st.markdown("### 📊 Active Tables")
+        st.code("""
+1. anchor_projects
+   - Purpose: Source for Job Codes, Customers, and PO dates.
+   - Primary Key: job_no
+
+2. progress_logs
+   - Purpose: Stores every progress update and milestone.
+   - Used for: Generating PDFs and history.
+        """)
+        
+    with col_b:
+        st.markdown("### ☁️ Storage & Assets")
+        st.code("""
+1. Bucket: 'progress-photos'
+   - logo.png: Used for PDF Header.
+   - {id}_{index}.jpg: Project photos.
+        """)
+    
+    st.divider()
+    st.markdown("### 🔄 Logic Flow")
+    st.write("1. **Job Selection:** App queries `anchor_projects` to populate dropdown.")
+    st.write("2. **Form Autofill:** App checks `progress_logs` for history; if empty, it pulls baseline data from `anchor_projects`.")
+    st.write("3. **Submission:** Data is saved to `progress_logs`, and images are uploaded to the storage bucket.")
