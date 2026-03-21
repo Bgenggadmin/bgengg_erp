@@ -23,5 +23,5 @@ else:
     # NOMINAL OPERATION
     st.success("✅ NOMINAL: System operating within design parameters.")
     st.info(f"Flow Rate: {pressure_reading * 0.8} m³/h") 
-    st.metric()
-    # Notice the calculation only runs if we are in the 'Nominal' zone
+    # Showing a 'Delta' (Comparison)
+    st.metric(label="Internal Pressure", value=f"{pressure_reading} PSI", delta="5 PSI")
