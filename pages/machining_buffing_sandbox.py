@@ -36,20 +36,36 @@ else:
 
 OP_MASTER, VN_MASTER, VH_MASTER = "master_workers", "master_clients", "master_vehicles"
 
-# 2. Data Fetching
+# --- 2. Data Fetching (UPDATED) ---
 def get_all_data():
     try:
+        # PULL MASTER DATA
         m_data = conn.table(MASTER_TABLE).select(MASTER_COL).execute().data or []
         o_data = conn.table(OP_MASTER).select("name").execute().data or []
         v_data = conn.table(VN_MASTER).select("name").execute().data or []
+        
+        # NEW: PULL JOB CODES FROM YOUR MASTER PROJECT TABLE
+        # We use .select("job_no") to keep the data light
+        j_master = conn.table("anchor_projects").select("job_no").execute().data or []
+        # Create a sorted list of unique job codes
+        job_list = sorted(list(set([j['job_no'] for j in j_master if j.get('job_no')])))
+
+        # VEHICLE LIST (Existing logic)
         vh_list = [v['reg_no'] for v in (conn.table(VH_MASTER).select("reg_no").execute().data or [])] if not IS_BUFFING else []
+        
+        # LOGS (Existing logic)
         logs = conn.table(DB_TABLE).select("*").order("created_at", desc=True).execute().data or []
         df = pd.DataFrame(logs)
-        return [r[MASTER_COL] for r in m_data], [o['name'] for o in o_data], [v['name'] for v in v_data], vh_list, df
-    except Exception as e:
-        st.error(f"Sync Error: {e}"); return [], [], [], [], pd.DataFrame()
+        
+        # RETURN THE NEW LIST (Added job_list at the end)
+        return [r[MASTER_COL] for r in m_data], [o['name'] for o in o_data], [v['name'] for v in v_data], vh_list, df, job_list
 
-res_list, op_list, vn_list, vh_list, df_main = get_all_data()
+    except Exception as e:
+        st.error(f"Sync Error: {e}")
+        return [], [], [], [], pd.DataFrame(), []
+
+# UNPACK THE NEW VARIABLE
+res_list, op_list, vn_list, vh_list, df_main, master_jobs = get_all_data()
 tabs = st.tabs(["📝 Production Request", "👨‍💻 Incharge Entry Desk", "📊 Executive Analytics", "🛠️ Masters"])
 
 # --- TAB 1: REQUEST & LIVE SUMMARY ---
@@ -60,19 +76,35 @@ with tabs[0]:
         u_no, j_code = c1.selectbox("Unit", [1, 2, 3]), c1.text_input("Job Code")
         part, act = c2.text_input("Part Name"), c2.selectbox("Activity", ACTIVITIES)
         req_d, prio = c3.date_input("Required Date"), c3.selectbox("Priority", ["Low", "Medium", "High", "URGENT"])
-        if st.form_submit_button("Submit Request") and j_code and part:
-            today_ist = get_today_ist()
-            # CORRECTED LINE:
-            conn.table(DB_TABLE).insert({
+        if st.form_submit_button("Submit Request"):
+    # 1. THE SAFETY INTERLOCK: Ensure no blank fields
+            if not j_code or j_code == "":
+                st.error("🚨 Selection Required: Please choose a valid Job Code.")
+            elif not part:
+                st.error("🚨 Input Required: Please enter the Part Name.")
+            else:
+        # 2. THE PROCESSING LOGIC
+                today_ist = get_today_ist()
+            payload = {
                 "unit_no": u_no, 
                 "job_code": j_code, 
                 "part_name": part, 
                 "activity_type": act, 
-                "required_date": str(req_d), 
-                "request_date": str(today_ist),  # Fixed: Removed ) and added ,
+                "required_date": req_d.isoformat(), # Standard Industrial Date Format
+                "request_date": today_ist.isoformat(),
                 "status": "Pending", 
                 "priority": prio
-            }).execute()
+            }
+        
+        # 3. THE INSPECTION RECEIPT (res)
+            try:
+                res = conn.table(DB_TABLE).insert(payload).execute()
+                if res.data:
+                    st.success(f"✅ Request Logged: {j_code} for {part} is now LIVE.")
+                    st.balloons() # Visual confirmation for the operator
+                    st.rerun()    # Refresh the summary table below immediately
+            except Exception as e:
+                st.error(f"🚨 System Link Failure: {e}")
     st.divider()
     st.subheader("🚦 Live Summary Table")
     if not df_main.empty:
