@@ -152,15 +152,34 @@ tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🧬 System Schem
 
 with tab1:
     st.subheader("📋 Project Update")
-    f_job = st.selectbox("Job Code", [""] + jobs, key="job_lookup")
+    
+    # 1. SETUP SESSION STATE FOR RESET
+    if "form_reset" not in st.session_state:
+        st.session_state.form_reset = False
+
+    c_top1, c_top2 = st.columns([3, 1])
+    f_job = c_top1.selectbox("Job Code", [""] + jobs, key="job_lookup")
+    
+    # Reset Button Logic
+    if c_top2.button("🧹 Clear Form", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
     last_data = {}
     
     if f_job:
+        # 2. FETCH HISTORY
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
-        if res and res.data: 
+        
+        # 3. SMART VALIDATION: Check if history actually has a Customer name
+        # This fixes the issue where history was "fetching" but showing NULLs
+        has_valid_history = res and res.data and res.data[0].get('customer') is not None
+        
+        if has_valid_history:
             last_data = res.data[0]
-            st.toast(f"🔄 Autofilled latest data for {f_job}")
+            st.toast(f"🔄 Loaded latest report for {f_job}")
         else:
+            # 4. FALLBACK: If history is empty or null, pull from Anchor Portal
             anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
             if anchor_res and anchor_res.data:
                 a_info = anchor_res.data[0]
@@ -175,6 +194,7 @@ with tab1:
                 }
                 st.toast(f"✨ New Job: Pulled from Anchor Portal")
 
+    # --- THE FORM ---
     with st.form("main_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
         try:
@@ -220,7 +240,8 @@ with tab1:
         st.divider()
         f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
         
-        uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
+        st.subheader("📸 Progress Documentation")
+        uploaded_photos = st.file_uploader("Upload Photos (Max 4)", accept_multiple_files=True, type=['jpg', 'png'])
 
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
             if not f_cust or not f_job:
@@ -242,7 +263,7 @@ with tab1:
                             f"{file_id}_{i}.jpg", img_data,
                             file_options={"content-type": "image/jpeg"}
                         )
-                st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
+                st.success("✅ Update Recorded Successfully!"); st.cache_data.clear(); st.rerun()
 
 with tab2:
     st.subheader("📂 Report Archive")
