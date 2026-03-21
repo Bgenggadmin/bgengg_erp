@@ -151,7 +151,7 @@ def generate_pdf(logs):
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
 # --- 3. DATA FETCH ---
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def get_master_data():
     try:
         c_res = conn.table("customer_master").select("name").execute()
