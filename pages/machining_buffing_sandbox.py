@@ -73,18 +73,20 @@ with tabs[0]:
     st.subheader(f"New {st.session_state.hub} Entry")
     with st.form("req_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        # NEW (Pulling from Master List)
         u_no = c1.selectbox("Unit", [1, 2, 3])
-        j_code = c1.selectbox("Job Code", [""] + master_jobs) # Linked to your master_jobs list
-        part, act = c2.text_input("Part Name"), c2.selectbox("Activity", ACTIVITIES)
-        req_d, prio = c3.date_input("Required Date"), c3.selectbox("Priority", ["Low", "Medium", "High", "URGENT"])
-  if st.form_submit_button("Submit Request"):
+        j_code = c1.selectbox("Job Code", [""] + master_jobs) 
+        part = c2.text_input("Part Name")
+        act = c2.selectbox("Activity", ACTIVITIES)
+        req_d = c3.date_input("Required Date")
+        prio = c3.selectbox("Priority", ["Low", "Medium", "High", "URGENT"])
+        
+        # FIXED INDENTATION: This must align with the columns above
+        if st.form_submit_button("Submit Request"):
             if not j_code or j_code == "":
                 st.error("🚨 Selection Required: Please choose a valid Job Code.")
             elif not part:
                 st.error("🚨 Input Required: Please enter the Part Name.")
             else:
-                # ALL OF THIS MUST BE INDENTED TO BE INSIDE THE 'ELSE'
                 today_ist = get_today_ist()
                 payload = {
                     "unit_no": u_no, 
