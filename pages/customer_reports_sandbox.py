@@ -11,7 +11,6 @@ import os
 st.set_page_config(page_title="B&G Hub 2.0", layout="wide")
 conn = st.connection("supabase", type=SupabaseConnection, ttl=60)
 
-# Added the new date fields to the header list for the PDF
 HEADER_FIELDS = ["customer", "job_code", "equipment", "po_no", "po_date", "engineer", "po_delivery_date", "exp_dispatch_date"]
 
 MILESTONE_MAP = [
@@ -130,9 +129,7 @@ def generate_pdf(logs):
                     os.unlink(t_name)
             except: continue
 
-        if photo_count > 0:
-            pdf.set_y(start_y + 55) 
-        else:
+        if photo_count <= 0:
             pdf.set_font("Arial", "I", 8)
             pdf.cell(0, 10, "No progress photos available.", 0, 1, "L")
 
@@ -140,31 +137,25 @@ def generate_pdf(logs):
         os.unlink(logo_path)
     return bytes(pdf.output(dest='S'), encoding='latin-1')
 
-# --- 3. DATA FETCH ---
+# --- 3. DATA FETCH (DISCONNECTED FROM MANUAL MASTERS) ---
 @st.cache_data(ttl=60)
 def get_master_data():
     try:
-        # Pull customers from the customer master
-        c_res = conn.table("customer_master").select("name").execute()
-        
-        # CHANGED: Pull Job Codes from anchor_projects instead of job_master
-        # We select 'job_no' and ensure we only get unique values
-        j_res = conn.table("anchor_projects").select("job_no").execute()
-        
-        c_list = [d['name'] for d in c_res.data] if c_res.data else []
-        
-        # Using set() to remove any duplicate job numbers if they exist
-        j_list = list(set([d['job_no'] for d in j_res.data if d.get('job_no')])) if j_res.data else []
-        
-        return sorted(c_list), sorted(j_list)
+        # Fetching everything from anchor_projects
+        res = conn.table("anchor_projects").select("client_name, job_no").execute()
+        if res.data:
+            c_list = list(set([d['client_name'] for d in res.data if d.get('client_name')]))
+            j_list = list(set([d['job_no'] for d in res.data if d.get('job_no')]))
+            return sorted(c_list), sorted(j_list)
+        return [], []
     except Exception as e:
-        st.error(f"Error fetching master data: {e}")
+        st.error(f"Error fetching anchor data: {e}")
         return [], []
 
 customers, jobs = get_master_data()
 
 # --- 4. MAIN UI ---
-tab1, tab2, tab3 = st.tabs(["📝 New Entry", "📂 Archive", "🛠️ Masters"])
+tab1, tab2 = st.tabs(["📝 New Entry", "📂 Archive"])
 
 with tab1:
     st.subheader("📋 Project Update")
@@ -172,13 +163,13 @@ with tab1:
     last_data = {}
     
     if f_job:
-        # Check for history first
+        # Check history first
         res = conn.table("progress_logs").select("*").eq("job_code", f_job).order("id", desc=True).limit(1).execute()
         if res and res.data: 
             last_data = res.data[0]
             st.toast(f"🔄 Autofilled latest data for {f_job}")
         else:
-            # FALLBACK to anchor_projects for new jobs
+            # Fallback to anchor_projects
             anchor_res = conn.table("anchor_projects").select("*").eq("job_no", f_job).limit(1).execute()
             if anchor_res and anchor_res.data:
                 a_info = anchor_res.data[0]
@@ -213,7 +204,6 @@ with tab1:
         f_po_d = c4.date_input("PO Date", value=safe_date('po_date'))
         f_eng = c5.text_input("Responsible Engineer", value=str(last_data.get('engineer') or ""))
 
-        # Extra dates for production planning
         c6, c7 = st.columns(2)
         f_po_del = c6.date_input("PO Delivery Date", value=safe_date('po_delivery_date'))
         f_exp_disp = c7.date_input("Expected Dispatch Date", value=safe_date('exp_dispatch_date'))
@@ -229,8 +219,7 @@ with tab1:
             col1, col2, col3 = st.columns([1.5, 1, 2])
             prev_status = str(last_data.get(skey) or "Pending")
             def_idx = opts.index(prev_status) if prev_status in opts else 0
-            raw_prog = last_data.get(pk, 0)
-            prev_prog = int(raw_prog or 0)
+            prev_prog = int(last_data.get(pk, 0) or 0)
             prev_note = str(last_data.get(nkey) or "")
             
             m_responses[skey] = col1.selectbox(label, opts, index=def_idx, key=f"s_{skey}_{job_suffix}")
@@ -240,7 +229,7 @@ with tab1:
         st.divider()
         f_progress = st.slider("📈 Overall Completion %", 0, 100, value=int(last_data.get('overall_progress', 0) or 0), key=f"ov_{job_suffix}")
         
-        st.subheader("📸 Progress Documentation (Max 4 Photos)")
+        st.subheader("📸 Progress Documentation")
         uploaded_photos = st.file_uploader("Upload Progress Photos", accept_multiple_files=True, type=['jpg', 'jpeg', 'png'])
 
         if st.form_submit_button("🚀 SUBMIT UPDATE", use_container_width=True):
@@ -265,7 +254,6 @@ with tab1:
                         )
                 st.success("✅ Saved!"); st.cache_data.clear(); st.rerun()
 
-# Tab 2 & 3 remain the same as your provided code
 with tab2:
     st.subheader("📂 Report Archive")
     f1, f2, f3 = st.columns(3)
@@ -288,34 +276,9 @@ with tab2:
         query = query.eq("customer", sel_c)
     
     res = query.execute()
-    raw_data = res.data if res.data else []
-
-    data = []
-    if start_date:
-        for d in raw_data:
-            try:
-                raw_ts = d.get('created_at') or d.get('po_date')
-                d_date = datetime.strptime(raw_ts[:10], "%Y-%m-%d").date()
-                if end_date:
-                    if start_date <= d_date <= end_date: data.append(d)
-                else:
-                    if d_date >= start_date: data.append(d)
-            except:
-                data.append(d)
-    else:
-        data = raw_data
+    data = res.data if res.data else []
 
     if data:
-        total_jobs = len(data)
-        completed = len([d for d in data if int(d.get('overall_progress', 0) or 0) == 100])
-        pending = total_jobs - completed
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Reports", total_jobs)
-        m2.metric("Completed", completed)
-        m3.metric("Pending", pending)
-        st.divider()
-
         if st.button("📥 Prepare PDF for Download", use_container_width=True):
             with st.spinner("Generating PDF..."):
                 pdf_bytes = generate_pdf(data)
@@ -336,22 +299,4 @@ with tab2:
                 st.progress(prog / 100)
                 st.write(f"Engineer: {log.get('engineer', 'N/A')}")
     else:
-        st.info("No records found for the selected filters.")
-
-with tab3:
-    st.subheader("🛠️ Master Management")
-    c_col, j_col = st.columns(2)
-    with c_col:
-        st.write("**Current Customers:**", ", ".join(customers) if customers else "None")
-        with st.form("add_cust"):
-            nc = st.text_input("New Customer")
-            if st.form_submit_button("Add Customer") and nc:
-                conn.table("customer_master").insert({"name": nc}).execute()
-                st.cache_data.clear(); st.rerun()
-    with j_col:
-        st.write("**Current Job Codes:**", ", ".join(jobs) if jobs else "None")
-        with st.form("add_job"):
-            nj = st.text_input("New Job Code")
-            if st.form_submit_button("Add Job") and nj:
-                conn.table("job_master").insert({"job_code": nj}).execute()
-                st.cache_data.clear(); st.rerun()
+        st.info("No records found.")
