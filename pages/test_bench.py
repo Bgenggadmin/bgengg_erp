@@ -1,33 +1,26 @@
 import streamlit as st
 
-st.title("Session 3: The Warehouse")
+st.title("Week 2: Control Logic")
+st.header("Sub-system: Pressure Monitor")
 
-# --- 1. THE LIST (The Conveyor Belt) ---
-# Ordered collection of equipment
-equipment_list = ["Lathe", "Milling Machine", "Drill Press", "Welding Rig"]
-
-# --- 2. THE DICTIONARY (The Spec Sheet) ---
-# Labeled data for a specific 'Job'
-job_spec = [
-    "Job_ID": "BG-2026-001",
-    "Client": "Local Industrial Corp",
-    "Material": "Mild Steel",
-    "Quantity": 50
-]
-
-# --- 3. THE INTERFACE (The Warehouse Manager) ---
-st.header("Inventory Overview")
-
-# Displaying the List (The Belt)
-st.subheader("Equipment on Floor")
-st.write(f"Primary Tool: {equipment_list[0]}") # Accessing the 1st item
-st.write(f"Backup Tool: {equipment_list[3]}")  # Accessing the 4th item
+# --- 1. THE SENSOR (Input) ---
+# We simulate a pressure gauge from 0 to 150 PSI
+pressure_reading = st.slider("Current System Pressure (PSI)", 0, 150, 85)
 
 st.divider()
 
-# Displaying the Dictionary (The Bin)
-st.subheader("Active Job Specifications")
-st.json(job_spec) # .json() is a great way to view 'Spec Sheets' clearly
-
-# Accessing a specific 'Bin' by its 'Label'
-st.info(f"Currently Processing: {job_spec['Material']}")
+# --- 2. THE CHECK VALVE (Logic) ---
+if pressure_reading > 120:
+    # CRITICAL CONDITION
+    st.error("🚨 CRITICAL FAULT: Pressure exceeds safety limit!")
+    st.button("Activate Emergency Vent")
+    
+elif pressure_reading < 30:
+    # LOW FLOW CONDITION
+    st.warning("⚠️ LOW PRESSURE: System in Standby Mode.")
+    
+else:
+    # NOMINAL OPERATION
+    st.success("✅ NOMINAL: System operating within design parameters.")
+    st.info(f"Flow Rate: {pressure_reading * 0.8} m³/h") 
+    # Notice the calculation only runs if we are in the 'Nominal' zone
