@@ -73,38 +73,37 @@ with tabs[0]:
     st.subheader(f"New {st.session_state.hub} Entry")
     with st.form("req_form", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
-        u_no, j_code = c1.selectbox("Unit", [1, 2, 3]), c1.text_input("Job Code")
+        # NEW (Pulling from Master List)
+        u_no = c1.selectbox("Unit", [1, 2, 3])
+        j_code = c1.selectbox("Job Code", [""] + master_jobs) # Linked to your master_jobs list
         part, act = c2.text_input("Part Name"), c2.selectbox("Activity", ACTIVITIES)
         req_d, prio = c3.date_input("Required Date"), c3.selectbox("Priority", ["Low", "Medium", "High", "URGENT"])
-        if st.form_submit_button("Submit Request"):
-    # 1. THE SAFETY INTERLOCK: Ensure no blank fields
+  if st.form_submit_button("Submit Request"):
             if not j_code or j_code == "":
                 st.error("🚨 Selection Required: Please choose a valid Job Code.")
             elif not part:
                 st.error("🚨 Input Required: Please enter the Part Name.")
             else:
-        # 2. THE PROCESSING LOGIC
+                # ALL OF THIS MUST BE INDENTED TO BE INSIDE THE 'ELSE'
                 today_ist = get_today_ist()
-            payload = {
-                "unit_no": u_no, 
-                "job_code": j_code, 
-                "part_name": part, 
-                "activity_type": act, 
-                "required_date": req_d.isoformat(), # Standard Industrial Date Format
-                "request_date": today_ist.isoformat(),
-                "status": "Pending", 
-                "priority": prio
-            }
-        
-        # 3. THE INSPECTION RECEIPT (res)
-            try:
-                res = conn.table(DB_TABLE).insert(payload).execute()
-                if res.data:
-                    st.success(f"✅ Request Logged: {j_code} for {part} is now LIVE.")
-                    st.balloons() # Visual confirmation for the operator
-                    st.rerun()    # Refresh the summary table below immediately
-            except Exception as e:
-                st.error(f"🚨 System Link Failure: {e}")
+                payload = {
+                    "unit_no": u_no, 
+                    "job_code": j_code, 
+                    "part_name": part, 
+                    "activity_type": act, 
+                    "required_date": req_d.isoformat(), 
+                    "request_date": today_ist.isoformat(),
+                    "status": "Pending", 
+                    "priority": prio
+                }
+                
+                try:
+                    res = conn.table(DB_TABLE).insert(payload).execute()
+                    if res.data:
+                        st.success(f"✅ Request Logged: {j_code}")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"🚨 System Link Failure: {e}")
     st.divider()
     st.subheader("🚦 Live Summary Table")
     if not df_main.empty:
