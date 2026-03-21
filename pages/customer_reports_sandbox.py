@@ -144,12 +144,22 @@ def generate_pdf(logs):
 @st.cache_data(ttl=60)
 def get_master_data():
     try:
+        # Pull customers from the customer master
         c_res = conn.table("customer_master").select("name").execute()
-        j_res = conn.table("job_master").select("job_code").execute()
+        
+        # CHANGED: Pull Job Codes from anchor_projects instead of job_master
+        # We select 'job_no' and ensure we only get unique values
+        j_res = conn.table("anchor_projects").select("job_no").execute()
+        
         c_list = [d['name'] for d in c_res.data] if c_res.data else []
-        j_list = [d['job_code'] for d in j_res.data] if j_res.data else []
+        
+        # Using set() to remove any duplicate job numbers if they exist
+        j_list = list(set([d['job_no'] for d in j_res.data if d.get('job_no')])) if j_res.data else []
+        
         return sorted(c_list), sorted(j_list)
-    except: return [], []
+    except Exception as e:
+        st.error(f"Error fetching master data: {e}")
+        return [], []
 
 customers, jobs = get_master_data()
 
