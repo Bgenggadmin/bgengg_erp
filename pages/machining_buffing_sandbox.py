@@ -42,13 +42,18 @@ def get_all_data():
     try:
         m_data = conn.table(MASTER_TABLE).select(MASTER_COL).execute().data or []
         o_data = conn.table(OP_MASTER).select("name").execute().data or []
-        v_data = conn.table(VN_MASTER).select("vendor_name").execute().data or []
+        
+        # FIX 1: Access the dictionary using 'vendor_name'
+        v_raw = conn.table(VN_MASTER).select("vendor_name").execute().data or []
+        v_list = [v['vendor_name'] for v in v_raw]
+        
         j_master = conn.table("anchor_projects").select("job_no").execute().data or []
         job_list = sorted(list(set([j['job_no'] for j in j_master if j.get('job_no')])))
         vh_list = [v['reg_no'] for v in (conn.table(VH_MASTER).select("reg_no").execute().data or [])] if not IS_BUFFING else []
         logs = conn.table(DB_TABLE).select("*").order("created_at", desc=True).execute().data or []
         df = pd.DataFrame(logs)
-        return [r[MASTER_COL] for r in m_data], [o['name'] for o in o_data], [v['name'] for v in v_data], vh_list, df, job_list
+        
+        return [r[MASTER_COL] for r in m_data], [o['name'] for o in o_data], v_list, vh_list, df, job_list
     except Exception as e:
         st.error(f"Sync Error: {e}")
         return [], [], [], [], pd.DataFrame(), []
@@ -135,17 +140,27 @@ with tabs[2]:
 
 # --- TAB 4: MASTERS ---
 with tabs[3]:
-    m_opt = {MASTER_TABLE: "Machine/Station", OP_MASTER: "Operator", VN_MASTER: "vendor_name"}
+    # Labels for the UI
+    m_opt = {MASTER_TABLE: "Machine/Station", OP_MASTER: "Operator", VN_MASTER: "Vendor"}
     if not IS_BUFFING: m_opt[VH_MASTER] = "Vehicle"
+    
     sel = st.segmented_control("Registry", options=list(m_opt.keys()), format_func=lambda x: m_opt[x], default=MASTER_TABLE)
+    
+    # FIX 2: Define dynamic column names based on the selected registry
+    if sel == VN_MASTER:
+        col_name = "vendor_name"
+    elif sel == VH_MASTER:
+        col_name = "reg_no"
+    else:
+        col_name = "name"
+
     v_col, a_col = st.columns([2, 1])
     with v_col:
         r = conn.table(sel).select("*").execute().data
         if r:
-            col_name = "reg_no" if sel == VH_MASTER else "name"
             st.dataframe(pd.DataFrame(r)[[col_name]], use_container_width=True)
     with a_col:
-        col_name = "reg_no" if sel == VH_MASTER else "name"
         new_v = st.text_input(f"New {m_opt[sel]}")
         if st.button("Register") and new_v:
-            conn.table(sel).insert({col_name: new_v}).execute(); st.rerun()
+            conn.table(sel).insert({col_name: new_v}).execute()
+            st.rerun()
