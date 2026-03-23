@@ -42,7 +42,7 @@ def get_all_data():
     try:
         m_data = conn.table(MASTER_TABLE).select(MASTER_COL).execute().data or []
         o_data = conn.table(OP_MASTER).select("name").execute().data or []
-        v_data = conn.table(VN_MASTER).select("name").execute().data or []
+        v_data = conn.table(VN_MASTER).select("vendor_name").execute().data or []
         j_master = conn.table("anchor_projects").select("job_no").execute().data or []
         job_list = sorted(list(set([j['job_no'] for j in j_master if j.get('job_no')])))
         vh_list = [v['reg_no'] for v in (conn.table(VH_MASTER).select("reg_no").execute().data or [])] if not IS_BUFFING else []
@@ -135,7 +135,7 @@ with tabs[2]:
 
 # --- TAB 4: MASTERS ---
 with tabs[3]:
-    m_opt = {MASTER_TABLE: "Machine/Station", OP_MASTER: "Operator", VN_MASTER: "Vendor"}
+    m_opt = {MASTER_TABLE: "Machine/Station", OP_MASTER: "Operator", VN_MASTER: "vendor_name"}
     if not IS_BUFFING: m_opt[VH_MASTER] = "Vehicle"
     sel = st.segmented_control("Registry", options=list(m_opt.keys()), format_func=lambda x: m_opt[x], default=MASTER_TABLE)
     v_col, a_col = st.columns([2, 1])
