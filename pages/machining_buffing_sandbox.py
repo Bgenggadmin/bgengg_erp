@@ -108,10 +108,28 @@ with tabs[1]:
                 
                 if mode == "In-House":
                     m = st.selectbox(f"Assign {RES_LABEL}", res_list, key=f"sel_{job['id']}")
-                    o = st.selectbox("Assign Operator", op_list, key=f"o_{job['id']}")
+                    
+                    # CHANGED: selectbox -> multiselect for multiple operators
+                    o = st.multiselect("Assign Operators (Multiple)", op_list, key=f"o_{job['id']}")
+                    
                     if st.button("🚀 Start", key=f"btn_{job['id']}"):
-                        conn.table(DB_TABLE).update({"status": "In-House", "machine_id": m, "operator_id": o, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
-                        st.rerun()
+                        if not o:
+                            st.warning("Please assign at least one operator.")
+                        else:
+                            # Join names with a comma to store in a single text column
+                            ops_string = ", ".join(o)
+                            
+                            update_payload = {
+                                "status": "In-House", 
+                                "machine_id": m, 
+                                "operator_id": ops_string, # Now stores "Name 1, Name 2"
+                                "delay_reason": dr, 
+                                "intervention_note": inote
+                            }
+                            
+                            conn.table(DB_TABLE).update(update_payload).eq("id", job['id']).execute()
+                            st.success(f"Started with: {ops_string}")
+                            st.rerun()
                 else: 
                     v = st.selectbox("Select Vendor", vendor_list, key=f"v_{job['id']}")
                     st.markdown("---")
