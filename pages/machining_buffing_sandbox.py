@@ -34,32 +34,27 @@ else:
     ACTIVITIES = ["Rough Buffing", "Mirror Polishing", "Satin Finish", "RA Value Check"]
     IS_BUFFING = True
 
-OP_MASTER, VN_MASTER, VH_MASTER = "master_workers", "master_clients", "master_vehicles"
+OP_MASTER, VN_MASTER, VH_MASTER = "master_workers", "beta_vendor_master", "master_vehicles"
 
 # --- 2. Data Fetching (UPDATED) ---
 def get_all_data():
     try:
-        # PULL MASTER DATA
         m_data = conn.table(MASTER_TABLE).select(MASTER_COL).execute().data or []
         o_data = conn.table(OP_MASTER).select("name").execute().data or []
+        
+        # Pointing to the new beta_vendor_master table
         v_data = conn.table(VN_MASTER).select("name").execute().data or []
         
-        # NEW: PULL JOB CODES FROM YOUR MASTER PROJECT TABLE
-        # We use .select("job_no") to keep the data light
         j_master = conn.table("anchor_projects").select("job_no").execute().data or []
-        # Create a sorted list of unique job codes
         job_list = sorted(list(set([j['job_no'] for j in j_master if j.get('job_no')])))
-
-        # VEHICLE LIST (Existing logic)
+        
         vh_list = [v['reg_no'] for v in (conn.table(VH_MASTER).select("reg_no").execute().data or [])] if not IS_BUFFING else []
         
-        # LOGS (Existing logic)
         logs = conn.table(DB_TABLE).select("*").order("created_at", desc=True).execute().data or []
         df = pd.DataFrame(logs)
         
-        # RETURN THE NEW LIST (Added job_list at the end)
+        # Returning vendor_list instead of vn_list
         return [r[MASTER_COL] for r in m_data], [o['name'] for o in o_data], [v['name'] for v in v_data], vh_list, df, job_list
-
     except Exception as e:
         st.error(f"Sync Error: {e}")
         return [], [], [], [], pd.DataFrame(), []
@@ -137,15 +132,31 @@ with tabs[1]:
                     if st.button("🚀 Start", key=f"btn_{job['id']}"):
                         conn.table(DB_TABLE).update({"status": "In-House", "machine_id": m, "operator_id": o, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
                         st.rerun()
-                else:
-                    v = st.selectbox("Vendor", vn_list, key=f"v_{job['id']}")
-                    if st.button("🚚 Dispatch", key=f"d_{job['id']}"):
-                        conn.table(DB_TABLE).update({"status": "Outsourced", "vendor_id": v, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
-                        st.rerun()
-            
-            elif st.button("🏁 Finish", key=f"f_{job['id']}", use_container_width=True):
-                conn.table(DB_TABLE).update({"status": "Finished", "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
-                st.rerun()
+               else: # OUTSOURCE MODE
+                    # Use the updated vendor_list here
+                    v = st.selectbox("Select Vendor", vendor_list, key=f"v_{job['id']}")
+                    
+                    st.markdown("---")
+                    c_gp, c_bn = st.columns(2)
+                    # New inputs for Gate Pass and Bill Number
+                    gp_no = c_gp.text_input("Gate Pass No.", key=f"gp_{job['id']}")
+                    bill_no = c_bn.text_input("Bill No.", key=f"bn_{job['id']}")
+                    
+                    if st.button("🚚 Dispatch to Vendor", key=f"d_{job['id']}", use_container_width=True):
+                        if not gp_no:
+                            st.warning("Please enter a Gate Pass Number before dispatching.")
+                        else:
+                            update_data = {
+                                "status": "Outsourced", 
+                                "vendor_id": v, 
+                                "delay_reason": dr, 
+                                "intervention_note": inote,
+                                "gate_pass_no": gp_no,  # Matches Supabase column
+                                "bill_no": bill_no      # Matches Supabase column
+                            }
+                            conn.table(DB_TABLE).update(update_data).eq("id", job['id']).execute()
+                            st.success(f"Dispatched to {v} with GP: {gp_no}")
+                            st.rerun()
 # --- TAB 3: ANALYTICS ---
 with tabs[2]:
     if not df_main.empty:
