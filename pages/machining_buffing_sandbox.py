@@ -3,6 +3,7 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 import datetime
 import pytz
+
 IST = pytz.timezone('Asia/Kolkata')
 
 def get_today_ist():
@@ -24,7 +25,7 @@ if c1.button("⚙️ MACHINING HUB", use_container_width=True, type="primary" if
 if c2.button("✨ BUFFING HUB", use_container_width=True, type="primary" if st.session_state.hub == "Buffing Hub" else "secondary"):
     st.session_state.hub = "Buffing Hub"; st.rerun()
 
-# --- CONFIGURATION (Synced with Master Setup) ---
+# --- CONFIGURATION ---
 if st.session_state.hub == "Machining Hub":
     DB_TABLE, MASTER_TABLE, MASTER_COL, RES_LABEL = "beta_machining_logs", "master_machines", "name", "Machine"
     ACTIVITIES = ["Turning", "Drilling", "Milling", "Keyway", "Dishbending"]
@@ -36,34 +37,26 @@ else:
 
 OP_MASTER, VN_MASTER, VH_MASTER = "master_workers", "beta_vendor_master", "master_vehicles"
 
-# --- 2. Data Fetching (UPDATED) ---
+# --- 2. Data Fetching ---
 def get_all_data():
     try:
         m_data = conn.table(MASTER_TABLE).select(MASTER_COL).execute().data or []
         o_data = conn.table(OP_MASTER).select("name").execute().data or []
-        
-        # Pointing to the new beta_vendor_master table
         v_data = conn.table(VN_MASTER).select("name").execute().data or []
-        
         j_master = conn.table("anchor_projects").select("job_no").execute().data or []
         job_list = sorted(list(set([j['job_no'] for j in j_master if j.get('job_no')])))
-        
         vh_list = [v['reg_no'] for v in (conn.table(VH_MASTER).select("reg_no").execute().data or [])] if not IS_BUFFING else []
-        
         logs = conn.table(DB_TABLE).select("*").order("created_at", desc=True).execute().data or []
         df = pd.DataFrame(logs)
-        
-        # Returning vendor_list instead of vn_list
         return [r[MASTER_COL] for r in m_data], [o['name'] for o in o_data], [v['name'] for v in v_data], vh_list, df, job_list
     except Exception as e:
         st.error(f"Sync Error: {e}")
         return [], [], [], [], pd.DataFrame(), []
 
-# UNPACK THE NEW VARIABLE
-res_list, op_list, vn_list, vh_list, df_main, master_jobs = get_all_data()
+res_list, op_list, vendor_list, vh_list, df_main, master_jobs = get_all_data()
 tabs = st.tabs(["📝 Production Request", "👨‍💻 Incharge Entry Desk", "📊 Executive Analytics", "🛠️ Masters"])
 
-# --- TAB 1: REQUEST & LIVE SUMMARY ---
+# --- TAB 1: REQUEST ---
 with tabs[0]:
     st.subheader(f"New {st.session_state.hub} Entry")
     with st.form("req_form", clear_on_submit=True):
@@ -75,39 +68,24 @@ with tabs[0]:
         req_d = c3.date_input("Required Date")
         prio = c3.selectbox("Priority", ["Low", "Medium", "High", "URGENT"])
         
-        # FIXED INDENTATION: This must align with the columns above
         if st.form_submit_button("Submit Request"):
-            if not j_code or j_code == "":
-                st.error("🚨 Selection Required: Please choose a valid Job Code.")
-            elif not part:
-                st.error("🚨 Input Required: Please enter the Part Name.")
+            if not j_code or not part:
+                st.error("🚨 Selection Required: Job Code and Part Name are mandatory.")
             else:
-                today_ist = get_today_ist()
                 payload = {
-                    "unit_no": u_no, 
-                    "job_code": j_code, 
-                    "part_name": part, 
-                    "activity_type": act, 
-                    "required_date": req_d.isoformat(), 
-                    "request_date": today_ist.isoformat(),
-                    "status": "Pending", 
-                    "priority": prio
+                    "unit_no": u_no, "job_code": j_code, "part_name": part, "activity_type": act, 
+                    "required_date": req_d.isoformat(), "request_date": get_today_ist().isoformat(),
+                    "status": "Pending", "priority": prio
                 }
-                
-                try:
-                    res = conn.table(DB_TABLE).insert(payload).execute()
-                    if res.data:
-                        st.success(f"✅ Request Logged: {j_code}")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"🚨 System Link Failure: {e}")
+                conn.table(DB_TABLE).insert(payload).execute()
+                st.success(f"✅ Request Logged: {j_code}")
+                st.rerun()
+
     st.divider()
-    st.subheader("🚦 Live Summary Table")
     if not df_main.empty:
         df_sum = df_main.copy()
         df_sum['required_date'] = pd.to_datetime(df_sum['required_date'], errors='coerce')
-        today_timestamp = pd.Timestamp(get_today_ist())
-        df_sum['Days Left'] = (df_sum['required_date'] - today_timestamp).dt.days
+        df_sum['Days Left'] = (df_sum['required_date'] - pd.Timestamp(get_today_ist())).dt.days
         u_filt = st.radio("Unit Filter", [1, 2, 3], horizontal=True)
         st.dataframe(df_sum[df_sum['unit_no'] == u_filt][['job_code', 'part_name', 'status', 'priority', 'required_date', 'Days Left']], use_container_width=True, hide_index=True)
 
@@ -117,46 +95,39 @@ with tabs[1]:
     for job in active:
         with st.expander(f"📌 {job['job_code']} | {job['part_name']} ({job['status']})"):
             c1, c2 = st.columns(2)
-            dr = c1.text_input("Delay Reason", value=job['delay_reason'] or '', key=f"dr_{job['id']}")
-            inote = c2.text_area("Incharge Note", value=job['intervention_note'] or '', key=f"in_{job['id']}")
+            dr = c1.text_input("Delay Reason", value=job.get('delay_reason') or '', key=f"dr_{job['id']}")
+            inote = c2.text_area("Incharge Note", value=job.get('intervention_note') or '', key=f"in_{job['id']}")
             
             if job['status'] == "Pending":
-                # CHANGED: Added 'rad_' prefix to the radio key
                 mode = st.radio("Allotment", ["In-House", "Outsource"], key=f"rad_{job['id']}", horizontal=True)
                 
                 if mode == "In-House":
-                    # CHANGED: Added 'sel_' prefix to the selectbox key
                     m = st.selectbox(f"Assign {RES_LABEL}", res_list, key=f"sel_{job['id']}")
                     o = st.selectbox("Assign Operator", op_list, key=f"o_{job['id']}")
-                    
                     if st.button("🚀 Start", key=f"btn_{job['id']}"):
                         conn.table(DB_TABLE).update({"status": "In-House", "machine_id": m, "operator_id": o, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
                         st.rerun()
-               else: # OUTSOURCE MODE
-                    # Use the updated vendor_list here
+                else: 
                     v = st.selectbox("Select Vendor", vendor_list, key=f"v_{job['id']}")
-                    
                     st.markdown("---")
                     c_gp, c_bn = st.columns(2)
-                    # New inputs for Gate Pass and Bill Number
-                    gp_no = c_gp.text_input("Gate Pass No.", key=f"gp_{job['id']}")
-                    bill_no = c_bn.text_input("Bill No.", key=f"bn_{job['id']}")
+                    gp_no = c_gp.text_input("Gate Pass No.", value=job.get('gate_pass_no') or '', key=f"gp_{job['id']}")
+                    bill_no = c_bn.text_input("Bill No.", value=job.get('bill_no') or '', key=f"bn_{job['id']}")
                     
-                    if st.button("🚚 Dispatch to Vendor", key=f"d_{job['id']}", use_container_width=True):
+                    if st.button("🚚 Dispatch", key=f"d_{job['id']}", use_container_width=True):
                         if not gp_no:
-                            st.warning("Please enter a Gate Pass Number before dispatching.")
+                            st.warning("Please enter Gate Pass No.")
                         else:
-                            update_data = {
-                                "status": "Outsourced", 
-                                "vendor_id": v, 
-                                "delay_reason": dr, 
-                                "intervention_note": inote,
-                                "gate_pass_no": gp_no,  # Matches Supabase column
-                                "bill_no": bill_no      # Matches Supabase column
-                            }
-                            conn.table(DB_TABLE).update(update_data).eq("id", job['id']).execute()
-                            st.success(f"Dispatched to {v} with GP: {gp_no}")
+                            conn.table(DB_TABLE).update({
+                                "status": "Outsourced", "vendor_id": v, "delay_reason": dr, 
+                                "intervention_note": inote, "gate_pass_no": gp_no, "bill_no": bill_no
+                            }).eq("id", job['id']).execute()
                             st.rerun()
+            
+            elif st.button("🏁 Finish", key=f"f_{job['id']}", use_container_width=True):
+                conn.table(DB_TABLE).update({"status": "Finished", "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
+                st.rerun()
+
 # --- TAB 3: ANALYTICS ---
 with tabs[2]:
     if not df_main.empty:
@@ -164,14 +135,17 @@ with tabs[2]:
 
 # --- TAB 4: MASTERS ---
 with tabs[3]:
-    m_opt = {MASTER_TABLE: MASTER_COL, OP_MASTER: "name", VN_MASTER: "name"}
-    if not IS_BUFFING: m_opt[VH_MASTER] = "reg_no"
-    sel = st.segmented_control("Registry", options=list(m_opt.keys()), default=MASTER_TABLE)
+    m_opt = {MASTER_TABLE: "Machine/Station", OP_MASTER: "Operator", VN_MASTER: "Vendor"}
+    if not IS_BUFFING: m_opt[VH_MASTER] = "Vehicle"
+    sel = st.segmented_control("Registry", options=list(m_opt.keys()), format_func=lambda x: m_opt[x], default=MASTER_TABLE)
     v_col, a_col = st.columns([2, 1])
     with v_col:
         r = conn.table(sel).select("*").execute().data
-        if r: st.dataframe(pd.DataFrame(r)[[m_opt[sel]]], use_container_width=True)
+        if r:
+            col_name = "reg_no" if sel == VH_MASTER else "name"
+            st.dataframe(pd.DataFrame(r)[[col_name]], use_container_width=True)
     with a_col:
+        col_name = "reg_no" if sel == VH_MASTER else "name"
         new_v = st.text_input(f"New {m_opt[sel]}")
         if st.button("Register") and new_v:
-            conn.table(sel).insert({m_opt[sel]: new_v}).execute(); st.rerun()
+            conn.table(sel).insert({col_name: new_v}).execute(); st.rerun()
