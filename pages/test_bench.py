@@ -1,46 +1,51 @@
 import streamlit as st
 
-# --- 1. THE PYTHON CORE (Updated with Material Logic) ---
-def calculate_steel_weight(length_mm, width_mm, thickness_mm, material_type):
-    # Convert mm to cm
+# --- 1. THE PYTHON CORE (Processing 3 Outputs) ---
+def calculate_material_data(length_mm, width_mm, thickness_mm, material_type):
+    # Volume calculation
     volume_cm3 = (length_mm/10) * (width_mm/10) * (thickness_mm/10)
     
-    # Logic: Set density and symbol based on material choice
-    if material_type == "Stainless Steel (SS304/316)":
-        density = 7.93 / 1000  # kg/cm3
+    # Logic for Density, Symbol, and Rate per kg
+    if material_type == "Stainless Steel (SS304)":
+        density = 7.93 / 1000
         symbol = "🔘"
-    else:  # Default to Mild Steel
-        density = 7.85 / 1000  # kg/cm3
+        rate_per_kg = 280  # Example price in ₹
+    else:
+        density = 7.85 / 1000
         symbol = "🔲"
+        rate_per_kg = 85   # Example price in ₹
         
     weight_kg = volume_cm3 * density
-    return round(weight_kg, 2), symbol
+    total_cost = weight_kg * rate_per_kg
+    
+    # THE TRIPLE RETURN (Number, String, Number)
+    return round(weight_kg, 2), symbol, round(total_cost, 2)
 
 # --- 2. THE STREAMLIT INTERFACE ---
-st.title("B&G Engineering: Material Lab")
+st.title("B&G Engineering: Commercial Lab")
 
-# NEW: Material Selector
-mat_choice = st.selectbox("Select Material Grade", 
-                          ["Mild Steel (MS)", "Stainless Steel (SS304/316)"])
+mat_choice = st.selectbox("Select Material", ["Mild Steel (MS)", "Stainless Steel (SS304)"])
 
-st.subheader("Input Plate Dimensions (mm)")
 col1, col2, col3 = st.columns(3)
-
 with col1: l = st.number_input("Length", value=1000)
 with col2: w = st.number_input("Width", value=500)
 with col3: t = st.number_input("Thickness", value=10)
 
-# --- 3. THE PIPING ---
-# Now passing 'mat_choice' into the engine
-final_weight, mat_symbol = calculate_steel_weight(l, w, t, mat_choice)
+# --- 3. THE PIPING (UNPACKING 3 VARIABLES) ---
+# Order matters: Weight first, then Symbol, then Cost
+final_weight, mat_symbol, est_cost = calculate_material_data(l, w, t, mat_choice)
 
 st.divider()
 
 # --- 4. THE OUTPUT GAUGE ---
-# Using the dynamic symbol in the label
-st.metric(label=f"{mat_symbol} Estimated {mat_choice} Weight", value=f"{final_weight} kg")
+c_res1, c_res2 = st.columns(2)
+
+with c_res1:
+    st.metric(label=f"{mat_symbol} Total Weight", value=f"{final_weight} kg")
+
+with c_res2:
+    # Adding a Delta (Difference) to see the 'Value' of the material
+    st.metric(label="Estimated Material Cost", value=f"₹{est_cost:,}")
 
 if final_weight > 100:
-    st.warning("⚠️ Manual lifting prohibited. Use the Overhead Crane.")
-else:
-    st.success("✅ Safe for manual handling.")
+    st.warning("⚠️ Use Crane for Loading.")
