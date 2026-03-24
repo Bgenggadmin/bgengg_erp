@@ -38,7 +38,7 @@ final_weight, mat_symbol, est_cost = calculate_material_data(l, w, t, mat_choice
 st.divider()
 
 # --- 4. THE OUTPUT GAUGE ---
-c_res1, c_res2 = st.columns(2)
+c_res1, c_res2 = st.columns([3,1])
 
 with c_res1:
     st.metric(label=f"{mat_symbol} Total Weight", value=f"{final_weight} kg")
