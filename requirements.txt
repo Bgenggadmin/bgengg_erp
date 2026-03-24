@@ -6,3 +6,4 @@ pytz
 fpdf
 pillow
 requests
+streamlit-drawable-canvas
