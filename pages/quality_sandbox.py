@@ -8,11 +8,12 @@ from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 import io
 
-# --- 1. CONFIGURATION ---
-st.set_page_config(page_title="B&G Quality ERP", layout="wide")
+# --- 1. SETTINGS & SETUP ---
+IST = pytz.timezone('Asia/Kolkata')
+st.set_page_config(page_title="B&G Quality ERP", layout="wide", page_icon="🛡️")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# The 12 Official Gates from your Index
+# The 12 Official Gates/Sections
 GATES = [
     "1. Quality check list", "2. QAP", "3. As Built Drawing", 
     "4. Material Flow Chart", "5. Material Test Reports", 
@@ -25,10 +26,12 @@ GATES = [
 # --- 2. PDF ENGINE ---
 class PharmaPDF(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'B&G ENGINEERING INDUSTRIES - PHARMA QUALITY RECORD', ln=True, align='C')
-        self.line(10, 22, 200, 22)
-        self.ln(10)
+        self.set_font('Arial', 'B', 14)
+        self.cell(0, 10, 'B&G ENGINEERING INDUSTRIES', ln=True, align='C')
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 5, 'Chemical Process Equipment Company | Hyderabad', ln=True, align='C')
+        self.line(10, 27, 200, 27)
+        self.ln(12)
 
 def generate_pdf(job_row, logs, signatory):
     pdf = PharmaPDF()
@@ -36,77 +39,111 @@ def generate_pdf(job_row, logs, signatory):
     
     # PAGE 1: COVER
     pdf.add_page()
-    pdf.set_font('Arial', 'B', 20)
-    pdf.cell(0, 50, "QUALITY DOCUMENTATION PACKAGE", ln=True, align='C')
-    pdf.set_font('Arial', '', 12)
-    pdf.cell(50, 10, "CLIENT NAME", 0); pdf.cell(0, 10, f": {job_row.get('client_name')}", ln=True)
-    pdf.cell(50, 10, "JOB NO", 0); pdf.cell(0, 10, f": {job_row['job_no']}", ln=True)
-    pdf.cell(50, 10, "ITEM", 0); pdf.cell(0, 10, f": {job_row.get('part_name')}", ln=True)
+    pdf.ln(30)
+    pdf.set_font('Arial', 'B', 22)
+    pdf.cell(0, 20, "QUALITY DOCUMENTATION PACKAGE", ln=True, align='C')
+    pdf.ln(10)
+    pdf.set_font('Arial', 'B', 14)
+    pdf.cell(0, 10, f"ITEM: {job_row.get('part_name', 'Equipment')}", ln=True, align='C')
+    pdf.ln(15)
     
-    # PAGE 2: MATERIAL FLOW (SECTION 4)
+    pdf.set_font('Arial', '', 12)
+    details = [
+        ["CLIENT NAME", job_row.get('client_name')],
+        ["JOB NUMBER", job_row['job_no']],
+        ["PO NO & DATE", job_row.get('po_no')],
+        ["DRAWING NO", job_row.get('drawing_no')]
+    ]
+    for label, val in details:
+        pdf.cell(50, 12, label, 0); pdf.cell(0, 12, f": {val}", 0, ln=True)
+
+    # PAGE 4: MATERIAL FLOW CHART
     pdf.add_page()
     pdf.set_font('Arial', 'B', 14); pdf.cell(0, 10, "SECTION 4: MATERIAL FLOW CHART", ln=True)
+    pdf.ln(5)
     pdf.set_font('Arial', 'B', 10)
-    pdf.cell(60, 10, "Component/Gate", 1); pdf.cell(60, 10, "Heat No", 1); pdf.cell(60, 10, "Status", 1, ln=True)
+    pdf.cell(60, 10, "Gate/Component", 1); pdf.cell(60, 10, "Heat No", 1); pdf.cell(60, 10, "Result", 1, ln=True)
     pdf.set_font('Arial', '', 10)
     for l in logs:
         pdf.cell(60, 10, l['gate_name'], 1)
         pdf.cell(60, 10, str(l.get('heat_no', 'N/A')), 1)
         pdf.cell(60, 10, l.get('quality_status', 'Pass'), 1, ln=True)
-        
+
     return pdf.output(dest='S').encode('latin-1')
 
-# --- 3. APP INTERFACE ---
-st.title("🛡️ B&G Engineering: Pharma Quality Sandbox")
+# --- 3. UI LOGIC ---
+st.title("🛡️ B&G Quality Integration Hub")
 
-# Load Global Data
+# Data Loading with Fixed .eq() Syntax
 try:
-    projs = conn.table("anchor_projects").select("*").execute().data
-    staff = conn.table("master_staff").select("name").execute().data
-    inspectors = [s['name'] for s in staff]
-    sel_job = st.sidebar.selectbox("Select Job", [p['job_no'] for p in projs])
-    job_row = next(p for p in projs if p['job_no'] == sel_job)
-except:
-    st.error("Database Connection Issues. Check your Supabase Secrets.")
+    # Use .select() before any filters
+    projs_data = conn.table("anchor_projects").select("*").execute().data
+    staff_data = conn.table("master_staff").select("name").execute().data
+    
+    inspectors = [s['name'] for s in staff_data]
+    sel_job = st.sidebar.selectbox("Select Active Job", [p['job_no'] for p in projs_data])
+    job_row = next(p for p in projs_data if p['job_no'] == sel_job)
+except Exception as e:
+    st.error(f"Database Error: {e}")
     st.stop()
 
-tab1, tab2, tab3 = st.tabs(["🏗️ Daily Work Entry", "📊 Status Dashboard", "📥 Generate Package"])
+tab1, tab2, tab3 = st.tabs(["🏗️ Daily Log Entry", "📊 Readiness Dashboard", "📄 Report Generator"])
 
-# --- TAB 1: WORKFLOW ENTRY ---
+# --- TAB 1: DAILY WORKFLOW ---
 with tab1:
-    with st.form("inspection_form"):
-        st.subheader(f"Record Inspection: {sel_job}")
+    st.subheader(f"Record Shop Floor Data: {sel_job}")
+    with st.form("inspection_gate", clear_on_submit=True):
         c1, c2 = st.columns(2)
-        gate = c1.selectbox("Select Gate/Stage", GATES)
-        heat = c1.text_input("Heat No / MOC Batch")
-        spec = c2.text_input("Drawing Spec")
-        meas = c2.text_input("Actual Measurement")
+        gate = c1.selectbox("Select Process Gate", GATES)
+        heat = c1.text_input("Heat No / Plate No")
+        spec = c1.text_input("Specified Dim")
         
-        st.write("🖋️ Inspector Signature")
-        canvas_result = st_canvas(stroke_width=2, stroke_color="#000", height=100, width=300, key="canvas")
+        meas = c2.text_input("Measured Dim")
+        inspt = c2.selectbox("Inspector", inspectors)
+        res = c2.segmented_control("Result", ["✅ Pass", "❌ Reject"], default="✅ Pass")
         
-        if st.form_submit_button("Submit & Record"):
-            # Logic: Upload Sig, then Save to quality_inspection_logs
-            st.success(f"Recorded {gate} for Job {sel_job}")
+        st.write("🖋️ Inspector Digital Signature")
+        canvas = st_canvas(stroke_width=2, stroke_color="#000", height=100, width=300, key="sig_pad")
+        
+        if st.form_submit_button("Submit Record"):
+            # FIX: Ensure we use .insert() and execute
+            payload = {
+                "job_no": sel_job, "gate_name": gate, "heat_no": heat,
+                "specified_val": spec, "measured_val": meas, 
+                "inspector_name": inspt, "quality_status": res
+            }
+            conn.table("quality_inspection_logs").insert(payload).execute()
+            st.success(f"Log for {gate} successfully saved.")
+            st.rerun()
 
-# --- TAB 2: DASHBOARD ---
+# --- TAB 2: READINESS DASHBOARD ---
 with tab2:
-    st.subheader("Completion Status (1-12)")
-    # Fetch existing logs
-    logs = conn.table("quality_inspection_logs").eq("job_no", sel_job).execute().data
-    logged_gates = [l['gate_name'] for l in logs]
+    st.subheader("12-Section Readiness Tracker")
+    # FIX: Use .select() before .eq()
+    logs = conn.table("quality_inspection_logs").select("*").eq("job_no", sel_job).execute().data
+    logged_gate_names = [l['gate_name'] for l in logs]
     
-    for g in GATES:
-        if g in logged_gates:
-            st.write(f"✅ {g}")
+    cols = st.columns(2)
+    for i, g in enumerate(GATES):
+        col = cols[0] if i < 6 else cols[1]
+        if g in logged_gate_names:
+            col.success(f"✅ {g}")
         else:
-            st.write(f"⬜ {g} (Pending)")
+            col.error(f"⬜ {g} (Missing Data)")
 
-# --- TAB 3: REPORT GENERATOR ---
+# --- TAB 3: RICH REPORT GENERATOR ---
 with tab3:
-    if st.button("Generate Final 12-Page Rich PDF"):
+    st.subheader("Generate Pharma Package")
+    signatory = st.selectbox("Authorised Signatory for Guarantee", inspectors)
+    
+    if st.button("🚀 Generate Final 12-Page Bundle", type="primary"):
         if logs:
-            pdf_out = generate_pdf(job_row, logs, "Authorized Signatory")
-            st.download_button("Download Full Documentation", pdf_out, f"BGE_{sel_job}.pdf")
+            pdf_bytes = generate_pdf(job_row, logs, signatory)
+            st.download_button(
+                label="📥 Download Rich Documentation",
+                data=pdf_bytes,
+                file_name=f"BGE_Quality_{sel_job}.pdf",
+                mime="application/pdf"
+            )
         else:
-            st.error("No data recorded yet for this job.")
+            st.warning("No logs found. Please complete shop floor entries first.")
