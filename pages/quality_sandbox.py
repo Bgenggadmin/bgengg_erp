@@ -8,12 +8,11 @@ from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 import io
 
-# --- 1. SETUP & THEME ---
+# --- 1. SETTINGS & SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G Quality ERP", layout="wide", page_icon="🛡️")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# The 12 Official Dropdown Options (Form Identifiers)
 GATES = [
     "1. Quality check list", "2. QAP", "3. As Built Drawing", 
     "4. Material Flow Chart", "5. Material Test Reports", 
@@ -23,88 +22,8 @@ GATES = [
     "12. Customer Feed back"
 ]
 
-# --- 2. ENHANCED PDF ENGINE (Matches PDF Columns/Headers) ---
-class PharmaPDF(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 14)
-        self.cell(0, 10, 'B&G ENGINEERING INDUSTRIES', ln=True, align='C')
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 5, 'Chemical Process Equipment Company | Hyderabad', ln=True, align='C')
-        self.line(10, 27, 200, 27)
-        self.ln(12)
-
-    def draw_table_header(self, cols, widths):
-        self.set_font('Arial', 'B', 10)
-        for i, col in enumerate(cols):
-            self.cell(widths[i], 10, col, 1, align='C')
-        self.ln()
-
-def generate_full_package(job_row, logs, signatory):
-    pdf = PharmaPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    
-    # --- PAGE 1: COVER PAGE ---
-    pdf.add_page()
-    pdf.ln(30)
-    pdf.set_font('Arial', 'B', 22)
-    pdf.cell(0, 20, "QUALITY DOCUMENTATION PACKAGE", ln=True, align='C')
-    pdf.ln(10)
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, f"ITEM: {job_row.get('part_name', '30KL SS304 OIL HOLDING TANK')}", ln=True, align='C')
-    pdf.ln(15)
-    
-    pdf.set_font('Arial', '', 12)
-    details = [
-        ["CLIENT NAME", f": {job_row.get('client_name', 'NEOTRAFO SOLUTIONS')}"],
-        ["PO NO & DATE", f": {job_row.get('po_no', '80')} & {job_row.get('po_date', '29-12-2025')}"],
-        ["JOB NUMBER", f": {job_row['job_no']}"],
-        ["DRAWING NO", f": {job_row.get('drawing_no', '3050101710')}"],
-        ["QAP NUMBER", f": {job_row.get('qap_no', 'BGE/QAP/1500')}"]
-    ]
-    for label, val in details:
-        pdf.cell(50, 12, label, 0); pdf.cell(0, 12, val, 0, ln=True)
-
-    # --- SECTION 4: MATERIAL FLOW CHART ---
-    pdf.add_page()
-    pdf.set_font('Arial', 'B', 14); pdf.cell(0, 10, "SECTION 4: MATERIAL FLOW CHART", ln=True)
-    pdf.ln(5)
-    headers = ["Description", "Size", "MOC", "TC No.", "Heat No."]
-    widths = [45, 35, 25, 40, 45]
-    pdf.draw_table_header(headers, widths)
-    pdf.set_font('Arial', '', 10)
-    for l in [log for log in logs if "4." in log['gate_name']]:
-        pdf.cell(widths[0], 10, l.get('component', 'Shell'), 1)
-        pdf.cell(widths[1], 10, l.get('size', '8THK'), 1)
-        pdf.cell(widths[2], 10, "SS304", 1)
-        pdf.cell(widths[3], 10, str(l.get('mtr_no', '-')), 1)
-        pdf.cell(widths[4], 10, str(l.get('heat_no', 'N/A')), 1, ln=True)
-
-    # --- SECTION 7: DIMENSIONAL INSPECTION (DIR) ---
-    pdf.add_page()
-    pdf.set_font('Arial', 'B', 14); pdf.cell(0, 10, "SECTION 7: DIMENSIONAL INSPECTION REPORT", ln=True)
-    pdf.ln(5)
-    headers = ["Description", "Specified Dim", "Measured Dim", "MOC"]
-    widths = [60, 45, 45, 40]
-    pdf.draw_table_header(headers, widths)
-    pdf.set_font('Arial', '', 10)
-    for l in [log for log in logs if "7." in log['gate_name']]:
-        pdf.cell(widths[0], 10, l.get('component', 'Shell ID'), 1)
-        pdf.cell(widths[1], 10, l.get('specified_val', '-'), 1)
-        pdf.cell(widths[2], 10, l.get('measured_val', '-'), 1)
-        pdf.cell(widths[3], 10, "SS304", 1, ln=True)
-
-    # --- SECTION 11: GUARANTEE CERTIFICATE ---
-    pdf.add_page()
-    pdf.ln(20)
-    pdf.set_font('Arial', 'B', 16); pdf.cell(0, 15, "GUARANTEE CERTIFICATE", ln=True, align='C')
-    pdf.ln(10); pdf.set_font('Arial', '', 12)
-    pdf.multi_cell(0, 10, f"This is to certify that the equipment Job No {job_row['job_no']} is guaranteed for 12 months from the date of supply against manufacturing defectives.")
-    pdf.ln(30); pdf.cell(0, 10, f"Authorized Signatory: {signatory}", ln=True, align='R')
-
-    return pdf.output(dest='S').encode('latin-1')
-
-# --- 3. UI LOGIC & DASHBOARD ---
-st.title("🛡️ B&G Quality Integration Portal")
+# --- 2. UI LOGIC & DYNAMIC FORMS ---
+st.title("🛡️ B&G Quality Integration Hub")
 
 try:
     projs_data = conn.table("anchor_projects").select("*").execute().data
@@ -113,37 +32,86 @@ try:
     sel_job = st.sidebar.selectbox("Select Active Job", [p['job_no'] for p in projs_data])
     job_row = next(p for p in projs_data if p['job_no'] == sel_job)
 except Exception as e:
-    st.error(f"Setup Error: {e}"); st.stop()
+    st.error(f"Database Error: {e}"); st.stop()
 
-tab1, tab2, tab3 = st.tabs(["🏗️ Daily Work Entry", "📊 Readiness Dashboard", "📄 Report Generator"])
+tab1, tab2, tab3 = st.tabs(["🏗️ Daily Log Entry", "📊 Readiness Dashboard", "📄 Report Generator"])
 
-# --- TAB 1: WORKFLOW ENTRY ---
 with tab1:
-    st.subheader(f"Log Data for {sel_job}")
+    st.subheader(f"Record Shop Floor Data: {sel_job}")
+    
+    # 1. Gate Selection
+    gate = st.selectbox("Select Process Gate / Form", GATES)
+    st.divider()
+
+    # 2. Dynamic Form Logic based on PDF headers
     with st.form("inspection_gate", clear_on_submit=True):
-        c1, c2, c3 = st.columns(3)
-        gate = c1.selectbox("Select Form Section", GATES)
-        comp = c1.text_input("Component Name (e.g., Top Dish)")
-        size = c1.text_input("Size/THK")
+        payload = {"job_no": sel_job, "gate_name": gate}
         
-        heat = c2.text_input("Heat No / MTR No")
-        spec = c2.text_input("Specified Dim (from Drawing)")
-        meas = c2.text_input("Measured Dim (Actual)")
-        
-        inspt = c3.selectbox("Inspector", inspectors)
-        res = c3.segmented_control("Result", ["✅ Pass", "❌ Reject"], default="✅ Pass")
-        
-        st.write("🖋️ Authorized Signatory Pad")
-        canvas = st_canvas(stroke_width=2, stroke_color="#000", height=100, width=300, key="sig_pad")
-        
-        if st.form_submit_button("Submit & Record Entry"):
-            payload = {
-                "job_no": sel_job, "gate_name": gate, "component": comp, "size": size,
-                "heat_no": heat, "specified_val": spec, "measured_val": meas, 
-                "inspector_name": inspt, "quality_status": res
-            }
+        if gate == "4. Material Flow Chart":
+            # Matching Headers: Description, Size, MOC, Test Report No, Heat No 
+            c1, c2, c3 = st.columns(3)
+            payload["description"] = c1.text_input("Component Description (e.g. Shell)")
+            payload["size"] = c1.text_input("Size (e.g. ID2750X8THK)")
+            payload["moc"] = c2.selectbox("MOC", ["SS304", "SS316L", "Carbon Steel"], index=0)
+            payload["mtr_no"] = c2.text_input("Test Report No")
+            payload["heat_no"] = c3.text_input("Heat Number")
+
+        elif gate == "6. Nozzle Flow Chart":
+            # Matching Headers: Nozzle No, Description, Qty, Size(NB), MOC, Projection [cite: 69, 576]
+            c1, c2, c3 = st.columns(3)
+            payload["nozzle_no"] = c1.text_input("Nozzle Mark (e.g. N1)")
+            payload["description"] = c1.text_input("Description (e.g. Drain)")
+            payload["qty"] = c2.number_input("Quantity", min_value=1, step=1)
+            payload["size_nb"] = c2.text_input("Size (NB)")
+            payload["projection"] = c3.text_input("Projection (mm)", value="150")
+            payload["moc"] = c3.text_input("MOC", value="SS304")
+
+        elif gate == "7. Dimensional Inspection Report":
+            # Matching Headers: Description, Specified, Measured, MOC 
+            c1, c2 = st.columns(2)
+            payload["description"] = c1.text_input("Inspection Parameter (e.g. Shell ID)")
+            payload["spec_dim"] = c1.text_input("Specified Dimension")
+            payload["meas_dim"] = c2.text_input("Measured Dimension")
+            payload["moc"] = c2.text_input("MOC", value="SS304")
+
+        elif gate == "8. Hydro test Report":
+            # Matching Headers: Test Pressure, Duration, Fluid, Temp 
+            c1, c2 = st.columns(2)
+            payload["test_pressure"] = c1.text_input("Test Pressure (e.g. 1.0 kg/cm2)")
+            payload["duration"] = c1.text_input("Duration (e.g. 1 Hr)")
+            payload["test_fluid"] = c2.selectbox("Test Fluid", ["WATER", "OIL", "AIR"])
+            payload["temperature"] = c2.text_input("Temperature", value="ATMP.")
+
+        elif gate == "9. Calibration Report":
+            # Matching Headers: Instrument, Sr No, Make, Range, Least Count 
+            c1, c2 = st.columns(2)
+            payload["instr_desc"] = c1.text_input("Instrument Description")
+            payload["sr_no"] = c1.text_input("Serial Number")
+            payload["make"] = c2.text_input("Make (e.g. Baumer)")
+            payload["range_val"] = c2.text_input("Range (e.g. 0-7 kg/cm2)")
+
+        else:
+            # General Entry for other forms
+            c1, c2 = st.columns(2)
+            payload["notes"] = c1.text_area("General Observations")
+            payload["remarks"] = c2.text_input("Remarks")
+
+        st.divider()
+        c_sig1, c_sig2 = st.columns([2, 1])
+        with c_sig1:
+            st.write("🖋️ Inspector Digital Signature")
+            canvas = st_canvas(stroke_width=2, stroke_color="#000", height=120, width=400, key="sig_pad")
+        with c_sig2:
+            payload["inspector_name"] = st.selectbox("Select Inspector", inspectors)
+            payload["quality_status"] = st.segmented_control("Result", ["✅ Pass", "❌ Reject"], default="✅ Pass")
+
+        if st.form_submit_button("🚀 Submit Section Record"):
+            # The payload now contains specific keys matching the PDF form selected
             conn.table("quality_inspection_logs").insert(payload).execute()
-            st.success("Record saved to database.")
+            st.success(f"Form '{gate}' successfully saved with specific field data.")
+            st.rerun()
+
+# --- TAB 2 & 3 (DASHBOARD & GENERATOR) remains similar, but now filters by specific keys ---
 
 # --- TAB 2: READINESS DASHBOARD ---
 with tab2:
