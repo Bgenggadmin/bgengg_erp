@@ -4,111 +4,141 @@ from fpdf import FPDF
 from datetime import datetime
 import pytz
 from st_supabase_connection import SupabaseConnection
+from streamlit_drawable_canvas import st_canvas
+from PIL import Image
+import io
 
-# --- 1. SETUP ---
+# --- 1. SETUP & THEME ---
 IST = pytz.timezone('Asia/Kolkata')
-st.set_page_config(page_title="B&G Quality Sandbox", layout="wide")
-
-# Initialize Connection
+st.set_page_config(page_title="B&G Quality ERP", layout="wide", page_icon="🛡️")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. SINGLE-CLICK PDF GENERATOR CLASS ---
+# Define the 12 Gates/Sections for Workflow
+GATES = [
+    "Material Receiving", "Shell Fit-up", "Dish Fit-up", "Shell Welding", 
+    "Nozzle Orientation", "Nozzle Welding", "Internal Grinding", 
+    "Dimensional Check", "Hydro Test", "Pneumatic Test", "Pickling & Passivation", "Final Inspection"
+]
+
+# --- 2. PDF GENERATOR CLASS ---
 class PharmaPDF(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'B&G ENGINEERING INDUSTRIES - QUALITY RECORD', ln=True, align='C')
-        self.line(10, 20, 200, 20)
-        self.ln(10)
+        self.set_font('Arial', 'B', 14)
+        self.cell(0, 10, 'B&G ENGINEERING INDUSTRIES', ln=True, align='C')
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 5, 'Plot no. 207, Industrial park, Pashamylaram, Hyderabad', ln=True, align='C')
+        self.line(10, 27, 200, 27)
+        self.ln(12)
 
-def generate_12_page_package(job_no, data_rows):
+# --- 3. CORE LOGIC FUNCTIONS ---
+def save_signature(canvas_data, job_no):
+    if canvas_data is not None:
+        img = Image.fromarray(canvas_data.astype('uint8'), 'RGBA')
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        file_name = f"sig_{job_no}_{datetime.now().strftime('%H%M%S')}.png"
+        conn.client.storage.from_("quality-photos").upload(file_name, buf.getvalue())
+        return conn.client.storage.from_("quality-photos").get_public_url(file_name)
+    return None
+
+def generate_full_package(job_row, logs, signatory):
     pdf = PharmaPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    # PAGE 1: INDEX
+    # PAGE 1: COVER
     pdf.add_page()
-    pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 15, f"QUALITY DOCUMENTATION PACKAGE - {job_no}", ln=True, align='C')
-    sections = ["Quality Check List", "QAP", "As Built Drawing", "Material Flow Chart", 
-                "Material Test Reports", "Nozzle Flow Chart", "Dimensional Inspection", 
-                "Hydro Test Report", "Calibration Report", "Final Inspection", 
-                "Guarantee Certificate", "Customer Feedback"]
+    pdf.ln(30); pdf.set_font('Arial', 'B', 22); pdf.cell(0, 20, "QUALITY DOCUMENTATION PACKAGE", ln=True, align='C')
+    pdf.ln(10); pdf.set_font('Arial', 'B', 14); pdf.cell(0, 10, f"ITEM: {job_row.get('part_name', 'Process Equipment')}", ln=True, align='C')
+    pdf.ln(10)
     pdf.set_font('Arial', '', 12)
-    for i, s in enumerate(sections, 1):
-        pdf.cell(10, 10, str(i), 1); pdf.cell(160, 10, s, 1, ln=True)
+    fields = [["CLIENT", job_row.get('client_name')], ["JOB NO", job_row['job_no']], ["PO NO", job_row.get('po_no')], ["DRAWING", job_row.get('drawing_no')]]
+    for f in fields:
+        pdf.cell(50, 10, f[0], 0); pdf.cell(0, 10, f": {f[1]}", 0, ln=True)
 
-    # PAGE 4: MATERIAL FLOW CHART
+    # PAGE 4: MATERIAL FLOW (TRACEABILITY)
     pdf.add_page()
-    pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, "SECTION 4: MATERIAL FLOW CHART", ln=True)
+    pdf.set_font('Arial', 'B', 14); pdf.cell(0, 10, "SECTION 4: MATERIAL FLOW CHART", ln=True)
     pdf.set_font('Arial', 'B', 10)
-    pdf.cell(50, 10, "Part", 1); pdf.cell(40, 10, "MOC", 1); pdf.cell(100, 10, "Heat/TC No", 1, ln=True)
+    pdf.cell(50, 10, "Component", 1); pdf.cell(70, 10, "Heat Number", 1); pdf.cell(70, 10, "Status", 1, ln=True)
     pdf.set_font('Arial', '', 10)
-    for row in data_rows:
-        pdf.cell(50, 10, row.get('gate_name', 'N/A'), 1)
-        pdf.cell(40, 10, row.get('moc_type', 'SS304'), 1)
-        pdf.cell(100, 10, str(row.get('heat_no', 'N/A')), 1, ln=True)
+    for log in logs:
+        pdf.cell(50, 10, log['gate_name'], 1)
+        pdf.cell(70, 10, str(log.get('heat_no', 'N/A')), 1)
+        pdf.cell(70, 10, log['quality_status'], 1, ln=True)
 
+    # PAGE 11: GUARANTEE
+    pdf.add_page()
+    pdf.set_font('Arial', 'B', 16); pdf.cell(0, 20, "GUARANTEE CERTIFICATE", ln=True, align='C')
+    pdf.set_font('Arial', '', 12)
+    pdf.multi_cell(0, 10, f"The equipment under Job {job_row['job_no']} is guaranteed for 12 months from dispatch against manufacturing defects.")
+    pdf.ln(20); pdf.cell(0, 10, "For B&G ENGINEERING INDUSTRIES", ln=True, align='R')
+    pdf.ln(5); pdf.cell(0, 10, f"({signatory.upper()})", ln=True, align='R')
+    
     return pdf.output(dest='S').encode('latin-1')
 
-# --- 3. DATA ENTRY UI ---
-st.title("🛡️ Pharma-Grade Quality Sandbox")
+# --- 4. APP UI ---
+st.title("🛡️ B&G Quality & Documentation Hub")
 
-# Sidebar for Job Selection
 try:
-    jobs_res = conn.table("anchor_projects").select("job_no").execute()
-    job_list = [j['job_no'] for j in jobs_res.data]
-    sel_job = st.sidebar.selectbox("Select Job", job_list)
-    
-    inspectors_res = conn.table("master_staff").select("name").execute()
-    inspectors = [i['name'] for i in inspectors_res.data]
+    projs = conn.table("anchor_projects").select("*").execute().data
+    staff = conn.table("master_staff").select("name").execute().data
+    inspector_list = [s['name'] for s in staff]
+    sel_job = st.sidebar.selectbox("Select Active Job", [p['job_no'] for p in projs])
+    job_row = next(item for item in projs if item["job_no"] == sel_job)
 except:
-    st.error("Connection Error: Check Supabase Credentials")
-    st.stop()
+    st.error("Database Connection Failed."); st.stop()
 
-tab1, tab2 = st.tabs(["📝 Data Entry", "📦 Report Generator"])
+t1, t2, t3 = st.tabs(["🏗️ Daily Inspection", "📂 Material MTR Archive", "📄 Report Generator"])
 
-with tab1:
-    sel_stage = st.selectbox("Select Process/Gate", ["Shell Fit-up", "Dish Fit-up", "Nozzle Welding", "Hydro Test"])
-    
-    with st.form("enhanced_q_form", clear_on_submit=True):
+# TAB 1: DAILY INSPECTION
+with t1:
+    st.subheader(f"Log Work for {sel_job}")
+    with st.form("gate_entry"):
         c1, c2 = st.columns(2)
-        with c1:
-            q_status = st.segmented_control("Result", ["✅ Pass", "❌ Reject"], default="✅ Pass")
-            inspector = st.selectbox("Inspector", inspectors)
-            heat_no = st.text_input("Heat No. / TC No. (Traceability)")
-            spec_val = st.text_input("Specified Dimension")
-            meas_val = st.text_input("Measured Dimension")
-            
-        with c2:
-            st.write("🔧 **Instrument/Test Details**")
-            gauge_id = st.text_input("Pressure Gauge ID")
-            cal_due = st.date_input("Calibration Due Date")
-            test_press = st.text_input("Test Pressure", "1.0 Kg/cm2")
-            q_photos = st.file_uploader("Evidence Photos", accept_multiple_files=True)
-            notes = st.text_area("Observations")
-
-        if st.form_submit_button("🚀 Submit & Save to Logs"):
+        gate = c1.selectbox("Select Gate", GATES)
+        heat = c1.text_input("Heat No / Plate No")
+        spec = c1.text_input("Specified Value")
+        meas = c2.text_input("Measured Value")
+        inspt = c2.selectbox("Inspector", inspector_list)
+        stat = c2.segmented_control("Result", ["✅ Pass", "❌ Reject"])
+        
+        st.write("🖋️ Sign to Authorize")
+        canvas_result = st_canvas(stroke_width=2, stroke_color="#000", background_color="#fff", height=100, width=300, key="canvas")
+        
+        if st.form_submit_button("Record Gate Entry"):
+            sig_url = save_signature(canvas_result.image_data, sel_job)
             payload = {
-                "job_no": sel_job, "gate_name": sel_stage, "heat_no": heat_no,
-                "specified_val": spec_val, "measured_val": meas_val, "gauge_id": gauge_id,
-                "inspector_name": inspector, "quality_status": q_status
+                "job_no": sel_job, "gate_name": gate, "heat_no": heat, 
+                "specified_val": spec, "measured_val": meas, 
+                "inspector_name": inspt, "quality_status": stat, "signature_url": sig_url
             }
             conn.table("quality_inspection_logs").insert(payload).execute()
-            st.success("Data recorded successfully!")
+            st.success("Entry Recorded and Signed.")
 
-with tab2:
-    st.subheader("Generate Complete Pharma Package")
-    if st.button("📑 Generate 12-Page Rich PDF"):
-        # Fetch all logs for this specific job
-        logs = conn.table("quality_inspection_logs").eq("job_no", sel_job).execute().data
+# TAB 2: MATERIAL ARCHIVE
+with t2:
+    st.subheader("Global MTR Vault")
+    with st.expander("Upload New Vendor Certificate"):
+        h_no = st.text_input("Heat Number Lookup")
+        mtr_f = st.file_uploader("Upload TC PDF")
+        if st.button("Archive MTR"):
+            st.info("MTR Archiving Logic Triggered")
+
+# TAB 3: REPORT GENERATOR
+with t3:
+    st.subheader("Pharma Package Status")
+    logs = conn.table("quality_inspection_logs").eq("job_no", sel_job).execute().data
+    log_df = pd.DataFrame(logs)
+    
+    if not log_df.empty:
+        # Show Readiness Metrics
+        done_gates = log_df['gate_name'].unique()
+        st.write(f"Completed Gates: {len(done_gates)} / {len(GATES)}")
+        st.progress(len(done_gates)/len(GATES))
         
-        if logs:
-            pdf_bytes = generate_12_page_package(sel_job, logs)
-            st.download_button(
-                label="📥 Download Documentation Package",
-                data=pdf_bytes,
-                file_name=f"Quality_Report_{sel_job}.pdf",
-                mime="application/pdf"
-            )
-        else:
-            st.warning("No quality logs found for this job to generate a report.")
+        signatory = st.selectbox("Authorised Signatory for Report", inspector_list)
+        if st.button("🚀 Generate 12-Page Rich Bundle"):
+            pdf_bytes = generate_full_package(job_row, logs, signatory)
+            st.download_button("📥 Download Final Documentation", pdf_bytes, f"BG_{sel_job}_Quality.pdf")
+    else:
+        st.warning("No daily logs found. Complete inspections to generate reports.")
