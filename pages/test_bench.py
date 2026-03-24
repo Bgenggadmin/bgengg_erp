@@ -1,38 +1,46 @@
 import streamlit as st
 
-# --- 1. THE PYTHON CORE (The Engine) ---
-# This is a standard Python function. No 'st.' prefix.
-def calculate_steel_weight(length_mm, width_mm, thickness_mm):
-    # Convert mm to cm for the calculation (10mm = 1cm)
+# --- 1. THE PYTHON CORE (Updated with Material Logic) ---
+def calculate_steel_weight(length_mm, width_mm, thickness_mm, material_type):
+    # Convert mm to cm
     volume_cm3 = (length_mm/10) * (width_mm/10) * (thickness_mm/10)
-    density_steel = 7.85 / 1000 # kg/cm3
-    weight_kg = volume_cm3 * density_steel
-    return round(weight_kg, 2)
+    
+    # Logic: Set density and symbol based on material choice
+    if material_type == "Stainless Steel (SS304/316)":
+        density = 7.93 / 1000  # kg/cm3
+        symbol = "🔘"
+    else:  # Default to Mild Steel
+        density = 7.85 / 1000  # kg/cm3
+        symbol = "🔲"
+        
+    weight_kg = volume_cm3 * density
+    return round(weight_kg, 2), symbol
 
-# --- 2. THE STREAMLIT INTERFACE (The Dashboard) ---
-st.title("B&G Engineering: Material Calculator")
+# --- 2. THE STREAMLIT INTERFACE ---
+st.title("B&G Engineering: Material Lab")
+
+# NEW: Material Selector
+mat_choice = st.selectbox("Select Material Grade", 
+                          ["Mild Steel (MS)", "Stainless Steel (SS304/316)"])
 
 st.subheader("Input Plate Dimensions (mm)")
 col1, col2, col3 = st.columns(3)
 
-with col1:
-    l = st.number_input("Length", value=1000)
-with col2:
-    w = st.number_input("Width", value=500)
-with col3:
-    t = st.number_input("Thickness", value=10)
+with col1: l = st.number_input("Length", value=1000)
+with col2: w = st.number_input("Width", value=500)
+with col3: t = st.number_input("Thickness", value=10)
 
-# --- 3. THE PIPING (Connecting Engine to Dashboard) ---
-# We take the values from the Streamlit 'valves' (l, w, t) 
-# and 'pipe' them into our Python Engine.
-final_weight = calculate_steel_weight(l, w, t)
+# --- 3. THE PIPING ---
+# Now passing 'mat_choice' into the engine
+final_weight, mat_symbol = calculate_steel_weight(l, w, t, mat_choice)
 
 st.divider()
 
-# --- 4. THE OUTPUT GAUGE (Streamlit Library) ---
-st.metric(label="Estimated Plate Weight", value=f"{final_weight} kg")
+# --- 4. THE OUTPUT GAUGE ---
+# Using the dynamic symbol in the label
+st.metric(label=f"{mat_symbol} Estimated {mat_choice} Weight", value=f"{final_weight} kg")
 
 if final_weight > 100:
     st.warning("⚠️ Manual lifting prohibited. Use the Overhead Crane.")
 else:
-    st.success("✅ Safe for manual handling (Two-person lift).")
+    st.success("✅ Safe for manual handling.")
