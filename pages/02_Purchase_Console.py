@@ -1,180 +1,169 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timezone
 import pytz
 
 # --- 1. SETUP & THEME ---
 IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="Purchase Integration | B&G", layout="wide", page_icon="🛒")
+
 # --- PASSWORD PROTECTION ---
 def check_password():
-    """Returns True if the user had the correct password."""
-    def password_entered():
-        if st.session_state["password"] == "1234": # You can change this!
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # don't store password
-        else:
-            st.session_state["password_correct"] = False
-
     if "password_correct" not in st.session_state:
-        # First run, show input for password.
-        st.text_input("🔑 Enter Master Password", type="password", on_change=password_entered, key="password")
+        st.text_input("🔑 Enter Master Password", type="password", 
+                      on_change=lambda: st.session_state.update({"password_correct": st.session_state["password"] == "1234"}), 
+                      key="password")
         return False
-    elif not st.session_state["password_correct"]:
-        # Password not correct, show input + error.
-        st.text_input("🔑 Enter Master Password", type="password", on_change=password_entered, key="password")
-        st.error("😕 Password incorrect")
-        return False
-    else:
-        # Password correct.
-        return True
+    return st.session_state["password_correct"]
 
-if not check_password():
-    st.stop()  # Do not run the rest of the app if password isn't correct
-# Custom Styles for specialized tags
+if not check_password(): st.stop()
+
 st.markdown("""
     <style>
     .section-header { background-color: #f8f9fa; padding: 10px; border-radius: 8px; border-left: 5px solid #007bff; margin-bottom: 15px; font-weight: bold; }
-    .tag-anchor { background-color: #e7f3ff; color: #007bff; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 13px; }
-    .tag-prod { background-color: #f0fff4; color: #28a745; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 13px; }
+    .tag-anchor { background-color: #e7f3ff; color: #007bff; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 11px; }
+    .tag-prod { background-color: #f0fff4; color: #28a745; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 11px; }
+    .aging-red { color: white; background-color: #dc3545; padding: 3px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; animation: blinker 1.5s linear infinite; }
+    .aging-orange { color: #856404; background-color: #fff3cd; padding: 3px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+    @keyframes blinker { 50% { opacity: 0.5; } }
     </style>
     """, unsafe_allow_html=True)
 
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS ---
-@st.cache_data(ttl=5)
+# --- 2. DATA LOADERS & AGING LOGIC ---
+def calculate_aging(created_at_str):
+    try:
+        if not created_at_str: return 0, ""
+        created_at = pd.to_datetime(created_at_str).replace(tzinfo=timezone.utc).astimezone(IST)
+        now = datetime.now(IST)
+        hrs = (now - created_at).total_seconds() / 3600
+        if hrs > 48:
+            return hrs, f'<span class="aging-red">🛑 CRITICAL: {int(hrs)} HRS</span>'
+        elif hrs > 24:
+            return hrs, f'<span class="aging-orange">⚠️ DELAYED: {int(hrs)} HRS</span>'
+        else:
+            return hrs, f'<span style="color:gray; font-size:11px;">⏱️ {int(hrs)}h ago</span>'
+    except:
+        return 0, ""
+
+@st.cache_data(ttl=2)
 def get_full_purchase_data():
     try:
         proj_res = conn.table("anchor_projects").select("*").execute()
         items_res = conn.table("purchase_orders").select("*").execute()
-        
         df_all_proj = pd.DataFrame(proj_res.data or [])
         df_items = pd.DataFrame(items_res.data or [])
         
         if not df_all_proj.empty:
-            active_item_jobs = []
-            if not df_items.empty:
-                active_item_jobs = df_items['job_no'].astype(str).str.upper().unique()
+            # Identify jobs with any status that isn't 'Received'
+            active_item_jobs = df_items[df_items['status'] != "Received"]['job_no'].astype(str).str.upper().unique() if not df_items.empty else []
             
-            # Show if Anchor flagged it OR if there are items in purchase_orders table
-            df_p = df_all_proj[
-                (df_all_proj.get('purchase_trigger') == True) | 
-                (df_all_proj['job_no'].astype(str).str.upper().isin(active_item_jobs))
-            ]
+            # Show if: Status is Won OR has active purchase items OR manually triggered
+            mask = (df_all_proj['status'] == "Won") | \
+                   (df_all_proj['job_no'].astype(str).str.upper().isin(active_item_jobs)) | \
+                   (df_all_proj.get('purchase_trigger') == True)
+            
+            df_p = df_all_proj[mask]
             return df_p, df_items
-            
         return pd.DataFrame(), df_items
     except Exception as e:
-        st.error(f"Data Load Error: {e}")
+        st.error(f"Sync Error: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
+# LOAD DATA
 df_p, df_items = get_full_purchase_data()
 
+# --- 3. HEADER & SEARCH ---
 st.title("🛒 Purchase Integration Console")
 
-# --- 3. ANALYTICS ---
-if not df_p.empty:
-    status_col = 'purchase_status' if 'purchase_status' in df_p.columns else 'status'
-    if status_col in df_p.columns:
-        p_summary = df_p.groupby(status_col).agg(Total_Jobs=('id', 'count')).reset_index()
-        sum_c1, sum_c2 = st.columns([1, 1])
-        with sum_c1: 
-            st.dataframe(p_summary, hide_index=True, use_container_width=True)
-        with sum_c2:
-            fig = px.pie(p_summary, values='Total_Jobs', names=status_col, hole=0.4, height=220)
-            fig.update_layout(margin=dict(t=20, b=0, l=0, r=0))
-            st.plotly_chart(fig, use_container_width=True)
+search_col, spacer = st.columns([1, 2])
+search_query = search_col.text_input("🔍 Search Job No or Client", placeholder="Ex: BGE-101...").strip().upper()
 
-st.divider()
+# --- 4. PRODUCTIVITY SUMMARY ---
+if not df_items.empty:
+    pending_items = df_items[df_items['status'] != "Received"].copy()
+    if not pending_items.empty:
+        aging_results = pending_items['created_at'].apply(calculate_aging)
+        pending_items['hrs_old'] = [res[0] for res in aging_results]
+        critical_count = len(pending_items[pending_items['hrs_old'] > 48])
+        if critical_count > 0:
+            st.error(f"🚨 **Productivity Alert:** {critical_count} items are currently CRITICAL (>48h delay).")
 
-# --- 4. STACKED ACTION CENTER ---
+# --- 5. ACTION CENTER ---
 if not df_p.empty:
-    for p_idx, p_row in df_p.iterrows():
-        p_db_id = p_row['id']
+    # Apply Search Filter (FIXED)
+    if search_query:
+        df_p = df_p[
+            (df_p['job_no'].astype(str).str.upper().str.contains(search_query, na=False)) | 
+            (df_p['client_name'].astype(str).str.upper().str.contains(search_query, na=False))
+        ]
+
+    for _, p_row in df_p.iterrows():
         job_no = str(p_row.get('job_no', 'N/A')).strip().upper()
+        p_db_id = p_row['id']
         
-        # Filter items for this specific job
-        job_items = pd.DataFrame()
-        if not df_items.empty and 'job_no' in df_items.columns:
-            job_items = df_items[df_items['job_no'].astype(str).str.upper() == job_no]
+        job_items = df_items[df_items['job_no'].astype(str).str.upper() == job_no] if not df_items.empty else pd.DataFrame()
+        active_items = job_items[job_items['status'] != "Received"].copy()
         
-        # Source detection logic for header summary
-        prod_count = 0
-        if not job_items.empty:
-            prod_count = len(job_items[
-                job_items['item_name'].str.contains("URGENT|SHOP", case=False, na=False) | 
-                job_items['specs'].str.contains("URGENT|SHOP", case=False, na=False)
-            ])
-        anchor_count = len(job_items) - prod_count
+        # Only show the expander if there are active items to handle
+        if active_items.empty: continue 
 
-        header_label = f"📋 JOB: {job_no} | {p_row.get('client_name', 'Client')} | ⚓ {anchor_count} | 🏗️ {prod_count}"
+        # TAGGING LOGIC: PRODUCTION VS ANCHOR
+        active_items['is_prod'] = active_items.apply(lambda x: 
+            any(word in str(x['item_name']).upper() for word in ["SHOP", "URGENT"]) or 
+            any(word in str(x['specs']).upper() for word in ["SHOP", "URGENT"]), axis=1)
         
-        with st.expander(header_label, expanded=True):
-            # --- PART A: LOGISTICS SUMMARY ---
+        prod_count = active_items['is_prod'].sum()
+        anchor_count = len(active_items) - prod_count
+        job_has_critical = any(calculate_aging(r.get('created_at'))[0] > 48 for _, r in active_items.iterrows())
+
+        header_label = f"{'🔴' if job_has_critical else '📋'} JOB: {job_no} | {p_row.get('client_name', 'Client')} | ⚓ {anchor_count} | 🏗️ {prod_count}"
+        
+        with st.expander(header_label, expanded=job_has_critical or search_query != ""):
             st.markdown('<div class="section-header">🚩 Logistics Summary</div>', unsafe_allow_html=True)
             ac1, ac2, ac3 = st.columns([1, 2, 1])
-            ac1.write(f"**Anchor Person:**\n{p_row.get('anchor_person', 'N/A')}")
-            ac2.info(f"**Critical Requirements:**\n{p_row.get('critical_materials', 'N/A')}")
+            ac1.write(f"**Anchor:** {p_row.get('anchor_person', 'N/A')}")
+            ac2.info(f"**Critical Materials:** {p_row.get('critical_materials', 'N/A')}")
             
+            # Job Progress Select
             stat_opts = ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"]
             curr_p_stat = p_row.get('purchase_status', "Pending Review")
-            def_stat_idx = stat_opts.index(curr_p_stat) if curr_p_stat in stat_opts else 0
-            new_p_stat = ac3.selectbox("Overall Status", stat_opts, index=def_stat_idx, key=f"h_stat_{p_db_id}")
-            
-            if ac3.button("Update Overall", key=f"h_btn_{p_db_id}", type="primary", use_container_width=True):
+            def_idx = stat_opts.index(curr_p_stat) if curr_p_stat in stat_opts else 0
+            new_p_stat = ac3.selectbox("Job Level Status", stat_opts, index=def_idx, key=f"h_stat_{p_db_id}")
+            if ac3.button("Update Job Status", key=f"h_btn_{p_db_id}", type="primary", use_container_width=True):
                 conn.table("anchor_projects").update({"purchase_status": new_p_stat}).eq("id", p_db_id).execute()
-                st.toast("Status Updated"); st.rerun()
+                st.rerun()
 
-            # --- PART B: ITEMIZED FULFILLMENT (De-duplicated & Grouped) ---
-            st.markdown(f'<div class="section-header">📦 Material Request Breakdown</div>', unsafe_allow_html=True)
-            
-            if job_items.empty:
-                st.info("No specific material requests logged for this job.")
-            else:
-                # Group all items inside ONE bordered container
+            st.markdown('<div class="section-header">📦 Material Request Breakdown</div>', unsafe_allow_html=True)
+            for i, i_row in active_items.sort_values('id').iterrows():
+                _, aging_tag = calculate_aging(i_row.get('created_at'))
+                
                 with st.container(border=True):
-                    items_sorted = job_items.sort_values('id').reset_index(drop=True)
-                    for i, i_row in items_sorted.iterrows():
-                        i_db_id = i_row['id']
-                        k_suffix = f"pur_{p_db_id}_{i_db_id}_{i}"
-                        
-                        # Detect Source
-                        item_name_up = str(i_row.get('item_name', '')).upper()
-                        item_spec_up = str(i_row.get('specs', '')).upper()
-                        is_prod = any(x in item_name_up for x in ["SHOP", "URGENT"]) or \
-                                  any(x in item_spec_up for x in ["SHOP", "URGENT"])
-                        
-                        ic1, ic2, ic3, ic4 = st.columns([1.5, 2.5, 1, 0.8])
-                        
-                        with ic1:
-                            if is_prod:
-                                st.markdown('<span class="tag-prod">🏗️ FROM PRODUCTION</span>', unsafe_allow_html=True)
-                                st.error("🚨 URGENT")
-                            else:
-                                st.markdown('<span class="tag-anchor">⚓ FROM ANCHOR</span>', unsafe_allow_html=True)
-                            st.write(f"**{i_row.get('item_name', 'Item')}**")
-                            st.caption(f"Spec: {i_row.get('specs', '-')}")
-                        
-                        i_reply_val = i_row.get('purchase_reply', "") or ""
-                        i_reply = ic2.text_area("Reply", value=i_reply_val, key=f"irep_{k_suffix}", height=80, label_visibility="collapsed")
-                        
-                        i_opts = ["Triggered", "Sourcing", "Ordered", "Received", "Urgent"]
-                        curr_i_stat = str(i_row.get('status', 'Triggered'))
-                        def_i_idx = i_opts.index(curr_i_stat) if curr_i_stat in i_opts else 0
-                        i_stat = ic3.selectbox("Status", i_opts, index=def_i_idx, key=f"istat_{k_suffix}", label_visibility="collapsed")
-                        
-                        if ic4.button("Update", key=f"isave_{k_suffix}", use_container_width=True):
-                            conn.table("purchase_orders").update({
-                                "purchase_reply": i_reply, "status": i_stat,
-                                "updated_at": datetime.now(IST).isoformat()
-                            }).eq("id", i_db_id).execute()
-                            st.toast(f"Saved {i_row.get('item_name')}"); st.cache_data.clear(); st.rerun()
-                        
-                        if i < len(items_sorted) - 1:
-                            st.divider()
-        st.write(" ") # Spacer between Job expanders
+                    ic1, ic2, ic3, ic4 = st.columns([1.5, 2.5, 1, 0.8])
+                    with ic1:
+                        if i_row['is_prod']:
+                            st.markdown('<span class="tag-prod">🏗️ PRODUCTION TRIGGER</span>', unsafe_allow_html=True)
+                        else:
+                            st.markdown('<span class="tag-anchor">⚓ ANCHOR REQUEST</span>', unsafe_allow_html=True)
+                        st.markdown(aging_tag, unsafe_allow_html=True)
+                        st.write(f"**{i_row.get('item_name')}**")
+                    
+                    i_reply = ic2.text_area("Purchase Note", value=i_row.get('purchase_reply', ""), key=f"rep_{i_row['id']}", height=85, placeholder="Enter lead time, vendor info...", label_visibility="collapsed")
+                    
+                    status_list = ["Triggered", "Sourcing", "Ordered", "Received"]
+                    curr_item_stat = i_row.get('status', "Triggered")
+                    stat_idx = status_list.index(curr_item_stat) if curr_item_stat in status_list else 0
+                    i_stat = ic3.selectbox("Status", status_list, index=stat_idx, key=f"st_{i_row['id']}", label_visibility="collapsed")
+                    
+                    if ic4.button("Update Item", key=f"btn_{i_row['id']}", use_container_width=True):
+                        conn.table("purchase_orders").update({
+                            "purchase_reply": i_reply, 
+                            "status": i_stat, 
+                            "updated_at": datetime.now(IST).isoformat()
+                        }).eq("id", i_row['id']).execute()
+                        st.cache_data.clear()
+                        st.rerun()
 else:
-    st.success("All clear! No pending purchase triggers.")
+    st.info("No active material requests found.")
