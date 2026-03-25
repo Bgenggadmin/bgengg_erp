@@ -36,7 +36,6 @@ def get_master_data():
         m_res = conn.table("production_gates").select("*").order("step_order").execute()
         j_res = conn.table("job_planning").select("*").order("step_order").execute()
         pur_res = conn.table("purchase_orders").select("*").execute()
-        # NEW: Load Sub-tasks
         sub_res = conn.table("job_sub_tasks").select("*").execute()
         
         return (pd.DataFrame(p_res.data or []), 
@@ -53,6 +52,7 @@ df_projects, df_logs, df_master_gates, df_job_plans, df_purchase, df_sub_tasks =
 
 # Mappings
 all_staff = master.get('staff', [])
+base_supervisors = ["-- Select --"] + all_staff # Created to fix Tab 2 error
 all_workers = sorted(list(set(master.get('workers', []))))
 all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
 all_activities = master.get('gates', [])
@@ -68,15 +68,13 @@ with tab_plan:
     target_job = st.selectbox("Select Job to Manage", ["-- Select --"] + all_jobs)
     
     if target_job != "-- Select --":
-        # (Delivery Dashboard & Material Trigger code remains exactly the same as your paste)
-        # ... [Skipping repeated UI code for brevity] ...
-        
-        # [Existing Delivery Dashboard code here]
         proj_match = df_projects[df_projects['job_no'] == target_job]
+        job_internal_id = None
+        
         if not proj_match.empty:
             p_data = proj_match.iloc[0]
-            job_internal_id = p_data.get('id') # Used for sub-task linking
-            # [Rest of your Dashboard logic...]
+            job_internal_id = p_data.get('id') 
+            st.info(f"📍 Managing Job: {target_job}")
 
         # --- D. EXECUTION & SUB-TASKS ---
         st.divider()
@@ -96,7 +94,6 @@ with tab_plan:
                         st.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
                         st.caption(f"🗓️ Planned: {p_start.strftime('%d %b') if p_start else '??'} — {p_end.strftime('%d %b') if p_end else '??'}")
 
-                    # Status & Action Buttons
                     if row['current_status'] == "Pending":
                         col2.warning("⏳ Pending")
                         if col4.button("▶️ Start", key=f"st_{gate_id}", use_container_width=True):
@@ -110,64 +107,51 @@ with tab_plan:
                     else:
                         col2.success("🏁 Completed")
 
-                    # --- SUB-TASK NESTED SECTION ---
-                    with st.expander("➕ Add Single Gate to Plan", expanded=False):
-    with st.form("add_gate_form", clear_on_submit=True):
-        sc1, sc2, sc3 = st.columns([2, 2, 1])
-        ng_gate = sc1.selectbox("Process Gate", all_activities)
-        ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
-        ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
-        
-        # New Option: Auto-populate sub-tasks?
-        auto_sub = st.checkbox("Auto-add standard sub-tasks from Master?", value=True)
-        
-        if st.form_submit_button("🚀 Add to Plan"):
-            if len(ng_dates) == 2:
-                # 1. Insert the Main Gate
-                gate_res = conn.table("job_planning").insert({
-                    "job_no": target_job, 
-                    "gate_name": ng_gate, 
-                    "step_order": ng_order, 
-                    "planned_start_date": ng_dates[0].isoformat(), 
-                    "planned_end_date": ng_dates[1].isoformat(), 
-                    "current_status": "Pending"
-                }).execute()
+        # --- ADD SINGLE GATE SECTION ---
+        with st.expander("➕ Add Single Gate to Plan", expanded=False):
+            with st.form("add_gate_form", clear_on_submit=True):
+                sc1, sc2, sc3 = st.columns([2, 2, 1])
+                ng_gate = sc1.selectbox("Process Gate", all_activities)
+                ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
+                ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
+                auto_sub = st.checkbox("Auto-add standard sub-tasks from Master?", value=True)
                 
-                # 2. Logic to Auto-Add Sub-tasks
-                if auto_sub and gate_res.data:
-                    new_gate_id = gate_res.data[0]['id']
-                    
-                    # Fetch template sub-tasks for this gate name
-                    m_subs = conn.table("master_sub_tasks").select("sub_task_name").eq("gate_name", ng_gate).execute()
-                    
-                    if m_subs.data:
-                        sub_payload = [{
-                            "project_id": int(job_internal_id) if 'job_internal_id' in locals() else None,
-                            "parent_gate_id": int(new_gate_id),
-                            "sub_task_name": s['sub_task_name'],
+                if st.form_submit_button("🚀 Add to Plan"):
+                    if len(ng_dates) == 2:
+                        gate_res = conn.table("job_planning").insert({
+                            "job_no": target_job, 
+                            "gate_name": ng_gate, 
+                            "step_order": ng_order, 
+                            "planned_start_date": ng_dates[0].isoformat(), 
+                            "planned_end_date": ng_dates[1].isoformat(), 
                             "current_status": "Pending"
-                        } for s in m_subs.data]
+                        }).execute()
                         
-                        conn.table("job_sub_tasks").insert(sub_payload).execute()
-                
-                st.cache_data.clear()
-                st.success(f"Added {ng_gate} with standard sub-tasks!")
-                st.rerun()
-
+                        if auto_sub and gate_res.data:
+                            new_gate_id = gate_res.data[0]['id']
+                            m_subs = conn.table("master_sub_tasks").select("sub_task_name").eq("gate_name", ng_gate).execute()
+                            
+                            if m_subs.data:
+                                sub_payload = [{
+                                    "project_id": int(job_internal_id) if job_internal_id else None,
+                                    "parent_gate_id": int(new_gate_id),
+                                    "sub_task_name": s['sub_task_name'],
+                                    "current_status": "Pending"
+                                } for s in m_subs.data]
+                                conn.table("job_sub_tasks").insert(sub_payload).execute()
+                        
+                        st.cache_data.clear()
+                        st.success(f"Added {ng_gate} with standard sub-tasks!")
+                        st.rerun()
 
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
     st.subheader("👷 Labor Output Entry")
     
     unit_map = {
-        "Welding": "MTs", 
-        "Buffing": "Sq.Ft", 
-        "Painting": "Sq.Ft",
-        "Cutting": "Nos", 
-        "Fitting": "Nos", 
-        "Grinding": "Nos",
-        "Assembly": "Nos", 
-        "Others": "Nos"
+        "Welding": "MTs", "Buffing": "Sq.Ft", "Painting": "Sq.Ft",
+        "Cutting": "Nos", "Fitting": "Nos", "Grinding": "Nos",
+        "Assembly": "Nos", "Others": "Nos"
     }
 
     f_act = st.selectbox("🎯 Select Current Activity", all_activities, key="act_main")
@@ -218,7 +202,6 @@ with tab_entry:
 # --- TAB 3: ANALYTICS ---
 with tab_analytics:
     st.subheader("📅 Production Shift Report")
-    
     a1, a2 = st.columns([1, 3])
     with a1:
         if st.button("🔄 Refresh Data"):
@@ -266,7 +249,6 @@ with tab_master:
             conn.table("master_sub_tasks").insert({"gate_name": t_gate, "sub_task_name": t_sub}).execute()
             st.cache_data.clear(); st.rerun()
             
-    # Show existing templates
     m_sub_df = conn.table("master_sub_tasks").select("*").execute()
     if m_sub_df.data:
         st.dataframe(pd.DataFrame(m_sub_df.data)[['gate_name', 'sub_task_name']], hide_index=True)
