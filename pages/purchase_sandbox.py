@@ -39,12 +39,14 @@ def calculate_aging(created_at_str):
         created_at = pd.to_datetime(created_at_str).replace(tzinfo=timezone.utc).astimezone(IST)
         now = datetime.now(IST)
         hrs = (now - created_at).total_seconds() / 3600
-        if hrs > 48:
-            return hrs, f'<span class="aging-red">🛑 CRITICAL: {int(hrs)} HRS</span>'
-        elif hrs > 24:
-            return hrs, f'<span class="aging-orange">⚠️ DELAYED: {int(hrs)} HRS</span>'
+        if days >= 7:
+            return days, f'<span class="aging-red">🛑 CRITICAL: {int(days)} DAYS</span>'
+        elif days >= 3:
+            return days, f'<span class="aging-orange">⚠️ DELAYED: {int(days)} DAY</span>'
         else:
-            return hrs, f'<span style="color:gray; font-size:11px;">⏱️ {int(hrs)}h ago</span>'
+            # Show hours if it's less than a day
+            hrs = int(diff.total_seconds() / 3600)
+            return days, f'<span style="color:gray; font-size:11px;">⏱️ {hrs}h ago</span>'
     except:
         return 0, ""
 
