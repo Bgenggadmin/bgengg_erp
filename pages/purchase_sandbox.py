@@ -81,47 +81,49 @@ if not df_p.empty:
     for p_idx, p_row in df_p.iterrows():
         job_no = str(p_row.get('job_no', 'N/A')).strip().upper()
         p_db_id = p_row['id']
-        job_items = df_items[df_items['job_no'].astype(str).str.upper() == job_no] if not df_items.empty else pd.DataFrame()
         
-        # Determine if this specific job card should be auto-expanded due to critical delays
-        job_has_critical = False
-        if not job_items.empty:
-            active_job_items = job_items[job_items['status'] != "Received"]
-            for _, r in active_job_items.iterrows():
-                if calculate_aging(r.get('created_at'))[0] > 48:
-                    job_has_critical = True; break
+        # 1. Pull all items for this job
+        all_items = df_items[df_items['job_no'].astype(str).str.upper() == job_no] if not df_items.empty else pd.DataFrame()
+        
+        # 2. SEPARATE LOGIC: Split items into Active and Received
+        active_items = all_items[all_items['status'] != "Received"]
+        received_items = all_items[all_items['status'] == "Received"]
 
-        label = f"{'🔴' if job_has_critical else '📋'} JOB: {job_no} | {p_row.get('client_name', 'Client')}"
+        # 3. Check for delays ONLY in active items
+        job_has_critical = False
+        for _, r in active_items.iterrows():
+            if calculate_aging(r.get('created_at'))[0] > 48:
+                job_has_critical = True; break
+
+        # 4. Update label to show the count of open triggers
+        open_count = len(active_items)
+        label = f"{'🔴' if job_has_critical else '📋'} JOB: {job_no} | {p_row.get('client_name', 'Client')} ({open_count} Open)"
         
         with st.expander(label, expanded=job_has_critical):
             # --- LOGISTICS SUMMARY ---
             st.markdown('<div class="section-header">🚩 Logistics Summary</div>', unsafe_allow_html=True)
-            ac1, ac2, ac3 = st.columns([1, 2, 1])
-            ac1.write(f"**Anchor Person:**\n{p_row.get('anchor_person', 'N/A')}")
-            ac2.info(f"**Critical Requirements:**\n{p_row.get('critical_materials', 'N/A')}")
+            ac1, ac2 = st.columns([1, 3])
+            ac1.write(f"**Anchor:** {p_row.get('anchor_person', 'N/A')}")
+            ac2.info(f"**Critical:** {p_row.get('critical_materials', 'N/A')}")
             
-            # --- ITEM BREAKDOWN WITH AGING ---
-            st.markdown('<div class="section-header">📦 Material Request Breakdown</div>', unsafe_allow_html=True)
+            # --- ITEM BREAKDOWN (ACTIVE ONLY) ---
+            st.markdown('<div class="section-header">📦 Active Material Requests</div>', unsafe_allow_html=True)
             with st.container(border=True):
-                if job_items.empty:
-                    st.write("No specific material requests logged.")
+                if active_items.empty:
+                    st.success("✅ All items for this job are closed.")
                 else:
-                    for i, i_row in job_items.sort_values('id').iterrows():
+                    # NOTICE: We only loop through active_items now
+                    for i, i_row in active_items.sort_values('id').reset_index(drop=True).iterrows():
                         _, aging_tag = calculate_aging(i_row.get('created_at'))
                         
                         ic1, ic2, ic3, ic4 = st.columns([1.5, 2.5, 1, 0.8])
                         with ic1:
                             st.markdown(aging_tag, unsafe_allow_html=True)
-                            st.write(f"**{i_row.get('item_name', 'Item')}**")
+                            st.write(f"**{i_row.get('item_name')}**")
                             st.caption(f"Spec: {i_row.get('specs', '-')}")
                         
-                        i_reply_val = i_row.get('purchase_reply', "") or ""
-                        i_reply = ic2.text_area("Purchase Reply", value=i_reply_val, key=f"r_{i_row['id']}", height=80, label_visibility="collapsed")
-                        
-                        i_opts = ["Triggered", "Sourcing", "Ordered", "Received"]
-                        curr_i_stat = str(i_row.get('status', 'Triggered'))
-                        def_i_idx = i_opts.index(curr_i_stat) if curr_i_stat in i_opts else 0
-                        i_stat = ic3.selectbox("Status", i_opts, index=def_i_idx, key=f"s_{i_row['id']}", label_visibility="collapsed")
+                        i_reply = ic2.text_area("Reply", value=i_row.get('purchase_reply', ""), key=f"r_{i_row['id']}", height=80, label_visibility="collapsed")
+                        i_stat = ic3.selectbox("Status", ["Triggered", "Sourcing", "Ordered", "Received"], key=f"s_{i_row['id']}", label_visibility="collapsed")
                         
                         if ic4.button("Update", key=f"b_{i_row['id']}", type="primary", use_container_width=True):
                             conn.table("purchase_orders").update({
@@ -129,7 +131,10 @@ if not df_p.empty:
                                 "updated_at": datetime.now(IST).isoformat()
                             }).eq("id", i_row['id']).execute()
                             st.cache_data.clear()
-                            st.rerun()
-                        
-                        if i < len(job_items) - 1:
-                            st.divider()
+                            st.rerun() # Once updated to "Received", it disappears from this list
+
+            # --- OPTIONAL: HISTORY SECTION ---
+            if not received_items.empty:
+                with st.expander("View Received History"):
+                    for _, c_row in received_items.iterrows():
+                        st.write(f"✅ {c_row['item_name']} (Received)")
