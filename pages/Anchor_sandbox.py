@@ -4,10 +4,10 @@ import pandas as pd
 from datetime import datetime, date
 import plotly.express as px
 
-# --- PAGE CONFIG ---
+# --- 1. PAGE CONFIG ---
 st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_icon="⚓")
 
-# --- PASSWORD PROTECTION ---
+# --- 2. PASSWORD PROTECTION ---
 def check_password():
     def password_entered():
         if st.session_state["password"] == "1234": 
@@ -28,7 +28,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 1. DATABASE CONNECTION ---
+# --- 3. DATABASE CONNECTION ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
 @st.cache_data(ttl=0) 
@@ -43,7 +43,6 @@ def get_purchase_items():
         if res.data:
             df_p = pd.DataFrame(res.data)
             df_p['job_no'] = df_p['job_no'].astype(str).str.strip().str.upper()
-            # Ensure created_at exists for aging logic
             if 'created_at' in df_p.columns:
                 df_p['created_at'] = pd.to_datetime(df_p['created_at'])
             return df_p
@@ -53,15 +52,16 @@ def get_purchase_items():
 
 df = get_projects()
 df_pur = get_purchase_items()
+today_dt = pd.to_datetime(date.today())
 
-# --- 2. SIDEBAR CONFIGURATION ---
+# --- 4. SIDEBAR CONFIGURATION ---
 st.sidebar.title("🎯 Anchor Control")
 anchor_choice = st.sidebar.selectbox("Select Your Profile", ["Ammu", "Kishore"])
 
-# DATA FILTERING (Initial)
+# Filter Data by Anchor
 df_display = df[df['anchor_person'] == anchor_choice] if not df.empty else pd.DataFrame()
 
-# --- SIDEBAR: CRITICAL MATERIAL ALERTS ---
+# Sidebar: Critical Material Alerts
 st.sidebar.divider()
 if not df_display.empty and not df_pur.empty:
     won_jobs = df_display[df_display['status'] == "Won"]['job_no'].unique()
@@ -75,15 +75,14 @@ if not df_display.empty and not df_pur.empty:
     else:
         st.sidebar.success("✅ All Materials Ordered")
 
-# SIDEBAR: SYNC & SEARCH
+# Sidebar: Sync & Search
 st.sidebar.divider()
 st.sidebar.caption(f"🕒 Last Sync: {datetime.now().strftime('%H:%M:%S')}")
 if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.divider()
-search_query = st.sidebar.text_input("🔍 Quick Search", placeholder="Client, Job, or Desc...")
+search_query = st.sidebar.text_input("🔍 Quick Search", placeholder="Client, Job, or Desc...", key="sidebar_search")
 
 if search_query and not df_display.empty:
     df_display = df_display[
@@ -95,9 +94,8 @@ if search_query and not df_display.empty:
 st.title(f"⚓ {anchor_choice}'s Project Portal")
 st.markdown("---")
 
-# --- 3. LIVE ACTION SUMMARY ---
+# --- 5. LIVE ACTION SUMMARY ---
 if not df_display.empty:
-    today_dt = pd.to_datetime(date.today())
     df_display['enquiry_date_dt'] = pd.to_datetime(df_display['enquiry_date']).dt.tz_localize(None)
     df_display['aging_days'] = (today_dt - df_display['enquiry_date_dt']).dt.days
 
@@ -116,7 +114,7 @@ if not df_display.empty:
             st.dataframe(pend_drawings[['client_name', 'drawing_status', 'aging_days']].rename(columns={'aging_days': 'Days Since Won'}), hide_index=True, use_container_width=True)
     st.markdown("---")
 
-# --- 4. MAIN TABS ---
+# --- 6. MAIN TABS ---
 tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status", "📊 Analytics"])
 
 # --- TAB 1: NEW ENTRY ---
@@ -145,7 +143,7 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("Sales Lifecycle & Project Tracking")
     if not df_display.empty:
-        # BULK & STAGE SELECTORS
+        # Bulk & Stage Selectors
         view_col, stage_col = st.columns([1, 2])
         bulk_mode = view_col.toggle("⚡ Bulk Update Mode", value=False)
         pipeline_stages = ["All", "Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"]
@@ -171,18 +169,16 @@ with tabs[1]:
                         st.cache_data.clear(); st.success("Bulk Update Complete!"); st.rerun()
         else:
             for index, row in df_pipeline.iterrows():
-                # Aging Logic
                 is_aging = row['aging_days'] > 7 and row['status'] in ["Enquiry", "Estimation"]
                 aging_label = f" [⚠️ {row['aging_days']} DAYS OLD]" if is_aging else ""
                 
-                with st.expander(f"{'🔥' if is_aging else '📋'} {row['client_name']} | Job: {row['job_no'] or 'N/A'}{aging_label}", expanded=is_aging):
-                    if is_aging: st.error(f"Action Required! This enquiry is {row['aging_days']} days old.")
-                    
-                    # LOGISTICS
+                with st.expander(f"{'🔥' if is_aging else '📋'} {row['client_name']} | Job: {row['job_no'] or 'N/A'}{aging_label}"):
+                    # PO Details
                     pd1, pd2 = st.columns(2)
                     u_po_no = pd1.text_input("PO Number", value=row.get('po_no') or "", key=f"pono_{row['id']}")
                     u_po_date_actual = pd2.date_input("PO Date", value=pd.to_datetime(row.get('po_date')).date() if pd.notnull(row.get('po_date')) else date.today(), key=f"podt_{row['id']}")
                     
+                    # Delivery Metrics
                     d1, d2, d3 = st.columns(3)
                     curr_po_del = pd.to_datetime(row.get('po_delivery_date')).date() if pd.notnull(row.get('po_delivery_date')) else date.today()
                     curr_rev_del = pd.to_datetime(row.get('revised_delivery_date')).date() if pd.notnull(row.get('revised_delivery_date')) else curr_po_del
@@ -190,11 +186,11 @@ with tabs[1]:
                     u_rev_del = d2.date_input("Revised Del. Date", value=curr_rev_del, key=f"rev_del_date_{row['id']}")
                     
                     days_to_go = (u_rev_del - date.today()).days
-                    d3.metric("Days to Dispatch", f"{days_to_go} Days", delta=days_to_go, delta_color="normal" if days_to_go > 7 else "inverse")
+                    d3.metric("Days to Dispatch", f"{days_to_go} Days", delta=days_to_go)
 
                     st.divider()
                     
-                    # FINANCIALS
+                    # Financials (Merging Margin Variance from old code)
                     f1, f2, f3, f4 = st.columns(4)
                     u_val = f1.number_input("Est. Value (₹)", value=float(row.get('estimated_value') or 0), key=f"val_{row['id']}")
                     u_act_val = f2.number_input("Actual PO Value (₹)", value=float(row.get('actual_value') or 0), key=f"act_val_{row['id']}")
@@ -205,9 +201,10 @@ with tabs[1]:
                         variance = u_act_val - u_val
                         st.markdown(f"**Margin Variance:** :{'green' if variance >= 0 else 'red'}[₹{variance:,.0f}]")
 
-                    new_status = st.selectbox("Update Stage", pipeline_stages[1:], index=pipeline_stages[1:].index(row['status']) if row['status'] in pipeline_stages[1:] else 0, key=f"st_{row['id']}")
+                    # Status Update
+                    new_status = st.selectbox("Update Stage", pipeline_stages[1:], index=pipeline_stages[1:].index(row['status']) if row['status'] in pipeline_stages[1:] else 0, key=f"st_select_{row['id']}")
                     
-                    # PURCHASE TRIGGER
+                    # Purchase Trigger Sub-section
                     st.markdown("##### 🛒 Item-wise Purchase Trigger")
                     pc1, pc2 = st.columns([1, 2])
                     u_job = pc1.text_input("Job No.", value=row['job_no'] or "", key=f"pjob_{row['id']}")
@@ -221,9 +218,10 @@ with tabs[1]:
                             if i_name and u_job:
                                 conn.table("purchase_orders").insert({"job_no": u_job.strip().upper(), "item_name": i_name, "specs": i_spec, "status": "Triggered"}).execute()
                                 conn.table("anchor_projects").update({"purchase_trigger": True, "job_no": u_job.strip().upper()}).eq("id", row['id']).execute()
-                                st.cache_data.clear(); st.success(f"Added {i_name}"); st.rerun()
+                                st.cache_data.clear(); st.rerun()
 
-                    if st.button("Save Project Status", key=f"up_{row['id']}", type="primary", use_container_width=True):
+                    col_save, col_del = st.columns([3, 1])
+                    if col_save.button("Save Project Status", key=f"up_btn_{row['id']}", type="primary", use_container_width=True):
                         update_payload = {
                             "po_no": u_po_no, "po_date": str(u_po_date_actual),
                             "estimated_value": u_val, "actual_value": u_act_val,
@@ -237,6 +235,13 @@ with tabs[1]:
                         
                         conn.table("anchor_projects").update(update_payload).eq("id", row['id']).execute()
                         st.cache_data.clear(); st.rerun()
+                    
+                    # DELETE LOGIC
+                    with col_del.popover("🗑️ Delete"):
+                        st.warning("Delete this project permanently?")
+                        if st.button("Confirm Delete", key=f"del_{row['id']}", type="primary"):
+                            conn.table("anchor_projects").delete().eq("id", row['id']).execute()
+                            st.cache_data.clear(); st.rerun()
 
 # --- TAB 3: DRAWINGS ---
 with tabs[2]:
@@ -246,7 +251,9 @@ with tabs[2]:
         with st.expander(f"📐 DRAWING: {row['client_name']}"):
             c1, c2 = st.columns(2)
             d_ref = c1.text_input("Drawing Ref No.", value=row['drawing_ref'] or "", key=f"dr_{row['id']}")
-            d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved", "NA"], index=["Pending", "Drafting", "Approved", "NA"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved", "NA"] else 0, key=f"ds_{row['id']}")
+            d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved", "NA"], 
+                                 index=["Pending", "Drafting", "Approved", "NA"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved", "NA"] else 0, 
+                                 key=f"ds_{row['id']}")
             if st.button("Save Drawing Info", key=f"dbtn_{row['id']}"):
                 conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat}).eq("id", row['id']).execute()
                 st.cache_data.clear(); st.rerun()
@@ -262,7 +269,7 @@ with tabs[3]:
                     with st.container(border=True):
                         st.markdown(f"#### Job: {row['job_no']} | {row['client_name']}")
                         for _, item in job_items.iterrows():
-                            # Calculate order aging
+                            # Order Aging Logic
                             created_at = pd.to_datetime(item.get('created_at')).tz_localize(None) if 'created_at' in item else today_dt
                             order_age = (today_dt - created_at).days
                             
@@ -309,5 +316,5 @@ with tabs[4]:
         with c2:
             st.markdown("##### Master Export")
             export_df = df_display.drop(columns=['id'], errors='ignore')
-            st.download_button("💾 Download CSV", data=export_df.to_csv(index=False).encode('utf-8'), file_name=f"BGE_{anchor_choice}.csv")
+            st.download_button("💾 Download CSV", data=export_df.to_csv(index=False).encode('utf-8'), file_name=f"BGE_{anchor_choice}.csv", key="master_csv_dl")
             st.dataframe(export_df, use_container_width=True)
