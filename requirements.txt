@@ -7,3 +7,4 @@ fpdf
 pillow
 requests
 streamlit-drawable-canvas
+pip install xlsxwriter
