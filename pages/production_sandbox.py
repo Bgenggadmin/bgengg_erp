@@ -88,24 +88,49 @@ with tab_plan:
                 p_end = pd.to_datetime(row['planned_end_date']).date() if pd.notnull(row['planned_end_date']) else None
                 
                 with st.container(border=True):
-                    col1, col2, col3, col4 = st.columns([2.5, 1, 1, 1])
-                    
-                    with col1:
-                        st.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
-                        st.caption(f"🗓️ Planned: {p_start.strftime('%d %b') if p_start else '??'} — {p_end.strftime('%d %b') if p_end else '??'}")
+    col1, col2, col3, col4 = st.columns([2.5, 1, 1.2, 1])
+    
+    # Step Details
+    with col1:
+        st.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
+        st.caption(f"🗓️ Planned: {p_start.strftime('%d %b') if p_start else '??'} — {p_end.strftime('%d %b') if p_end else '??'}")
 
-                    if row['current_status'] == "Pending":
-                        col2.warning("⏳ Pending")
-                        if col4.button("▶️ Start", key=f"st_{gate_id}", use_container_width=True):
-                            conn.table("job_planning").update({"current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()}).eq("id", gate_id).execute()
-                            st.cache_data.clear(); st.rerun()
-                    elif row['current_status'] == "Active":
-                        col2.info("🚀 Active")
-                        if col4.button("✅ Close", key=f"cl_{gate_id}", use_container_width=True):
-                            conn.table("job_planning").update({"current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()}).eq("id", gate_id).execute()
-                            st.cache_data.clear(); st.rerun()
-                    else:
-                        col2.success("🏁 Completed")
+    # Status & Actions logic
+    status = row['current_status']
+    
+    if status == "Pending":
+        col2.warning("⏳ Pending")
+        if col4.button("▶️ Start", key=f"st_{gate_id}", use_container_width=True):
+            conn.table("job_planning").update({
+                "current_status": "Active", 
+                "actual_start_date": datetime.now(IST).isoformat()
+            }).eq("id", gate_id).execute()
+            st.cache_data.clear()
+            st.rerun()
+
+    elif status == "Active":
+        col2.info("🚀 Active")
+        # Use Col3 to show how long it's been active
+        if row.get('actual_start_date'):
+            start_dt = datetime.fromisoformat(row['actual_start_date'])
+            days_active = (datetime.now(IST) - start_dt).days
+            col3.caption(f"⏱️ {days_active} days in progress")
+            
+        if col4.button("✅ Close", key=f"cl_{gate_id}", use_container_width=True):
+            conn.table("job_planning").update({
+                "current_status": "Completed", 
+                "actual_end_date": datetime.now(IST).isoformat()
+            }).eq("id", gate_id).execute()
+            st.cache_data.clear()
+            st.rerun()
+
+    else:
+        col2.success("🏁 Completed")
+        # Optional: Add a 'Reopen' button in col4 if needed
+        if col4.button("🔄 Reopen", key=f"re_{gate_id}", use_container_width=True):
+            conn.table("job_planning").update({"current_status": "Active"}).eq("id", gate_id).execute()
+            st.cache_data.clear()
+            st.rerun()
 
         # --- ADD SINGLE GATE SECTION ---
         with st.expander("➕ Add Single Gate to Plan", expanded=False):
