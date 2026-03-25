@@ -93,11 +93,11 @@ if not df_items.empty:
 
 # --- 5. ACTION CENTER ---
 if not df_p.empty:
-    # Apply Search Filter
+    # Apply Search Filter (FIXED)
     if search_query:
         df_p = df_p[
-            (df_p['job_no'].astype(str).str.upper().contains(search_query)) | 
-            (df_p['client_name'].astype(str).str.upper().contains(search_query))
+            (df_p['job_no'].astype(str).str.upper().str.contains(search_query, na=False)) | 
+            (df_p['client_name'].astype(str).str.upper().str.contains(search_query, na=False))
         ]
 
     for _, p_row in df_p.iterrows():
