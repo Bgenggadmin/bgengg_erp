@@ -34,14 +34,19 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. DATA LOADERS & AGING LOGIC ---
 def calculate_aging(created_at_str):
+    """Returns days elapsed and a formatted HTML tag."""
     try:
         if not created_at_str: return 0, ""
         created_at = pd.to_datetime(created_at_str).replace(tzinfo=timezone.utc).astimezone(IST)
         now = datetime.now(IST)
-        hrs = (now - created_at).total_seconds() / 3600
-        if days >= 7:
+        
+        # Calculate DAYS instead of hours
+        diff = now - created_at
+        days = diff.total_seconds() / 86400  # 86400 seconds in a day
+        
+        if days >= 2:
             return days, f'<span class="aging-red">🛑 CRITICAL: {int(days)} DAYS</span>'
-        elif days >= 3:
+        elif days >= 1:
             return days, f'<span class="aging-orange">⚠️ DELAYED: {int(days)} DAY</span>'
         else:
             # Show hours if it's less than a day
@@ -91,8 +96,8 @@ if not df_items.empty:
         pending_items['days_old'] = [res[0] for res in aging_results]
         
         # Alerts based on Days
-        critical_count = len(pending_items[pending_items['days_old'] >= 7])
-        warning_count = len(pending_items[(pending_items['days_old'] >= 3) & (pending_items['days_old'] < 4)])
+        critical_count = len(pending_items[pending_items['days_old'] >= 2])
+        warning_count = len(pending_items[(pending_items['days_old'] >= 1) & (pending_items['days_old'] < 2)])
         
         if critical_count > 0:
             st.error(f"🚨 **Productivity Alert:** {critical_count} items are Critical (>2 Days).")
