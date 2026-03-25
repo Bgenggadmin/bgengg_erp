@@ -34,17 +34,24 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. DATA LOADERS & AGING LOGIC ---
 def calculate_aging(created_at_str):
+    """Returns days elapsed and a formatted HTML tag."""
     try:
         if not created_at_str: return 0, ""
         created_at = pd.to_datetime(created_at_str).replace(tzinfo=timezone.utc).astimezone(IST)
         now = datetime.now(IST)
-        hrs = (now - created_at).total_seconds() / 3600
-        if hrs > 48:
-            return hrs, f'<span class="aging-red">🛑 CRITICAL: {int(hrs)} HRS</span>'
-        elif hrs > 24:
-            return hrs, f'<span class="aging-orange">⚠️ DELAYED: {int(hrs)} HRS</span>'
+        
+        # Calculate DAYS instead of hours
+        diff = now - created_at
+        days = diff.total_seconds() / 86400  # 86400 seconds in a day
+        
+        if days >= 2:
+            return days, f'<span class="aging-red">🛑 CRITICAL: {int(days)} DAYS</span>'
+        elif days >= 1:
+            return days, f'<span class="aging-orange">⚠️ DELAYED: {int(days)} DAY</span>'
         else:
-            return hrs, f'<span style="color:gray; font-size:11px;">⏱️ {int(hrs)}h ago</span>'
+            # Show hours if it's less than a day
+            hrs = int(diff.total_seconds() / 3600)
+            return days, f'<span style="color:gray; font-size:11px;">⏱️ {hrs}h ago</span>'
     except:
         return 0, ""
 
@@ -86,10 +93,16 @@ if not df_items.empty:
     pending_items = df_items[df_items['status'] != "Received"].copy()
     if not pending_items.empty:
         aging_results = pending_items['created_at'].apply(calculate_aging)
-        pending_items['hrs_old'] = [res[0] for res in aging_results]
-        critical_count = len(pending_items[pending_items['hrs_old'] > 48])
+        pending_items['days_old'] = [res[0] for res in aging_results]
+        
+        # Alerts based on Days
+        critical_count = len(pending_items[pending_items['days_old'] >= 2])
+        warning_count = len(pending_items[(pending_items['days_old'] >= 1) & (pending_items['days_old'] < 2)])
+        
         if critical_count > 0:
-            st.error(f"🚨 **Productivity Alert:** {critical_count} items are currently CRITICAL (>48h delay).")
+            st.error(f"🚨 **Productivity Alert:** {critical_count} items are Critical (>2 Days).")
+        elif warning_count > 0:
+            st.warning(f"⚠️ **Attention:** {warning_count} items are becoming delayed (>1 Day).")
 
 # --- 5. ACTION CENTER ---
 if not df_p.empty:
