@@ -39,19 +39,17 @@ def get_master_data():
         j_res = conn.table("job_planning").select("*").order("step_order").execute()
         pur_res = conn.table("purchase_orders").select("*").execute()
         
-        return (pd.DataFrame(p_res.data or []), 
-                pd.DataFrame(l_res.data or []), 
-                pd.DataFrame(m_res.data or []), 
-                pd.DataFrame(j_res.data or []),
-                pd.DataFrame(pur_res.data or []))
+        # Convert to DataFrames and immediately fill NaNs/None with empty strings or defaults
+        df_p = pd.DataFrame(p_res.data or []).fillna("")
+        df_l = pd.DataFrame(l_res.data or []).fillna({"notes": "", "Activity": "Uncategorized"})
+        df_m = pd.DataFrame(m_res.data or []).fillna("Unknown Gate")
+        df_j = pd.DataFrame(j_res.data or []).fillna("")
+        df_pur = pd.DataFrame(pur_res.data or []).fillna("")
+        
+        return df_p, df_l, df_m, df_j, df_pur
     except Exception as e:
         st.error(f"Data Load Error: {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-
-df_projects, df_logs, df_master_gates, df_job_plans, df_purchase = get_master_data()
-
-all_workers = sorted(list(set(master.get('workers', []))))
-all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
 
 # --- 4. NAVIGATION ---
 tab_plan, tab_entry, tab_analytics, tab_master = st.tabs([
@@ -138,19 +136,26 @@ with tab_entry:
                 f_notes = st.text_input("Remarks / Notes")
                 
                 if st.form_submit_button("🚀 Log Progress"):
-                    if f_wrk != "-- Select --":
-                        conn.table("production").insert({
-                            "Job_Code": f_job, 
-                            "Activity": f_gate_data['gate_name'], 
-                            "sub_task": f_gate_data['sub_task'], # SAVING SUBTASK
-                            "Worker": f_wrk, 
-                            "Hours": f_hrs, 
-                            "Output": f_out, 
-                            "Unit": f_unit,
-                            "notes": f_notes,
-                            "created_at": datetime.now(IST).isoformat()
-                        }).execute()
-                        st.cache_data.clear(); st.success("Logged!"); st.rerun()
+    # VALIDATION CHECK
+    if f_wrk == "-- Select --":
+        st.error("Please select a worker.")
+    elif not f_act:
+        st.error("Gate/Activity is missing. Please check the job plan.")
+    else:
+        # Proceed with insertion
+        conn.table("production").insert({
+            "Job_Code": f_job, 
+            "Activity": str(f_act), # Force string type
+            "Worker": f_wrk, 
+            "Hours": f_hrs, 
+            "Output": f_out, 
+            "Unit": f_unit,
+            "notes": f_notes or "", # Ensure notes isn't None
+            "created_at": datetime.now(IST).isoformat()
+        }).execute()
+        st.cache_data.clear()
+        st.success("Logged successfully!")
+        st.rerun()
 
     # (Correction Tools & Dataframe display logic remains same)
 
