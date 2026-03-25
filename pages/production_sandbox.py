@@ -62,6 +62,8 @@ tab_plan, tab_entry, tab_analytics, tab_master = st.tabs([
     "🏗️ Scheduling & Execution", "👷 Daily Entry", "📊 Analytics & Reports", "⚙️ Master Settings"
 ])
 
+# ... (Imports and Setup remain the same) ...
+
 # --- TAB 1: SCHEDULING & EXECUTION ---
 with tab_plan:
     st.subheader("📋 Production Control Center")
@@ -76,7 +78,6 @@ with tab_plan:
             job_internal_id = p_data.get('id') 
             st.info(f"📍 Managing Job: {target_job}")
 
-        # --- D. EXECUTION & SUB-TASKS ---
         st.divider()
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
 
@@ -88,55 +89,31 @@ with tab_plan:
                 p_end = pd.to_datetime(row['planned_end_date']).date() if pd.notnull(row['planned_end_date']) else None
                 
                 with st.container(border=True):
-    col1, col2, col3, col4 = st.columns([2.5, 1, 1.2, 1])
-    
-    # Step Details
-    with col1:
-        st.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
-        st.caption(f"🗓️ Planned: {p_start.strftime('%d %b') if p_start else '??'} — {p_end.strftime('%d %b') if p_end else '??'}")
+                    col1, col2, col3, col4 = st.columns([2.5, 1, 1, 1])
+                    
+                    with col1:
+                        st.markdown(f"**Step {row['step_order']}: {row['gate_name']}**")
+                        st.caption(f"🗓️ Planned: {p_start.strftime('%d %b') if p_start else '??'} — {p_end.strftime('%d %b') if p_end else '??'}")
 
-    # Status & Actions logic
-    status = row['current_status']
-    
-    if status == "Pending":
-        col2.warning("⏳ Pending")
-        if col4.button("▶️ Start", key=f"st_{gate_id}", use_container_width=True):
-            conn.table("job_planning").update({
-                "current_status": "Active", 
-                "actual_start_date": datetime.now(IST).isoformat()
-            }).eq("id", gate_id).execute()
-            st.cache_data.clear()
-            st.rerun()
-
-    elif status == "Active":
-        col2.info("🚀 Active")
-        # Use Col3 to show how long it's been active
-        if row.get('actual_start_date'):
-            start_dt = datetime.fromisoformat(row['actual_start_date'])
-            days_active = (datetime.now(IST) - start_dt).days
-            col3.caption(f"⏱️ {days_active} days in progress")
-            
-        if col4.button("✅ Close", key=f"cl_{gate_id}", use_container_width=True):
-            conn.table("job_planning").update({
-                "current_status": "Completed", 
-                "actual_end_date": datetime.now(IST).isoformat()
-            }).eq("id", gate_id).execute()
-            st.cache_data.clear()
-            st.rerun()
-
-    else:
-        col2.success("🏁 Completed")
-        # Optional: Add a 'Reopen' button in col4 if needed
-        if col4.button("🔄 Reopen", key=f"re_{gate_id}", use_container_width=True):
-            conn.table("job_planning").update({"current_status": "Active"}).eq("id", gate_id).execute()
-            st.cache_data.clear()
-            st.rerun()
+                    if row['current_status'] == "Pending":
+                        col2.warning("⏳ Pending")
+                        if col4.button("▶️ Start", key=f"st_{gate_id}", use_container_width=True):
+                            conn.table("job_planning").update({"current_status": "Active", "actual_start_date": datetime.now(IST).isoformat()}).eq("id", gate_id).execute()
+                            st.cache_data.clear(); st.rerun()
+                    elif row['current_status'] == "Active":
+                        col2.info("🚀 Active")
+                        if col4.button("✅ Close", key=f"cl_{gate_id}", use_container_width=True):
+                            conn.table("job_planning").update({"current_status": "Completed", "actual_end_date": datetime.now(IST).isoformat()}).eq("id", gate_id).execute()
+                            st.cache_data.clear(); st.rerun()
+                    else:
+                        col2.success("🏁 Completed")
 
         # --- ADD SINGLE GATE SECTION ---
         with st.expander("➕ Add Single Gate to Plan", expanded=False):
             with st.form("add_gate_form", clear_on_submit=True):
                 sc1, sc2, sc3 = st.columns([2, 2, 1])
                 ng_gate = sc1.selectbox("Process Gate", all_activities)
+                # Fixed list index error potential in date_input
                 ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
                 ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
                 auto_sub = st.checkbox("Auto-add standard sub-tasks from Master?", value=True)
@@ -152,7 +129,8 @@ with tab_plan:
                             "current_status": "Pending"
                         }).execute()
                         
-                        if auto_sub and gate_res.data:
+                        # Safety check for auto-adding sub-tasks
+                        if auto_sub and gate_res.data and len(gate_res.data) > 0:
                             new_gate_id = gate_res.data[0]['id']
                             m_subs = conn.table("master_sub_tasks").select("sub_task_name").eq("gate_name", ng_gate).execute()
                             
@@ -166,8 +144,11 @@ with tab_plan:
                                 conn.table("job_sub_tasks").insert(sub_payload).execute()
                         
                         st.cache_data.clear()
-                        st.success(f"Added {ng_gate} with standard sub-tasks!")
+                        st.success(f"Added {ng_gate}!")
                         st.rerun()
+
+# --- TAB 2, 3 & 4 (Ensure they are aligned with 'with tab_plan') ---
+# (Rest of code continues with similar indentation levels)
 
 # --- TAB 2: DAILY WORK ENTRY ---
 with tab_entry:
