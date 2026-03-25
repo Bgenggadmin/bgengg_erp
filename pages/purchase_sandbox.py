@@ -52,30 +52,39 @@ def calculate_aging(created_at_str):
     except:
         return 0, ""
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=2)
 def get_full_purchase_data():
     try:
-        # Step 1: Filter out Enquiry/Estimation at the database level
-        proj_res = conn.table("anchor_projects").select("*").not_.in_("status", ["Enquiry", "Estimation"]).execute()
+        # 1. Fetch ALL projects and ALL purchase items (No pre-filtering on status)
+        proj_res = conn.table("anchor_projects").select("*").execute()
         items_res = conn.table("purchase_orders").select("*").execute()
         
         df_all_proj = pd.DataFrame(proj_res.data or [])
         df_items = pd.DataFrame(items_res.data or [])
         
         if not df_all_proj.empty:
-            active_item_jobs = df_items['job_no'].astype(str).str.upper().unique() if not df_items.empty else []
-            # Keep only if flagged or has items
-            df_p = df_all_proj[
-                (df_all_proj.get('purchase_trigger') == True) | 
-                (df_all_proj['job_no'].astype(str).str.upper().isin(active_item_jobs))
-            ]
+            # Get list of Job Nos that have ANY pending items (Triggered, Sourcing, Ordered, etc.)
+            # This ensures Production-triggered items are caught
+            active_item_jobs = df_items[df_items['status'] != "Received"]['job_no'].astype(str).str.upper().unique() if not df_items.empty else []
+            
+            # Logic: Show the project in Purchase Console IF:
+            # A) It is 'Won' (Production usually only happens here)
+            # B) It has active purchase items (The "Production Trigger")
+            # C) The 'purchase_trigger' flag is manually set to True
+            
+            mask = (
+                (df_all_proj['status'] == "Won") | 
+                (df_all_proj['job_no'].astype(str).str.upper().isin(active_item_jobs)) |
+                (df_all_proj.get('purchase_trigger') == True)
+            )
+            
+            df_p = df_all_proj[mask]
             return df_p, df_items
+            
         return pd.DataFrame(), df_items
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Sync Error: {e}")
         return pd.DataFrame(), pd.DataFrame()
-
-df_p, df_items = get_full_purchase_data()
 st.title("🛒 Purchase Integration Console")
 
 # --- 3. PRODUCTIVITY SUMMARY ---
