@@ -136,26 +136,26 @@ with tab_entry:
                 f_notes = st.text_input("Remarks / Notes")
                 
                 if st.form_submit_button("🚀 Log Progress"):
-    # VALIDATION CHECK
-    if f_wrk == "-- Select --":
-        st.error("Please select a worker.")
-    elif not f_act:
-        st.error("Gate/Activity is missing. Please check the job plan.")
-    else:
-        # Proceed with insertion
-        conn.table("production").insert({
-            "Job_Code": f_job, 
-            "Activity": str(f_act), # Force string type
-            "Worker": f_wrk, 
-            "Hours": f_hrs, 
-            "Output": f_out, 
-            "Unit": f_unit,
-            "notes": f_notes or "", # Ensure notes isn't None
-            "created_at": datetime.now(IST).isoformat()
-        }).execute()
-        st.cache_data.clear()
-        st.success("Logged successfully!")
-        st.rerun()
+            # 1. FIXED INDENTATION: Everything below must be indented one level
+            if f_wrk == "-- Select --":
+                st.error("Please select a worker.")
+            elif not f_gate_label: # 2. UPDATED VARIABLE: Use f_gate_label instead of f_act
+                st.error("Gate/Activity is missing. Please check the job plan.")
+            else:
+                # Proceed with insertion
+                conn.table("production").insert({
+                    "Job_Code": f_job, 
+                    "Activity": f_gate_label, # Use the descriptive label
+                    "Worker": f_wrk, 
+                    "Hours": f_hrs, 
+                    "Output": f_out, 
+                    "Unit": f_unit,
+                    "notes": f_notes or "", 
+                    "created_at": datetime.now(IST).isoformat()
+                }).execute()
+                st.cache_data.clear()
+                st.success("Logged successfully!")
+                st.rerun()
 
     # (Correction Tools & Dataframe display logic remains same)
 
