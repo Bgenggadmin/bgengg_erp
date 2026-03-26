@@ -64,6 +64,7 @@ with st.sidebar:
     if st.button("🔄 Sync Master Data"):
         st.cache_data.clear()
         st.rerun()
+
 tabs = st.tabs(["📅 Staff Booking", "👨‍✈️ Brahmiah's Desk", "📝 Trip Logger", "📊 Analytics", "📥 Export & Reports"])
 
 # --- TAB 1: STAFF BOOKING ---
@@ -85,39 +86,49 @@ with tabs[0]:
                 st.success("Request logged!"); st.rerun()
 
     st.divider()
-    st.subheader("📋 Recent Status")
-    status_data = conn.table("logistics_requests").select("*").order("created_at", desc=True).limit(10).execute().data
-    if status_data:
-        st.dataframe(pd.DataFrame(status_data)[['requested_by', 'destination', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
+    st.subheader("📋 My Request Summary")
+    status_res = conn.table("logistics_requests").select("requested_by, destination, req_date, req_time, assigned_vehicle, status").order("created_at", desc=True).limit(10).execute()
+    if status_res.data:
+        st.table(pd.DataFrame(status_res.data))
 
 # --- TAB 2: BRAHMIAH'S DESK ---
 with tabs[1]:
-    st.subheader("📬 Approval Queue & Live Trips")
-    
-    # 1. Summary Metrics
-    all_reqs = conn.table("logistics_requests").select("*").execute().data
-    if all_reqs:
-        ardf = pd.DataFrame(all_reqs)
+    st.subheader("📬 Operations Command Center")
+    all_reqs_res = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute()
+    ardf = pd.DataFrame(all_reqs_res.data) if all_reqs_res.data else pd.DataFrame()
+
+    if not ardf.empty:
         m1, m2, m3 = st.columns(3)
-        m1.metric("Pending", len(ardf[ardf['status'] == 'Pending']))
-        m2.metric("In-Trip (Assigned)", len(ardf[ardf['status'] == 'Assigned']))
+        m1.metric("Pending Approval", len(ardf[ardf['status'] == 'Pending']))
+        m2.metric("Active (In-Trip)", len(ardf[ardf['status'] == 'Assigned']))
         m3.metric("Closed Today", len(ardf[(ardf['status'] == 'Trip Closed') & (ardf['req_date'] == str(date.today()))]))
 
-    # 2. Action Area
-    req_data = conn.table("logistics_requests").select("*").eq("status", "Pending").execute().data
-    if req_data:
-        for r in req_data:
+        st.markdown("#### 📑 Fleet Movement Table")
+        # Showing high importance fields for Brahmiah
+        st.dataframe(ardf[['requested_by', 'assigned_vehicle', 'destination', 'req_date', 'status']], use_container_width=True, hide_index=True)
+
+    # Action Area for Approvals
+    pending_reqs = ardf[ardf['status'] == 'Pending'] if not ardf.empty else []
+    if len(pending_reqs) > 0:
+        st.divider()
+        st.subheader("⚠️ Action Required")
+        for _, r in pending_reqs.iterrows():
             with st.expander(f"🚩 APPROVE: {r['requested_by']} to {r['destination']}"):
                 v_assign = st.selectbox("Assign Vehicle", vehicle_list, key=f"v{r['id']}")
-                if st.button("Confirm Assignment", key=f"btn{r['id']}"):
+                if st.button("Confirm & Assign", key=f"btn{r['id']}"):
                     conn.table("logistics_requests").update({"status": "Assigned", "assigned_vehicle": v_assign}).eq("id", r['id']).execute()
                     st.rerun()
-    else: st.info("No pending requests to approve.")
 
-# --- TAB 3: TRIP LOGGER (WITH TRIP CLOSED LOGIC) ---
+# --- TAB 3: TRIP LOGGER ---
 with tabs[2]:
+    st.subheader("📝 End Trip & Update KMs")
+    # Show active trips that need closing
+    active_trips_res = conn.table("logistics_requests").select("requested_by, assigned_vehicle, destination").eq("status", "Assigned").execute()
+    if active_trips_res.data:
+        st.info("💡 Reminder: The following vehicles are currently out on trips.")
+        st.table(pd.DataFrame(active_trips_res.data))
+
     with st.form("logistics_form", clear_on_submit=True):
-        st.subheader("📝 End Trip & Log Movement")
         col1, col2, col3 = st.columns(3)
         with col1:
             vehicle = st.selectbox("Vehicle", vehicle_list, key="log_veh")
@@ -129,42 +140,39 @@ with tabs[2]:
             fuel_qty = st.number_input("Fuel Added", min_value=0.0)
             auth_by = st.selectbox("Authorized By", staff_list, key="log_auth")
       
-        location = st.text_input("Current Location / Final Destination")
+        location = st.text_input("Current Location / Final Site")
         st.camera_input("Capture Odometer Reading")
 
         if st.form_submit_button("🚀 SUBMIT LOG & CLOSE TRIP"):
             if end_km > start_km and location:
-                # 1. Insert into Logistics Logs (The History)
                 new_entry = {
                     "timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M'), 
-                    "vehicle": vehicle, "driver": driver, 
-                    "start_km": start_km, "end_km": end_km, 
-                    "distance": end_km-start_km, "fuel_ltrs": fuel_qty, 
-                    "location": location.upper()
+                    "vehicle": vehicle, "driver": driver, "start_km": start_km, "end_km": end_km, 
+                    "distance": end_km-start_km, "fuel_ltrs": fuel_qty, "location": location.upper()
                 }
                 conn.table("logistics_logs").insert(new_entry).execute()
-                
-                # 2. TRIP CLOSED LOGIC: Update the active request
-                # We find the most recent 'Assigned' request for this specific vehicle and close it.
-                conn.table("logistics_requests").update({"status": "Trip Closed"})\
-                    .eq("assigned_vehicle", vehicle)\
-                    .eq("status", "Assigned").execute()
-                
-                st.cache_data.clear()
-                st.success(f"✅ Logged! Trip for {vehicle} is now CLOSED.")
-                st.rerun()
-            else:
-                st.error("Invalid Entry: End KM must be greater than Start KM.")
+                conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
+                st.cache_data.clear(); st.success("✅ Logged & Trip Closed!"); st.rerun()
 
-# --- TAB 4 & 5 (Analytics & Export) ---
+# --- TAB 4: ANALYTICS ---
 with tabs[3]:
+    st.subheader("📊 Performance Summary")
     if not df.empty:
-        st.metric("Total KM Managed", f"{df['distance'].sum():,}")
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Distance", f"{df['distance'].sum():,} KM")
+        c2.metric("Total Fuel Consumed", f"{df['fuel_ltrs'].sum():,} L")
+        c3.metric("Avg KM per Trip", f"{round(df['distance'].mean(), 2)}")
+        
+        st.markdown("#### 📑 Detailed Trip History")
+        st.dataframe(df[['timestamp', 'vehicle', 'driver', 'distance', 'location']], use_container_width=True, hide_index=True)
 
+# --- TAB 5: EXPORT & REPORTS ---
 with tabs[4]:
-    target = st.radio("Select Table", ["Trip Logs", "Vehicle Requests"], horizontal=True)
-    export_table = "logistics_logs" if target == "Trip Logs" else "logistics_requests"
-    export_df = pd.DataFrame(conn.table(export_table).select("*").execute().data)
+    st.subheader("📥 Data Export Table")
+    target = st.radio("Select View", ["All Trip Logs", "All Booking Requests"], horizontal=True)
+    table_name = "logistics_logs" if target == "All Trip Logs" else "logistics_requests"
+    export_df = pd.DataFrame(conn.table(table_name).select("*").execute().data)
+    
     if not export_df.empty:
-        st.download_button("💾 Download CSV", export_df.to_csv(index=False).encode('utf-8'), f"bg_{export_table}.csv")
+        st.dataframe(export_df, use_container_width=True)
+        st.download_button("💾 Download CSV", export_df.to_csv(index=False).encode('utf-8'), f"bg_{table_name}.csv")
