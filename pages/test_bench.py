@@ -1,51 +1,47 @@
 import streamlit as st
+import pandas as pd # The 'Engine' for tables
 
-# --- 1. THE PYTHON CORE (Processing 3 Outputs) ---
-def calculate_material_data(length_mm, width_mm, thickness_mm, material_type):
-    # Volume calculation
-    volume_cm3 = (length_mm/10) * (width_mm/10) * (thickness_mm/10)
-    
-    # Logic for Density, Symbol, and Rate per kg
-    if material_type == "Stainless Steel (SS304)":
-        density = 7.93 / 1000
-        symbol = "🔘"
-        rate_per_kg = 280  # Example price in ₹
-    else:
-        density = 7.85 / 1000
-        symbol = "🔲"
-        rate_per_kg = 85   # Example price in ₹
-        
-    weight_kg = volume_cm3 * density
-    total_cost = weight_kg * rate_per_kg
-    
-    # THE TRIPLE RETURN (Number, String, Number)
-    return round(weight_kg, 2), symbol, round(total_cost, 2)
+# --- 1. THE DATA ENGINE (Simulating B&G Shop Floor) ---
+# Imagine this is the data coming from your 'res' variable
+raw_data = [
+    {"job_code": "PRO-001", "machine_id": "VMC-01", "status": "In-House", "priority": "URGENT"},
+    {"job_code": "PRO-002", "machine_id": "VMC-01", "status": "In-House", "priority": "Standard"},
+    {"job_code": "PRO-003", "machine_id": "Lathe-02", "status": "In-House", "priority": "Standard"},
+    {"job_code": "PRO-004", "machine_id": "VMC-01", "status": "Outsourced", "priority": "Standard"},
+    {"job_code": "PRO-005", "machine_id": "Buffing-A", "status": "In-House", "priority": "URGENT"},
+]
+df = pd.DataFrame(raw_data)
 
-# --- 2. THE STREAMLIT INTERFACE ---
-st.title("B&G Engineering: Commercial Lab")
+# --- 2. THE ANALYTICS DASHBOARD ---
+st.title("B&G Analytics: Test Bench")
 
-mat_choice = st.selectbox("Select Material", ["Mild Steel (MS)", "Stainless Steel (SS304)"])
+# ROW 1: The Triple Unpack (4:2:2 Ratio)
+c1, c2, c3 = st.columns([4, 2, 2])
 
-col1, col2, col3 = st.columns(3)
-with col1: l = st.number_input("Length", value=1000)
-with col2: w = st.number_input("Width", value=500)
-with col3: t = st.number_input("Thickness", value=10)
+# Logic for Metrics
+total_active = len(df[df['status'] != "Finished"])
+urgent_count = len(df[df['priority'] == "URGENT"])
+in_house_count = len(df[df['status'] == "In-House"])
 
-# --- 3. THE PIPING (UNPACKING 3 VARIABLES) ---
-# Order matters: Weight first, then Symbol, then Cost
-final_weight, mat_symbol, est_cost = calculate_material_data(t, l, w, mat_choice)
+with c1: st.metric("Total Active", total_active)
+with c2: st.metric("Urgent ⚠️", urgent_count, delta="Action Required", delta_color="inverse")
+with c3: st.metric("In-House", in_house_count)
 
 st.divider()
 
-# --- 4. THE OUTPUT GAUGE ---
-c_res1, c_res2 = st.columns([3,1])
+# ROW 2: The Load Balancer (Chart vs Alerts)
+col_chart, col_alerts = st.columns([3, 2])
 
-with c_res1:
-    st.metric(label=f"{mat_symbol} Total Weight", value=f"{final_weight} kg")
+with col_chart:
+    st.subheader("🏗️ Machine Load")
+    # THE GROUPBY: Filter for In-House and count
+    load_stats = df[df['status'] == "In-House"].groupby('machine_id')['job_code'].count().reset_index()
+    
+    # The Visual Output
+    st.bar_chart(data=load_stats, x='machine_id', y='job_code')
 
-with c_res2:
-    # Adding a Delta (Difference) to see the 'Value' of the material
-    st.metric(label="Estimated Material Cost", value=f"₹{est_cost:,}")
-
-if final_weight > 100:
-    st.warning("⚠️ Use Crane for Loading.")
+with col_alerts:
+    st.subheader("🚨 Priority List")
+    # Only show URGENT jobs here
+    urgent_df = df[df['priority'] == "URGENT"]
+    st.dataframe(urgent_df[['job_code', 'machine_id']])
