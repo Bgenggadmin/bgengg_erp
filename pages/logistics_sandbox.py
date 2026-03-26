@@ -87,16 +87,14 @@ with tabs[0]:
 
     st.divider()
     st.subheader("📋 Complete Booking History")
-    # Removed .limit(10) to show older data as well
     status_data = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute().data
     if status_data:
         st.dataframe(pd.DataFrame(status_data)[['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
 
-# --- TAB 2: BRAHMIAH'S DESK ---
+# --- TAB 2: BRAHMIAH'S DESK (MODIFIED FOR STATUS SWITCH) ---
 with tabs[1]:
     st.subheader("👨‍✈️ Operations & Manual Controls")
     
-    # Fetch all data for summary
     all_res = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute().data
     ardf = pd.DataFrame(all_res) if all_res else pd.DataFrame()
 
@@ -120,24 +118,31 @@ with tabs[1]:
 
     st.divider()
 
-    # SECTION 2: LIVE TRIPS & MANUAL CLOSE (THE MISSING OPTION)
-    st.markdown("### 🚚 Live Trips (Manual Close)")
-    assigned = ardf[ardf['status'] == 'Assigned'] if not ardf.empty else pd.DataFrame()
-    if not assigned.empty:
-        for _, r in assigned.iterrows():
+    # SECTION 2: LIVE & RECENTLY CLOSED TRIPS
+    st.markdown("### 🚚 Live Trips & Activity Switch")
+    # We show both Assigned and Closed to ensure Brahmiah sees the status "Switch"
+    activity_filter = ardf[ardf['status'].isin(['Assigned', 'Trip Closed'])].head(20) 
+    
+    if not activity_filter.empty:
+        for _, r in activity_filter.iterrows():
             c1, c2, c3 = st.columns([3, 2, 1])
-            c1.write(f"**{r['assigned_vehicle']}** | {r['requested_by']} ➔ {r['destination']}")
-            c2.write(f"Date: {r['req_date']}")
-            if c3.button("Close Trip", key=f"close_br{r['id']}"):
-                conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("id", r['id']).execute()
-                st.toast(f"Trip for {r['assigned_vehicle']} marked Closed.")
-                st.rerun()
-    else: st.info("No vehicles are currently assigned to a trip.")
+            status_color = "🟢" if r['status'] == "Assigned" else "✅"
+            c1.write(f"{status_color} **{r['assigned_vehicle']}** | {r['requested_by']} ➔ {r['destination']}")
+            c2.write(f"Status: **{r['status']}**")
+            
+            # Show "Close Trip" button ONLY if it is still Assigned
+            if r['status'] == "Assigned":
+                if c3.button("Close Trip", key=f"close_br{r['id']}"):
+                    conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("id", r['id']).execute()
+                    st.toast(f"Trip for {r['assigned_vehicle']} is now CLOSED.")
+                    st.rerun()
+            else:
+                c3.write("Done")
+    else: st.info("No recent trip activity.")
 
 # --- TAB 3: TRIP LOGGER ---
 with tabs[2]:
     st.subheader("📝 Driver Log & Trip Closure")
-    # Summary of what needs to be logged
     active_trips = conn.table("logistics_requests").select("assigned_vehicle, destination, requested_by").eq("status", "Assigned").execute().data
     if active_trips:
         st.write("**Vehicles currently out:**")
@@ -166,7 +171,6 @@ with tabs[2]:
                     "distance": end_km-start_km, "fuel_ltrs": fuel_qty, "location": location.upper()
                 }
                 conn.table("logistics_logs").insert(new_entry).execute()
-                # Auto-close the request
                 conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
                 st.cache_data.clear(); st.success("✅ Logged & Trip Closed!"); st.rerun()
 
@@ -175,7 +179,6 @@ with tabs[3]:
     st.subheader("📊 Fleet Performance")
     if not df.empty:
         st.metric("Total KM Covered", f"{df['distance'].sum():,}")
-        # Summary table showing all movement history (Old Data included)
         st.dataframe(df[['timestamp', 'vehicle', 'driver', 'distance', 'location']], use_container_width=True, hide_index=True)
 
 with tabs[4]:
