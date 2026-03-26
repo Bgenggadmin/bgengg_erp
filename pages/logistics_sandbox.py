@@ -3,9 +3,6 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date
 import pytz
-from io import BytesIO
-from PIL import Image
-import urllib.parse
 
 # --- 1. SETUP & UTILITIES ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -15,19 +12,21 @@ try:
 except Exception as e:
     st.error("❌ Supabase Connection Failed!"); st.stop()
 
-# --- 2. FUNCTIONS (Must be at the TOP) ---
+# --- 2. FUNCTIONS ---
 @st.cache_data(ttl=600)
 def get_staff_master():
     try:
         res = conn.table("master_staff").select("name").order("name").execute()
         return [item['name'] for item in res.data] if res.data else ["Admin"]
     except: return ["Admin", "Staff"]
+
 @st.cache_data(ttl=600)
 def get_vehicle_master():
     try:
         res = conn.table("master_vehicles").select("reg_no").order("reg_no").execute()
         return [item['reg_no'] for item in res.data] if res.data else ["AP07-XXXX"]
     except: return ["AP07-XXXX", "TS09-XXXX"]
+
 @st.cache_data(ttl=60)
 def load_logistics_data():
     try:
@@ -43,36 +42,33 @@ def load_logistics_data():
     return pd.DataFrame(columns=["timestamp", "vehicle", "end_km", "distance", "fuel_ltrs"])
 
 def get_last_km(veh_name, dataframe):
-    """Safely retrieves the last recorded KM for a vehicle."""
     try:
         if not dataframe.empty and 'vehicle' in dataframe.columns:
-            # Filter logs for this specific vehicle
             veh_logs = dataframe[dataframe['vehicle'] == veh_name]
             if not veh_logs.empty:
                 last_val = veh_logs.iloc[0]['end_km']
-                # Check if the value is actually a number before converting
                 if pd.notnull(last_val):
                     return int(float(last_val)) 
-    except Exception as e:
-        print(f"KM Lookup Warning: {e}") # Silent log for debugging
-    return 0 # Default for brand new vehicles with no history
+    except: pass
+    return 0
 
 # Initialize Global Data
 staff_list = get_staff_master()
 vehicle_list = get_vehicle_master()
 df = load_logistics_data()
 purpose_list = ["Site Delivery", "Material pickup","Material droping","Material Pickup & Drop","Inter-Unit Transfer", "Client Pickup & Drop", "Vendor Visit", "Fueling", "Maintenance", "Other"]
+
 # --- 3. UI LAYOUT ---
 st.title("🚛 B&G Logistics Management System")
 with st.sidebar:
     if st.button("🔄 Sync Master Data"):
         st.cache_data.clear()
         st.rerun()
+
 tabs = st.tabs(["📅 Staff Booking", "👨‍✈️ Brahmiah's Desk", "📝 Trip Logger", "📊 Analytics", "📥 Export & Reports"])
 
 # --- TAB 1: STAFF BOOKING ---
 with tabs[0]:
-    # 1. Booking Form
     with st.form("request_form", clear_on_submit=True):
         st.subheader("Request Vehicle for Work")
         c1, c2 = st.columns(2)
@@ -86,56 +82,74 @@ with tabs[0]:
         if st.form_submit_button("Submit Request"):
             if dest:
                 new_req = {
-                    "requested_by": req_by, 
-                    "destination": dest.upper(), 
-                    "req_date": str(r_date), 
-                    "req_time": r_time, 
-                    "purpose": req_purpose, 
-                    "assigned_vehicle": req_veh, 
-                    "status": "Pending"
+                    "requested_by": req_by, "destination": dest.upper(), 
+                    "req_date": str(r_date), "req_time": r_time, 
+                    "purpose": req_purpose, "assigned_vehicle": req_veh, "status": "Pending"
                 }
                 conn.table("logistics_requests").insert(new_req).execute()
                 st.success("Request logged!"); st.rerun()
             else:
                 st.error("Please provide a destination.")
-    # 2. ADDED: Status Summary Table (Below the form)
+
     st.divider()
     st.subheader("📋 Your Recent Request Status")
     try:
-        # Fetching last 10 requests to keep it fast
-        status_data = conn.table("logistics_requests").select(
-            "requested_by, destination, purpose, req_date, req_time, assigned_vehicle, status"
-        ).order("created_at", desc=True).limit(10).execute().data
-   
+        status_data = conn.table("logistics_requests").select("*").order("created_at", desc=True).limit(10).execute().data
         if status_data:
-            status_df = pd.DataFrame(status_data)
-       
-            # Apply styling for better readability
-            def color_status(val):
-                color = '#FFA500' if val == 'Pending' else '#008000'
-                return f'color: {color}; font-weight: bold'
+            st.dataframe(pd.DataFrame(status_data)[['requested_by', 'destination', 'req_date', 'status']], use_container_width=True, hide_index=True)
+    except: pass
 
+# --- TAB 2: BRAHMIAH'S DESK (UPDATED) ---
+with tabs[1]:
+    st.subheader("👨‍✈️ Fleet Operations Summary")
+    
+    # 1. FETCH ALL ACTIVE DATA
+    try:
+        all_reqs_res = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute()
+        all_reqs_df = pd.DataFrame(all_reqs_res.data) if all_reqs_res.data else pd.DataFrame()
+        
+        if not all_reqs_df.empty:
+            # Create Status Metrics
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Pending Approval", len(all_reqs_df[all_reqs_df['status'] == 'Pending']))
+            m2.metric("Assigned/In-Trip", len(all_reqs_df[all_reqs_df['status'] == 'Assigned']))
+            m3.metric("Completed Today", len(all_reqs_df[(all_reqs_df['status'] == 'Completed') & (all_reqs_df['req_date'] == str(date.today()))]))
+
+            # Summary Table with Style
+            st.markdown("#### 📑 Real-time Request Pipeline")
+            
+            def style_status(val):
+                color = '#e67e22' if val == 'Pending' else '#2ecc71' if val == 'Assigned' else '#3498db'
+                return f'background-color: {color}; color: white; font-weight: bold; border-radius: 5px;'
+
+            display_cols = ['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']
             st.dataframe(
-                status_df.style.applymap(color_status, subset=['status']),
+                all_reqs_df[display_cols].style.applymap(style_status, subset=['status']),
                 use_container_width=True,
                 hide_index=True
             )
         else:
-            st.info("No recent requests found.")
+            st.info("No logistics data available.")
     except Exception as e:
-        st.error(f"Status Load Error: {e}")
-# --- TAB 2: BRAHMIAH'S DESK ---
-with tabs[1]:
-    st.subheader("📬 Pending Approvals")
-    req_data = conn.table("logistics_requests").select("*").ilike("status", "Pending").execute().data
-    if req_data:
-        for r in req_data:
-            with st.expander(f"🚩 {r['requested_by']} to {r['destination']}"):
-                v_assign = st.selectbox("Assign Vehicle", vehicle_list, key=f"v{r['id']}")
-                if st.button("Approve & Assign", key=f"btn{r['id']}"):
+        st.error(f"Error loading summary: {e}")
+
+    st.divider()
+    st.subheader("📬 Pending Approvals (Action Required)")
+    
+    # Approval Logic
+    pending_data = all_reqs_df[all_reqs_df['status'] == 'Pending'].to_dict('records') if not all_reqs_df.empty else []
+    
+    if pending_data:
+        for r in pending_data:
+            with st.expander(f"🚩 APPROVE: {r['requested_by']} ➔ {r['destination']} ({r['req_time']})"):
+                c1, c2 = st.columns([2, 1])
+                v_assign = c1.selectbox("Confirm/Change Vehicle", vehicle_list, index=vehicle_list.index(r['assigned_vehicle']) if r['assigned_vehicle'] in vehicle_list else 0, key=f"v{r['id']}")
+                if c2.button("✅ Approve & Assign", key=f"btn{r['id']}", use_container_width=True):
                     conn.table("logistics_requests").update({"status": "Assigned", "assigned_vehicle": v_assign}).eq("id", r['id']).execute()
+                    st.toast(f"Assigned {v_assign} to {r['requested_by']}")
                     st.rerun()
-    else: st.info("No pending requests.")
+    else: 
+        st.success("All clear! No pending approvals.")
 
 # --- TAB 3: TRIP LOGGER ---
 with tabs[2]:
@@ -157,10 +171,11 @@ with tabs[2]:
 
         if st.form_submit_button("🚀 SUBMIT LOG"):
             if end_km > start_km and location:
-                # Logic for photo upload and Supabase insert (Standard Golden Master logic)
                 new_entry = {"timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M'), "vehicle": vehicle, "driver": driver, "start_km": start_km, "end_km": end_km, "distance": end_km-start_km, "fuel_ltrs": fuel_qty, "location": location.upper()}
                 conn.table("logistics_logs").insert(new_entry).execute()
-                st.cache_data.clear(); st.success("✅ Logged!"); st.rerun()
+                # Update request status to Completed if applicable
+                conn.table("logistics_requests").update({"status": "Completed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
+                st.cache_data.clear(); st.success("✅ Trip Closed & Logged!"); st.rerun()
 
 # --- TAB 4: ANALYTICS ---
 with tabs[3]:
@@ -171,13 +186,10 @@ with tabs[3]:
         c3.metric("Logs Count", len(df))
         st.dataframe(df.head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 5: EXPORT & REPORTS ---
+# --- TAB 5: EXPORT ---
 with tabs[4]:
-    st.subheader("📥 Data Export")
     target = st.radio("Select Table", ["Trip Logs", "Vehicle Requests"], horizontal=True)
     export_table = "logistics_logs" if target == "Trip Logs" else "logistics_requests"
-  
     export_df = pd.DataFrame(conn.table(export_table).select("*").execute().data)
     if not export_df.empty:
-        st.dataframe(export_df.head(10), use_container_width=True)
         st.download_button("💾 Download CSV", export_df.to_csv(index=False).encode('utf-8'), f"bg_{export_table}.csv", "text/csv")
