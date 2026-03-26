@@ -297,3 +297,16 @@ with tabs[3]:
         new_v = st.text_input(f"New {m_opt[sel]}")
         if st.button("Register") and new_v:
             conn.table(sel).insert({col_name: new_v}).execute(); st.rerun()
+
+# Paste this inside "with tabs[3]:" (The Masters Tab)
+st.divider()
+st.subheader("System Integration Test")
+if st.button("🧪 Send Test WhatsApp Notification"):
+    with st.spinner("Connecting to WhatsApp Gateway..."):
+        # Replace these with your actual UltraMsg/Provider credentials
+        test_success = send_whatsapp_alert("TEST-001", "Sample Engineering Part", 5)
+        
+        if test_success:
+            st.success("✅ Test message sent to your number!")
+        else:
+            st.error("❌ Connection Failed. Check your Instance ID and Token.")
