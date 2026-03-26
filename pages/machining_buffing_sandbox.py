@@ -3,6 +3,28 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 import datetime
 import pytz
+import requests
+
+def send_whatsapp_alert(job_code, part_name, days_overdue):
+    # Example using a generic WhatsApp API Gateway
+    instance_id = "your_instance_id"
+    token = "your_token"
+    mobile = "919848993939" # Incharge Mobile Number
+    
+    message = f"🚨 *OVERDUE ALERT: B&G ERP*\n\n" \
+              f"Job: {job_code}\n" \
+              f"Part: {part_name}\n" \
+              f"Status: OVERDUE by {days_overdue} days.\n" \
+              f"Please update the Incharge Desk."
+    
+    url = f"https://api.ultramsg.com/{instance_id}/messages/chat"
+    payload = {"token": token, "to": mobile, "body": message}
+    
+    try:
+        requests.post(url, data=payload)
+        return True
+    except:
+        return False
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -200,7 +222,22 @@ with tabs[2]:
         m1.metric("Active Work Orders", total_active)
         m2.metric("Critical Delays", delayed_count, delta=f"{delayed_count} overdue", delta_color="inverse")
         m3.metric("Healthy Jobs", ontrack_count)
-        
+
+        # --- WHATSAPP NOTIFICATION TRIGGER ---
+        if delayed_count > 0:
+            if st.button(f"📢 Send {delayed_count} Overdue Alerts via WhatsApp", use_container_width=True):
+                success_count = 0
+                for _, row in delayed_df.iterrows():
+                    # Calculate days overdue
+                    days_ov = abs((pd.to_datetime(row['required_date']).date() - today).days)
+                    
+                    if send_whatsapp_alert(row['job_code'], row['part_name'], days_ov):
+                        success_count += 1
+                
+                if success_count > 0:
+                    st.success(f"✅ {success_count} Notifications sent successfully!")
+                else:
+                    st.error("🚨 Failed to send notifications. Check API credentials.")
         st.divider()
 
         # 3. Unit-wise Summary Section
