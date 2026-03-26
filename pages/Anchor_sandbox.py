@@ -58,7 +58,6 @@ today_dt = pd.to_datetime(date.today())
 st.sidebar.title("🎯 Anchor Control")
 anchor_choice = st.sidebar.selectbox("Select Your Profile", ["Ammu", "Kishore"])
 
-# Filter Data by Anchor
 df_display = df[df['anchor_person'] == anchor_choice] if not df.empty else pd.DataFrame()
 
 # Sidebar: Critical Material Alerts
@@ -139,11 +138,10 @@ with tabs[0]:
                 }).execute()
                 st.cache_data.clear(); st.success("Enquiry Logged!"); st.rerun()
 
-# --- TAB 2: PIPELINE ---
+# --- TAB 2: PIPELINE (UPDATED) ---
 with tabs[1]:
     st.subheader("Sales Lifecycle & Project Tracking")
     if not df_display.empty:
-        # Bulk & Stage Selectors
         view_col, stage_col = st.columns([1, 2])
         bulk_mode = view_col.toggle("⚡ Bulk Update Mode", value=False)
         pipeline_stages = ["All", "Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"]
@@ -172,7 +170,12 @@ with tabs[1]:
                 is_aging = row['aging_days'] > 7 and row['status'] in ["Enquiry", "Estimation"]
                 aging_label = f" [⚠️ {row['aging_days']} DAYS OLD]" if is_aging else ""
                 
-                with st.expander(f"{'🔥' if is_aging else '📋'} {row['client_name']} | Job: {row['job_no'] or 'N/A'}{aging_label}"):
+                # --- MODIFIED ROW HEADER ---
+                client_part = f"{'🔥' if is_aging else '📋'} {row['client_name']}"
+                job_part = f" | Job: {row['job_no'] or 'N/A'}"
+                desc_part = f" | 📝 {row['project_description'][:50]}..." if row['project_description'] else ""
+                
+                with st.expander(f"{client_part}{job_part}{desc_part}{aging_label}"):
                     # PO Details
                     pd1, pd2 = st.columns(2)
                     u_po_no = pd1.text_input("PO Number", value=row.get('po_no') or "", key=f"pono_{row['id']}")
@@ -190,7 +193,7 @@ with tabs[1]:
 
                     st.divider()
                     
-                    # Financials (Merging Margin Variance from old code)
+                    # Financials
                     f1, f2, f3, f4 = st.columns(4)
                     u_val = f1.number_input("Est. Value (₹)", value=float(row.get('estimated_value') or 0), key=f"val_{row['id']}")
                     u_act_val = f2.number_input("Actual PO Value (₹)", value=float(row.get('actual_value') or 0), key=f"act_val_{row['id']}")
@@ -201,10 +204,8 @@ with tabs[1]:
                         variance = u_act_val - u_val
                         st.markdown(f"**Margin Variance:** :{'green' if variance >= 0 else 'red'}[₹{variance:,.0f}]")
 
-                    # Status Update
                     new_status = st.selectbox("Update Stage", pipeline_stages[1:], index=pipeline_stages[1:].index(row['status']) if row['status'] in pipeline_stages[1:] else 0, key=f"st_select_{row['id']}")
                     
-                    # Purchase Trigger Sub-section
                     st.markdown("##### 🛒 Item-wise Purchase Trigger")
                     pc1, pc2 = st.columns([1, 2])
                     u_job = pc1.text_input("Job No.", value=row['job_no'] or "", key=f"pjob_{row['id']}")
@@ -235,8 +236,7 @@ with tabs[1]:
                         
                         conn.table("anchor_projects").update(update_payload).eq("id", row['id']).execute()
                         st.cache_data.clear(); st.rerun()
-                    
-                    # DELETE LOGIC
+
                     with col_del.popover("🗑️ Delete"):
                         st.warning("Delete this project permanently?")
                         if st.button("Confirm Delete", key=f"del_{row['id']}", type="primary"):
@@ -251,9 +251,7 @@ with tabs[2]:
         with st.expander(f"📐 DRAWING: {row['client_name']}"):
             c1, c2 = st.columns(2)
             d_ref = c1.text_input("Drawing Ref No.", value=row['drawing_ref'] or "", key=f"dr_{row['id']}")
-            d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved", "NA"], 
-                                 index=["Pending", "Drafting", "Approved", "NA"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved", "NA"] else 0, 
-                                 key=f"ds_{row['id']}")
+            d_stat = c2.selectbox("Status", ["Pending", "Drafting", "Approved", "NA"], index=["Pending", "Drafting", "Approved", "NA"].index(row['drawing_status']) if row['drawing_status'] in ["Pending", "Drafting", "Approved", "NA"] else 0, key=f"ds_{row['id']}")
             if st.button("Save Drawing Info", key=f"dbtn_{row['id']}"):
                 conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat}).eq("id", row['id']).execute()
                 st.cache_data.clear(); st.rerun()
@@ -269,10 +267,8 @@ with tabs[3]:
                     with st.container(border=True):
                         st.markdown(f"#### Job: {row['job_no']} | {row['client_name']}")
                         for _, item in job_items.iterrows():
-                            # Order Aging Logic
                             created_at = pd.to_datetime(item.get('created_at')).tz_localize(None) if 'created_at' in item else today_dt
                             order_age = (today_dt - created_at).days
-                            
                             c1, c2, c3, c4 = st.columns([2, 1, 3, 1])
                             c1.write(f"{'🛑' if order_age > 2 and item['status'] == 'Triggered' else '🔹'} {item['item_name']}")
                             c2.write(item['specs'])
@@ -288,19 +284,16 @@ with tabs[4]:
         lost_count = len(df_display[df_display['status'] == "Lost"])
         win_rate = (len(won_df) / (len(won_df) + lost_count) * 100) if (len(won_df) + lost_count) > 0 else 0
         
-        # Metrics
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Win Rate", f"{win_rate:.1f}%")
         m2.metric("Won Value", f"₹{won_df['actual_value'].sum():,.0f}")
         
-        # Sales Cycle Calculation
         if not won_df.empty and 'won_date' in won_df.columns:
             won_df['won_date_dt'] = pd.to_datetime(won_df['won_date']).dt.tz_localize(None)
             won_df['cycle_time'] = (won_df['won_date_dt'] - won_df['enquiry_date_dt']).dt.days
             avg_cycle = won_df['cycle_time'].mean()
             m3.metric("Avg. Sales Cycle", f"{int(avg_cycle)} Days" if not pd.isna(avg_cycle) else "N/A")
             
-            # Monthly Forecast
             won_df['delivery_month'] = pd.to_datetime(won_df['revised_delivery_date']).dt.strftime('%b %Y')
             monthly_data = won_df.groupby('delivery_month')['actual_value'].sum().reset_index()
             st.markdown("##### 📅 Revenue Forecast (by Delivery Month)")
