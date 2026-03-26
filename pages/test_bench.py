@@ -33,7 +33,7 @@ with col3: t = st.number_input("Thickness", value=10)
 
 # --- 3. THE PIPING (UNPACKING 3 VARIABLES) ---
 # Order matters: Weight first, then Symbol, then Cost
-final_weight, mat_symbol, est_cost = calculate_material_data(l, w, t, mat_choice)
+final_weight, mat_symbol, est_cost = calculate_material_data(t, l, w, mat_choice)
 
 st.divider()
 
