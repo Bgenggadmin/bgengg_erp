@@ -90,11 +90,39 @@ with tabs[0]:
         u_filt = st.radio("Unit Filter", [1, 2, 3], horizontal=True)
         st.dataframe(df_sum[df_sum['unit_no'] == u_filt][['job_code', 'part_name', 'status', 'priority', 'required_date', 'Days Left']], use_container_width=True, hide_index=True)
 
-# --- TAB 2: INCHARGE ENTRY DESK ---
+# --- TAB 2: INCHARGE ENTRY DESK (UPDATED) ---
 with tabs[1]:
+    # Filter for jobs that are not Finished
     active = df_main[df_main['status'] != "Finished"].to_dict('records') if not df_main.empty else []
+    
+    if not active:
+        st.info("No active production requests found.")
+    
     for job in active:
-        with st.expander(f"📌 {job['job_code']} | {job['part_name']} ({job['status']})"):
+        # Use a status-based emoji for the expander label
+        prio_emoji = "🔴" if job.get('priority') == "URGENT" else "🟡" if job.get('priority') == "High" else "📌"
+        
+        with st.expander(f"{prio_emoji} {job['job_code']} | {job['part_name']} ({job['status']})"):
+            # --- DATE DISPLAY SECTION ---
+            # Formatting dates for better readability
+            req_dt = job.get('request_date', 'N/A')
+            due_dt = job.get('required_date', 'N/A')
+            
+            d_col1, d_col2, d_col3 = st.columns(3)
+            d_col1.markdown(f"**📅 Requested:** {req_dt}")
+            d_col2.markdown(f"**🎯 Required:** {due_dt}")
+            
+            # Add a small countdown/overdue badge
+            if due_dt != 'N/A':
+                days_left = (pd.to_datetime(due_dt).date() - get_today_ist()).days
+                if days_left < 0:
+                    d_col3.error(f"⚠️ {abs(days_left)} Days Overdue")
+                else:
+                    d_col3.success(f"⏳ {days_left} Days Remaining")
+            
+            st.divider()
+
+            # --- ENTRY SECTION ---
             c1, c2 = st.columns(2)
             dr = c1.text_input("Delay Reason", value=job.get('delay_reason') or '', key=f"dr_{job['id']}")
             inote = c2.text_area("Incharge Note", value=job.get('intervention_note') or '', key=f"in_{job['id']}")
@@ -103,10 +131,18 @@ with tabs[1]:
                 mode = st.radio("Allotment", ["In-House", "Outsource"], key=f"rad_{job['id']}", horizontal=True)
                 if mode == "In-House":
                     m = st.selectbox(f"Assign {RES_LABEL}", res_list, key=f"sel_{job['id']}")
+                    # Toggle multiselect for Buffing Hub, single select for Machining
                     o = st.multiselect("Assign Operators", op_list, key=f"o_{job['id']}") if IS_BUFFING else st.selectbox("Assign Operator", op_list, key=f"o_{job['id']}")
-                    if st.button("🚀 Start", key=f"btn_{job['id']}"):
+                    
+                    if st.button("🚀 Start Production", key=f"btn_{job['id']}", use_container_width=True):
                         operator_val = ", ".join(o) if isinstance(o, list) else o
-                        conn.table(DB_TABLE).update({"status": "In-House", "machine_id": m, "operator_id": operator_val, "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
+                        conn.table(DB_TABLE).update({
+                            "status": "In-House", 
+                            "machine_id": m, 
+                            "operator_id": operator_val, 
+                            "delay_reason": dr, 
+                            "intervention_note": inote
+                        }).eq("id", job['id']).execute()
                         st.rerun()
                 else: 
                     v = st.selectbox("Select Vendor", vendor_list, key=f"v_{job['id']}")
@@ -114,14 +150,30 @@ with tabs[1]:
                     c_gp, c_bn = st.columns(2)
                     gp_no = c_gp.text_input("Gate Pass No.", value=job.get('gate_pass_no') or '', key=f"gp_{job['id']}")
                     bill_no = c_bn.text_input("Bill No.", value=job.get('bill_no') or '', key=f"bn_{job['id']}")
-                    if st.button("🚚 Dispatch", key=f"d_{job['id']}", use_container_width=True):
-                        if not gp_no: st.warning("Please enter Gate Pass No.")
+                    
+                    if st.button("🚚 Dispatch to Vendor", key=f"d_{job['id']}", use_container_width=True):
+                        if not gp_no: 
+                            st.warning("Please enter Gate Pass No.")
                         else:
-                            conn.table(DB_TABLE).update({"status": "Outsourced", "vendor_id": v, "delay_reason": dr, "intervention_note": inote, "gate_pass_no": gp_no, "bill_no": bill_no}).eq("id", job['id']).execute()
+                            conn.table(DB_TABLE).update({
+                                "status": "Outsourced", 
+                                "vendor_id": v, 
+                                "delay_reason": dr, 
+                                "intervention_note": inote, 
+                                "gate_pass_no": gp_no, 
+                                "bill_no": bill_no
+                            }).eq("id", job['id']).execute()
                             st.rerun()
-            elif st.button("🏁 Finish", key=f"f_{job['id']}", use_container_width=True):
-                conn.table(DB_TABLE).update({"status": "Finished", "delay_reason": dr, "intervention_note": inote}).eq("id", job['id']).execute()
-                st.rerun()
+            
+            # Allow "Finish" for any job already in progress (In-House or Outsourced)
+            elif job['status'] in ["In-House", "Outsourced"]:
+                if st.button("🏁 Mark as Finished", key=f"f_{job['id']}", use_container_width=True, type="primary"):
+                    conn.table(DB_TABLE).update({
+                        "status": "Finished", 
+                        "delay_reason": dr, 
+                        "intervention_note": inote
+                    }).eq("id", job['id']).execute()
+                    st.rerun()
 
 # --- TAB 3: EXECUTIVE ANALYTICS ---
 with tabs[2]:
