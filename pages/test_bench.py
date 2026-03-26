@@ -1,47 +1,30 @@
-import streamlit as st
-import pandas as pd # The 'Engine' for tables
-
-# --- 1. THE DATA ENGINE (Simulating B&G Shop Floor) ---
-# Imagine this is the data coming from your 'res' variable
+# --- Week 3, Session 3: Capacity Simulator ---
+# 1. THE DATA (Adding Time)
 raw_data = [
-    {"job_code": "PRO-001", "machine_id": "VMC-01", "status": "In-House", "priority": "URGENT"},
-    {"job_code": "PRO-002", "machine_id": "VMC-01", "status": "In-House", "priority": "Standard"},
-    {"job_code": "PRO-003", "machine_id": "Lathe-02", "status": "In-House", "priority": "Standard"},
-    {"job_code": "PRO-004", "machine_id": "VMC-01", "status": "Outsourced", "priority": "Standard"},
-    {"job_code": "PRO-005", "machine_id": "Buffing-A", "status": "In-House", "priority": "URGENT"},
+    {"job_code": "PRO-001", "machine_id": "VMC-01", "hours": 4},
+    {"job_code": "PRO-002", "machine_id": "VMC-01", "hours": 5}, # VMC-01 total = 9 hrs
+    {"job_code": "PRO-003", "machine_id": "Lathe-02", "hours": 3},
+    {"job_code": "PRO-004", "machine_id": "Buffing-A", "hours": 6},
 ]
 df = pd.DataFrame(raw_data)
 
-# --- 2. THE ANALYTICS DASHBOARD ---
-st.title("B&G Analytics: Test Bench")
+# 2. THE GROUPBY (Summing Hours instead of Counting Jobs)
+# .sum() tells us the Total Workload in hours
+capacity_df = df.groupby('machine_id')['hours'].sum().reset_index()
 
-# ROW 1: The Triple Unpack (4:2:2 Ratio)
-c1, c2, c3 = st.columns([4, 2, 2])
+# 3. THE TARGET LINE
+# We define an 8-hour shift limit
+SHIFT_LIMIT = 8
 
-# Logic for Metrics
-total_active = len(df[df['status'] != "Finished"])
-urgent_count = len(df[df['priority'] == "URGENT"])
-in_house_count = len(df[df['status'] == "In-House"])
+# 4. THE OUTPUT (A Bar Chart with a Goal)
+st.subheader("⏳ Shift Capacity vs. Load")
 
-with c1: st.metric("Total Active", total_active)
-with c2: st.metric("Urgent ⚠️", urgent_count, delta="Action Required", delta_color="inverse")
-with c3: st.metric("In-House", in_house_count)
+# Streamlit's native bar_chart is simple, 
+# but we can use 'st.altair_chart' for the "Red Line" logic later.
+# For now, let's use the standard bar chart.
+st.bar_chart(data=capacity_df, x='machine_id', y='hours')
 
-st.divider()
-
-# ROW 2: The Load Balancer (Chart vs Alerts)
-col_chart, col_alerts = st.columns([3, 2])
-
-with col_chart:
-    st.subheader("🏗️ Machine Load")
-    # THE GROUPBY: Filter for In-House and count
-    load_stats = df[df['status'] == "In-House"].groupby('machine_id')['job_code'].count().reset_index()
-    
-    # The Visual Output
-    st.bar_chart(data=load_stats, x='machine_id', y='job_code')
-
-with col_alerts:
-    st.subheader("🚨 Priority List")
-    # Only show URGENT jobs here
-    urgent_df = df[df['priority'] == "URGENT"]
-    st.dataframe(urgent_df[['job_code', 'machine_id']])
+# 5. THE DECISION LOGIC (The Safety Interlock)
+for index, row in capacity_df.iterrows():
+    if row['hours'] > SHIFT_LIMIT:
+        st.error(f"🚨 OVERLOAD: {row['machine_id']} requires {row['hours']} hrs (Limit: {SHIFT_LIMIT} hrs)")
