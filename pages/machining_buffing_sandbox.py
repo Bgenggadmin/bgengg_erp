@@ -13,7 +13,7 @@ def get_today_ist():
 
 def generate_wa_link(job_code, part_name, days_overdue):
     """Creates a free wa.me link to nudge the incharge."""
-    mobile = "919848993939" # Your Incharge Mobile Number
+    mobile = "917995565796" # Your Incharge Mobile Number
     message = (f"🚩 *B&G OVERDUE ALERT*\n\n"
                f"*Job:* {job_code}\n"
                f"*Part:* {part_name}\n"
