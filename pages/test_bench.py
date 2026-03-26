@@ -1,33 +1,32 @@
 import streamlit as st
-import pandas as pd # The 'Engine' for tables
+import pandas as pd
 
-# --- Week 3, Session 3: Capacity Simulator ---
-# 1. THE DATA (Adding Time)
+# --- 1. THE CONTROL PANEL (User Inputs) ---
+st.sidebar.header("⚙️ Factory Settings")
+# A slider to adjust how 'efficient' the shop is today
+efficiency = st.sidebar.slider("Operator Efficiency (%)", 50, 100, 85) / 100
+shift_limit = 8 # Total hours in a shift
+
+# --- 2. THE DATA ---
 raw_data = [
-    {"job_code": "PRO-001", "machine_id": "VMC-01", "hours": 4},
-    {"job_code": "PRO-002", "machine_id": "VMC-01", "hours": 5}, # VMC-01 total = 9 hrs
-    {"job_code": "PRO-003", "machine_id": "Lathe-02", "hours": 3},
-    {"job_code": "PRO-004", "machine_id": "Buffing-A", "hours": 6},
+    {"machine_id": "VMC-01", "hours": 6},
+    {"machine_id": "Lathe-02", "hours": 7},
 ]
 df = pd.DataFrame(raw_data)
 
-# 2. THE GROUPBY (Summing Hours instead of Counting Jobs)
-# .sum() tells us the Total Workload in hours
-capacity_df = df.groupby('machine_id')['hours'].sum().reset_index()
+# --- 3. THE CALCULATION ENGINE ---
+# Effective Capacity = What we can ACTUALLY finish
+effective_capacity = shift_limit * efficiency
 
-# 3. THE TARGET LINE
-# We define an 8-hour shift limit
-SHIFT_LIMIT = 8
+st.title("B&G Capacity Planner")
+st.info(f"💡 At {efficiency*100}% efficiency, your actual capacity is **{effective_capacity} hrs** per machine.")
 
-# 4. THE OUTPUT (A Bar Chart with a Goal)
-st.subheader("⏳ Shift Capacity vs. Load")
-
-# Streamlit's native bar_chart is simple, 
-# but we can use 'st.altair_chart' for the "Red Line" logic later.
-# For now, let's use the standard bar chart.
-st.bar_chart(data=capacity_df, x='machine_id', y='hours')
-
-# 5. THE DECISION LOGIC (The Safety Interlock)
-for index, row in capacity_df.iterrows():
-    if row['hours'] > SHIFT_LIMIT:
-        st.error(f"🚨 OVERLOAD: {row['machine_id']} requires {row['hours']} hrs (Limit: {SHIFT_LIMIT} hrs)")
+# --- 4. THE OUTPUT (The Alert System) ---
+for index, row in df.iterrows():
+    load = row['hours']
+    machine = row['machine_id']
+    
+    if load > effective_capacity:
+        st.error(f"🚨 {machine} OVERLOADED: Needs {load}h, but can only do {effective_capacity}h today.")
+    else:
+        st.success(f"✅ {machine} OK: Load is {load}h.")
