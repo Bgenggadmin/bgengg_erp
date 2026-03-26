@@ -1,3 +1,6 @@
+import streamlit as st
+import pandas as pd # The 'Engine' for tables
+
 # --- Week 3, Session 3: Capacity Simulator ---
 # 1. THE DATA (Adding Time)
 raw_data = [
