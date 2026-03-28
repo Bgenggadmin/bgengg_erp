@@ -1,7 +1,7 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, time
 import pytz
 import plotly.express as px
 
@@ -10,6 +10,11 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G HR | Leave & Attendance", layout="wide", page_icon="📅")
 
 conn = st.connection("supabase", type=SupabaseConnection)
+
+# Office Timings
+OFFICE_IN = time(9, 0)      # 9:00 AM
+GRACE_IN = time(9, 15)     # 9:15 AM
+OFFICE_OUT = time(17, 30)   # 5:30 PM
 
 def get_now_ist():
     return datetime.now(IST)
@@ -36,7 +41,7 @@ def get_staff_list():
         return ["Admin", "Staff Member"]
 
 # --- 3. NAVIGATION ---
-tabs = st.tabs(["📝 Leave Application", "📊 My Balance", "🕒 Attendance & Movement", "🔐 HR Admin Panel"])
+tabs = st.tabs(["📝 Leave Application", "📊 My Balance", "🕒 Attendance & Movement Register", "🔐 HR Admin Panel"])
 
 # --- TAB 1: LEAVE APPLICATION ---
 with tabs[0]:
@@ -80,17 +85,17 @@ with tabs[1]:
         m2.metric("Remaining Balance", f"{max(0, 24 - total_taken)} Days")
         st.dataframe(user_df[['created_at', 'leave_type', 'status']], use_container_width=True)
 
-# --- TAB 3: ATTENDANCE & MOVEMENT (WITH TIME OUT/IN LOGIC) ---
+# --- TAB 3: ATTENDANCE & MOVEMENT ---
 with tabs[2]:
     st.subheader("🕒 Daily Time Office & Movement Register")
-    att_user = st.selectbox("Identify Yourself", get_staff_master(), key="att_user")
+    att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
     
     col_a, col_b = st.columns(2)
     
-    # --- A. Daily Punch (Shift Start/End) ---
+    # --- A. Daily Punch (Shift 9 AM - 5:30 PM) ---
     with col_a:
-        st.markdown("### 🏢 Shift Punch (9 AM - 5:30 PM)")
+        st.markdown("### 🏢 Shift Punch")
         att_data = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
         
         if not att_data:
@@ -99,99 +104,78 @@ with tabs[2]:
                 st.rerun()
         else:
             log = att_data[0]
-            st.info(f"✅ Punched In: {pd.to_datetime(log['punch_in']).astimezone(IST).strftime('%I:%M %p')}")
+            p_in = pd.to_datetime(log['punch_in']).astimezone(IST)
+            
+            # Late Logic
+            if p_in.time() > GRACE_IN:
+                st.error(f"🚩 Late Entry: {p_in.strftime('%I:%M %p')}")
+            else:
+                st.success(f"✅ On Time: {p_in.strftime('%I:%M %p')}")
+            
             if not log.get('punch_out'):
                 if st.button("🏁 PUNCH OUT", use_container_width=True):
-                    conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat()}).eq("id", log['id']).execute()
+                    now = get_now_ist()
+                    conn.table("attendance_logs").update({"punch_out": now.isoformat()}).eq("id", log['id']).execute()
                     st.rerun()
             else:
-                st.success(f"🏁 Punched Out: {pd.to_datetime(log['punch_out']).astimezone(IST).strftime('%I:%M %p')}")
+                p_out = pd.to_datetime(log['punch_out']).astimezone(IST)
+                # Early Out Logic
+                if p_out.time() < OFFICE_OUT:
+                    st.warning(f"⚠️ Early Departure: {p_out.strftime('%I:%M %p')}")
+                else:
+                    st.success(f"🏁 Shift Ended: {p_out.strftime('%I:%M %p')}")
 
     # --- B. Movement Register (Time Out / Time In) ---
     with col_b:
         st.markdown("### 🚶 Movement Register")
-        # Check if user has an active movement (Time Out but no Time In)
         active_move = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         
         if not active_move:
-            with st.form("movement_timeout_form", clear_on_submit=True):
-                st.markdown("**Log Time Out**")
-                m_reason = st.selectbox("Reason for Going Out", 
-                                        ["Inter-Unit Transfer", "Site Delivery", "Vendor Visit", "Lunch", "Personal"])
+            with st.form("movement_form", clear_on_submit=True):
+                m_reason = st.selectbox("Reason", ["Inter-Unit Transfer", "Site Delivery", "Vendor Visit", "Lunch", "Personal"])
                 m_dest = st.text_input("Destination / Target Unit")
-                
                 if st.form_submit_button("📤 LOG TIME OUT"):
                     if m_dest:
                         conn.table("movement_logs").insert({
-                            "employee_name": att_user, 
-                            "reason": m_reason, 
-                            "destination": m_dest.upper(),
-                            "exit_time": get_now_ist().isoformat()
+                            "employee_name": att_user, "reason": m_reason, 
+                            "destination": m_dest.upper(), "exit_time": get_now_ist().isoformat()
                         }).execute()
-                        st.toast(f"Time Out logged for {m_dest}")
                         st.rerun()
-                    else:
-                        st.error("Please specify a destination.")
+                    else: st.error("Specify destination.")
         else:
-            # Logic for Time In
             m_log = active_move[0]
-            out_time = pd.to_datetime(m_log['exit_time']).astimezone(IST)
-            duration = (get_now_ist() - out_time).total_seconds() / 60 
-            
-            st.warning(f"⚠️ **Currently Out** at **{m_log['destination']}**")
-            st.write(f"Logged Out at: **{out_time.strftime('%I:%M %p')}**")
-            st.write(f"Duration: **{int(duration)} minutes**")
-            
+            out_t = pd.to_datetime(m_log['exit_time']).astimezone(IST)
+            st.warning(f"⚠️ At **{m_log['destination']}** since {out_t.strftime('%I:%M %p')}")
             if st.button("📥 LOG TIME IN", use_container_width=True, type="primary"):
-                conn.table("movement_logs").update({
-                    "return_time": get_now_ist().isoformat()
-                }).eq("id", m_log['id']).execute()
-                st.success("Back at Base Base. Time In recorded.")
+                conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", m_log['id']).execute()
                 st.rerun()
-
-    # --- MOVEMENT SUMMARY TABLE ---
-    st.divider()
-    st.subheader("📋 Today's Movement Summary")
-    recent_m = conn.table("movement_logs").select("*")\
-        .eq("employee_name", att_user)\
-        .gte("exit_time", f"{today}T00:00:00")\
-        .order("exit_time", desc=True).execute().data
-    
-    if recent_m:
-        mdf = pd.DataFrame(recent_m)
-        # Formatting for readability
-        mdf['Time Out'] = pd.to_datetime(mdf['exit_time']).dt.tz_convert('Asia/Kolkata').dt.strftime('%I:%M %p')
-        mdf['Time In'] = pd.to_datetime(mdf['return_time']).dt.tz_convert('Asia/Kolkata').dt.strftime('%I:%M %p').fillna("Out")
-        
-        # Calculate Total Minutes for the summary table
-        def calc_duration(row):
-            if pd.notnull(row['return_time']):
-                d = (pd.to_datetime(row['return_time']) - pd.to_datetime(row['exit_time'])).total_seconds() / 60
-                return f"{int(d)} min"
-            return "---"
-        
-        mdf['Duration'] = mdf.apply(calc_duration, axis=1)
-        
-        st.dataframe(mdf[['reason', 'destination', 'Time Out', 'Time In', 'Duration']], 
-                     use_container_width=True, hide_index=True)
-    else:
-        st.info("No movements recorded today.")
 
 # --- TAB 4: HR ADMIN PANEL ---
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
+        st.subheader("📊 Daily Discipline Summary")
+        
+        # Late Comers / Early Leavers Logic
+        today_att = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
+        if today_att:
+            tdf = pd.DataFrame(today_att)
+            tdf['in_time'] = pd.to_datetime(tdf['punch_in']).dt.tz_convert('Asia/Kolkata').dt.time
+            tdf['out_time'] = pd.to_datetime(tdf['punch_out']).dt.tz_convert('Asia/Kolkata').dt.time
+            
+            tdf['Status'] = tdf['in_time'].apply(lambda x: "🚩 LATE" if x > GRACE_IN else "✅ OK")
+            st.table(tdf[['employee_name', 'in_time', 'out_time', 'Status']])
+        
+        st.divider()
+        st.subheader("📬 Pending Leaves")
         df_all = get_leave_requests()
-        st.subheader("📬 Pending Leave Approvals")
         if not df_all.empty and 'status' in df_all.columns:
             pending = df_all[df_all['status'] == 'Pending']
-            if not pending.empty:
-                for _, row in pending.iterrows():
-                    with st.container(border=True):
-                        c1, c2, c3 = st.columns([2, 2, 1])
-                        c1.write(f"**{row['employee_name']}** ({row['leave_type']})")
-                        c2.write(f"Reason: {row['reason']}")
-                        if c3.button("Approve", key=f"app_{row['id']}"):
-                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute()
-                            st.rerun()
-            else: st.success("No pending leaves.")
+            for _, row in pending.iterrows():
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([2, 2, 1])
+                    c1.write(f"**{row['employee_name']}**")
+                    c2.write(f"Reason: {row['reason']}")
+                    if c3.button("Approve", key=f"app_{row['id']}"):
+                        conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute()
+                        st.rerun()
