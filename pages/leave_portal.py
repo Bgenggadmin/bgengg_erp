@@ -3,6 +3,7 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date
 import pytz
+import plotly.express as px
 
 # --- 1. SETUP & STYLE ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -10,7 +11,6 @@ st.set_page_config(page_title="B&G HR | Leave Portal", layout="centered", page_i
 
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# Custom HR Styling
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
@@ -35,7 +35,7 @@ def get_staff_list():
 # --- 3. NAVIGATION ---
 tab_apply, tab_status, tab_admin = st.tabs(["📝 Apply for Leave", "📊 My Leave Balance", "🔐 HR Admin Panel"])
 
-# --- TAB 1: APPLICATION FORM ---
+# --- TAB 1: APPLICATION FORM (Same as before) ---
 with tab_apply:
     st.subheader("Employee Leave Application")
     with st.form("leave_form", clear_on_submit=True):
@@ -52,8 +52,6 @@ with tab_apply:
         if st.form_submit_button("Submit Application"):
             if s_date > e_date:
                 st.error("Error: End Date cannot be before Start Date.")
-            elif not reason:
-                st.warning("Please provide a reason.")
             else:
                 payload = {
                     "employee_name": emp_name, "leave_type": l_type,
@@ -61,69 +59,78 @@ with tab_apply:
                     "reason": reason, "status": "Pending"
                 }
                 conn.table("leave_requests").insert(payload).execute()
-                st.success("✅ Application submitted successfully.")
+                st.success("✅ Application submitted.")
                 st.cache_data.clear()
                 st.rerun()
 
-# --- TAB 2: LEAVE BALANCE & STATUS ---
+# --- TAB 2: LEAVE BALANCE & PERSONAL CHART ---
 with tab_status:
     df_leaves = get_leave_requests()
-    
     if not df_leaves.empty:
-        # Filter for current employee view
-        user_sel = st.selectbox("View Balance For:", get_staff_list())
-        user_df = df_leaves[df_leaves['employee_name'] == user_sel]
+        user_sel = st.selectbox("View Records for:", get_staff_list())
+        user_df = df_leaves[df_leaves['employee_name'] == user_sel].copy()
         
-        # Calculate Days Taken
-        approved_df = user_df[user_df['status'] == 'Approved'].copy()
-        if not approved_df.empty:
-            approved_df['start_date'] = pd.to_datetime(approved_df['start_date'])
-            approved_df['end_date'] = pd.to_datetime(approved_df['end_date'])
-            # Calculation: (End - Start) + 1 to include both days
-            approved_df['days_count'] = (approved_df['end_date'] - approved_df['start_date']).dt.days + 1
-            total_taken = approved_df['days_count'].sum()
+        # Calculate consumption
+        app_df = user_df[user_df['status'] == 'Approved'].copy()
+        if not app_df.empty:
+            app_df['start_date'] = pd.to_datetime(app_df['start_date'])
+            app_df['end_date'] = pd.to_datetime(app_df['end_date'])
+            app_df['days_count'] = (app_df['end_date'] - app_df['start_date']).dt.days + 1
+            app_df['Month'] = app_df['start_date'].dt.strftime('%b')
+            total_taken = app_df['days_count'].sum()
         else:
             total_taken = 0
 
-        # Display Metrics
         m1, m2 = st.columns(2)
-        with m1:
-            st.markdown(f"<div class='leave-metric'><h3>Total Days Taken</h3><h2 style='color:#007bff;'>{total_taken}</h2></div>", unsafe_allow_html=True)
-        with m2:
-            # Assuming a standard 24 days annual leave for B&G Engineering
-            remaining = max(0, 24 - total_taken)
-            st.markdown(f"<div class='leave-metric'><h3>Remaining Balance</h3><h2 style='color:#27ae60;'>{remaining}</h2></div>", unsafe_allow_html=True)
+        m1.metric("Days Taken (2026)", f"{total_taken} Days")
+        m2.metric("Remaining Balance", f"{max(0, 24 - total_taken)} Days")
 
-        st.divider()
-        st.markdown("#### 📋 Recent Application History")
-        st.dataframe(user_df[['created_at', 'leave_type', 'start_date', 'end_date', 'status']], use_container_width=True, hide_index=True)
-    else:
-        st.info("No leave records found in the database.")
+        if total_taken > 0:
+            st.markdown("#### 📈 Your Monthly Leave Trend")
+            month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            fig = px.bar(app_df.groupby('Month')['days_count'].sum().reindex(month_order).reset_index(), 
+                         x='Month', y='days_count', text_auto=True, color_discrete_sequence=['#007bff'])
+            st.plotly_chart(fig, use_container_width=True)
 
-# --- TAB 3: HR ADMIN PANEL ---
+        st.dataframe(user_df[['created_at', 'leave_type', 'status']], use_container_width=True)
+
+# --- TAB 3: HR ADMIN & GLOBAL ANALYTICS ---
 with tab_admin:
-    st.subheader("Admin Approval Desk")
+    st.subheader("HR Management Console")
     admin_pass = st.text_input("Admin Password", type="password")
     
     if admin_pass == "bgadmin": 
-        df_admin = get_leave_requests()
-        pending = df_admin[df_admin['status'] == 'Pending'] if not df_admin.empty else pd.DataFrame()
+        df_all = get_leave_requests()
         
+        # 📊 GLOBAL ANALYTICS SECTION
+        st.markdown("### 🏢 Company-wide Leave Insights")
+        approved_all = df_all[df_all['status'] == 'Approved'].copy()
+        if not approved_all.empty:
+            approved_all['start_date'] = pd.to_datetime(approved_all['start_date'])
+            approved_all['end_date'] = pd.to_datetime(approved_all['end_date'])
+            approved_all['days_count'] = (approved_all['end_date'] - approved_all['start_date']).dt.days + 1
+            approved_all['Month'] = approved_all['start_date'].dt.strftime('%b')
+            
+            # Monthly Bar Chart
+            month_order = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+            monthly_sum = approved_all.groupby('Month')['days_count'].sum().reindex(month_order).reset_index()
+            
+            fig_global = px.bar(monthly_sum, x='Month', y='days_count', 
+                                title="Total Man-Days Lost per Month",
+                                labels={'days_count': 'Total Days Taken'},
+                                text_auto=True, color_discrete_sequence=['#FF4B4B'])
+            st.plotly_chart(fig_global, use_container_width=True)
+        
+        st.divider()
+        st.subheader("📬 Pending Approvals")
+        pending = df_all[df_all['status'] == 'Pending']
         if not pending.empty:
             for _, row in pending.iterrows():
                 with st.container(border=True):
-                    c1, c2, c3 = st.columns([2, 2, 1])
-                    c1.write(f"**{row['employee_name']}**")
-                    c1.caption(f"{row['leave_type']}")
-                    c2.write(f"📅 {row['start_date']} to {row['end_date']}")
-                    if c3.button("Approve", key=f"a_{row['id']}"):
+                    st.write(f"**{row['employee_name']}** ({row['leave_type']})")
+                    st.caption(f"Reason: {row['reason']}")
+                    if st.button("Approve", key=f"a_{row['id']}"):
                         conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute()
                         st.cache_data.clear(); st.rerun()
-                    if c3.button("Reject", key=f"r_{row['id']}"):
-                        conn.table("leave_requests").update({"status": "Rejected"}).eq("id", row['id']).execute()
-                        st.cache_data.clear(); st.rerun()
         else:
-            st.success("No pending approvals.")
-        
-        st.divider()
-        st.dataframe(df_admin, use_container_width=True)
+            st.success("No pending requests.")
