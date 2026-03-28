@@ -80,41 +80,57 @@ with tabs[1]:
         m2.metric("Remaining Balance", f"{max(0, 24 - total_taken)} Days")
         st.dataframe(user_df[['created_at', 'leave_type', 'status']], use_container_width=True)
 
-# --- TAB 3: ATTENDANCE & MOVEMENT ---
+# --- TAB 3: ATTENDANCE & MOVEMENT (UPDATED) ---
 with tabs[2]:
-    st.subheader("Daily Time Office")
+    st.subheader("🕒 Daily Time Office")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
+    
+    # Office Configuration
+    OFFICE_START = "09:00 AM"
+    GRACE_TIME = "09:15 AM"
+    OFFICE_END = "05:30 PM"
     
     col_a, col_b = st.columns(2)
     
     # --- A. Daily Punch Logic ---
     with col_a:
-        st.markdown("### 🏢 Daily Punch")
+        st.markdown(f"### 🏢 Daily Punch (Shift: {OFFICE_START} - {OFFICE_END})")
         att_data = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
         
         if not att_data:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
+                now = get_now_ist()
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute()
                 st.rerun()
         else:
             log = att_data[0]
-            st.info(f"✅ Punched In: {pd.to_datetime(log['punch_in']).astimezone(IST).strftime('%I:%M %p')}")
+            p_in_dt = pd.to_datetime(log['punch_in']).astimezone(IST)
+            p_in_time = p_in_dt.strftime('%I:%M %p')
+            
+            # Late Entry Check
+            is_late = p_in_dt.time() > datetime.strptime(GRACE_TIME, "%I:%M %p").time()
+            if is_late:
+                st.error(f"🚩 Late Entry: {p_in_time}")
+            else:
+                st.success(f"✅ On Time: {p_in_time}")
+            
             if not log.get('punch_out'):
                 if st.button("🏁 PUNCH OUT", use_container_width=True):
                     conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat()}).eq("id", log['id']).execute()
                     st.rerun()
             else:
-                st.success(f"🏁 Punched Out: {pd.to_datetime(log['punch_out']).astimezone(IST).strftime('%I:%M %p')}")
+                p_out_time = pd.to_datetime(log['punch_out']).astimezone(IST).strftime('%I:%M %p')
+                st.info(f"🏁 Punched Out: {p_out_time}")
 
-    # --- B. Movement Logic ---
+    # --- B. Movement Logic (Same as before) ---
     with col_b:
         st.markdown("### 🚶 Movement Tracker")
         move_data = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         
         if not move_data:
             with st.form("move_form", clear_on_submit=True):
-                m_reason = st.selectbox("Reason for Going Out", ["Site Visit", "Vendor Visit", "Lunch", "Personal Work", "Other"])
+                m_reason = st.selectbox("Reason", ["Site Visit", "Vendor Visit", "Lunch", "Personal"])
                 m_dest = st.text_input("Destination")
                 if st.form_submit_button("📤 Log Exit"):
                     conn.table("movement_logs").insert({"employee_name": att_user, "reason": m_reason, "destination": m_dest}).execute()
