@@ -80,67 +80,91 @@ with tabs[1]:
         m2.metric("Remaining Balance", f"{max(0, 24 - total_taken)} Days")
         st.dataframe(user_df[['created_at', 'leave_type', 'status']], use_container_width=True)
 
-# --- TAB 3: ATTENDANCE & MOVEMENT (UPDATED) ---
+# --- TAB 3: ATTENDANCE & MOVEMENT (WITH INTER-UNIT LOGIC) ---
 with tabs[2]:
-    st.subheader("🕒 Daily Time Office")
+    st.subheader("🕒 Daily Time Office & Movement")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
     
     # Office Configuration
-    OFFICE_START = "09:00 AM"
     GRACE_TIME = "09:15 AM"
-    OFFICE_END = "05:30 PM"
     
     col_a, col_b = st.columns(2)
     
-    # --- A. Daily Punch Logic ---
+    # --- A. Daily Punch (Same logic as before) ---
     with col_a:
-        st.markdown(f"### 🏢 Daily Punch (Shift: {OFFICE_START} - {OFFICE_END})")
+        st.markdown("### 🏢 Daily Shift Punch")
         att_data = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
         
         if not att_data:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
-                now = get_now_ist()
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute()
                 st.rerun()
         else:
             log = att_data[0]
             p_in_dt = pd.to_datetime(log['punch_in']).astimezone(IST)
-            p_in_time = p_in_dt.strftime('%I:%M %p')
-            
-            # Late Entry Check
             is_late = p_in_dt.time() > datetime.strptime(GRACE_TIME, "%I:%M %p").time()
-            if is_late:
-                st.error(f"🚩 Late Entry: {p_in_time}")
-            else:
-                st.success(f"✅ On Time: {p_in_time}")
+            
+            if is_late: st.error(f"🚩 Late Entry: {p_in_dt.strftime('%I:%M %p')}")
+            else: st.success(f"✅ On Time: {p_in_dt.strftime('%I:%M %p')}")
             
             if not log.get('punch_out'):
                 if st.button("🏁 PUNCH OUT", use_container_width=True):
                     conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat()}).eq("id", log['id']).execute()
                     st.rerun()
             else:
-                p_out_time = pd.to_datetime(log['punch_out']).astimezone(IST).strftime('%I:%M %p')
-                st.info(f"🏁 Punched Out: {p_out_time}")
+                st.info(f"🏁 Shift Ended: {pd.to_datetime(log['punch_out']).astimezone(IST).strftime('%I:%M %p')}")
 
-    # --- B. Movement Logic (Same as before) ---
+    # --- B. Movement & Inter-Unit Transfer ---
     with col_b:
-        st.markdown("### 🚶 Movement Tracker")
+        st.markdown("### 🚶 Movement & Inter-Unit Transfer")
         move_data = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         
         if not move_data:
             with st.form("move_form", clear_on_submit=True):
-                m_reason = st.selectbox("Reason", ["Site Visit", "Vendor Visit", "Lunch", "Personal"])
-                m_dest = st.text_input("Destination")
-                if st.form_submit_button("📤 Log Exit"):
-                    conn.table("movement_logs").insert({"employee_name": att_user, "reason": m_reason, "destination": m_dest}).execute()
-                    st.rerun()
+                # Added 'Inter-Unit Transfer' to reasons
+                m_reason = st.selectbox("Reason for Leaving", 
+                                        ["Inter-Unit Transfer", "Site Visit", "Vendor Visit", "Lunch", "Personal"])
+                
+                # Dynamic destination hint
+                dest_label = "Target Unit (e.g., Unit 2)" if m_reason == "Inter-Unit Transfer" else "Destination"
+                m_dest = st.text_input(dest_label)
+                
+                m_note = st.text_input("Short Note (e.g., Machine Repair, Document Sign)")
+                
+                if st.form_submit_button("📤 Log Movement"):
+                    if m_dest:
+                        conn.table("movement_logs").insert({
+                            "employee_name": att_user, 
+                            "reason": m_reason, 
+                            "destination": m_dest.upper(),
+                            "exit_time": get_now_ist().isoformat()
+                        }).execute()
+                        st.rerun()
+                    else:
+                        st.error("Please specify a destination/unit.")
         else:
             m_log = move_data[0]
-            st.warning(f"⚠️ Currently OUT for: {m_log['reason']}")
-            if st.button("📥 Log Return", use_container_width=True, type="primary"):
+            exit_t = pd.to_datetime(m_log['exit_time']).astimezone(IST)
+            duration = (get_now_ist() - exit_t).total_seconds() / 60 # Duration in minutes
+            
+            st.warning(f"⚠️ Currently at: **{m_log['destination']}**")
+            st.caption(f"Reason: {m_log['reason']} | Left at: {exit_t.strftime('%I:%M %p')} ({int(duration)} mins ago)")
+            
+            if st.button("📥 Log Return to Base", use_container_width=True, type="primary"):
                 conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", m_log['id']).execute()
+                st.success("Welcome back to your primary unit!")
                 st.rerun()
+
+# --- NEW: VIEW RECENT MOVEMENTS (Bottom of Tab) ---
+    st.divider()
+    st.subheader("📑 Recent Movements (Today)")
+    recent_m = conn.table("movement_logs").select("*").eq("employee_name", att_user).order("exit_time", desc=True).limit(5).execute().data
+    if recent_m:
+        rdf = pd.DataFrame(recent_m)
+        rdf['exit_time'] = pd.to_datetime(rdf['exit_time']).dt.tz_convert('Asia/Kolkata').dt.strftime('%I:%M %p')
+        rdf['return_time'] = pd.to_datetime(rdf['return_time']).dt.tz_convert('Asia/Kolkata').dt.strftime('%I:%M %p').fillna("Still Out")
+        st.table(rdf[['reason', 'destination', 'exit_time', 'return_time']])
 
 # --- TAB 4: HR ADMIN PANEL ---
 with tabs[3]:
