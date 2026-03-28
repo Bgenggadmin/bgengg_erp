@@ -156,14 +156,23 @@ with tabs[3]:
     if admin_pass == "bgadmin":
         st.subheader("📊 Daily Discipline Summary")
         
-        # Late Comers / Early Leavers Logic
+        # --- FIXED HR ADMIN LOGIC ---
         today_att = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
         if today_att:
             tdf = pd.DataFrame(today_att)
-            tdf['in_time'] = pd.to_datetime(tdf['punch_in']).dt.tz_convert('Asia/Kolkata').dt.time
-            tdf['out_time'] = pd.to_datetime(tdf['punch_out']).dt.tz_convert('Asia/Kolkata').dt.time
             
+            # Convert Punch In (Localize to UTC first, then convert to IST)
+            tdf['in_time'] = pd.to_datetime(tdf['punch_in']).dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata').dt.time
+            
+            # Convert Punch Out safely (Handling potential Nulls/NaNs)
+            tdf['out_time'] = pd.to_datetime(tdf['punch_out']).apply(
+                lambda x: x.tz_localize('UTC').tz_convert('Asia/Kolkata').time() if pd.notnull(x) else None
+            )
+            
+            # Status Logic
             tdf['Status'] = tdf['in_time'].apply(lambda x: "🚩 LATE" if x > GRACE_IN else "✅ OK")
+            
+            st.markdown("#### 📑 Today's Attendance Sheet")
             st.table(tdf[['employee_name', 'in_time', 'out_time', 'Status']])
         
         st.divider()
