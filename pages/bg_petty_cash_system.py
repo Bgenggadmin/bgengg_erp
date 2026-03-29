@@ -9,7 +9,7 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G Finance | Petty Cash", layout="wide", page_icon="💰")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. LOGIN GATEWAY ---
+# --- 2. LOGIN GATEWAY (Portal Access) ---
 def check_password():
     def password_entered():
         if st.session_state["password"] == "pcash_bgengg":
@@ -63,7 +63,7 @@ if st.sidebar.button("🔓 Logout Portal"):
 
 tabs = st.tabs(["📊 Dashboard", "📝 Raise Voucher", "📥 Add Cash", "⚙️ Manage Headers", "📜 History"])
 
-# --- TAB 0: DASHBOARD (ADMIN AUTHORIZATION & ANALYTICS) ---
+# --- TAB 0: DASHBOARD (Authorization & Analytics) ---
 with tabs[0]:
     st.title("📊 Petty Cash Control Center")
     total_in, total_out, balance = get_cash_metrics()
@@ -72,7 +72,7 @@ with tabs[0]:
     c2.metric("Total Issues (Out)", f"₹{total_out:,.2f}", delta_color="inverse")
     c3.metric("Live Balance", f"₹{balance:,.2f}")
 
-    # --- NEW: ANALYTICAL CHARTS ---
+    # --- Analytics Section ---
     st.divider()
     all_data_res = conn.table("petty_cash").select("*").eq("status", "Authorized").execute()
     if all_data_res.data:
@@ -80,19 +80,18 @@ with tabs[0]:
         df_charts['vch_date'] = pd.to_datetime(df_charts['vch_date'])
         
         chart_col1, chart_col2 = st.columns(2)
-        
         with chart_col1:
             st.subheader("📈 Spending Trend (Daily)")
             daily_trend = df_charts.groupby('vch_date')['amount'].sum().reset_index()
             st.line_chart(daily_trend.set_index('vch_date'))
-            
         with chart_col2:
             st.subheader("🏗️ Head-wise Breakdown")
             head_breakdown = df_charts.groupby('head_account')['amount'].sum().sort_values(ascending=False)
             st.bar_chart(head_breakdown)
     
+    # --- Admin Authorization ---
     st.divider()
-    st.subheader("🔐 Admin Authorization")
+    st.subheader("🔐 Admin Authorization (Brahmiah)")
     admin_auth = st.text_input("Enter Admin Password to Authorize", type="password", key="admin_auth_pwd")
     
     if admin_auth == "admin_bg_finance":
@@ -107,26 +106,20 @@ with tabs[0]:
                     col2.markdown(f"**Head:** {v['head_account']} | **Receiver:** {v['received_by']}")
                     col2.write(f"**Narration:** {v['purpose']}")
                     col2.caption(f"Recommended by: {v['requested_by']}")
-                    adm_note = col2.text_input("Admin Note / Remarks (Optional)", key=f"note_{v['id']}")
                     
-                    if col3.button("✅ Authorize", key=f"auth_{v['id']}", use_container_width=True):
+                    adm_note = col2.text_input("Admin Note / Remarks", key=f"note_{v['id']}")
+                    
+                    btn_c1, btn_c2 = col3.columns(2)
+                    if btn_c1.button("✅ Authorize", key=f"auth_{v['id']}", use_container_width=True):
                         conn.table("petty_cash").update({
-                            "status": "Authorized", 
-                            "authorized_at": get_now_ist().isoformat(),
-                            "reject_reason": adm_note
+                            "status": "Authorized", "authorized_at": get_now_ist().isoformat(), "reject_reason": adm_note
                         }).eq("id", v['id']).execute()
-                        st.success(f"Authorized Voucher {v.get('physical_vch_no')}")
                         st.rerun()
                         
-                    if col3.button("❌ Reject", key=f"rej_{v['id']}", use_container_width=True):
-                        if not adm_note:
-                            st.error("Please provide a note/reason for rejection.")
+                    if btn_c2.button("❌ Reject", key=f"rej_{v['id']}", use_container_width=True):
+                        if not adm_note: st.error("Note required for rejection")
                         else:
-                            conn.table("petty_cash").update({
-                                "status": "Rejected", 
-                                "reject_reason": adm_note 
-                            }).eq("id", v['id']).execute()
-                            st.warning(f"Rejected Voucher {v.get('physical_vch_no')}")
+                            conn.table("petty_cash").update({"status": "Rejected", "reject_reason": adm_note}).eq("id", v['id']).execute()
                             st.rerun()
         else: st.info("No vouchers awaiting authorization.")
 
@@ -136,43 +129,35 @@ with tabs[1]:
     all_heads = get_all_expense_heads()
     with st.form("voucher_form", clear_on_submit=True):
         c1, c2, c3 = st.columns([1, 1, 2])
-        v_phys_no = c1.text_input("Physical Voucher No.", placeholder="Ex: 101")
+        v_phys_no = c1.text_input("Physical Voucher No.")
         v_date = c2.date_input("Voucher Date", value=date.today())
         v_amount = c3.number_input("Amount (₹)", min_value=1.0)
         c4, c5 = st.columns(2)
         v_head = c4.selectbox("Towards Head Account", all_heads)
         v_recom = c5.selectbox("Recommended By", get_staff_list())
-        v_particulars = st.text_input("Particulars (Received By / Paid To)")
+        v_particulars = st.text_input("Particulars (Received By)")
         v_narration = st.text_area("Narration (Description)")
         if st.form_submit_button("Submit Voucher"):
             if v_particulars and v_narration and v_phys_no:
                 conn.table("petty_cash").insert({
-                    "physical_vch_no": v_phys_no,
-                    "vch_date": str(v_date),
-                    "amount": v_amount, 
-                    "head_account": v_head, 
-                    "received_by": v_particulars,
-                    "requested_by": v_recom, 
-                    "purpose": v_narration, 
-                    "status": "Pending"
+                    "physical_vch_no": v_phys_no, "vch_date": str(v_date), "amount": v_amount, 
+                    "head_account": v_head, "received_by": v_particulars, "requested_by": v_recom, 
+                    "purpose": v_narration, "status": "Pending"
                 }).execute()
-                st.success(f"✅ Voucher {v_phys_no} submitted for Approval.")
-            else:
-                st.error("Please fill in Voucher No, Particulars, and Narration.")
+                st.success("✅ Submitted for Approval.")
+            else: st.error("Please fill in all fields.")
 
 # --- TAB 2: ADD CASH ---
 with tabs[2]:
     st.title("📥 Top-up Cash [Receipts]")
     with st.form("cash_in_form", clear_on_submit=True):
         t_amt = st.number_input("Amount Received (₹)", min_value=100.0, step=100.0)
-        t_src = st.text_input("Received From (e.g. Bank Withdrawal, Babu Sir)")
+        t_src = st.text_input("Source (e.g. Bank Withdrawal)")
         if st.form_submit_button("Log Receipt"):
             if t_src:
                 conn.table("petty_cash_topups").insert({"amount": t_amt, "source": t_src}).execute()
                 st.success("💰 Balance Updated!")
-                st.rerun()
-            else:
-                st.error("Please specify the source.")
+            else: st.error("Specify source.")
 
 # --- TAB 3: MANAGE HEADERS ---
 with tabs[3]:
@@ -185,7 +170,6 @@ with tabs[3]:
             if st.form_submit_button("Add to System"):
                 if new_head:
                     conn.table("petty_cash_heads").insert({"head_name": new_head.upper()}).execute()
-                    st.success("Header Added.")
                     st.rerun()
     with col2:
         st.subheader("🗑️ Remove Header")
@@ -193,64 +177,36 @@ with tabs[3]:
         head_to_delete = st.selectbox("Select to Remove", current_heads)
         if st.button("Delete Selected Header", type="primary"):
             usage_check = conn.table("petty_cash").select("id").eq("head_account", head_to_delete).limit(1).execute()
-            if usage_check.data:
-                st.error("Header is in use and cannot be deleted.")
+            if usage_check.data: st.error("Header in use.")
             else:
                 conn.table("petty_cash_heads").delete().eq("head_name", head_to_delete).execute()
-                st.success("Removed.")
                 st.rerun()
 
-# --- TAB 4: HISTORY (ADVANCED FILTERING) ---
+# --- TAB 4: HISTORY (Filtering) ---
 with tabs[4]:
     st.title("📜 Transaction History")
-    
-    # --- NEW: FILTER SECTION ---
     with st.expander("🔍 Filter History", expanded=True):
         f_col1, f_col2, f_col3 = st.columns(3)
-        
-        filter_type = f_col1.selectbox("Filter Range", ["All Time", "Today", "This Week", "This Month", "Custom Date Range"])
+        filter_type = f_col1.selectbox("Filter Range", ["All Time", "Today", "This Week", "This Month", "Custom Range"])
         selected_head = f_col2.selectbox("Filter by Head", ["All"] + get_all_expense_heads())
-        
-        # Date Logic
         today = date.today()
         start_date, end_date = None, None
-        
-        if filter_type == "Today":
-            start_date = end_date = today
+        if filter_type == "Today": start_date = end_date = today
         elif filter_type == "This Week":
-            start_date = today - timedelta(days=today.weekday())
-            end_date = today
+            start_date, end_date = today - timedelta(days=today.weekday()), today
         elif filter_type == "This Month":
-            start_date = today.replace(day=1)
-            end_date = today
-        elif filter_type == "Custom Date Range":
+            start_date, end_date = today.replace(day=1), today
+        elif filter_type == "Custom Range":
             custom_range = f_col3.date_input("Select Dates", [today - timedelta(days=7), today])
-            if len(custom_range) == 2:
-                start_date, end_date = custom_range
+            if len(custom_range) == 2: start_date, end_date = custom_range
     
-    # Build Query
-    query = conn.table("petty_cash").select("*").order("vch_date", desc=True)
-    
-    # Apply Filters to the resulting DataFrame instead of multiple API calls for speed
-    res = query.execute()
+    res = conn.table("petty_cash").select("*").order("vch_date", desc=True).execute()
     if res.data:
         df = pd.DataFrame(res.data)
         df['vch_date'] = pd.to_datetime(df['vch_date']).dt.date
-        
-        if start_date and end_date:
-            df = df[(df['vch_date'] >= start_date) & (df['vch_date'] <= end_date)]
-        
-        if selected_head != "All":
-            df = df[df['head_account'] == selected_head]
+        if start_date and end_date: df = df[(df['vch_date'] >= start_date) & (df['vch_date'] <= end_date)]
+        if selected_head != "All": df = df[df['head_account'] == selected_head]
             
-        st.info(f"Showing {len(df)} transactions.")
-        st.dataframe(
-            df[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status', 'reject_reason']], 
-            column_config={"reject_reason": "Admin Remarks", "vch_date": "Date", "physical_vch_no": "Voucher #"},
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Export CSV for filtered data
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("💾 Download Filtered CSV", csv, "filtered_petty_cash.csv", "text/csv")
+        st.dataframe(df[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status', 'reject_reason']], 
+                     column_config={"reject_reason": "Admin Remarks"}, use_container_width=True, hide_index=True)
+        st.download_button("💾 Download CSV", df.to_csv(index=False).encode('utf-8'), "bg_ledger.csv")
