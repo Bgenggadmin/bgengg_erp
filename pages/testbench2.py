@@ -36,9 +36,9 @@ def check_password():
 # --- 3. PDF GENERATOR ---
 def generate_offer_pdf(data):
     pdf = FPDF()
-    pdf.add_page()
     
-    # 1. Logo from Supabase [cite: 7]
+    # --- PAGE 1: COVER & SUMMARY ---
+    pdf.add_page()
     try:
         supabase_url = st.secrets["connections"]["supabase"]["SUPABASE_URL"]
         logo_url = f"{supabase_url}/storage/v1/object/public/progress-photos/logo.png"
@@ -48,7 +48,6 @@ def generate_offer_pdf(data):
     except:
         pass
 
-    # 2. Header & Slogan [cite: 1, 7]
     pdf.set_y(15)
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, "TECHNO-COMMERCIAL OFFER", ln=True, align='R')
@@ -56,35 +55,54 @@ def generate_offer_pdf(data):
     pdf.cell(0, 5, "Responsible towards water", ln=True, align='R')
     pdf.ln(20)
 
-    # 3. Project Information [cite: 7, 9, 11]
-    pdf.set_font("Arial", 'B', 12)
-    pdf.set_fill_color(230, 230, 230)
+    pdf.set_font("Arial", 'B', 12); pdf.set_fill_color(230, 230, 230)
     pdf.cell(0, 10, " 1. PROJECT INFORMATION", ln=True, fill=True)
     pdf.set_font("Arial", '', 10)
-    info_fields = [
-        ("Quote Reference:", data.get('ref', 'N/A')),
-        ("Client Name:", data.get('client', 'N/A')),
-        ("Capacity:", f"{data.get('cap', 110)} KLD"),
-        ("MOC Selection:", data.get('moc', 'N/A'))
-    ]
-    for label, val in info_fields:
-        pdf.cell(50, 8, label, 0); pdf.cell(0, 8, str(val), ln=True)
-    pdf.ln(5)
+    pdf.cell(50, 8, "Quote Reference:", 0); pdf.cell(0, 8, data['ref'], ln=True)
+    pdf.cell(50, 8, "Client Name:", 0); pdf.cell(0, 8, data['client'], ln=True)
+    pdf.cell(50, 8, "Capacity:", 0); pdf.cell(0, 8, f"{data['cap']} KLD", ln=True)
+    pdf.ln(10)
 
-    # 4. Plant Economics [cite: 68]
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, " 2. ESTIMATED PLANT ECONOMICS", ln=True, fill=True)
+    # --- PAGE 2: PROCESS & ECONOMICS ---
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, " 2. PROCESS & ECONOMICS", ln=True, fill=True)
     pdf.set_font("Arial", '', 10)
-    pdf.cell(0, 8, f"Annual Steam Savings: {data.get('savings', '36')} Lakhs/Year", ln=True)
-    pdf.cell(0, 8, "Energy Recovery: Save more than 20% of fresh steam consumption", ln=True)
+    pdf.multi_cell(0, 8, "The ECOX-BG ZLD SYSTEM utilizes energy recovery from ATFD vapors to save more than 20% of fresh steam consumption.")
     pdf.ln(5)
+    pdf.cell(0, 8, f"Estimated Annual Steam Savings: Rs. {data['savings']} Lakhs/Year", ln=True)
 
-    # 5. Commercial Summary 
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, " 3. COMMERCIAL SUMMARY", ln=True, fill=True)
-    pdf.set_font("Arial", 'B', 11)
-    pdf.cell(0, 15, f"Total Project Value (DAP, Hyderabad): Rs. {data.get('total', 75800000):,.2f}", ln=True)
+    # --- PAGE 3: TECHNICAL SPECIFICATIONS (Option Based) ---
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, " 3. TECHNICAL SPECIFICATIONS", ln=True, fill=True)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 10, f"Selected Metallurgy Path: {data['moc']}", ln=True)
     
+    # Table Header for Apple-to-Apple check
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(60, 8, "Equipment", 1); pdf.cell(130, 8, "Specification", 1, ln=True)
+    pdf.set_font("Arial", '', 9)
+    
+    # Logic to print specific specs from your Word doc based on MOC
+    if "Option 1" in data['moc']:
+        specs = [("Stripper Re-Boiler", "Titanium Gr2 Seamless Tubes, Duplex 2205 Sheet"),
+                 ("MEE Calandria", "Titanium Gr2 Seamless Tubes, Duplex 2205 Sheet"),
+                 ("ATFD Unit", "Duplex 2205 Inner Shell & Blades")]
+    else:
+        specs = [("Stripper Re-Boiler", "SS 316Ti Tubes, SS 316L Sheet"),
+                 ("MEE Calandria", "SS 316Ti Tubes, SS 316L Sheet"),
+                 ("ATFD Unit", "SS 316L Inner Shell & Blades")]
+    
+    for eq, sp in specs:
+        pdf.cell(60, 8, eq, 1); pdf.cell(130, 8, sp, 1, ln=True)
+
+    # --- FINAL PAGE: COMMERCIALS ---
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 12); pdf.cell(0, 10, " 4. COMMERCIAL SUMMARY", ln=True, fill=True)
+    pdf.set_font("Arial", 'B', 11)
+    pdf.cell(0, 15, f"Total Project Value (DAP, Hyderabad): Rs. {data['total']:,.2f}", ln=True)
+    pdf.set_font("Arial", 'I', 9)
+    pdf.multi_cell(0, 8, "Validity: 15 Days. Delivery: 6-7 Months (Option 1) or 3.5 Months (Option 2) from advance.")
+
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 4. MAIN APP ---
