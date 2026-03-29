@@ -27,27 +27,26 @@ def to_ist(series):
 def get_now_ist():
     return datetime.now(IST)
 
-# --- 3. DATA LOADERS (FIXED TABLE NAME) ---
-@st.cache_data(ttl=2)
-def get_job_codes():
-    """Pulls live Job Numbers from the correct Anchor table."""
-    try:
-        # Changed table name from 'anchor_portal' to 'anchor_projects' to match your second script
-        res = conn.table("anchor_projects").select("job_no").eq("status", "Won").execute()
-        # Filter out empty or null job numbers
-        jobs = [j['job_no'] for j in res.data if j.get('job_no')] if res.data else []
-        # Combine with default internal categories
-        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"] + sorted(list(set(jobs)))
-    except Exception as e:
-        # If table name is still wrong, show error for debugging
-        st.sidebar.error(f"DB Error: {e}")
-        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
+# --- 3. DATA LOADERS ---
+@st.cache_data(ttl=5)
+def get_leave_requests():
+    res = conn.table("leave_requests").select("*").order("created_at", desc=True).execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 def get_staff_list():
     try:
         res = conn.table("master_staff").select("name").execute()
         return [s['name'] for s in res.data] if res.data else ["Admin", "Staff Member"]
     except: return ["Admin", "Staff Member"]
+
+def get_job_codes():
+    """Pulls live Job Numbers from the correct Anchor table."""
+    try:
+        res = conn.table("anchor_projects").select("job_no").eq("status", "Won").execute()
+        jobs = [j['job_no'] for j in res.data if j.get('job_no')] if res.data else []
+        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"] + sorted(list(set(jobs)))
+    except Exception as e:
+        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
 
 def is_log_due(employee_name):
     if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
@@ -71,21 +70,17 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # --- THE HOURLY GATEKEEPER ---
+    # --- THE HOURLY GATEKEEPER (MANDATORY LOGIC) ---
     due_slot = is_log_due(att_user)
     if due_slot:
-        st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your work to unlock the system.")
+        st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your activity to unlock the system.")
         with st.form("mandatory_log_form", clear_on_submit=True):
-            # DROPDOWN REPLACED WITH FIXED LOADER
             job_code = st.selectbox("Job Number (Optional)", get_job_codes())
             task_desc = st.text_area(f"Activity for {due_slot}", placeholder="Describe work done...")
             c1, c2 = st.columns(2)
             if c1.form_submit_button("✅ Submit & Unlock"):
                 if task_desc:
-                    conn.table("work_logs").insert({
-                        "employee_name": att_user, "task_description": f"[{job_code}] {task_desc}",
-                        "hours_spent": 1.0, "work_date": today
-                    }).execute()
+                    conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] {task_desc}", "hours_spent": 1.0, "work_date": today}).execute()
                     st.rerun()
                 else: st.error("Details required.")
             if c2.form_submit_button("🕒 Snooze (10 Mins)"):
@@ -107,8 +102,6 @@ with tabs[0]:
             st.success(f"✅ In: {p_in.strftime('%I:%M %p')}")
             if not log.get('punch_out') and st.button("🏁 PUNCH OUT", use_container_width=True):
                 conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat()}).eq("id", log['id']).execute(); st.rerun()
-            elif log.get('punch_out'):
-                st.info(f"🏁 Out: {to_ist(pd.Series([log['punch_out']])).dt.time.iloc[0].strftime('%I:%M %p')}")
 
     with col_b:
         st.markdown("### 🚶 Movement")
@@ -136,7 +129,6 @@ with tabs[0]:
                 if task:
                     conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-    # --- SUMMARIES ---
     st.divider()
     h1, h2 = st.columns(2)
     with h1:
@@ -152,6 +144,38 @@ with tabs[0]:
         work_data = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at", desc=True).execute().data
         if work_data:
             st.dataframe(pd.DataFrame(work_data)[['task_description', 'hours_spent']], use_container_width=True, hide_index=True)
+
+# --- TAB 2: LEAVE APPLICATION ---
+with tabs[1]:
+    st.subheader("New Leave Application")
+    with st.form("leave_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        emp_name_l = col1.selectbox("Employee Name", get_staff_list(), key="l_emp")
+        l_type = col2.selectbox("Type", ["Casual Leave", "Sick Leave", "Earned Leave", "Loss of Pay"])
+        d1, d2 = st.columns(2)
+        s_date = d1.date_input("Start", min_value=date.today())
+        e_date = d2.date_input("End", min_value=date.today())
+        reason_l = st.text_area("Reason")
+        if st.form_submit_button("Submit"):
+            conn.table("leave_requests").insert({"employee_name": emp_name_l, "leave_type": l_type, "start_date": str(s_date), "end_date": str(e_date), "reason": reason_l, "status": "Pending"}).execute()
+            st.success("✅ Submitted."); st.cache_data.clear(); st.rerun()
+
+# --- TAB 3: MY BALANCE ---
+with tabs[2]:
+    st.subheader("Leave Balance & History")
+    df_leaves = get_leave_requests()
+    user_sel_bal = st.selectbox("View Records for:", get_staff_list(), key="bal_user")
+    if not df_leaves.empty:
+        user_df = df_leaves[df_leaves['employee_name'] == user_sel_bal].copy()
+        app_df = user_df[user_df['status'] == 'Approved'].copy()
+        total_t = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
+        st.metric("Total Days Taken (2026)", f"{total_t} Days")
+        for _, r in user_df.head(5).iterrows():
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+                c1.write(f"**{r['leave_type']}**"); c2.write(f"{r['start_date']} to {r['end_date']}"); c3.write(r['status'])
+                if r['status'] == "Pending" and c4.button("Withdraw", key=f"wd_{r['id']}"):
+                    conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.cache_data.clear(); st.rerun()
 
 # --- TAB 4: HR ADMIN PANEL ---
 with tabs[3]:
@@ -174,8 +198,7 @@ with tabs[3]:
                     u_b = mdf[(mdf['employee_name'] == row['employee_name']) & (mdf['reason'].str.contains('Lunch|Personal')) & (mdf['return_time'].notnull())]
                     breaks = (pd.to_datetime(u_b['return_time']) - pd.to_datetime(u_b['exit_time'])).dt.total_seconds().sum() / 3600
                 final_s = max(0.1, shift - breaks)
-                
-                latest_task = "No logs yet"
+                latest_task = "No logs"
                 task_h = 0
                 if t_work:
                     wdf = pd.DataFrame(t_work)
@@ -183,16 +206,8 @@ with tabs[3]:
                     if not user_w.empty:
                         latest_task = user_w.iloc[0]['task_description']
                         task_h = user_w['hours_spent'].sum()
-                
                 eff = f"{int(min(100, (task_h/final_s)*100))}%"
                 return f"{final_s:.2f}h", f"{task_h:.2f}h", eff, latest_task
 
             tdf[['Shift', 'Logged', 'Efficiency', 'Current Work']] = tdf.apply(get_admin_metrics, axis=1, result_type='expand')
             st.dataframe(tdf[['employee_name', 'Shift', 'Logged', 'Efficiency', 'Current Work']], use_container_width=True, hide_index=True)
-            
-            if t_work:
-                st.markdown("### 🏗️ Job Distribution (Hours)")
-                wdf = pd.DataFrame(t_work)
-                wdf['JobNo'] = wdf['task_description'].str.extract(r'\[(.*?)\]').fillna("Other")
-                fig = px.pie(wdf, values='hours_spent', names='JobNo', hole=0.4)
-                st.plotly_chart(fig, use_container_width=True)
