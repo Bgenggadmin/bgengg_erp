@@ -9,7 +9,7 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G Finance | Petty Cash", layout="wide", page_icon="💰")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. LOGIN GATEWAY (PORTAL ACCESS) ---
+# --- 2. LOGIN GATEWAY ---
 def check_password():
     def password_entered():
         if st.session_state["password"] == "pcash_bgengg":
@@ -63,7 +63,7 @@ if st.sidebar.button("🔓 Logout Portal"):
 
 tabs = st.tabs(["📊 Dashboard", "📝 Raise Voucher", "📥 Add Cash", "⚙️ Manage Headers", "📜 History"])
 
-# --- TAB 0: DASHBOARD (ADMIN AUTHORIZATION REQUIRED) ---
+# --- TAB 0: DASHBOARD (ADMIN AUTHORIZATION) ---
 with tabs[0]:
     st.title("📊 Petty Cash Control Center")
     total_in, total_out, balance = get_cash_metrics()
@@ -81,39 +81,56 @@ with tabs[0]:
         if pending.data:
             for v in pending.data:
                 with st.container(border=True):
-                    col1, col2, col3 = st.columns([1, 3, 1])
-                    col1.write(f"**Vch #{v['id']}**\n### ₹{v['amount']}")
+                    col1, col2, col3 = st.columns([1.5, 3, 1])
+                    # Display Physical Voucher No and Date
+                    col1.write(f"**Vch No: {v.get('physical_vch_no', 'N/A')}**")
+                    col1.write(f"📅 {v.get('vch_date', 'N/A')}")
+                    col1.write(f"### ₹{v['amount']}")
+                    
                     col2.markdown(f"**Head:** {v['head_account']} | **Receiver:** {v['received_by']}")
                     col2.write(f"**Narration:** {v['purpose']}")
+                    col2.caption(f"Recommended by: {v['requested_by']}")
+                    
                     if col3.button("✅ Authorize", key=f"auth_{v['id']}", use_container_width=True):
                         conn.table("petty_cash").update({"status": "Authorized", "authorized_at": get_now_ist().isoformat()}).eq("id", v['id']).execute()
-                        st.success(f"Voucher {v['id']} Authorized.")
+                        st.success(f"Authorized Voucher {v.get('physical_vch_no')}")
                         st.rerun()
         else: st.info("No vouchers awaiting authorization.")
 
-# --- TAB 1: RAISE VOUCHER (RESTORED) ---
+# --- TAB 1: RAISE VOUCHER ---
 with tabs[1]:
     st.title("📝 Raise New Expense Voucher")
     all_heads = get_all_expense_heads()
     with st.form("voucher_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        v_amount = c1.number_input("Amount (₹)", min_value=1.0)
-        v_head = c2.selectbox("Towards Head Account", all_heads)
-        c3, c4 = st.columns(2)
-        v_particulars = c3.text_input("Particulars (Paid To)")
-        v_recom = c4.selectbox("Recommended By", get_staff_list())
+        c1, c2, c3 = st.columns([1, 1, 2])
+        v_phys_no = c1.text_input("Physical Voucher No.", placeholder="Ex: 101")
+        v_date = c2.date_input("Voucher Date", value=date.today())
+        v_amount = c3.number_input("Amount (₹)", min_value=1.0)
+        
+        c4, c5 = st.columns(2)
+        v_head = c4.selectbox("Towards Head Account", all_heads)
+        v_recom = c5.selectbox("Recommended By", get_staff_list())
+        
+        v_particulars = st.text_input("Particulars (Received By / Paid To)")
         v_narration = st.text_area("Narration (Description)")
+        
         if st.form_submit_button("Submit Voucher"):
-            if v_particulars and v_narration:
+            if v_particulars and v_narration and v_phys_no:
                 conn.table("petty_cash").insert({
-                    "amount": v_amount, "head_account": v_head, "received_by": v_particulars,
-                    "requested_by": v_recom, "purpose": v_narration, "status": "Pending"
+                    "physical_vch_no": v_phys_no,
+                    "vch_date": str(v_date),
+                    "amount": v_amount, 
+                    "head_account": v_head, 
+                    "received_by": v_particulars,
+                    "requested_by": v_recom, 
+                    "purpose": v_narration, 
+                    "status": "Pending"
                 }).execute()
-                st.success("✅ Voucher submitted for Admin Authorization.")
+                st.success(f"✅ Voucher {v_phys_no} submitted for Approval.")
             else:
-                st.error("Please fill in Particulars and Narration.")
+                st.error("Please fill in Voucher No, Particulars, and Narration.")
 
-# --- TAB 2: ADD CASH (RESTORED) ---
+# --- TAB 2: ADD CASH ---
 with tabs[2]:
     st.title("📥 Top-up Cash [Receipts]")
     with st.form("cash_in_form", clear_on_submit=True):
@@ -127,7 +144,7 @@ with tabs[2]:
             else:
                 st.error("Please specify the source.")
 
-# --- TAB 3: MANAGE HEADERS (PASSWORD REMOVED) ---
+# --- TAB 3: MANAGE HEADERS ---
 with tabs[3]:
     st.title("⚙️ Manage Expense Heads")
     col1, col2 = st.columns(2)
@@ -156,7 +173,8 @@ with tabs[3]:
 # --- TAB 4: HISTORY ---
 with tabs[4]:
     st.title("📜 Transaction History")
-    res = conn.table("petty_cash").select("*").order("created_at", desc=True).execute()
+    res = conn.table("petty_cash").select("*").order("vch_date", desc=True).execute()
     if res.data:
         df = pd.DataFrame(res.data)
-        st.dataframe(df[['created_at', 'head_account', 'amount', 'received_by', 'status']], use_container_width=True)
+        # Showing the physical voucher no and date in the history table
+        st.dataframe(df[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status']], use_container_width=True)
