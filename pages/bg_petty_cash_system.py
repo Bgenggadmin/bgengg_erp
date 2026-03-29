@@ -1,7 +1,7 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import pytz
 
 # --- 1. SETUP & CONFIG ---
@@ -63,7 +63,7 @@ if st.sidebar.button("🔓 Logout Portal"):
 
 tabs = st.tabs(["📊 Dashboard", "📝 Raise Voucher", "📥 Add Cash", "⚙️ Manage Headers", "📜 History"])
 
-# --- TAB 0: DASHBOARD (ADMIN AUTHORIZATION) ---
+# --- TAB 0: DASHBOARD (ADMIN AUTHORIZATION & ANALYTICS) ---
 with tabs[0]:
     st.title("📊 Petty Cash Control Center")
     total_in, total_out, balance = get_cash_metrics()
@@ -72,6 +72,25 @@ with tabs[0]:
     c2.metric("Total Issues (Out)", f"₹{total_out:,.2f}", delta_color="inverse")
     c3.metric("Live Balance", f"₹{balance:,.2f}")
 
+    # --- NEW: ANALYTICAL CHARTS ---
+    st.divider()
+    all_data_res = conn.table("petty_cash").select("*").eq("status", "Authorized").execute()
+    if all_data_res.data:
+        df_charts = pd.DataFrame(all_data_res.data)
+        df_charts['vch_date'] = pd.to_datetime(df_charts['vch_date'])
+        
+        chart_col1, chart_col2 = st.columns(2)
+        
+        with chart_col1:
+            st.subheader("📈 Spending Trend (Daily)")
+            daily_trend = df_charts.groupby('vch_date')['amount'].sum().reset_index()
+            st.line_chart(daily_trend.set_index('vch_date'))
+            
+        with chart_col2:
+            st.subheader("🏗️ Head-wise Breakdown")
+            head_breakdown = df_charts.groupby('head_account')['amount'].sum().sort_values(ascending=False)
+            st.bar_chart(head_breakdown)
+    
     st.divider()
     st.subheader("🔐 Admin Authorization")
     admin_auth = st.text_input("Enter Admin Password to Authorize", type="password", key="admin_auth_pwd")
@@ -82,23 +101,19 @@ with tabs[0]:
             for v in pending.data:
                 with st.container(border=True):
                     col1, col2, col3 = st.columns([1.5, 3, 1.2])
-                    
                     col1.write(f"**Vch No: {v.get('physical_vch_no', 'N/A')}**")
                     col1.write(f"📅 {v.get('vch_date', 'N/A')}")
                     col1.write(f"### ₹{v['amount']}")
-                    
                     col2.markdown(f"**Head:** {v['head_account']} | **Receiver:** {v['received_by']}")
                     col2.write(f"**Narration:** {v['purpose']}")
                     col2.caption(f"Recommended by: {v['requested_by']}")
-                    
-                    # Single Admin Note for both actions
                     adm_note = col2.text_input("Admin Note / Remarks (Optional)", key=f"note_{v['id']}")
                     
                     if col3.button("✅ Authorize", key=f"auth_{v['id']}", use_container_width=True):
                         conn.table("petty_cash").update({
                             "status": "Authorized", 
                             "authorized_at": get_now_ist().isoformat(),
-                            "reject_reason": adm_note # Using same column for remarks
+                            "reject_reason": adm_note
                         }).eq("id", v['id']).execute()
                         st.success(f"Authorized Voucher {v.get('physical_vch_no')}")
                         st.rerun()
@@ -124,14 +139,11 @@ with tabs[1]:
         v_phys_no = c1.text_input("Physical Voucher No.", placeholder="Ex: 101")
         v_date = c2.date_input("Voucher Date", value=date.today())
         v_amount = c3.number_input("Amount (₹)", min_value=1.0)
-        
         c4, c5 = st.columns(2)
         v_head = c4.selectbox("Towards Head Account", all_heads)
         v_recom = c5.selectbox("Recommended By", get_staff_list())
-        
         v_particulars = st.text_input("Particulars (Received By / Paid To)")
         v_narration = st.text_area("Narration (Description)")
-        
         if st.form_submit_button("Submit Voucher"):
             if v_particulars and v_narration and v_phys_no:
                 conn.table("petty_cash").insert({
@@ -188,15 +200,57 @@ with tabs[3]:
                 st.success("Removed.")
                 st.rerun()
 
-# --- TAB 4: HISTORY ---
+# --- TAB 4: HISTORY (ADVANCED FILTERING) ---
 with tabs[4]:
     st.title("📜 Transaction History")
-    res = conn.table("petty_cash").select("*").order("vch_date", desc=True).execute()
+    
+    # --- NEW: FILTER SECTION ---
+    with st.expander("🔍 Filter History", expanded=True):
+        f_col1, f_col2, f_col3 = st.columns(3)
+        
+        filter_type = f_col1.selectbox("Filter Range", ["All Time", "Today", "This Week", "This Month", "Custom Date Range"])
+        selected_head = f_col2.selectbox("Filter by Head", ["All"] + get_all_expense_heads())
+        
+        # Date Logic
+        today = date.today()
+        start_date, end_date = None, None
+        
+        if filter_type == "Today":
+            start_date = end_date = today
+        elif filter_type == "This Week":
+            start_date = today - timedelta(days=today.weekday())
+            end_date = today
+        elif filter_type == "This Month":
+            start_date = today.replace(day=1)
+            end_date = today
+        elif filter_type == "Custom Date Range":
+            custom_range = f_col3.date_input("Select Dates", [today - timedelta(days=7), today])
+            if len(custom_range) == 2:
+                start_date, end_date = custom_range
+    
+    # Build Query
+    query = conn.table("petty_cash").select("*").order("vch_date", desc=True)
+    
+    # Apply Filters to the resulting DataFrame instead of multiple API calls for speed
+    res = query.execute()
     if res.data:
         df = pd.DataFrame(res.data)
+        df['vch_date'] = pd.to_datetime(df['vch_date']).dt.date
+        
+        if start_date and end_date:
+            df = df[(df['vch_date'] >= start_date) & (df['vch_date'] <= end_date)]
+        
+        if selected_head != "All":
+            df = df[df['head_account'] == selected_head]
+            
+        st.info(f"Showing {len(df)} transactions.")
         st.dataframe(
             df[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status', 'reject_reason']], 
-            column_config={"reject_reason": "Admin Remarks"},
+            column_config={"reject_reason": "Admin Remarks", "vch_date": "Date", "physical_vch_no": "Voucher #"},
             use_container_width=True,
             hide_index=True
         )
+        
+        # Export CSV for filtered data
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("💾 Download Filtered CSV", csv, "filtered_petty_cash.csv", "text/csv")
