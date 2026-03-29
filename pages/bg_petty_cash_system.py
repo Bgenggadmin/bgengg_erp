@@ -11,36 +11,26 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. LOGIN GATEWAY ---
 def check_password():
-    """Returns True if the user had the correct password."""
     def password_entered():
-        """Checks whether a password entered by the user is correct."""
         if st.session_state["password"] == "pcash_bgengg":
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # First run, show input for password.
         st.title("🔐 B&G Engineering | Petty Cash Login")
-        st.text_input(
-            "Enter Portal Password", type="password", on_change=password_entered, key="password"
-        )
+        st.text_input("Enter Portal Password", type="password", on_change=password_entered, key="password")
         return False
     elif not st.session_state["password_correct"]:
-        # Password incorrect, show input + error.
         st.title("🔐 B&G Engineering | Petty Cash Login")
-        st.text_input(
-            "Enter Portal Password", type="password", on_change=password_entered, key="password"
-        )
+        st.text_input("Enter Portal Password", type="password", on_change=password_entered, key="password")
         st.error("😕 Password incorrect. Please try again.")
         return False
-    else:
-        # Password correct.
-        return True
+    return True
 
 if not check_password():
-    st.stop()  # Do not run the rest of the app if not logged in
+    st.stop()
 
 # --- 3. SMART UTILITIES ---
 def get_now_ist():
@@ -49,11 +39,8 @@ def get_now_ist():
 def get_all_expense_heads():
     try:
         res = conn.table("petty_cash_heads").select("head_name").order("head_name").execute()
-        if res.data:
-            return [row['head_name'] for row in res.data]
-        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
-    except:
-        return ["GENERAL/INTERNAL"]
+        return [row['head_name'] for row in res.data] if res.data else ["GENERAL/INTERNAL"]
+    except: return ["GENERAL/INTERNAL"]
 
 def get_staff_list():
     try:
@@ -68,17 +55,17 @@ def get_cash_metrics():
     total_out = sum([float(i['amount']) for i in res_out.data]) if res_out.data else 0.0
     return total_in, total_out, (total_in - total_out)
 
-# --- 4. NAVIGATION ---
+# --- 4. NAVIGATION (CONVERTED TO TABS) ---
 st.sidebar.title("💰 B&G Finance Hub")
 if st.sidebar.button("🔓 Logout"):
     del st.session_state["password_correct"]
     st.rerun()
 
-menu = ["📊 Dashboard", "📝 Raise Voucher", "📥 Add Cash", "⚙️ Manage Headers", "📜 History"]
-choice = st.sidebar.radio("Navigate", menu)
+# This replaces the sidebar radio with top tabs
+tabs = st.tabs(["📊 Dashboard", "📝 Raise Voucher", "📥 Add Cash", "⚙️ Manage Headers", "📜 History"])
 
-# --- PAGE: DASHBOARD ---
-if choice == "📊 Dashboard":
+# --- TAB: DASHBOARD ---
+with tabs[0]:
     st.title("📊 Petty Cash Control Center")
     total_in, total_out, balance = get_cash_metrics()
     c1, c2, c3 = st.columns(3)
@@ -88,8 +75,7 @@ if choice == "📊 Dashboard":
 
     st.divider()
     st.subheader("🔐 Admin Authorization (Brahmiah)")
-    # Note: Admin uses the same password as the app for authorization convenience
-    if st.text_input("Enter Admin Authorization Key", type="password") == "pcash_bgengg":
+    if st.text_input("Enter Admin Authorization Key", type="password", key="admin_auth_key") == "pcash_bgengg":
         pending = conn.table("petty_cash").select("*").eq("status", "Pending").order("id").execute()
         if pending.data:
             for v in pending.data:
@@ -103,8 +89,37 @@ if choice == "📊 Dashboard":
                         st.rerun()
         else: st.info("No pending vouchers for authorization.")
 
-# --- PAGE: MANAGE HEADERS ---
-elif choice == "⚙️ Manage Headers":
+# --- TAB: RAISE VOUCHER ---
+with tabs[1]:
+    st.title("📝 Raise New Expense Voucher")
+    all_heads = get_all_expense_heads()
+    with st.form("voucher_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        v_amount = c1.number_input("Amount (₹)", min_value=1.0)
+        v_head = c2.selectbox("Towards Head Account", all_heads)
+        c3, c4 = st.columns(2)
+        v_particulars = c3.text_input("Particulars (Paid To)")
+        v_recom = c4.selectbox("Recommended By", get_staff_list())
+        v_narration = st.text_area("Narration")
+        if st.form_submit_button("Submit"):
+            conn.table("petty_cash").insert({
+                "amount": v_amount, "head_account": v_head, "received_by": v_particulars,
+                "requested_by": v_recom, "purpose": v_narration, "status": "Pending"
+            }).execute()
+            st.success("Submitted for Approval.")
+
+# --- TAB: ADD CASH ---
+with tabs[2]:
+    st.title("📥 Top-up Cash [Receipts]")
+    with st.form("cash_in"):
+        t_amt = st.number_input("Amount Received (₹)", min_value=100.0, step=100.0)
+        t_src = st.text_input("Received From (e.g. Bank Withdrawal)")
+        if st.form_submit_button("Log Receipt"):
+            conn.table("petty_cash_topups").insert({"amount": t_amt, "source": t_src}).execute()
+            st.success("Balance Updated!")
+
+# --- TAB: MANAGE HEADERS ---
+with tabs[3]:
     st.title("⚙️ Manage Expense Heads")
     col1, col2 = st.columns(2)
     with col1:
@@ -129,37 +144,8 @@ elif choice == "⚙️ Manage Headers":
                 st.success("Removed.")
                 st.rerun()
 
-# --- PAGE: RAISE VOUCHER ---
-elif choice == "📝 Raise Voucher":
-    st.title("📝 Raise New Expense Voucher")
-    all_heads = get_all_expense_heads()
-    with st.form("voucher_form", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        v_amount = c1.number_input("Amount (₹)", min_value=1.0)
-        v_head = c2.selectbox("Towards Head Account", all_heads)
-        c3, c4 = st.columns(2)
-        v_particulars = c3.text_input("Particulars (Paid To)")
-        v_recom = c4.selectbox("Recommended By", get_staff_list())
-        v_narration = st.text_area("Narration")
-        if st.form_submit_button("Submit"):
-            conn.table("petty_cash").insert({
-                "amount": v_amount, "head_account": v_head, "received_by": v_particulars,
-                "requested_by": v_recom, "purpose": v_narration, "status": "Pending"
-            }).execute()
-            st.success("Submitted for Approval.")
-
-# --- PAGE: ADD CASH ---
-elif choice == "📥 Add Cash":
-    st.title("📥 Top-up Cash [Receipts]")
-    with st.form("cash_in"):
-        t_amt = st.number_input("Amount Received (₹)", min_value=100.0, step=100.0)
-        t_src = st.text_input("Received From (e.g. Bank Withdrawal)")
-        if st.form_submit_button("Log Receipt"):
-            conn.table("petty_cash_topups").insert({"amount": t_amt, "source": t_src}).execute()
-            st.success("Balance Updated!")
-
-# --- PAGE: HISTORY ---
-elif choice == "📜 History":
+# --- TAB: HISTORY ---
+with tabs[4]:
     st.title("📜 Transaction History")
     res = conn.table("petty_cash").select("*").order("created_at", desc=True).execute()
     if res.data:
