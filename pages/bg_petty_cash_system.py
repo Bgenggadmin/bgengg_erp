@@ -63,7 +63,7 @@ if st.sidebar.button("🔓 Logout Portal"):
 
 tabs = st.tabs(["📊 Dashboard", "📝 Raise Voucher", "📥 Add Cash", "⚙️ Manage Headers", "📜 History"])
 
-# --- TAB 0: DASHBOARD ---
+# --- TAB 0: DASHBOARD (ADMIN AUTH & ANALYTICS) ---
 with tabs[0]:
     st.title("📊 Petty Cash Control Center")
     total_in, total_out, balance = get_cash_metrics()
@@ -72,7 +72,7 @@ with tabs[0]:
     c2.metric("Total Issues (Out)", f"₹{total_out:,.2f}", delta_color="inverse")
     c3.metric("Live Balance", f"₹{balance:,.2f}")
 
-    # Analytics Section
+    # Analytical Charts
     st.divider()
     all_data_res = conn.table("petty_cash").select("*").eq("status", "Authorized").execute()
     if all_data_res.data:
@@ -98,7 +98,8 @@ with tabs[0]:
                     col1.write(f"**Vch No: {v.get('physical_vch_no')}**\n📅 {v.get('vch_date')}\n### ₹{v['amount']}")
                     col2.markdown(f"**Head:** {v['head_account']} | **Receiver:** {v['received_by']}")
                     col2.write(f"**Narration:** {v['purpose']}")
-                    adm_note = col2.text_input("Admin Note", key=f"note_{v['id']}")
+                    adm_note = col2.text_input("Admin Note / Remarks (Optional)", key=f"note_{v['id']}")
+                    
                     if col3.button("✅ Authorize", key=f"auth_{v['id']}", use_container_width=True):
                         conn.table("petty_cash").update({"status": "Authorized", "authorized_at": get_now_ist().isoformat(), "reject_reason": adm_note}).eq("id", v['id']).execute()
                         st.rerun()
@@ -109,12 +110,10 @@ with tabs[0]:
                             st.rerun()
         else: st.info("No pending vouchers.")
 
-# --- TAB 1: RAISE VOUCHER (Summary at Bottom) ---
+# --- TAB 1: RAISE VOUCHER ---
 with tabs[1]:
     st.title("📝 Raise New Expense Voucher")
-    
     all_heads = get_all_expense_heads()
-    # 1. Entry Form First
     with st.form("voucher_form", clear_on_submit=True):
         c1, c2, c3 = st.columns([1, 1, 2])
         v_phys_no = c1.text_input("Physical Voucher No.")
@@ -137,31 +136,18 @@ with tabs[1]:
             else: st.error("Please fill all fields.")
 
     st.divider()
-    
-    # 2. Recent Status Summary Second
     st.subheader("🔔 Recent Submissions Status")
     summary_res = conn.table("petty_cash").select("*").order("created_at", desc=True).limit(10).execute()
     if summary_res.data:
         df_s = pd.DataFrame(summary_res.data)
-        pending_count = len(df_s[df_s['status'] == 'Pending'])
-        rejected_count = len(df_s[df_s['status'] == 'Rejected'])
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Pending Approval", pending_count)
-        m2.metric("Rejected", rejected_count, delta=rejected_count, delta_color="inverse" if rejected_count > 0 else "normal")
-        m3.info("Latest 10 entries shown below.")
+        m1, m2 = st.columns(2)
+        m1.metric("Pending Approval", len(df_s[df_s['status'] == 'Pending']))
+        m2.metric("Rejected", len(df_s[df_s['status'] == 'Rejected']))
+        st.dataframe(df_s[['vch_date', 'physical_vch_no', 'amount', 'status', 'reject_reason']].head(5),
+                     column_config={"reject_reason": "Admin Remarks"}, use_container_width=True, hide_index=True)
 
-        st.dataframe(
-            df_s[['vch_date', 'physical_vch_no', 'amount', 'status', 'reject_reason']],
-            column_config={
-                "reject_reason": st.column_config.TextColumn("Admin Remarks"), 
-                "status": st.column_config.TextColumn("Status")
-            },
-            use_container_width=True, hide_index=True
-        )
-
-# --- TAB 2, 3, 4 ---
-with tabs[2]: # Add Cash
+# --- TAB 2: ADD CASH ---
+with tabs[2]:
     st.title("📥 Top-up Cash [Receipts]")
     with st.form("cash_in_form", clear_on_submit=True):
         t_amt = st.number_input("Amount Received (₹)", min_value=100.0, step=100.0)
@@ -172,7 +158,8 @@ with tabs[2]: # Add Cash
                 st.success("💰 Balance Updated!")
                 st.rerun()
 
-with tabs[3]: # Manage Headers
+# --- TAB 3: MANAGE HEADERS ---
+with tabs[3]:
     st.title("⚙️ Manage Expense Heads")
     col1, col2 = st.columns(2)
     with col1:
@@ -194,10 +181,32 @@ with tabs[3]: # Manage Headers
                 conn.table("petty_cash_heads").delete().eq("head_name", head_to_delete).execute()
                 st.rerun()
 
-with tabs[4]: # History
+# --- TAB 4: HISTORY (RESTORED FILTER LOGIC) ---
+with tabs[4]:
     st.title("📜 Transaction History")
-    # ... (Keep existing Filter logic)
-    res = conn.table("petty_cash").select("*").order("vch_date", desc=True).execute()
-    if res.data:
-        df = pd.DataFrame(res.data)
-        st.dataframe(df[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status', 'reject_reason']], use_container_width=True, hide_index=True)
+    with st.expander("🔍 Filter History", expanded=True):
+        f_col1, f_col2, f_col3 = st.columns(3)
+        filter_range = f_col1.selectbox("Date Range", ["All Time", "Today", "This Week", "This Month", "Custom Range"])
+        selected_head = f_col2.selectbox("Filter by Head", ["All"] + get_all_expense_heads())
+        
+        today = date.today()
+        start_d, end_d = None, None
+        if filter_range == "Today": start_d = end_d = today
+        elif filter_range == "This Week": start_d, end_d = today - timedelta(days=today.weekday()), today
+        elif filter_range == "This Month": start_d, end_d = today.replace(day=1), today
+        elif filter_range == "Custom Range":
+            custom_range = f_col3.date_input("Select Dates", [today - timedelta(days=7), today])
+            if len(custom_range) == 2: start_d, end_d = custom_range
+
+    res_h = conn.table("petty_cash").select("*").order("vch_date", desc=True).execute()
+    if res_h.data:
+        df_h = pd.DataFrame(res_h.data)
+        df_h['vch_date'] = pd.to_datetime(df_h['vch_date']).dt.date
+        
+        # Apply Filters
+        if start_d and end_d: df_h = df_h[(df_h['vch_date'] >= start_d) & (df_h['vch_date'] <= end_d)]
+        if selected_head != "All": df_h = df_h[df_h['head_account'] == selected_head]
+            
+        st.dataframe(df_h[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status', 'reject_reason']], 
+                     column_config={"reject_reason": "Admin Remarks"}, use_container_width=True, hide_index=True)
+        st.download_button("💾 Download Filtered CSV", df_h.to_csv(index=False).encode('utf-8'), "bg_filtered_ledger.csv")
