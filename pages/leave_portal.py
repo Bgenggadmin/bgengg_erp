@@ -7,17 +7,10 @@ import plotly.express as px
 
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
-# Updated Shift Constants for B&G Engineering
-OFFICE_IN = time(6, 0)
-GRACE_IN = time(6, 15)
-OFFICE_OUT = time(19, 30)
-
-# Expanded Logic Slots to cover the full 6:00 AM - 7:30 PM window
-# Reporting intervals set for every hour/hour-and-a-half
-LOG_SLOTS = [
-    "07:30", "09:00", "10:30", "12:00", "13:30", 
-    "15:00", "16:30", "18:00", "19:30"
-]
+OFFICE_IN = time(9, 0)
+GRACE_IN = time(9, 15)
+OFFICE_OUT = time(17, 30)
+LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:30"]
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -57,26 +50,17 @@ def get_job_codes():
         return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
 
 def is_log_due(employee_name):
-    # Skip check if snoozed
     if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
         return None
-    
     now_t = get_now_ist().strftime("%H:%M")
     past_slots = [s for s in LOG_SLOTS if s <= now_t]
     if not past_slots: return None
-    
     latest_slot = past_slots[-1]
     today = str(date.today())
-    
-    # Check if a log exists for this user today after the latest slot time
     res = conn.table("work_logs").select("*").eq("employee_name", employee_name).eq("work_date", today).order("created_at", desc=True).limit(1).execute().data
-    
     if not res: return latest_slot
     last_log_t = pd.to_datetime(res[0]['created_at']).tz_convert(IST).strftime("%H:%M")
-    
-    if last_log_t < latest_slot:
-        return latest_slot
-    return None
+    return latest_slot if last_log_t < latest_slot else None
 
 # --- 4. NAVIGATION ---
 tabs = st.tabs(["🕒 Attendance & Productivity", "📝 Leave Application", "📊 My Balance", "🔐 HR Admin Panel"])
@@ -94,16 +78,11 @@ with tabs[0]:
         with st.form("mandatory_log_form", clear_on_submit=True):
             slot_time = st.selectbox("Reporting for Slot", LOG_SLOTS, index=LOG_SLOTS.index(due_slot))
             job_code = st.selectbox("Job Number (Optional)", get_job_codes())
-            task_desc = st.text_area(f"Work detail for {slot_time}", placeholder="Describe work done since last report...")
+            task_desc = st.text_area(f"Work detail for {slot_time}", placeholder="Describe work done...")
             c1, c2 = st.columns(2)
             if c1.form_submit_button("✅ Submit & Unlock"):
                 if task_desc:
-                    conn.table("work_logs").insert({
-                        "employee_name": att_user, 
-                        "task_description": f"[{job_code}] @{slot_time}: {task_desc}", 
-                        "hours_spent": 1.5, # Adjusted to match 90-min intervals
-                        "work_date": today
-                    }).execute()
+                    conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute()
                     st.rerun()
                 else: st.error("Details required.")
             if c2.form_submit_button("🕒 Snooze (10 Mins)"):
@@ -114,7 +93,7 @@ with tabs[0]:
     col_a, col_b, col_c = st.columns([1.5, 1.5, 2.5])
     
     with col_a:
-        st.markdown("### 🏢 Shift Punch (From 6:00 AM)")
+        st.markdown("### 🏢 Shift Punch")
         att_data = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
         if not att_data:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
@@ -125,9 +104,6 @@ with tabs[0]:
             st.success(f"✅ In: {p_in.strftime('%I:%M %p')}")
             if not log.get('punch_out') and st.button("🏁 PUNCH OUT", use_container_width=True):
                 conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat()}).eq("id", log['id']).execute(); st.rerun()
-            elif log.get('punch_out'):
-                p_out = to_ist(pd.Series([log['punch_out']])).dt.time.iloc[0]
-                st.info(f"🏁 Out: {p_out.strftime('%I:%M %p')}")
 
     with col_b:
         st.markdown("### 🚶 Movement")
@@ -151,29 +127,11 @@ with tabs[0]:
         with st.form("manual_work_log", clear_on_submit=True):
             slot_t = st.selectbox("Time Slot", LOG_SLOTS)
             job_c = st.selectbox("Job Number (Optional)", get_job_codes(), key="manual_job")
-            task = st.text_area("Activity Description")
+            task = st.text_area("Update Task")
             if st.form_submit_button("Post Log"):
                 if task:
-                    conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.5, "work_date": today}).execute(); st.rerun()
+                    conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-    st.divider()
-    h1, h2 = st.columns(2)
-    with h1:
-        st.markdown("#### 📜 Recent Shift Records")
-        hist_data = conn.table("attendance_logs").select("*").eq("employee_name", att_user).order("work_date", desc=True).limit(5).execute().data
-        if hist_data:
-            hdf = pd.DataFrame(hist_data)
-            hdf['In'] = to_ist(hdf['punch_in']).dt.strftime('%I:%M %p')
-            hdf['Out'] = to_ist(hdf['punch_out']).dt.strftime('%I:%M %p').fillna("Active")
-            st.dataframe(hdf[['work_date', 'In', 'Out']], use_container_width=True, hide_index=True)
-    with h2:
-        st.markdown("#### 🛠️ Today's Activity Log")
-        work_data = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at", desc=True).execute().data
-        if work_data:
-            st.dataframe(pd.DataFrame(work_data)[['task_description', 'hours_spent']], use_container_width=True, hide_index=True)
-
-# --- TAB 2, 3 & 4 (Leave Logic, Balance & HR Admin panel from previous consolidated version) ---
-# [Ensure the rest of the Leave/Admin code is pasted here as well]
 # --- TAB 2: LEAVE APPLICATION ---
 with tabs[1]:
     st.subheader("New Leave Application")
