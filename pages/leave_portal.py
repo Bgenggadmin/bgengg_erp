@@ -15,7 +15,7 @@ LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. SMART UTILITIES ---
+# --- 2. SMART TIME UTILITY ---
 def to_ist(series):
     if series is None or (isinstance(series, pd.Series) and series.empty):
         return series
@@ -40,7 +40,7 @@ def get_staff_list():
     except: return ["Admin", "Staff Member"]
 
 def get_job_codes():
-    """Pulls live Job Codes from Anchor Portal. Includes Internal defaults."""
+    """Pulls live Job Codes from Anchor Portal. Selecting is Optional."""
     try:
         res = conn.table("anchor_portal").select("job_code").eq("status", "Active").execute()
         jobs = [j['job_code'] for j in res.data] if res.data else []
@@ -70,12 +70,12 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # --- THE HOURLY GATEKEEPER ---
+    # --- THE HOURLY GATEKEEPER (BLOCKER) ---
     due_slot = is_log_due(att_user)
     if due_slot:
-        st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your activity to unlock the system.")
+        st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your work to unlock the system.")
         with st.form("mandatory_log_form", clear_on_submit=True):
-            job_code = st.selectbox("Job Code / Category (Optional)", get_job_codes())
+            job_code = st.selectbox("Job Code (Optional)", get_job_codes())
             task_desc = st.text_area(f"Activity for {due_slot}", placeholder="Describe work done...")
             c1, c2 = st.columns(2)
             if c1.form_submit_button("✅ Submit & Unlock"):
@@ -120,6 +120,7 @@ with tabs[0]:
                 if st.form_submit_button("📤 TIME OUT"):
                     if dest and detail:
                         conn.table("movement_logs").insert({"employee_name": att_user, "reason": f"{reason}: {detail}", "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
+                    else: st.error("Fields required.")
         else:
             m_log = active_move[0]
             st.warning(f"⚠️ At **{m_log['destination']}**")
@@ -129,8 +130,8 @@ with tabs[0]:
     with col_c:
         st.markdown("### 📝 Work log")
         with st.form("manual_work_log", clear_on_submit=True):
-            job_c = st.selectbox("Job Code / Category (Optional)", get_job_codes(), key="manual_job")
-            task = st.text_area("Update Task")
+            job_c = st.selectbox("Job Code (Optional)", get_job_codes(), key="manual_job")
+            task = st.text_area("Task Update")
             if st.form_submit_button("Post Log"):
                 if task:
                     conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
@@ -152,37 +153,6 @@ with tabs[0]:
         if work_data:
             st.dataframe(pd.DataFrame(work_data)[['task_description', 'hours_spent']], use_container_width=True, hide_index=True)
 
-# --- TAB 2 & 3: LEAVE & BALANCE Logic Preserved ---
-with tabs[1]:
-    st.subheader("New Leave Application")
-    with st.form("leave_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        emp_name_l = col1.selectbox("Employee Name", get_staff_list(), key="l_emp")
-        l_type = col2.selectbox("Type", ["Casual Leave", "Sick Leave", "Earned Leave", "Loss of Pay"])
-        d1, d2 = st.columns(2)
-        s_date = d1.date_input("Start", min_value=date.today())
-        e_date = d2.date_input("End", min_value=date.today())
-        reason_l = st.text_area("Reason")
-        if st.form_submit_button("Submit"):
-            conn.table("leave_requests").insert({"employee_name": emp_name_l, "leave_type": l_type, "start_date": str(s_date), "end_date": str(e_date), "reason": reason_l, "status": "Pending"}).execute()
-            st.success("✅ Submitted."); st.cache_data.clear(); st.rerun()
-
-with tabs[2]:
-    st.subheader("Leave Balance & History")
-    df_leaves = get_leave_requests()
-    user_sel_bal = st.selectbox("View Records for:", get_staff_list(), key="bal_user")
-    if not df_leaves.empty:
-        user_df = df_leaves[df_leaves['employee_name'] == user_sel_bal].copy()
-        app_df = user_df[user_df['status'] == 'Approved'].copy()
-        total_t = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
-        st.metric("Total Days Taken (2026)", f"{total_t} Days")
-        for _, r in user_df.head(5).iterrows():
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-                c1.write(f"**{r['leave_type']}**"); c2.write(f"{r['start_date']} to {r['end_date']}"); c3.write(r['status'])
-                if r['status'] == "Pending" and c4.button("Withdraw", key=f"wd_{r['id']}"):
-                    conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.cache_data.clear(); st.rerun()
-
 # --- TAB 4: HR ADMIN PANEL ---
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
@@ -197,12 +167,10 @@ with tabs[3]:
             tdf = pd.DataFrame(t_att)
             
             def get_admin_metrics(row):
-                # Net Shift Hours
                 start = pd.to_datetime(row['punch_in'])
                 end = pd.to_datetime(row['punch_out']) if pd.notnull(row['punch_out']) else get_now_ist()
                 shift = (end - start).total_seconds() / 3600
                 
-                # Subtract Lunch/Personal Breaks
                 breaks = 0
                 if t_move:
                     mdf = pd.DataFrame(t_move)
@@ -210,7 +178,6 @@ with tabs[3]:
                     breaks = (pd.to_datetime(u_b['return_time']) - pd.to_datetime(u_b['exit_time'])).dt.total_seconds().sum() / 3600
                 final_s = max(0.1, shift - breaks)
 
-                # Latest Work Task
                 latest_task = "No logs yet"
                 task_h = 0
                 if t_work:
@@ -223,10 +190,8 @@ with tabs[3]:
                 efficiency = f"{int(min(100, (task_h/final_s)*100))}%"
                 return f"{final_s:.2f}h", f"{task_h:.2f}h", latest_task, efficiency
 
-            tdf[['Shift', 'Logged', 'Current Task', 'Efficiency']] = tdf.apply(get_admin_metrics, axis=1, result_type='expand')
-            
-            # Summary Table for Brahmiah
-            st.dataframe(tdf[['employee_name', 'Shift', 'Logged', 'Efficiency', 'Current Task']], use_container_width=True, hide_index=True)
+            tdf[['Shift', 'Logged', 'Latest Task', 'Efficiency']] = tdf.apply(get_admin_metrics, axis=1, result_type='expand')
+            st.dataframe(tdf[['employee_name', 'Shift', 'Logged', 'Efficiency', 'Latest Task']], use_container_width=True, hide_index=True)
             
             if t_work:
                 st.markdown("### 🏗️ Job Distribution (Hours)")
@@ -234,15 +199,3 @@ with tabs[3]:
                 wdf['JobCode'] = wdf['task_description'].str.extract(r'\[(.*?)\]').fillna("General")
                 fig = px.pie(wdf, values='hours_spent', names='JobCode', hole=0.4)
                 st.plotly_chart(fig, use_container_width=True)
-        
-        st.divider()
-        st.subheader("📬 Pending Leave Approvals")
-        df_all = get_leave_requests()
-        if not df_all.empty:
-            pending = df_all[df_all['status'] == 'Pending']
-            for _, row in pending.iterrows():
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([2, 2, 1])
-                    c1.write(f"**{row['employee_name']}**"); c2.write(row['reason'])
-                    if c3.button("Approve", key=f"ap_{row['id']}"):
-                        conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
