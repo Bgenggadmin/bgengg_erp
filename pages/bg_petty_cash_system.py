@@ -12,7 +12,6 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. LOGIN GATEWAY (PORTAL ACCESS) ---
 def check_password():
     def password_entered():
-        # Portal Password for staff/accounts to enter
         if st.session_state["password"] == "pcash_bgengg":
             st.session_state["password_correct"] = True
             del st.session_state["password"]
@@ -64,7 +63,7 @@ if st.sidebar.button("🔓 Logout Portal"):
 
 tabs = st.tabs(["📊 Dashboard", "📝 Raise Voucher", "📥 Add Cash", "⚙️ Manage Headers", "📜 History"])
 
-# --- TAB: DASHBOARD (ADMIN AUTHORIZATION) ---
+# --- TAB 0: DASHBOARD (ADMIN AUTHORIZATION REQUIRED) ---
 with tabs[0]:
     st.title("📊 Petty Cash Control Center")
     total_in, total_out, balance = get_cash_metrics()
@@ -75,8 +74,6 @@ with tabs[0]:
 
     st.divider()
     st.subheader("🔐 Admin Authorization")
-    
-    # NEW: Secure Admin Password for your use only
     admin_auth = st.text_input("Enter Admin Password to Authorize", type="password", key="admin_auth_pwd")
     
     if admin_auth == "admin_bg_finance":
@@ -93,45 +90,70 @@ with tabs[0]:
                         st.success(f"Voucher {v['id']} Authorized.")
                         st.rerun()
         else: st.info("No vouchers awaiting authorization.")
-    elif admin_auth != "":
-        st.error("❌ Admin Password Incorrect.")
 
-# --- TAB: MANAGE HEADERS (PROTECTED) ---
+# --- TAB 1: RAISE VOUCHER (RESTORED) ---
+with tabs[1]:
+    st.title("📝 Raise New Expense Voucher")
+    all_heads = get_all_expense_heads()
+    with st.form("voucher_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        v_amount = c1.number_input("Amount (₹)", min_value=1.0)
+        v_head = c2.selectbox("Towards Head Account", all_heads)
+        c3, c4 = st.columns(2)
+        v_particulars = c3.text_input("Particulars (Paid To)")
+        v_recom = c4.selectbox("Recommended By", get_staff_list())
+        v_narration = st.text_area("Narration (Description)")
+        if st.form_submit_button("Submit Voucher"):
+            if v_particulars and v_narration:
+                conn.table("petty_cash").insert({
+                    "amount": v_amount, "head_account": v_head, "received_by": v_particulars,
+                    "requested_by": v_recom, "purpose": v_narration, "status": "Pending"
+                }).execute()
+                st.success("✅ Voucher submitted for Admin Authorization.")
+            else:
+                st.error("Please fill in Particulars and Narration.")
+
+# --- TAB 2: ADD CASH (RESTORED) ---
+with tabs[2]:
+    st.title("📥 Top-up Cash [Receipts]")
+    with st.form("cash_in_form", clear_on_submit=True):
+        t_amt = st.number_input("Amount Received (₹)", min_value=100.0, step=100.0)
+        t_src = st.text_input("Received From (e.g. Bank Withdrawal, Babu Sir)")
+        if st.form_submit_button("Log Receipt"):
+            if t_src:
+                conn.table("petty_cash_topups").insert({"amount": t_amt, "source": t_src}).execute()
+                st.success("💰 Balance Updated!")
+                st.rerun()
+            else:
+                st.error("Please specify the source.")
+
+# --- TAB 3: MANAGE HEADERS (PASSWORD REMOVED) ---
 with tabs[3]:
     st.title("⚙️ Manage Expense Heads")
-    # Only allow management if Admin password is correct
-    admin_manage = st.text_input("Enter Admin Password to Manage Headers", type="password", key="admin_manage_pwd")
-    
-    if admin_manage == "admin_bg_finance":
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("➕ Add New Header")
-            with st.form("add_head_form", clear_on_submit=True):
-                new_head = st.text_input("Header Name")
-                if st.form_submit_button("Add to System"):
-                    if new_head:
-                        conn.table("petty_cash_heads").insert({"head_name": new_head.upper()}).execute()
-                        st.success("Header Added.")
-                        st.rerun()
-        with col2:
-            st.subheader("🗑️ Remove Header")
-            current_heads = get_all_expense_heads()
-            head_to_delete = st.selectbox("Select to Remove", current_heads)
-            if st.button("Delete Selected Header", type="primary"):
-                usage_check = conn.table("petty_cash").select("id").eq("head_account", head_to_delete).limit(1).execute()
-                if usage_check.data:
-                    st.error("Header is in use and cannot be deleted.")
-                else:
-                    conn.table("petty_cash_heads").delete().eq("head_name", head_to_delete).execute()
-                    st.success("Removed.")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("➕ Add New Header")
+        with st.form("add_head_form", clear_on_submit=True):
+            new_head = st.text_input("Header Name")
+            if st.form_submit_button("Add to System"):
+                if new_head:
+                    conn.table("petty_cash_heads").insert({"head_name": new_head.upper()}).execute()
+                    st.success("Header Added.")
                     st.rerun()
-    elif admin_manage != "":
-        st.error("❌ Admin Password Incorrect.")
+    with col2:
+        st.subheader("🗑️ Remove Header")
+        current_heads = get_all_expense_heads()
+        head_to_delete = st.selectbox("Select to Remove", current_heads)
+        if st.button("Delete Selected Header", type="primary"):
+            usage_check = conn.table("petty_cash").select("id").eq("head_account", head_to_delete).limit(1).execute()
+            if usage_check.data:
+                st.error("Header is in use and cannot be deleted.")
+            else:
+                conn.table("petty_cash_heads").delete().eq("head_name", head_to_delete).execute()
+                st.success("Removed.")
+                st.rerun()
 
-# --- REMAINING TABS (RAISE VOUCHER, ADD CASH, HISTORY) ---
-# [Logic remains as per previous version...]
-
-# --- TAB: HISTORY ---
+# --- TAB 4: HISTORY ---
 with tabs[4]:
     st.title("📜 Transaction History")
     res = conn.table("petty_cash").select("*").order("created_at", desc=True).execute()
