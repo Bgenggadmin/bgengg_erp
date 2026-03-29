@@ -71,14 +71,13 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # --- THE HOURLY GATEKEEPER ---
     due_slot = is_log_due(att_user)
     if due_slot:
         st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your activity to unlock the system.")
         with st.form("mandatory_log_form", clear_on_submit=True):
             slot_time = st.selectbox("Reporting for Slot", LOG_SLOTS, index=LOG_SLOTS.index(due_slot))
             job_code = st.selectbox("Job Number (Optional)", get_job_codes())
-            task_desc = st.text_area(f"Work detail for {slot_time}", placeholder="Describe work done...")
+            task_desc = st.text_area(f"Work detail for {slot_time}")
             c1, c2 = st.columns(2)
             if c1.form_submit_button("✅ Submit & Unlock"):
                 if task_desc:
@@ -91,7 +90,6 @@ with tabs[0]:
         st.stop()
 
     col_a, col_b, col_c = st.columns([1.5, 1.5, 2.5])
-    
     with col_a:
         st.markdown("### 🏢 Shift Punch")
         att_data = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
@@ -154,16 +152,6 @@ with tabs[2]:
     user_sel_bal = st.selectbox("View Records for:", get_staff_list(), key="bal_user")
     if not df_leaves.empty:
         user_df = df_leaves[df_leaves['employee_name'] == user_sel_bal].copy()
-        
-        # Simple Status Notification Area
-        new_updates = user_df[user_df['status'] != 'Pending'].head(1)
-        if not new_updates.empty:
-            status = new_updates.iloc[0]['status']
-            if status == "Rejected":
-                st.error(f"🔔 Last Request Rejected: {new_updates.iloc[0]['reject_reason']}")
-            elif status == "Approved":
-                st.success(f"🔔 Last Request Approved for {new_updates.iloc[0]['start_date']}")
-
         for _, r in user_df.head(10).iterrows():
             with st.container(border=True):
                 c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
@@ -173,12 +161,48 @@ with tabs[2]:
                 c3.markdown(f":{color}[{r['status']}]")
                 if r['status'] == "Pending" and c4.button("Withdraw", key=f"wd_{r['id']}"):
                     conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.cache_data.clear(); st.rerun()
+                if r.get('reject_reason'): st.caption(f"Reason: {r['reject_reason']}")
 
 # --- TAB 4: HR ADMIN PANEL ---
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
-        st.subheader("📬 Pending Leave Approvals")
+        st.subheader("📊 Today's Real-Time Work Summary")
+        t_att = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
+        t_move = conn.table("movement_logs").select("*").gte("exit_time", f"{today}T00:00:00").execute().data
+        t_work = conn.table("work_logs").select("*").eq("work_date", today).order("created_at", desc=True).execute().data
+        
+        if t_att:
+            tdf = pd.DataFrame(t_att)
+            def get_admin_metrics(row):
+                start = pd.to_datetime(row['punch_in'])
+                end = pd.to_datetime(row['punch_out']) if pd.notnull(row['punch_out']) else get_now_ist()
+                shift = (end - start).total_seconds() / 3600
+                breaks = 0
+                if t_move:
+                    mdf = pd.DataFrame(t_move)
+                    u_b = mdf[(mdf['employee_name'] == row['employee_name']) & (mdf['reason'].str.contains('Lunch|Personal')) & (mdf['return_time'].notnull())]
+                    breaks = (pd.to_datetime(u_b['return_time']) - pd.to_datetime(u_b['exit_time'])).dt.total_seconds().sum() / 3600
+                final_s = max(0.1, shift - breaks)
+                latest_task, task_h = "No logs", 0
+                if t_work:
+                    wdf = pd.DataFrame(t_work)
+                    user_w = wdf[wdf['employee_name'] == row['employee_name']]
+                    if not user_w.empty:
+                        latest_task = user_w.iloc[0]['task_description']
+                        task_h = user_w['hours_spent'].sum()
+                eff = f"{int(min(100, (task_h/final_s)*100))}%"
+                return f"{final_s:.2f}h", f"{task_h:.2f}h", eff, latest_task
+
+            tdf[['Shift', 'Logged', 'Efficiency', 'Current Work']] = tdf.apply(get_admin_metrics, axis=1, result_type='expand')
+            summary_view = tdf[['employee_name', 'Shift', 'Logged', 'Efficiency', 'Current Work']]
+            st.dataframe(summary_view, use_container_width=True, hide_index=True)
+            
+            # --- EXPORT BUTTON ---
+            st.download_button("💾 Export Summary (CSV)", data=summary_view.to_csv(index=False), file_name=f"BG_Summary_{today}.csv")
+        
+        st.divider()
+        st.subheader("📬 Leave Approvals")
         df_all = get_leave_requests()
         if not df_all.empty:
             pending = df_all[df_all['status'] == 'Pending']
@@ -194,4 +218,3 @@ with tabs[3]:
                         if st.button("Confirm Reject", key=f"rej_{row['id']}"):
                             if reason:
                                 conn.table("leave_requests").update({"status": "Rejected", "reject_reason": reason}).eq("id", row['id']).execute(); st.rerun()
-                            else: st.error("Reason required")
