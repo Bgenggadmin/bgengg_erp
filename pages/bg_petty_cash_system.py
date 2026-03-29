@@ -81,8 +81,8 @@ with tabs[0]:
         if pending.data:
             for v in pending.data:
                 with st.container(border=True):
-                    col1, col2, col3 = st.columns([1.5, 3, 1])
-                    # Display Physical Voucher No and Date
+                    col1, col2, col3 = st.columns([1.5, 3, 1.2])
+                    
                     col1.write(f"**Vch No: {v.get('physical_vch_no', 'N/A')}**")
                     col1.write(f"📅 {v.get('vch_date', 'N/A')}")
                     col1.write(f"### ₹{v['amount']}")
@@ -91,10 +91,28 @@ with tabs[0]:
                     col2.write(f"**Narration:** {v['purpose']}")
                     col2.caption(f"Recommended by: {v['requested_by']}")
                     
+                    # Single Admin Note for both actions
+                    adm_note = col2.text_input("Admin Note / Remarks (Optional)", key=f"note_{v['id']}")
+                    
                     if col3.button("✅ Authorize", key=f"auth_{v['id']}", use_container_width=True):
-                        conn.table("petty_cash").update({"status": "Authorized", "authorized_at": get_now_ist().isoformat()}).eq("id", v['id']).execute()
+                        conn.table("petty_cash").update({
+                            "status": "Authorized", 
+                            "authorized_at": get_now_ist().isoformat(),
+                            "reject_reason": adm_note # Using same column for remarks
+                        }).eq("id", v['id']).execute()
                         st.success(f"Authorized Voucher {v.get('physical_vch_no')}")
                         st.rerun()
+                        
+                    if col3.button("❌ Reject", key=f"rej_{v['id']}", use_container_width=True):
+                        if not adm_note:
+                            st.error("Please provide a note/reason for rejection.")
+                        else:
+                            conn.table("petty_cash").update({
+                                "status": "Rejected", 
+                                "reject_reason": adm_note 
+                            }).eq("id", v['id']).execute()
+                            st.warning(f"Rejected Voucher {v.get('physical_vch_no')}")
+                            st.rerun()
         else: st.info("No vouchers awaiting authorization.")
 
 # --- TAB 1: RAISE VOUCHER ---
@@ -176,5 +194,9 @@ with tabs[4]:
     res = conn.table("petty_cash").select("*").order("vch_date", desc=True).execute()
     if res.data:
         df = pd.DataFrame(res.data)
-        # Showing the physical voucher no and date in the history table
-        st.dataframe(df[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status']], use_container_width=True)
+        st.dataframe(
+            df[['vch_date', 'physical_vch_no', 'head_account', 'amount', 'received_by', 'status', 'reject_reason']], 
+            column_config={"reject_reason": "Admin Remarks"},
+            use_container_width=True,
+            hide_index=True
+        )
