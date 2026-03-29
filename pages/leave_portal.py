@@ -15,7 +15,7 @@ LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. SMART TIME UTILITY ---
+# --- 2. SMART UTILITIES ---
 def to_ist(series):
     if series is None or (isinstance(series, pd.Series) and series.empty):
         return series
@@ -27,17 +27,20 @@ def to_ist(series):
 def get_now_ist():
     return datetime.now(IST)
 
-# --- 3. DATA LOADERS ---
-@st.cache_data(ttl=2) # Reduced TTL to ensure job codes refresh
+# --- 3. DATA LOADERS (FIXED TABLE NAME) ---
+@st.cache_data(ttl=2)
 def get_job_codes():
-    """Pulls live Job Codes from Anchor Portal."""
+    """Pulls live Job Numbers from the correct Anchor table."""
     try:
-        # NOTE: Ensure the column name in your Supabase table is 'job_code'
-        res = conn.table("anchor_portal").select("job_code").eq("status", "Active").execute()
-        jobs = [j['job_code'] for j in res.data if j.get('job_code')] if res.data else []
-        # Return unique list with defaults first
+        # Changed table name from 'anchor_portal' to 'anchor_projects' to match your second script
+        res = conn.table("anchor_projects").select("job_no").eq("status", "Won").execute()
+        # Filter out empty or null job numbers
+        jobs = [j['job_no'] for j in res.data if j.get('job_no')] if res.data else []
+        # Combine with default internal categories
         return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"] + sorted(list(set(jobs)))
     except Exception as e:
+        # If table name is still wrong, show error for debugging
+        st.sidebar.error(f"DB Error: {e}")
         return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
 
 def get_staff_list():
@@ -71,14 +74,18 @@ with tabs[0]:
     # --- THE HOURLY GATEKEEPER ---
     due_slot = is_log_due(att_user)
     if due_slot:
-        st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your activity to unlock.")
+        st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your work to unlock the system.")
         with st.form("mandatory_log_form", clear_on_submit=True):
-            job_code = st.selectbox("Job Code (Optional)", get_job_codes())
-            task_desc = st.text_area(f"Activity for {due_slot}", placeholder="Describe your work...")
+            # DROPDOWN REPLACED WITH FIXED LOADER
+            job_code = st.selectbox("Job Number (Optional)", get_job_codes())
+            task_desc = st.text_area(f"Activity for {due_slot}", placeholder="Describe work done...")
             c1, c2 = st.columns(2)
             if c1.form_submit_button("✅ Submit & Unlock"):
                 if task_desc:
-                    conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] {task_desc}", "hours_spent": 1.0, "work_date": today}).execute()
+                    conn.table("work_logs").insert({
+                        "employee_name": att_user, "task_description": f"[{job_code}] {task_desc}",
+                        "hours_spent": 1.0, "work_date": today
+                    }).execute()
                     st.rerun()
                 else: st.error("Details required.")
             if c2.form_submit_button("🕒 Snooze (10 Mins)"):
@@ -123,8 +130,8 @@ with tabs[0]:
     with col_c:
         st.markdown("### 📝 Work log")
         with st.form("manual_work_log", clear_on_submit=True):
-            job_c = st.selectbox("Job Code (Optional)", get_job_codes(), key="manual_job")
-            task = st.text_area("Task Update")
+            job_c = st.selectbox("Job Number (Optional)", get_job_codes(), key="manual_job")
+            task = st.text_area("Update Task")
             if st.form_submit_button("Post Log"):
                 if task:
                     conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
@@ -182,3 +189,10 @@ with tabs[3]:
 
             tdf[['Shift', 'Logged', 'Efficiency', 'Current Work']] = tdf.apply(get_admin_metrics, axis=1, result_type='expand')
             st.dataframe(tdf[['employee_name', 'Shift', 'Logged', 'Efficiency', 'Current Work']], use_container_width=True, hide_index=True)
+            
+            if t_work:
+                st.markdown("### 🏗️ Job Distribution (Hours)")
+                wdf = pd.DataFrame(t_work)
+                wdf['JobNo'] = wdf['task_description'].str.extract(r'\[(.*?)\]').fillna("Other")
+                fig = px.pie(wdf, values='hours_spent', names='JobNo', hole=0.4)
+                st.plotly_chart(fig, use_container_width=True)
