@@ -7,11 +7,16 @@ import plotly.express as px
 
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
-OFFICE_IN = time(9, 0)
-GRACE_IN = time(9, 15)
-OFFICE_OUT = time(17, 30)
-LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:30"]
+OFFICE_IN = time(6, 0)
+GRACE_IN = time(6, 15)
+OFFICE_OUT = time(19, 30)
 
+# Expanded Logic Slots to cover the full 6:00 AM - 7:30 PM window
+# Reporting intervals set for every hour/hour-and-a-half
+LOG_SLOTS = [
+    "07:30", "09:00", "10:30", "12:00", "13:30", 
+    "15:00", "16:30", "18:00", "19:30"
+]
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
 
