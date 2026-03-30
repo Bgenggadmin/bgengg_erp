@@ -7,7 +7,6 @@ import pytz
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
 LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:30"]
-LATE_THRESHOLD = time(9, 15)
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -74,7 +73,7 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # PERSONAL SUMMARY SECTION
+    # PERSONAL SUMMARY (Matches 8hrs punch exactly)
     st.markdown("### 📊 Your Today's Status")
     p_att = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     p_work = conn.table("work_logs").select("hours_spent").eq("employee_name", att_user).eq("work_date", today).execute().data
@@ -139,7 +138,7 @@ with tabs[0]:
             if st.form_submit_button("Post Log"):
                 if task: conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- TAB 2 & 3: LEAVE & BALANCE --- (Kept exactly as provided)
+# --- TAB 2 & 3: LEAVE & BALANCE ---
 with tabs[1]:
     st.subheader("New Leave Application")
     with st.form("leave_form", clear_on_submit=True):
@@ -168,58 +167,16 @@ with tabs[2]:
                 if r['status'] == "Pending" and c3.button("Withdraw", key=f"wd_{r['id']}"):
                     conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.cache_data.clear(); st.rerun()
 
-# --- TAB 4: HR ADMIN PANEL (CLEANED) ---
+# --- TAB 4: HR ADMIN PANEL (MODIFIED: ONLY 2 TABS) ---
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
         today_str = str(date.today())
-        # REMOVED MASTER STAFF TAB
-        admin_tabs = st.tabs(["📊 Operational Analytics", "🕒 Detailed Logs", "📬 Leave Approvals"])
+        # REMOVED Operational Analytics and Master Staff
+        admin_tabs = st.tabs(["🕒 Detailed Logs", "📬 Leave Approvals"])
 
+        # TAB 1: DETAILED LOGS (WITH SEARCH FILTER)
         with admin_tabs[0]:
-            st.subheader("🏢 Operational Performance Tracking")
-            t_att_raw = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
-            t_work_raw = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
-            
-            if t_att_raw:
-                df_att = pd.DataFrame(t_att_raw)
-                df_work = pd.DataFrame(t_work_raw) if t_work_raw else pd.DataFrame(columns=['employee_name', 'hours_spent'])
-                
-                # 1. Late Comers
-                df_att['p_in_time'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
-                late_df = df_att[df_att['p_in_time'] > LATE_THRESHOLD]
-                
-                # 2. Log Performance
-                log_sum = df_work.groupby('employee_name')['hours_spent'].sum().reset_index()
-                low_logs = log_sum[log_sum['hours_spent'] < 4.0]
-                high_logs = log_sum[log_sum['hours_spent'] > 7.5]
-
-                ac1, ac2, ac3 = st.columns(3)
-                with ac1:
-                    st.error(f"⌛ Late Comers ({len(late_df)})")
-                    if not late_df.empty: st.dataframe(late_df[['employee_name', 'p_in_time']], hide_index=True)
-                with ac2:
-                    st.warning(f"📉 Low Work Logs (<4h)")
-                    if not low_logs.empty: st.dataframe(low_logs, hide_index=True)
-                with ac3:
-                    st.success(f"🚀 High Work Logs (>7.5h)")
-                    if not high_logs.empty: ac3.dataframe(high_logs, hide_index=True)
-
-            st.divider()
-            st.markdown("##### 🏢 Performance Snapshot")
-            if t_att_raw:
-                tdf = pd.DataFrame(t_att_raw)
-                def get_admin_summary(row):
-                    s = pd.to_datetime(row['punch_in']).tz_convert(IST)
-                    e = pd.to_datetime(row['punch_out']).tz_convert(IST) if pd.notnull(row['punch_out']) else get_now_ist()
-                    dur = (e - s).total_seconds() / 3600
-                    task_h = pd.DataFrame(t_work_raw)[pd.DataFrame(t_work_raw)['employee_name'] == row['employee_name']]['hours_spent'].sum() if t_work_raw else 0
-                    return f"{dur:.2f}h", f"{task_h:.2f}h", f"{int(min(100, (task_h/dur)*100)) if dur > 0.1 else 0}%"
-                
-                tdf[['Shift', 'Logged', 'Efficiency']] = tdf.apply(get_admin_summary, axis=1, result_type='expand')
-                st.dataframe(tdf[['employee_name', 'Shift', 'Logged', 'Efficiency']], use_container_width=True, hide_index=True)
-
-        with admin_tabs[1]:
             st.subheader("📜 Filtered Activity Stream")
             search_name = st.selectbox("🔍 Filter by Staff Name", ["All Staff"] + get_staff_list())
             log_type = st.radio("Select Category", ["Work Logs", "Movement History", "Attendance Timeline"], horizontal=True)
@@ -246,8 +203,9 @@ with tabs[3]:
                     df['Punch In'] = df['punch_in'].apply(format_ts); df['Punch Out'] = df['punch_out'].apply(format_ts)
                     st.dataframe(df[['employee_name', 'work_date', 'Punch In', 'Punch Out']], use_container_width=True, hide_index=True)
 
-        with admin_tabs[2]:
-            st.subheader("📬 Leave Requests")
+        # TAB 2: LEAVE APPROVALS
+        with admin_tabs[1]:
+            st.subheader("📬 Pending Leave Requests")
             df_all = get_leave_requests()
             if not df_all.empty:
                 pending = df_all[df_all['status'] == 'Pending']
