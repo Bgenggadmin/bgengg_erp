@@ -78,28 +78,57 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # --- EMPLOYEE TODAY SUMMARY (NEW) ---
-    st.markdown("### 📊 Your Today's Summary")
-    emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
-    work_summ_res = conn.table("work_logs").select("hours_spent").eq("employee_name", att_user).eq("work_date", today).execute().data
+    # --- EMPLOYEE TODAY SUMMARY (ENHANCED) ---
+    st.markdown("### 📊 Your Today's Status")
     
+    # 1. Fetch Data
+    emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
+    work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
+    move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
+    
+    # 2. Main Metrics
     c_sum1, c_sum2, c_sum3 = st.columns(3)
     if emp_summ_res:
         log_data = emp_summ_res[0]
         start_t = pd.to_datetime(log_data['punch_in']).tz_convert(IST)
         end_t = pd.to_datetime(log_data['punch_out']).tz_convert(IST) if log_data.get('punch_out') else get_now_ist()
         dur = (end_t - start_t).total_seconds() / 3600
-        logged = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
+        logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
         
         c_sum1.metric("Punch In", start_t.strftime('%I:%M %p'))
         c_sum2.metric("Shift Duration", f"{dur:.2f} hrs")
-        c_sum3.metric("Logged Work", f"{logged:.2f} hrs", delta=f"{int((logged/dur)*100) if dur > 0.1 else 0}% Eff.")
+        c_sum3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100) if dur > 0.1 else 0}% Eff.")
+        
+        # 3. Detailed Activity Breakdown
+        st.write("#### 📝 Today's Activity Details")
+        sum_col_left, sum_col_right = st.columns(2)
+        
+        with sum_col_left:
+            with st.expander(f"Work Logs ({len(work_summ_res)})", expanded=True):
+                if work_summ_res:
+                    for w in work_summ_res:
+                        st.caption(f"✅ {w['task_description']} ({w['hours_spent']}h)")
+                else:
+                    st.info("No work logged yet.")
+
+        with sum_col_right:
+            with st.expander(f"Movements ({len(move_summ_res)})", expanded=True):
+                if move_summ_res:
+                    for m in move_summ_res:
+                        out_t = pd.to_datetime(m['exit_time']).tz_convert(IST).strftime('%I:%M %p')
+                        ret_t = pd.to_datetime(m['return_time']).tz_convert(IST).strftime('%I:%M %p') if m.get('return_time') else "OUT"
+                        st.caption(f"🚶 {out_t} ➔ {ret_t} | {m['destination']}")
+                else:
+                    st.info("No movements recorded.")
     else:
         st.info("No punch record found for today.")
+    
     st.divider()
 
+    # --- REST OF YOUR EXISTING LOGIC (MANDATORY LOGS, BUTTONS, ETC.) ---
     due_slot = is_log_due(att_user)
     if due_slot:
+        # ... (keep your existing due_slot code here)
         st.warning(f"🔔 **MANDATORY UPDATE:** It is past {due_slot}. Please log your activity to unlock the system.")
         with st.form("mandatory_log_form", clear_on_submit=True):
             slot_time = st.selectbox("Reporting for Slot", LOG_SLOTS, index=LOG_SLOTS.index(due_slot))
@@ -116,6 +145,8 @@ with tabs[0]:
                 st.rerun()
         st.stop()
 
+    # --- Shift Punch / Movement / Work log forms ---
+  
     col_a, col_b, col_c = st.columns([1.5, 1.5, 2.5])
     with col_a:
         st.markdown("### 🏢 Shift Punch")
