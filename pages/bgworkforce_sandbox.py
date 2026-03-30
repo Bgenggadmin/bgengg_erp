@@ -167,54 +167,115 @@ with tabs[2]:
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
-        st.subheader("📊 Today's Real-Time Work Summary")
-        t_att = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
-        t_move = conn.table("movement_logs").select("*").gte("exit_time", f"{today}T00:00:00").execute().data
-        t_work = conn.table("work_logs").select("*").eq("work_date", today).order("created_at", desc=True).execute().data
-        
-        if t_att:
-            tdf = pd.DataFrame(t_att)
-            def get_admin_metrics(row):
-                start = pd.to_datetime(row['punch_in'])
-                end = pd.to_datetime(row['punch_out']) if pd.notnull(row['punch_out']) else get_now_ist()
-                shift = (end - start).total_seconds() / 3600
-                breaks = 0
-                if t_move:
-                    mdf = pd.DataFrame(t_move)
-                    u_b = mdf[(mdf['employee_name'] == row['employee_name']) & (mdf['reason'].str.contains('Lunch|Personal')) & (mdf['return_time'].notnull())]
-                    breaks = (pd.to_datetime(u_b['return_time']) - pd.to_datetime(u_b['exit_time'])).dt.total_seconds().sum() / 3600
-                final_s = max(0.1, shift - breaks)
-                latest_task, task_h = "No logs", 0
-                if t_work:
-                    wdf = pd.DataFrame(t_work)
-                    user_w = wdf[wdf['employee_name'] == row['employee_name']]
-                    if not user_w.empty:
-                        latest_task = user_w.iloc[0]['task_description']
-                        task_h = user_w['hours_spent'].sum()
-                eff = f"{int(min(100, (task_h/final_s)*100))}%"
-                return f"{final_s:.2f}h", f"{task_h:.2f}h", eff, latest_task
+        # Sub-navigation for Admin
+        admin_tabs = st.tabs(["📈 Operations Analytics", "🕒 Detailed Logs", "📬 Leave Approvals", "👥 Master Staff"])
 
-            tdf[['Shift', 'Logged', 'Efficiency', 'Current Work']] = tdf.apply(get_admin_metrics, axis=1, result_type='expand')
-            summary_view = tdf[['employee_name', 'Shift', 'Logged', 'Efficiency', 'Current Work']]
-            st.dataframe(summary_view, use_container_width=True, hide_index=True)
+        # --- ADMIN SUB-TAB 1: ANALYTICS ---
+        with admin_tabs[0]:
+            st.subheader("📊 Business Intelligence Summary")
             
-            # --- EXPORT BUTTON ---
-            st.download_button("💾 Export Summary (CSV)", data=summary_view.to_csv(index=False), file_name=f"BG_Summary_{today}.csv")
-        
-        st.divider()
-        st.subheader("📬 Leave Approvals")
-        df_all = get_leave_requests()
-        if not df_all.empty:
-            pending = df_all[df_all['status'] == 'Pending']
-            for _, row in pending.iterrows():
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([2, 2, 2])
-                    c1.write(f"**{row['employee_name']}** | {row['leave_type']}")
-                    c2.write(f"Reason: {row['reason']}")
-                    if c3.button("✅ Approve", key=f"ap_{row['id']}"):
-                        conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
-                    with c3.popover("❌ Reject"):
-                        reason = st.text_input("Reject Reason", key=f"txt_{row['id']}")
-                        if st.button("Confirm Reject", key=f"rej_{row['id']}"):
-                            if reason:
-                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": reason}).eq("id", row['id']).execute(); st.rerun()
+            # Fetch Data for Analytics
+            t_att = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
+            t_work = conn.table("work_logs").select("*").eq("work_date", today).execute().data
+            
+            if t_att and t_work:
+                df_att_an = pd.DataFrame(t_att)
+                df_work_an = pd.DataFrame(t_work)
+                
+                c1, c2 = st.columns(2)
+                
+                with c1:
+                    st.markdown("##### 🏗️ Work Distribution by Job")
+                    # Extract Job Codes from the formatted task description
+                    df_work_an['Job'] = df_work_an['task_description'].str.extract(r'\[(.*?)\]')
+                    job_dist = df_work_an.groupby('Job')['hours_spent'].sum().reset_index()
+                    fig_job = px.pie(job_dist, values='hours_spent', names='Job', hole=0.4, 
+                                    color_discrete_sequence=px.colors.qualitative.Pastel)
+                    st.plotly_chart(fig_job, use_container_width=True)
+
+                with c2:
+                    st.markdown("##### ⚡ Productivity per Staff (Logged Hours)")
+                    staff_perf = df_work_an.groupby('employee_name')['hours_spent'].sum().sort_values(ascending=False).reset_index()
+                    fig_perf = px.bar(staff_perf, x='employee_name', y='hours_spent', 
+                                     labels={'hours_spent': 'Hours Logged', 'employee_name': 'Staff'},
+                                     color='hours_spent', color_continuous_scale='Viridis')
+                    st.plotly_chart(fig_perf, use_container_width=True)
+
+            st.divider()
+            st.markdown("##### 🏢 Today's Attendance Overview")
+            # Reuse your logic for the summary view
+            if t_att:
+                tdf = pd.DataFrame(t_att)
+                def get_summary(row):
+                    start = pd.to_datetime(row['punch_in'])
+                    end = pd.to_datetime(row['punch_out']) if pd.notnull(row['punch_out']) else get_now_ist()
+                    shift = (end - start).total_seconds() / 3600
+                    task_h = pd.DataFrame(t_work)[pd.DataFrame(t_work)['employee_name'] == row['employee_name']]['hours_spent'].sum() if t_work else 0
+                    eff = int(min(100, (task_h/shift)*100)) if shift > 0 else 0
+                    return f"{shift:.2f}h", f"{task_h:.2f}h", f"{eff}%"
+
+                tdf[['Shift', 'Logged', 'Efficiency']] = tdf.apply(get_summary, axis=1, result_type='expand')
+                st.dataframe(tdf[['employee_name', 'Shift', 'Logged', 'Efficiency']], use_container_width=True, hide_index=True)
+
+        # --- ADMIN SUB-TAB 2: DETAILED LOGS ---
+        with admin_tabs[1]:
+            st.subheader("📜 Complete Activity Stream")
+            log_type = st.radio("Select Log Type", ["Work Logs", "Movement History", "Attendance Timeline"], horizontal=True)
+            
+            if log_type == "Work Logs":
+                res = conn.table("work_logs").select("*").eq("work_date", today).order("created_at", desc=True).execute().data
+                if res:
+                    st.dataframe(pd.DataFrame(res), use_container_width=True)
+            
+            elif log_type == "Movement History":
+                res = conn.table("movement_logs").select("*").gte("exit_time", f"{today}T00:00:00").execute().data
+                if res:
+                    st.dataframe(pd.DataFrame(res), use_container_width=True)
+            
+            elif log_type == "Attendance Timeline":
+                res = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
+                if res:
+                    st.dataframe(pd.DataFrame(res), use_container_width=True)
+
+        # --- ADMIN SUB-TAB 3: LEAVE APPROVALS ---
+        with admin_tabs[2]:
+            st.subheader("📬 Pending Leave Requests")
+            df_all = get_leave_requests()
+            if not df_all.empty:
+                pending = df_all[df_all['status'] == 'Pending']
+                if pending.empty:
+                    st.success("No pending leave requests!")
+                for _, row in pending.iterrows():
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([2, 2, 2])
+                        c1.write(f"**{row['employee_name']}** | {row['leave_type']}")
+                        c1.caption(f"Dates: {row['start_date']} to {row['end_date']}")
+                        c2.write(f"**Reason:** {row['reason']}")
+                        
+                        btn_col1, btn_col2 = c3.columns(2)
+                        if btn_col1.button("✅ Approve", key=f"ap_{row['id']}", use_container_width=True):
+                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute()
+                            st.rerun()
+                        with btn_col2.popover("❌ Reject", use_container_width=True):
+                            rej_reason = st.text_input("Reject Reason", key=f"txt_{row['id']}")
+                            if st.button("Confirm Reject", key=f"rej_{row['id']}"):
+                                if rej_reason:
+                                    conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rej_reason}).eq("id", row['id']).execute()
+                                    st.rerun()
+
+        # --- ADMIN SUB-TAB 4: MASTER STAFF ---
+        with admin_tabs[3]:
+            st.subheader("👥 Employee Master Management")
+            # Option to add new staff member
+            with st.expander("➕ Add New Staff Member"):
+                new_staff = st.text_input("Full Name")
+                if st.button("Add to System"):
+                    if new_staff:
+                        conn.table("master_staff").insert({"name": new_staff.upper()}).execute()
+                        st.success("Staff member added!")
+                        st.rerun()
+            
+            # List current staff
+            staff_data = conn.table("master_staff").select("*").execute().data
+            if staff_data:
+                st.dataframe(pd.DataFrame(staff_data), use_container_width=True, hide_index=True)
