@@ -7,9 +7,6 @@ import plotly.express as px
 
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
-OFFICE_IN = time(9, 0)
-GRACE_IN = time(9, 15)
-OFFICE_OUT = time(17, 30)
 LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:30"]
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
@@ -23,6 +20,15 @@ def to_ist(series):
     if dt.dt.tz is None:
         dt = dt.dt.tz_localize('UTC')
     return dt.dt.tz_convert(IST)
+
+def format_timestamp(ts):
+    """Converts raw DB timestamp to B&G Standard: DD-MM-YYYY HH:MM AM/PM"""
+    if not ts: return "-"
+    try:
+        dt = pd.to_datetime(ts)
+        if dt.tzinfo is None: dt = pytz.utc.localize(dt)
+        return dt.astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
+    except: return str(ts)
 
 def get_now_ist():
     return datetime.now(IST)
@@ -46,25 +52,12 @@ def get_job_codes():
         res = conn.table("anchor_projects").select("job_no").eq("status", "Won").execute()
         jobs = [j['job_no'] for j in res.data if j.get('job_no')] if res.data else []
         return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"] + sorted(list(set(jobs)))
-    except:
-        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
-
-def is_log_due(employee_name):
-    if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
-        return None
-    now_t = get_now_ist().strftime("%H:%M")
-    past_slots = [s for s in LOG_SLOTS if s <= now_t]
-    if not past_slots: return None
-    latest_slot = past_slots[-1]
-    today = str(date.today())
-    res = conn.table("work_logs").select("*").eq("employee_name", employee_name).eq("work_date", today).order("created_at", desc=True).limit(1).execute().data
-    if not res: return latest_slot
-    last_log_t = pd.to_datetime(res[0]['created_at']).tz_convert(IST).strftime("%H:%M")
-    return latest_slot if last_log_t < latest_slot else None
+    except: return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
 
 # --- 4. NAVIGATION ---
 tabs = st.tabs(["🕒 Attendance & Productivity", "📝 Leave Application", "📊 My Balance", "🔐 HR Admin Panel"])
 
+# [TAB 1, 2, 3 Logic remains same as your snippet - ensures continuity]
 # --- TAB 1: ATTENDANCE & WORK LOGS ---
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
@@ -263,19 +256,81 @@ with tabs[3]:
                                     conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rej_reason}).eq("id", row['id']).execute()
                                     st.rerun()
 
-        # --- ADMIN SUB-TAB 4: MASTER STAFF ---
-        with admin_tabs[3]:
-            st.subheader("👥 Employee Master Management")
-            # Option to add new staff member
-            with st.expander("➕ Add New Staff Member"):
-                new_staff = st.text_input("Full Name")
-                if st.button("Add to System"):
-                    if new_staff:
-                        conn.table("master_staff").insert({"name": new_staff.upper()}).execute()
-                        st.success("Staff member added!")
-                        st.rerun()
+        # --- TAB 4: HR ADMIN PANEL (UPGRADED) ---
+with tabs[3]:
+    admin_pass = st.text_input("Admin Password", type="password")
+    if admin_pass == "bgadmin":
+        today = str(date.today())
+        admin_tabs = st.tabs(["📈 Operations Analytics", "🕒 Detailed Logs", "📬 Leave Approvals", "👥 Master Staff"])
+
+        # --- ADMIN SUB-TAB 1: ANALYTICS ---
+        with admin_tabs[0]:
+            st.subheader("📊 Business Intelligence Summary")
             
-            # List current staff
-            staff_data = conn.table("master_staff").select("*").execute().data
-            if staff_data:
-                st.dataframe(pd.DataFrame(staff_data), use_container_width=True, hide_index=True)
+            # Fetch Current Data
+            t_att = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
+            t_work = conn.table("work_logs").select("*").eq("work_date", today).execute().data
+            
+            if t_att and t_work:
+                df_att_an = pd.DataFrame(t_att)
+                df_work_an = pd.DataFrame(t_work)
+                
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("##### 🏗️ Work Distribution by Job")
+                    df_work_an['Job'] = df_work_an['task_description'].str.extract(r'\[(.*?)\]')
+                    df_work_an['Job'] = df_work_an['Job'].fillna("Other")
+                    job_dist = df_work_an.groupby('Job')['hours_spent'].sum().reset_index()
+                    fig_job = px.pie(job_dist, values='hours_spent', names='Job', hole=0.4, color_discrete_sequence=px.colors.qualitative.Set3)
+                    st.plotly_chart(fig_job, use_container_width=True)
+
+                with c2:
+                    st.markdown("##### ⚡ Output per Staff Member")
+                    staff_perf = df_work_an.groupby('employee_name')['hours_spent'].sum().reset_index()
+                    fig_perf = px.bar(staff_perf, x='employee_name', y='hours_spent', color='hours_spent', labels={'hours_spent':'Logged Hrs'})
+                    st.plotly_chart(fig_perf, use_container_width=True)
+
+            st.divider()
+            st.markdown("##### 🏢 Today's Performance Snapshot")
+            if t_att:
+                tdf = pd.DataFrame(t_att)
+                def get_summary(row):
+                    start = pd.to_datetime(row['punch_in'])
+                    end = pd.to_datetime(row['punch_out']) if pd.notnull(row['punch_out']) else get_now_ist()
+                    shift = (end.replace(tzinfo=IST if end.tzinfo is None else end.tzinfo) - start.replace(tzinfo=IST if start.tzinfo is None else start.tzinfo)).total_seconds() / 3600
+                    task_h = pd.DataFrame(t_work)[pd.DataFrame(t_work)['employee_name'] == row['employee_name']]['hours_spent'].sum() if t_work else 0
+                    eff = int(min(100, (task_h/shift)*100)) if shift > 0.1 else 0
+                    return f"{shift:.2f}h", f"{task_h:.2f}h", f"{eff}%"
+
+                tdf[['Shift Dur.', 'Logged Hrs', 'Efficiency']] = tdf.apply(get_summary, axis=1, result_type='expand')
+                st.dataframe(tdf[['employee_name', 'Shift Dur.', 'Logged Hrs', 'Efficiency']], use_container_width=True, hide_index=True)
+
+        # --- ADMIN SUB-TAB 2: DETAILED LOGS (FORMATTED TIME) ---
+        with admin_tabs[1]:
+            st.subheader("📜 Complete Activity Stream")
+            log_type = st.radio("Select log type to view:", ["Work Logs", "Movement History", "Attendance"], horizontal=True)
+            
+            if log_type == "Work Logs":
+                res = conn.table("work_logs").select("*").eq("work_date", today).order("created_at", desc=True).execute().data
+                if res:
+                    df_w = pd.DataFrame(res)
+                    df_w['Time Recorded'] = df_w['created_at'].apply(format_timestamp)
+                    st.dataframe(df_w[['Time Recorded', 'employee_name', 'task_description', 'hours_spent']], use_container_width=True, hide_index=True)
+            
+            elif log_type == "Movement History":
+                res = conn.table("movement_logs").select("*").gte("exit_time", f"{today}T00:00:00").execute().data
+                if res:
+                    df_m = pd.DataFrame(res)
+                    df_m['Out Time'] = df_m['exit_time'].apply(format_timestamp)
+                    df_m['Return Time'] = df_m['return_time'].apply(format_timestamp)
+                    st.dataframe(df_m[['employee_name', 'destination', 'reason', 'Out Time', 'Return Time']], use_container_width=True, hide_index=True)
+            
+            elif log_type == "Attendance":
+                res = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
+                if res:
+                    df_a = pd.DataFrame(res)
+                    df_a['Punch In'] = df_a['punch_in'].apply(format_timestamp)
+                    df_a['Punch Out'] = df_a['punch_out'].apply(format_timestamp)
+                    st.dataframe(df_a[['employee_name', 'work_date', 'Punch In', 'Punch Out']], use_container_width=True, hide_index=True)
+
+       
