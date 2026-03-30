@@ -73,7 +73,7 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # PERSONAL SUMMARY (Matches 8hrs punch exactly)
+    # PERSONAL SUMMARY (Fixed logic for exact duration)
     st.markdown("### 📊 Your Today's Status")
     p_att = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     p_work = conn.table("work_logs").select("hours_spent").eq("employee_name", att_user).eq("work_date", today).execute().data
@@ -167,18 +167,18 @@ with tabs[2]:
                 if r['status'] == "Pending" and c3.button("Withdraw", key=f"wd_{r['id']}"):
                     conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.cache_data.clear(); st.rerun()
 
-# --- TAB 4: HR ADMIN PANEL (MODIFIED: ONLY 2 TABS) ---
+# --- TAB 4: HR ADMIN PANEL (CLEANED - ONLY 2 TABS) ---
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
         today_str = str(date.today())
-        # REMOVED Operational Analytics and Master Staff
+        # Operational Analytics and Master Staff tabs are GONE.
         admin_tabs = st.tabs(["🕒 Detailed Logs", "📬 Leave Approvals"])
 
-        # TAB 1: DETAILED LOGS (WITH SEARCH FILTER)
+        # TAB 1: DETAILED LOGS (WITH STAFF FILTER)
         with admin_tabs[0]:
             st.subheader("📜 Filtered Activity Stream")
-            search_name = st.selectbox("🔍 Filter by Staff Name", ["All Staff"] + get_staff_list())
+            search_name = st.selectbox("🔍 Filter Results by Staff Name", ["All Staff"] + get_staff_list())
             log_type = st.radio("Select Category", ["Work Logs", "Movement History", "Attendance Timeline"], horizontal=True)
             
             if log_type == "Work Logs":
