@@ -92,26 +92,62 @@ def generate_pdf(logs):
         pdf.cell(30, 8, " Progress", 1, 0, 'C', True) 
         pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
         
-        pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
+      pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
+        
         for label, s_key, n_key in MILESTONE_MAP:
             pk = f"{s_key}_prog"
             m_p = int(log.get(pk, 0) or 0)
-            pdf.cell(50, 10, f" {label}", 1)
-            pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
-            curr_x, curr_y = pdf.get_x(), pdf.get_y()
-            pdf.cell(30, 10, "", 1, 0) 
-            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
+            remark_text = f" {str(log.get(n_key,'-'))}"
+            
+            # --- START MULTI-LINE LOGIC ---
+            # 1. Store starting position
+            curr_x = pdf.get_x()
+            curr_y = pdf.get_y()
+            
+            # 2. Calculate height needed for the remarks (Width = 80)
+            # We temporarily calculate the height multi_cell would take
+            # Default row height is 10, but if text wraps it might be more
+            line_height = 5 
+            # This logic calculates how many lines are needed and sets height accordingly
+            # We use a minimum height of 10 to keep the table consistent
+            nb_lines = len(pdf.multi_cell(80, line_height, remark_text, split_only=True))
+            row_height = max(10, nb_lines * line_height)
+
+            # 3. Draw Columns 1, 2, and 3 using the calculated row_height
+            pdf.set_xy(curr_x, curr_y)
+            pdf.cell(50, row_height, f" {label}", 1)
+            pdf.cell(30, row_height, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
+            
+            # Column 3 (Progress Bar Box)
+            prog_x = pdf.get_x()
+            pdf.cell(30, row_height, "", 1, 0) 
+            # Center the progress bar vertically within the dynamic row height
+            bar_offset_y = (row_height / 2) - 1 
+            pdf.set_fill_color(240, 240, 240); pdf.rect(prog_x + 3, curr_y + bar_offset_y, 24, 2, 'F')
             if m_p > 0:
-                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (min(m_p, 100) / 100) * 24, 2, 'F')
-            pdf.set_xy(curr_x + 30, curr_y)
-            pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
+                pdf.set_fill_color(0, 153, 76); pdf.rect(prog_x + 3, curr_y + bar_offset_y, (min(m_p, 100) / 100) * 24, 2, 'F')
+            
+            # 4. Column 4: The Remarks (Multi-cell)
+            # This will wrap text automatically without crossing the table border
+            pdf.set_xy(prog_x + 30, curr_y)
+            pdf.multi_cell(80, (row_height/nb_lines) if nb_lines > 0 else row_height, remark_text, 1, 'L')
+            
+            # 5. Reset position to the left and bottom of the tallest column
+            pdf.set_xy(curr_x, curr_y + row_height)
+
+        # --- END MILSTONE TABLE ---
 
         pdf.ln(10) 
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, "Progress Documentation Photos:", 0, 1, "L")
         
+        # Check if photos would overflow the current page after a long table
+        if pdf.get_y() > 230:
+            pdf.add_page()
+            
         start_y = pdf.get_y() 
         img_x = 10
+      
         photo_count = 0
 
         for i in range(4):
