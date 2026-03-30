@@ -7,8 +7,8 @@ import plotly.express as px
 
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
-LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:30"]
+LATE_THRESHOLD = time(9, 15)
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -53,8 +53,7 @@ def get_job_codes():
         res = conn.table("anchor_projects").select("job_no").eq("status", "Won").execute()
         jobs = [j['job_no'] for j in res.data if j.get('job_no')] if res.data else []
         return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"] + sorted(list(set(jobs)))
-    except:
-        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
+    except: return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
 
 def is_log_due(employee_name):
     if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
@@ -78,24 +77,23 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # --- EMPLOYEE TODAY SUMMARY (NEW) ---
-    st.markdown("### 📊 Your Today's Summary")
-    emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
-    work_summ_res = conn.table("work_logs").select("hours_spent").eq("employee_name", att_user).eq("work_date", today).execute().data
+    # --- NEW: EMPLOYEE TODAY SUMMARY ---
+    st.markdown("### 📊 Your Today's Status")
+    p_att = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
+    p_work = conn.table("work_logs").select("hours_spent").eq("employee_name", att_user).eq("work_date", today).execute().data
     
-    c_sum1, c_sum2, c_sum3 = st.columns(3)
-    if emp_summ_res:
-        log_data = emp_summ_res[0]
-        start_t = pd.to_datetime(log_data['punch_in']).tz_convert(IST)
-        end_t = pd.to_datetime(log_data['punch_out']).tz_convert(IST) if log_data.get('punch_out') else get_now_ist()
-        dur = (end_t - start_t).total_seconds() / 3600
-        logged = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
+    sc1, sc2, sc3 = st.columns(3)
+    if p_att:
+        p_in = pd.to_datetime(p_att[0]['punch_in']).tz_convert(IST)
+        p_out = pd.to_datetime(p_att[0]['punch_out']).tz_convert(IST) if p_att[0].get('punch_out') else get_now_ist()
+        actual_shift = (p_out - p_in).total_seconds() / 3600
+        actual_logs = sum([float(w['hours_spent']) for w in p_work]) if p_work else 0.0
         
-        c_sum1.metric("Punch In", start_t.strftime('%I:%M %p'))
-        c_sum2.metric("Shift Duration", f"{dur:.2f} hrs")
-        c_sum3.metric("Logged Work", f"{logged:.2f} hrs", delta=f"{int((logged/dur)*100) if dur > 0.1 else 0}% Eff.")
+        sc1.metric("Punch In", p_in.strftime('%I:%M %p'))
+        sc2.metric("Shift Duration", f"{actual_shift:.2f} hrs")
+        sc3.metric("Logged Work", f"{actual_logs:.2f} hrs", delta=f"{int((actual_logs/actual_shift)*100) if actual_shift > 0.1 else 0}% Eff.")
     else:
-        st.info("No punch record found for today.")
+        st.info("Punch record not found for today.")
     st.divider()
 
     due_slot = is_log_due(att_user)
@@ -125,8 +123,8 @@ with tabs[0]:
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute(); st.rerun()
         else:
             log = att_data[0]
-            p_in = to_ist(pd.Series([log['punch_in']])).dt.time.iloc[0]
-            st.success(f"✅ In: {p_in.strftime('%I:%M %p')}")
+            p_in_time = to_ist(pd.Series([log['punch_in']])).dt.time.iloc[0]
+            st.success(f"✅ In: {p_in_time.strftime('%I:%M %p')}")
             if not log.get('punch_out') and st.button("🏁 PUNCH OUT", use_container_width=True):
                 conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat()}).eq("id", log['id']).execute(); st.rerun()
 
@@ -197,7 +195,7 @@ with tabs[3]:
         today_str = str(date.today())
         admin_tabs = st.tabs(["📈 Operations Analytics", "🕒 Detailed Logs", "📬 Leave Approvals"])
 
-        # --- ADMIN SUB-TAB 1: ANALYTICS (MODIFIED) ---
+        # --- ADMIN SUB-TAB 1: ANALYTICS (RE-DESIGNED) ---
         with admin_tabs[0]:
             st.subheader("🏢 Operational Performance Tracking")
             t_att = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
@@ -207,71 +205,72 @@ with tabs[3]:
                 df_att = pd.DataFrame(t_att)
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name', 'hours_spent'])
                 
-                # Late Comers
+                # 1. Late Comers (> 9:15 AM)
                 df_att['p_in_dt'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST)
                 late_df = df_att[df_att['p_in_dt'].dt.time > LATE_THRESHOLD]
                 
-                # Work Log Analysis
-                work_sums = df_work.groupby('employee_name')['hours_spent'].sum().reset_index() if not df_work.empty else pd.DataFrame(columns=['employee_name', 'hours_spent'])
-                low_work = work_sums[work_sums['hours_spent'] < 4.0]
-                high_work = work_sums[work_sums['hours_spent'] > 7.5]
+                # 2. Log Performance
+                log_sum = df_work.groupby('employee_name')['hours_spent'].sum().reset_index() if not df_work.empty else pd.DataFrame(columns=['employee_name', 'hours_spent'])
+                low_logs = log_sum[log_sum['hours_spent'] < 4.0]
+                high_logs = log_sum[log_sum['hours_spent'] > 7.5]
 
-                c1, c2, c3 = st.columns(3)
-                c1.error(f"⌛ Late Comers ({len(late_df)})")
-                if not late_df.empty: c1.dataframe(late_df[['employee_name', 'p_in_dt']].assign(Time=late_df['p_in_dt'].dt.strftime('%I:%M %p'))[['employee_name', 'Time']], hide_index=True)
+                ac1, ac2, ac3 = st.columns(3)
+                ac1.error(f"⌛ Late Comers ({len(late_df)})")
+                if not late_df.empty: ac1.dataframe(late_df[['employee_name', 'p_in_dt']].assign(Time=late_df['p_in_dt'].dt.strftime('%I:%M %p'))[['employee_name', 'Time']], hide_index=True)
                 
-                c2.warning(f"📉 Low Work Logs ({len(low_work)})")
-                if not low_work.empty: c2.dataframe(low_work, hide_index=True)
+                ac2.warning(f"📉 Low Work Logs (<4h)")
+                if not low_logs.empty: ac2.dataframe(low_logs, hide_index=True)
                 
-                c3.success(f"🚀 High Work Logs ({len(high_work)})")
-                if not high_work.empty: c3.dataframe(high_work, hide_index=True)
+                ac3.success(f"🚀 High Work Logs (>7.5h)")
+                if not high_logs.empty: ac3.dataframe(high_logs, hide_index=True)
 
             st.divider()
             st.markdown("##### 🏢 Today's Performance Snapshot")
             if t_att:
                 tdf = pd.DataFrame(t_att)
-                def get_summary(row):
-                    start = pd.to_datetime(row['punch_in']).tz_convert(IST).replace(tzinfo=None)
-                    end = (pd.to_datetime(row['punch_out']).tz_convert(IST) if pd.notnull(row['punch_out']) else datetime.now(IST).replace(tzinfo=None)).replace(tzinfo=None)
+                def get_summary_logic(row):
+                    start = pd.to_datetime(row['punch_in']).tz_convert(IST)
+                    end = (pd.to_datetime(row['punch_out']).tz_convert(IST) if pd.notnull(row['punch_out']) else get_now_ist())
+                    # Precise shift duration subtraction
                     shift = (end - start).total_seconds() / 3600
                     task_h = pd.DataFrame(t_work)[pd.DataFrame(t_work)['employee_name'] == row['employee_name']]['hours_spent'].sum() if t_work else 0
                     eff = int(min(100, (task_h/shift)*100)) if shift > 0.1 else 0
                     return f"{shift:.2f}h", f"{task_h:.2f}h", f"{eff}%"
 
-                tdf[['Shift Dur.', 'Logged Hrs', 'Efficiency']] = tdf.apply(get_summary, axis=1, result_type='expand')
+                tdf[['Shift Dur.', 'Logged Hrs', 'Efficiency']] = tdf.apply(get_summary_logic, axis=1, result_type='expand')
                 st.dataframe(tdf[['employee_name', 'Shift Dur.', 'Logged Hrs', 'Efficiency']], use_container_width=True, hide_index=True)
 
-        # --- ADMIN SUB-TAB 2: DETAILED LOGS (WITH FILTER) ---
+        # --- ADMIN SUB-TAB 2: DETAILED LOGS (WITH NAME FILTER) ---
         with admin_tabs[1]:
-            st.subheader("📜 Activity Stream")
-            search_name = st.selectbox("🔍 Filter by Name", ["All Staff"] + get_staff_list(), key="admin_filter")
+            st.subheader("📜 Complete Activity Stream")
+            search_name = st.selectbox("🔍 Filter Results by Staff Name", ["All Staff"] + get_staff_list(), key="admin_name_filter")
             log_type = st.radio("Select Category", ["Work Logs", "Movement History", "Attendance Timeline"], horizontal=True)
             
             if log_type == "Work Logs":
                 res = conn.table("work_logs").select("*").eq("work_date", today_str).order("created_at", desc=True).execute().data
                 if res:
-                    df = pd.DataFrame(res)
-                    if search_name != "All Staff": df = df[df['employee_name'] == search_name]
-                    df['Time Recorded'] = df['created_at'].apply(format_ts)
-                    st.dataframe(df[['Time Recorded', 'employee_name', 'task_description', 'hours_spent']], use_container_width=True, hide_index=True)
+                    df_w = pd.DataFrame(res)
+                    if search_name != "All Staff": df_w = df_w[df_w['employee_name'] == search_name]
+                    df_w['Time Recorded'] = df_w['created_at'].apply(format_ts)
+                    st.dataframe(df_w[['Time Recorded', 'employee_name', 'task_description', 'hours_spent']], use_container_width=True, hide_index=True)
             
             elif log_type == "Movement History":
                 res = conn.table("movement_logs").select("*").gte("exit_time", f"{today_str}T00:00:00").execute().data
                 if res:
-                    df = pd.DataFrame(res)
-                    if search_name != "All Staff": df = df[df['employee_name'] == search_name]
-                    df['Out Time'] = df['exit_time'].apply(format_ts)
-                    df['Return Time'] = df['return_time'].apply(format_ts)
-                    st.dataframe(df[['employee_name', 'destination', 'reason', 'Out Time', 'Return Time']], use_container_width=True, hide_index=True)
+                    df_m = pd.DataFrame(res)
+                    if search_name != "All Staff": df_m = df_m[df_m['employee_name'] == search_name]
+                    df_m['Out Time'] = df_m['exit_time'].apply(format_ts)
+                    df_m['Return Time'] = df_m['return_time'].apply(format_ts)
+                    st.dataframe(df_m[['employee_name', 'destination', 'reason', 'Out Time', 'Return Time']], use_container_width=True, hide_index=True)
             
             elif log_type == "Attendance Timeline":
                 res = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
                 if res:
-                    df = pd.DataFrame(res)
-                    if search_name != "All Staff": df = df[df['employee_name'] == search_name]
-                    df['Punch In'] = df['punch_in'].apply(format_ts)
-                    df['Punch Out'] = df['punch_out'].apply(format_ts)
-                    st.dataframe(df[['employee_name', 'work_date', 'Punch In', 'Punch Out']], use_container_width=True, hide_index=True)
+                    df_a = pd.DataFrame(res)
+                    if search_name != "All Staff": df_a = df_a[df_a['employee_name'] == search_name]
+                    df_a['Punch In'] = df_a['punch_in'].apply(format_ts)
+                    df_a['Punch Out'] = df_a['punch_out'].apply(format_ts)
+                    st.dataframe(df_a[['employee_name', 'work_date', 'Punch In', 'Punch Out']], use_container_width=True, hide_index=True)
 
         # --- ADMIN SUB-TAB 3: LEAVE APPROVALS ---
         with admin_tabs[2]:
