@@ -256,7 +256,17 @@ with tabs[3]:
                                     conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rej_reason}).eq("id", row['id']).execute()
                                     st.rerun()
 
-        # --- TAB 4: HR ADMIN PANEL (UPGRADED) ---
+       # --- 2. ADD THIS UTILITY AT THE TOP (Update section 2) ---
+def format_ts(ts):
+    """Utility to turn ISO timestamp into B&G Standard format"""
+    if not ts: return "-"
+    try:
+        dt = pd.to_datetime(ts)
+        if dt.tzinfo is None: dt = pytz.utc.localize(dt)
+        return dt.astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
+    except: return str(ts)
+
+# --- TAB 4: HR ADMIN PANEL (RE-STRUCTURED) ---
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
@@ -267,37 +277,34 @@ with tabs[3]:
         with admin_tabs[0]:
             st.subheader("📊 Business Intelligence Summary")
             
-            # Fetch Current Data
             t_att = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
             t_work = conn.table("work_logs").select("*").eq("work_date", today).execute().data
             
             if t_att and t_work:
-                df_att_an = pd.DataFrame(t_att)
                 df_work_an = pd.DataFrame(t_work)
-                
                 c1, c2 = st.columns(2)
+                
                 with c1:
                     st.markdown("##### 🏗️ Work Distribution by Job")
-                    df_work_an['Job'] = df_work_an['task_description'].str.extract(r'\[(.*?)\]')
-                    df_work_an['Job'] = df_work_an['Job'].fillna("Other")
+                    df_work_an['Job'] = df_work_an['task_description'].str.extract(r'\[(.*?)\]').fillna("GENERAL")
                     job_dist = df_work_an.groupby('Job')['hours_spent'].sum().reset_index()
-                    fig_job = px.pie(job_dist, values='hours_spent', names='Job', hole=0.4, color_discrete_sequence=px.colors.qualitative.Set3)
+                    fig_job = px.pie(job_dist, values='hours_spent', names='Job', hole=0.4)
                     st.plotly_chart(fig_job, use_container_width=True)
 
                 with c2:
                     st.markdown("##### ⚡ Output per Staff Member")
                     staff_perf = df_work_an.groupby('employee_name')['hours_spent'].sum().reset_index()
-                    fig_perf = px.bar(staff_perf, x='employee_name', y='hours_spent', color='hours_spent', labels={'hours_spent':'Logged Hrs'})
+                    fig_perf = px.bar(staff_perf, x='employee_name', y='hours_spent', color='hours_spent')
                     st.plotly_chart(fig_perf, use_container_width=True)
 
             st.divider()
-            st.markdown("##### 🏢 Today's Performance Snapshot")
+            st.markdown("##### 🏢 Performance Snapshot (Today)")
             if t_att:
                 tdf = pd.DataFrame(t_att)
                 def get_summary(row):
-                    start = pd.to_datetime(row['punch_in'])
-                    end = pd.to_datetime(row['punch_out']) if pd.notnull(row['punch_out']) else get_now_ist()
-                    shift = (end.replace(tzinfo=IST if end.tzinfo is None else end.tzinfo) - start.replace(tzinfo=IST if start.tzinfo is None else start.tzinfo)).total_seconds() / 3600
+                    start = pd.to_datetime(row['punch_in']).replace(tzinfo=None)
+                    end = (pd.to_datetime(row['punch_out']) if pd.notnull(row['punch_out']) else datetime.now()).replace(tzinfo=None)
+                    shift = (end - start).total_seconds() / 3600
                     task_h = pd.DataFrame(t_work)[pd.DataFrame(t_work)['employee_name'] == row['employee_name']]['hours_spent'].sum() if t_work else 0
                     eff = int(min(100, (task_h/shift)*100)) if shift > 0.1 else 0
                     return f"{shift:.2f}h", f"{task_h:.2f}h", f"{eff}%"
@@ -305,32 +312,60 @@ with tabs[3]:
                 tdf[['Shift Dur.', 'Logged Hrs', 'Efficiency']] = tdf.apply(get_summary, axis=1, result_type='expand')
                 st.dataframe(tdf[['employee_name', 'Shift Dur.', 'Logged Hrs', 'Efficiency']], use_container_width=True, hide_index=True)
 
-        # --- ADMIN SUB-TAB 2: DETAILED LOGS (FORMATTED TIME) ---
+        # --- ADMIN SUB-TAB 2: DETAILED LOGS (CLEAN TIME FORMAT) ---
         with admin_tabs[1]:
             st.subheader("📜 Complete Activity Stream")
-            log_type = st.radio("Select log type to view:", ["Work Logs", "Movement History", "Attendance"], horizontal=True)
+            log_type = st.radio("Select Category", ["Work Logs", "Movement History", "Attendance Timeline"], horizontal=True)
             
             if log_type == "Work Logs":
                 res = conn.table("work_logs").select("*").eq("work_date", today).order("created_at", desc=True).execute().data
                 if res:
                     df_w = pd.DataFrame(res)
-                    df_w['Time Recorded'] = df_w['created_at'].apply(format_timestamp)
+                    df_w['Time Recorded'] = df_w['created_at'].apply(format_ts)
                     st.dataframe(df_w[['Time Recorded', 'employee_name', 'task_description', 'hours_spent']], use_container_width=True, hide_index=True)
             
             elif log_type == "Movement History":
                 res = conn.table("movement_logs").select("*").gte("exit_time", f"{today}T00:00:00").execute().data
                 if res:
                     df_m = pd.DataFrame(res)
-                    df_m['Out Time'] = df_m['exit_time'].apply(format_timestamp)
-                    df_m['Return Time'] = df_m['return_time'].apply(format_timestamp)
+                    df_m['Out Time'] = df_m['exit_time'].apply(format_ts)
+                    df_m['Return Time'] = df_m['return_time'].apply(format_ts)
                     st.dataframe(df_m[['employee_name', 'destination', 'reason', 'Out Time', 'Return Time']], use_container_width=True, hide_index=True)
             
-            elif log_type == "Attendance":
+            elif log_type == "Attendance Timeline":
                 res = conn.table("attendance_logs").select("*").eq("work_date", today).execute().data
                 if res:
                     df_a = pd.DataFrame(res)
-                    df_a['Punch In'] = df_a['punch_in'].apply(format_timestamp)
-                    df_a['Punch Out'] = df_a['punch_out'].apply(format_timestamp)
+                    df_a['Punch In'] = df_a['punch_in'].apply(format_ts)
+                    df_a['Punch Out'] = df_a['punch_out'].apply(format_ts)
                     st.dataframe(df_a[['employee_name', 'work_date', 'Punch In', 'Punch Out']], use_container_width=True, hide_index=True)
 
+        # --- ADMIN SUB-TAB 3: LEAVE APPROVALS ---
+        with admin_tabs[2]:
+            st.subheader("📬 Pending Leave Requests")
+            df_all = get_leave_requests()
+            if not df_all.empty:
+                pending = df_all[df_all['status'] == 'Pending']
+                for _, row in pending.iterrows():
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([2, 2, 2])
+                        c1.write(f"**{row['employee_name']}** | {row['leave_type']}")
+                        c1.caption(f"Dates: {row['start_date']} to {row['end_date']}")
+                        c2.write(f"**Reason:** {row['reason']}")
+                        if c3.button("✅ Approve", key=f"ap_{row['id']}"):
+                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute()
+                            st.rerun()
+
+        # --- ADMIN SUB-TAB 4: MASTER STAFF ---
+        with admin_tabs[3]:
+            st.subheader("👥 Employee Master")
+            with st.expander("➕ Add New Employee"):
+                new_staff = st.text_input("Name")
+                if st.button("Add Staff") and new_staff:
+                    conn.table("master_staff").insert({"name": new_staff.upper()}).execute()
+                    st.success("Added!"); st.rerun()
+            
+            staff_data = conn.table("master_staff").select("*").execute().data
+            if staff_data:
+                st.dataframe(pd.DataFrame(staff_data), use_container_width=True, hide_index=True)
        
