@@ -172,23 +172,74 @@ with tabs[1]:
             conn.table("leave_requests").insert({"employee_name": emp_name_l, "leave_type": l_type, "start_date": str(s_date), "end_date": str(e_date), "reason": reason_l, "status": "Pending"}).execute()
             st.success("✅ Submitted."); st.cache_data.clear(); st.rerun()
 
-# --- TAB 3: MY BALANCE ---
+# --- TAB 3: MY BALANCE (REPLACED LOGIC) ---
 with tabs[2]:
-    st.subheader("Leave Balance & History")
+    st.subheader("📊 Your Leave Balance & Tracking")
+    
+    # 1. Define Quotas (Needed for calculation)
+    LEAVE_QUOTA = {
+        "Casual Leave": 12,
+        "Sick Leave": 10,
+        "Earned Leave": 15,
+        "Loss of Pay": 0 
+    }
+    
     df_leaves = get_leave_requests()
     user_sel_bal = st.selectbox("View Records for:", get_staff_list(), key="bal_user")
+    
     if not df_leaves.empty:
+        # Filter for selected user
         user_df = df_leaves[df_leaves['employee_name'] == user_sel_bal].copy()
-        for _, r in user_df.head(10).iterrows():
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-                c1.write(f"**{r['leave_type']}**")
-                c2.write(f"{r['start_date']} to {r['end_date']}")
-                color = "orange" if r['status'] == 'Pending' else "green" if r['status'] == 'Approved' else "red"
-                c3.markdown(f":{color}[{r['status']}]")
-                if r['status'] == "Pending" and c4.button("Withdraw", key=f"wd_{r['id']}"):
-                    conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.cache_data.clear(); st.rerun()
-                if r.get('reject_reason'): st.caption(f"Reason: {r['reject_reason']}")
+        
+        # Calculate Approved Leaves
+        approved_df = user_df[user_df['status'] == 'Approved'].copy()
+        
+        if not approved_df.empty:
+            # Calculate days for each approved request
+            approved_df['start_date'] = pd.to_datetime(approved_df['start_date'])
+            approved_df['end_date'] = pd.to_datetime(approved_df['end_date'])
+            approved_df['days_count'] = (approved_df['end_date'] - approved_df['start_date']).dt.days + 1
+            leaves_used = approved_df.groupby('leave_type')['days_count'].sum().to_dict()
+        else:
+            leaves_used = {}
+
+        # 2. Display Metrics Dashboard
+        m_cols = st.columns(len(LEAVE_QUOTA))
+        for i, (l_name, quota) in enumerate(LEAVE_QUOTA.items()):
+            used = leaves_used.get(l_name, 0)
+            remaining = quota - used
+            
+            if l_name == "Loss of Pay":
+                m_cols[i].metric(l_name, f"{int(used)} Days", help="Total unpaid leave taken")
+            else:
+                m_cols[i].metric(l_name, f"{int(remaining)} Left", f"Used: {int(used)}", delta_color="inverse")
+
+        st.divider()
+        
+        # 3. History Section
+        st.write("#### 📜 Recent Application History")
+        if user_df.empty:
+            st.info("No leave history found for this user.")
+        else:
+            for _, r in user_df.head(10).iterrows():
+                with st.container(border=True):
+                    c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
+                    c1.write(f"**{r['leave_type']}**")
+                    c2.write(f"📅 {r['start_date']} to {r['end_date']}")
+                    
+                    # Status Color Coding
+                    color = "orange" if r['status'] == 'Pending' else "green" if r['status'] == 'Approved' else "red"
+                    c3.markdown(f":{color}[{r['status']}]")
+                    
+                    # Withdrawal Button
+                    if r['status'] == "Pending":
+                        if c4.button("Withdraw", key=f"wd_{r['id']}", use_container_width=True):
+                            conn.table("leave_requests").delete().eq("id", r['id']).execute()
+                            st.cache_data.clear()
+                            st.rerun()
+                    
+                    if r.get('reject_reason'):
+                        st.caption(f"🚫 Reject Reason: {r['reject_reason']}")
 
 # --- TAB 4: HR ADMIN PANEL ---
 with tabs[3]:
