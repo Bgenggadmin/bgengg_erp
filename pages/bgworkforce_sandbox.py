@@ -60,8 +60,8 @@ def get_job_codes():
     try:
         res = conn.table("anchor_projects").select("job_no").eq("status", "Won").execute()
         jobs = [j['job_no'] for j in res.data if j.get('job_no')] if res.data else []
-        return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"] + sorted(list(set(jobs)))
-    except: return ["GENERAL/INTERNAL", "ACCOUNTS", "PURCHASE", "MAINTENANCE"]
+        return ["GENERAL", "ACCOUNTS", "PURCHASE", "PROD_PLAN","CLIENT_CALLS","ESTIMATIONS","QUOTATIONS","5S", "MAINTENANCE"] + sorted(list(set(jobs)))
+    except: return ["GENERAL"]
 
 def is_log_due(employee_name):
     if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
@@ -187,7 +187,7 @@ with tabs[0]:
         active_move = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         if not active_move:
             with st.form("move_form"):
-                reason = st.selectbox("Category", ["Site Delivery", "Vendor Visit", "Lunch", "Personal"])
+                reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Client Visit", "Inspection", "Vendor Visit", "Lunch", "Personal"])
                 dest = st.text_input("Destination")
                 if st.form_submit_button("📤 TIME OUT") and dest:
                     conn.table("movement_logs").insert({"employee_name": att_user, "reason": reason, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
