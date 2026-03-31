@@ -240,7 +240,7 @@ with tabs[3]:
                     st.download_button("📥 Download Leave Summary", data=convert_df(leave_summary), file_name="Staff_Leave_Position.csv")
                 else: st.info("No approved leaves yet.")
 
-        with admin_tabs[1]: # LOGS & EXPORT
+        with admin_tabs[2]: # LOGS & EXPORT
             l_type = st.radio("Category", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             if st.button("📥 Export CSV"):
                 tbl_map = {"Work Logs": "work_logs", "Movement": "movement_logs", "Attendance": "attendance_logs", "Plans": "work_plans"}
@@ -249,24 +249,18 @@ with tabs[3]:
                 exp = q.execute().data
                 if exp: st.download_button("Download", data=convert_df(pd.DataFrame(exp)), file_name=f"{l_type}.csv")
             
-            # --- FIXED TABLE LOGIC BELOW ---
-            # Map selection to correct DB columns for filtering
             if l_type == "Work Logs":
                 res = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
             elif l_type == "Movement":
-                # Movement uses 'exit_time' instead of 'work_date'
                 res = conn.table("movement_logs").select("*").gte("exit_time", f"{today_str}T00:00:00").execute().data
             elif l_type == "Plans":
                 res = conn.table("work_plans").select("*").eq("plan_date", today_str).execute().data
-            else: # Attendance
+            else: 
                 res = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
 
             if res:
                 df_v = pd.DataFrame(res)
-                if s_name != "All Staff": 
-                    df_v = df_v[df_v['employee_name'] == s_name]
-                
-                # Show the table
+                if s_name != "All Staff": df_v = df_v[df_v['employee_name'] == s_name]
                 st.write(f"### {l_type} for Today")
                 st.dataframe(df_v, hide_index=True, use_container_width=True)
             else:
