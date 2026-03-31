@@ -12,10 +12,7 @@ LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 
 LEAVE_QUOTA = {
-    "Casual Leave": 12,
-    "Sick Leave": 10,
-    "Earned Leave": 15,
-    "Loss of Pay": 0
+    "Casual Leave": 12
 }
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
