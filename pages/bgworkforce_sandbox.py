@@ -62,6 +62,7 @@ def get_job_codes():
     except: return ["GENERAL"]
 
 def is_log_due(employee_name):
+    # --- SNOOZE LOGIC CHECK ---
     if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
         return None
     now_t = get_now_ist().strftime("%H:%M")
@@ -114,35 +115,46 @@ with tabs[0]:
         log_data = emp_summ_res[0]
         start_t = pd.to_datetime(log_data['punch_in']).tz_convert(IST)
         
-        # PUNCH OUT LOGIC FOR DISPLAY
         punch_out_val = log_data.get('punch_out')
         if punch_out_val:
             end_t = pd.to_datetime(punch_out_val).tz_convert(IST)
-            punch_out_display = end_t.strftime('%I:%M %p')
+            p_out_disp = end_t.strftime('%I:%M %p')
         else:
             end_t = get_now_ist()
-            punch_out_display = "Active"
+            p_out_disp = "Active"
 
         dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
         logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
         
-        # Updated Metrics to include Punch Out
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Punch In", start_t.strftime('%I:%M %p'))
-        m2.metric("Punch Out", punch_out_display)
+        m2.metric("Punch Out", p_out_disp)
         m3.metric("Shift Duration", f"{dur:.2f} hrs")
         m4.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
-    
+        
+        sl, sr = st.columns(2)
+        with sl:
+            with st.expander("Today's Work Logs"):
+                for w in work_summ_res: st.caption(f"✅ {w['task_description']} ({w['hours_spent']}h)")
+        with sr:
+            move_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
+            with st.expander("Today's Movements"):
+                if move_res:
+                    for m in move_res: st.caption(f"🚶 {pd.to_datetime(m['exit_time']).tz_convert(IST).strftime('%I:%M %p')} | {m['destination']}")
+
     st.divider()
     due_slot = is_log_due(att_user)
     if due_slot:
         st.warning(f"🔔 MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
         with st.form("mandatory_log_form"):
             slot_time = st.selectbox("Slot", LOG_SLOTS, index=LOG_SLOTS.index(due_slot), format_func=get_ampm_label)
-            job_code = st.selectbox("Job No", get_job_codes())
+            job_code = st.selectbox("Job No", get_job_codes(), key="mand_job")
             task_desc = st.text_area("Detail")
-            if st.form_submit_button("✅ Submit"):
+            c_f1, c_f2 = st.columns(2)
+            if c_f1.form_submit_button("✅ Submit"):
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
+            if c_f2.form_submit_button("🕒 Snooze"):
+                st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
     ca, cb, cc = st.columns([1.5, 1.5, 2.5])
@@ -170,7 +182,7 @@ with tabs[0]:
         st.markdown("### 📝 Work log")
         with st.form("manual_work_log"):
             slot_t = st.selectbox("Slot", LOG_SLOTS, format_func=get_ampm_label)
-            job_c = st.selectbox("Job", get_job_codes())
+            job_c = st.selectbox("Job", get_job_codes(), key="man_log_job")
             task = st.text_area("Update")
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
@@ -179,7 +191,7 @@ with tabs[0]:
 with tabs[1]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
-        l_emp = st.selectbox("Employee Name", get_staff_list(), key="l_form_staff")
+        l_emp = st.selectbox("Employee Name", get_staff_list(), key="leave_staff")
         sd, ed = st.date_input("Start"), st.date_input("End")
         reason_l = st.text_area("Reason")
         if st.form_submit_button("Submit"):
@@ -208,23 +220,22 @@ with tabs[3]:
         elif export_mode == "Monthly": sr, er = date.today() - timedelta(days=30), date.today()
         else: sr, er = st.date_input("From"), st.date_input("To")
         
-        # FIXED: Correct Tab indices [0, 1, 2, 3]
-        admin_tabs = st.tabs(["📈 Operations Analytics", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
+        # CORRECTED INDICES [0, 1, 2, 3]
+        admin_tabs = st.tabs(["📈 Analytics", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
         with admin_tabs[0]: # ANALYTICS
-            st.subheader("🏢 Operational Performance Tracking")
             t_att = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
             t_work = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
             if t_att:
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent'])
                 work_sums = df_work.groupby('employee_name')['hours_spent'].sum().reset_index() if not df_work.empty else pd.DataFrame()
-                c1, c2, c3 = st.columns(3)
-                c1.info(f"Total Active: {len(t_att)}")
+                st.info(f"Total Active Today: {len(t_att)}")
                 if not work_sums.empty:
-                    c2.warning("Low Logs (<4h)")
-                    c2.dataframe(work_sums[work_sums['hours_spent'] < 4.0], hide_index=True)
-                    c3.success("High Logs (>7.5h)")
-                    c3.dataframe(work_sums[work_sums['hours_spent'] > 7.5], hide_index=True)
+                    c1, c2 = st.columns(2)
+                    c1.warning("Low Logs (<4h)")
+                    c1.dataframe(work_sums[work_sums['hours_spent'] < 4.0], hide_index=True)
+                    c2.success("High Logs (>7.5h)")
+                    c2.dataframe(work_sums[work_sums['hours_spent'] > 7.5], hide_index=True)
 
         with admin_tabs[1]: # STAFF LEAVE POSITION
             st.subheader("📊 Yearly Staff Leave Master Position")
@@ -235,15 +246,14 @@ with tabs[3]:
                     app_l['start_date'] = pd.to_datetime(app_l['start_date'])
                     app_l['end_date'] = pd.to_datetime(app_l['end_date'])
                     app_l['days'] = (app_l['end_date'] - app_l['start_date']).dt.days + 1
-                    leave_summary = app_l.groupby('employee_name')['days'].sum().reset_index()
-                    leave_summary.columns = ['Staff Name', 'Used Leaves']
-                    leave_summary['Quota'] = 12
-                    leave_summary['Balance'] = leave_summary['Quota'] - leave_summary['Used Leaves']
-                    st.dataframe(leave_summary, use_container_width=True, hide_index=True)
-                    st.download_button("📥 Download Leave Summary", data=convert_df(leave_summary), file_name="Staff_Leave_Position.csv")
+                    leave_sum = app_l.groupby('employee_name')['days'].sum().reset_index()
+                    leave_sum.columns = ['Staff Name', 'Used']
+                    leave_sum['Balance'] = 12 - leave_sum['Used']
+                    st.dataframe(leave_sum, use_container_width=True, hide_index=True)
+                    st.download_button("Download Leave Report", data=convert_df(leave_sum), file_name="Leave_Position.csv")
 
         with admin_tabs[2]: # DETAILED LOGS
-            l_type = st.radio("Category", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
+            l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             if st.button("📥 Export CSV"):
                 tbl_map = {"Work Logs": "work_logs", "Movement": "movement_logs", "Attendance": "attendance_logs", "Plans": "work_plans"}
                 q = conn.table(tbl_map[l_type]).select("*")
@@ -251,7 +261,7 @@ with tabs[3]:
                 exp = q.execute().data
                 if exp: st.download_button("Download", data=convert_df(pd.DataFrame(exp)), file_name=f"{l_type}.csv")
             
-            # Dynamic Table View
+            # Dynamic View Logic
             if l_type == "Work Logs": res = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
             elif l_type == "Movement": res = conn.table("movement_logs").select("*").gte("exit_time", f"{today_str}T00:00:00").execute().data
             elif l_type == "Plans": res = conn.table("work_plans").select("*").eq("plan_date", today_str).execute().data
