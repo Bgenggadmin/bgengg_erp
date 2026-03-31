@@ -58,7 +58,6 @@ def get_job_codes():
     try:
         res = conn.table("anchor_projects").select("job_no").eq("status", "Won").execute()
         jobs = [j['job_no'] for j in res.data if j.get('job_no')] if res.data else []
-        # YOUR MANUAL JOB CATEGORIES
         return ["GENERAL", "ACCOUNTS", "PURCHASE", "PROD_PLAN","CLIENT_CALLS","ESTIMATIONS","QUOTATIONS","5S", "MAINTENANCE"] + sorted(list(set(jobs)))
     except: return ["GENERAL"]
 
@@ -160,7 +159,6 @@ with tabs[0]:
         active_move = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         if not active_move:
             with st.form("move_form"):
-                # YOUR MANUAL MOVEMENT CATEGORIES
                 reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Client Visit", "Inspection", "Vendor Visit", "Lunch", "Personal"])
                 dest = st.text_input("Destination")
                 if st.form_submit_button("📤 TIME OUT") and dest:
@@ -177,7 +175,7 @@ with tabs[0]:
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- TAB 2 & 3: LEAVE & BALANCE (Kept same) ---
+# --- TAB 2 & 3: LEAVE & BALANCE ---
 with tabs[1]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
@@ -197,7 +195,7 @@ with tabs[2]:
         used = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
         st.metric("Casual Leave Balance", f"{int(12 - used)} Left", f"Used: {int(used)}")
 
-# --- TAB 4: HR ADMIN PANEL (RESTORED ANALYTICS & LEAVES) ---
+# --- TAB 4: HR ADMIN PANEL ---
 with tabs[3]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
@@ -210,23 +208,39 @@ with tabs[3]:
         elif export_mode == "Monthly": sr, er = date.today() - timedelta(days=30), date.today()
         else: sr, er = st.date_input("From"), st.date_input("To")
         
-        admin_tabs = st.tabs(["📈 Operations Analytics", "🕒 Detailed Logs", "📬 Leave Approvals"])
+        admin_tabs = st.tabs(["📈 Operations Analytics", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
-        with admin_tabs[0]: # RESTORED ANALYTICS
-            st.subheader("🏢 Operational Performance Tracking")
+        with admin_tabs[0]: # ANALYTICS
             t_att = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
             t_work = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
             if t_att:
-                df_att = pd.DataFrame(t_att); df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent'])
+                df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent'])
                 work_sums = df_work.groupby('employee_name')['hours_spent'].sum().reset_index()
                 c1, c2, c3 = st.columns(3)
-                c1.error("⌛ Late Comers")
+                c1.error("⌛ Active Today")
                 c2.warning("📉 Low Work Logs (<4h)")
                 c2.dataframe(work_sums[work_sums['hours_spent'] < 4.0], hide_index=True)
                 c3.success("🚀 High Work Logs (>7.5h)")
                 c3.dataframe(work_sums[work_sums['hours_spent'] > 7.5], hide_index=True)
 
-        with admin_tabs[1]: # LOGS & EXPORT
+        with admin_tabs[1]: # STAFF LEAVE POSITION
+            st.subheader("📊 Yearly Staff Leave Master Position")
+            all_l = get_leave_requests()
+            if not all_l.empty:
+                app_l = all_l[all_l['status'] == 'Approved'].copy()
+                if not app_l.empty:
+                    app_l['start_date'] = pd.to_datetime(app_l['start_date'])
+                    app_l['end_date'] = pd.to_datetime(app_l['end_date'])
+                    app_l['days'] = (app_l['end_date'] - app_l['start_date']).dt.days + 1
+                    leave_summary = app_l.groupby('employee_name')['days'].sum().reset_index()
+                    leave_summary.columns = ['Staff Name', 'Used Leaves']
+                    leave_summary['Quota'] = 12
+                    leave_summary['Balance'] = leave_summary['Quota'] - leave_summary['Used Leaves']
+                    st.dataframe(leave_summary, use_container_width=True, hide_index=True)
+                    st.download_button("📥 Download Leave Summary", data=convert_df(leave_summary), file_name="Staff_Leave_Position.csv")
+                else: st.info("No approved leaves yet.")
+
+        with admin_tabs[2]: # LOGS & EXPORT
             l_type = st.radio("Category", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             if st.button("📥 Export CSV"):
                 tbl_map = {"Work Logs": "work_logs", "Movement": "movement_logs", "Attendance": "attendance_logs", "Plans": "work_plans"}
@@ -241,7 +255,7 @@ with tabs[3]:
                 if s_name != "All Staff": df_v = df_v[df_v['employee_name'] == s_name]
                 st.dataframe(df_v, hide_index=True)
 
-        with admin_tabs[2]: # RESTORED LEAVE APPROVALS
+        with admin_tabs[3]: # LEAVE APPROVALS
             st.subheader("📬 Pending Leave Requests")
             df_all = get_leave_requests()
             if not df_all.empty:
