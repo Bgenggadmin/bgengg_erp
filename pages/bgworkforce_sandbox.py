@@ -10,7 +10,6 @@ IST = pytz.timezone('Asia/Kolkata')
 LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = ["10:00", "11:00", "12:00", "13:00", "14:30", "15:30", "16:30", "17:30"]
 
-# Yearly Leave Entitlements for Tab 3 logic
 LEAVE_QUOTA = {
     "Casual Leave": 12,
     "Sick Leave": 10,
@@ -31,7 +30,6 @@ def to_ist(series):
     return dt.dt.tz_convert(IST)
 
 def format_ts(ts):
-    """Converts raw DB timestamp to B&G Standard: DD-MM-YYYY HH:MM AM/PM"""
     if not ts: return "-"
     try:
         dt = pd.to_datetime(ts)
@@ -41,6 +39,10 @@ def format_ts(ts):
 
 def get_now_ist():
     return datetime.now(IST)
+
+# Helper for CSV Downloads
+def convert_df(df):
+    return df.to_csv(index=False).encode('utf-8')
 
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=5)
@@ -86,9 +88,7 @@ with tabs[0]:
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     today = str(date.today())
 
-    # --- EMPLOYEE TODAY SUMMARY (ENHANCED) ---
     st.markdown("### 📊 Your Today's Status")
-    
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
     move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
@@ -187,7 +187,7 @@ with tabs[1]:
             conn.table("leave_requests").insert({"employee_name": emp_name_l, "leave_type": l_type, "start_date": str(s_date), "end_date": str(e_date), "reason": reason_l, "status": "Pending"}).execute()
             st.success("✅ Submitted."); st.cache_data.clear(); st.rerun()
 
-# --- TAB 3: MY BALANCE (INTEGRATED LOGIC) ---
+# --- TAB 3: MY BALANCE ---
 with tabs[2]:
     st.subheader("📊 Your Leave Balance & Tracking")
     df_leaves = get_leave_requests()
@@ -224,6 +224,23 @@ with tabs[3]:
     if admin_pass == "bgadmin":
         today_str = str(date.today())
         admin_tabs = st.tabs(["📈 Operations Analytics", "🕒 Detailed Logs", "📬 Leave Approvals"])
+        
+        # Admin Global Filter
+        st.sidebar.header("Admin Export Settings")
+        s_name = st.sidebar.selectbox("Filter Staff Name", ["All Staff"] + get_staff_list(), key="adm_filt")
+        export_mode = st.sidebar.selectbox("Export Range", ["Weekly", "Monthly", "Custom Date"])
+        
+        if export_mode == "Weekly":
+            start_range = date.today() - timedelta(days=7)
+            end_range = date.today()
+        elif export_mode == "Monthly":
+            start_range = date.today() - timedelta(days=30)
+            end_range = date.today()
+        else:
+            c1, c2 = st.sidebar.columns(2)
+            start_range = c1.date_input("From", value=date.today() - timedelta(days=7))
+            end_range = c2.date_input("To", value=date.today())
+
         with admin_tabs[0]:
             t_att = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
             t_work = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
@@ -248,9 +265,28 @@ with tabs[3]:
                     return f"{shift:.2f}h", f"{task_h:.2f}h", f"{int(min(100, (task_h/shift)*100)) if shift > 0.1 else 0}%"
                 tdf[['Shift', 'Logged', 'Efficiency']] = tdf.apply(get_summary, axis=1, result_type='expand')
                 st.dataframe(tdf[['employee_name', 'Shift', 'Logged', 'Efficiency']], use_container_width=True, hide_index=True)
+
         with admin_tabs[1]:
-            s_name = st.selectbox("🔍 Filter by Name", ["All Staff"] + get_staff_list(), key="adm_filt")
+            st.subheader("📜 Detailed Activity Logs")
             l_type = st.radio("Category", ["Work Logs", "Movement History", "Attendance Timeline"], horizontal=True)
+            
+            # Export Utility Logic
+            if st.button(f"📥 Generate Export for {s_name} ({start_range} to {end_range})"):
+                query = conn.table("work_logs" if l_type=="Work Logs" else "movement_logs" if l_type=="Movement History" else "attendance_logs").select("*")
+                if s_name != "All Staff": query = query.eq("employee_name", s_name)
+                
+                # Dynamic date filtering
+                if l_type == "Work Logs" or l_type == "Attendance Timeline":
+                    query = query.gte("work_date", str(start_range)).lte("work_date", str(end_range))
+                else:
+                    query = query.gte("exit_time", f"{start_range}T00:00:00").lte("exit_time", f"{end_range}T23:59:59")
+                
+                export_data = query.execute().data
+                if export_data:
+                    df_exp = pd.DataFrame(export_data)
+                    st.download_button("Click to Download CSV", data=convert_df(df_exp), file_name=f"{l_type}_{s_name}.csv", mime="text/csv")
+                else: st.warning("No data found for selected range.")
+
             if l_type == "Work Logs":
                 res = conn.table("work_logs").select("*").eq("work_date", today_str).order("created_at", desc=True).execute().data
                 if res:
@@ -272,10 +308,13 @@ with tabs[3]:
                     if s_name != "All Staff": df = df[df['employee_name'] == s_name]
                     df['Punch In'] = df['punch_in'].apply(format_ts); df['Punch Out'] = df['punch_out'].apply(format_ts)
                     st.dataframe(df[['employee_name', 'work_date', 'Punch In', 'Punch Out']], use_container_width=True, hide_index=True)
+
         with admin_tabs[2]:
             df_all = get_leave_requests()
             if not df_all.empty:
                 pend = df_all[df_all['status'] == 'Pending']
+                # Export Leave logic
+                st.download_button("📥 Download All Leave History (Filtered)", data=convert_df(df_all if s_name=="All Staff" else df_all[df_all['employee_name']==s_name]), file_name="Leave_Report.csv")
                 for _, row in pend.iterrows():
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([2, 2, 2])
