@@ -88,6 +88,7 @@ with tabs[0]:
                 if p_task:
                     conn.table("work_plans").insert({"employee_name": att_user, "job_no": p_job, "planned_task": p_task, "planned_hours": p_hrs, "plan_date": today, "status": "Pending"}).execute()
                     st.rerun()
+
     with plan_col2:
         my_plans = conn.table("work_plans").select("*").eq("employee_name", att_user).or_(f"plan_date.eq.{today},status.eq.Pending").execute().data
         if my_plans:
@@ -111,6 +112,7 @@ with tabs[0]:
         end_t = pd.to_datetime(log_data['punch_out']).tz_convert(IST) if log_data.get('punch_out') else get_now_ist()
         dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
         logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
+        
         c1, c2, c3 = st.columns(3)
         c1.metric("Punch In", start_t.strftime('%I:%M %p'))
         c2.metric("Shift Duration", f"{dur:.2f} hrs")
@@ -151,24 +153,27 @@ with tabs[0]:
         else:
             if not emp_summ_res[0].get('punch_out'):
                 if st.button("🏁 PUNCH OUT", use_container_width=True):
-                    @st.dialog("Shift Rating & Feedback")
+                    @st.dialog("Daily Rating & Remarks")
                     def punch_out_dialog(log_id):
-                        st.write("Please rate your productivity for today's shift.")
-                        rating = st.feedback("stars")
-                        remarks = st.text_area("Key Achievements / Remarks")
-                        if st.button("Confirm Punch Out", type="primary"):
+                        st.write("Rate your productivity for this shift:")
+                        rating_val = st.feedback("stars")
+                        remarks_val = st.text_area("Key Accomplishments / Remarks")
+                        if st.form_submit_button("Confirm Punch Out") or st.button("Confirm Punch Out", type="primary"):
                             conn.table("attendance_logs").update({
                                 "punch_out": get_now_ist().isoformat(),
-                                "rating": rating,
-                                "punch_out_remarks": remarks
+                                "rating": rating_val,
+                                "punch_out_remarks": remarks_val
                             }).eq("id", log_id).execute()
-                            st.success("Shift ended successfully!")
                             st.rerun()
                     punch_out_dialog(emp_summ_res[0]['id'])
             else:
+                # --- CHECK LOGIC (Showing result of Punch Out) ---
                 st.success("Shift Completed")
-                if emp_summ_res[0].get('rating'):
-                    st.write(f"Rating: {'⭐' * int(emp_summ_res[0]['rating'])}")
+                current_rating = emp_summ_res[0].get('rating')
+                if current_rating:
+                    st.markdown(f"**Rating:** {'⭐' * int(current_rating)}")
+                if emp_summ_res[0].get('punch_out_remarks'):
+                    st.caption(f"**Remarks:** {emp_summ_res[0]['punch_out_remarks']}")
 
     with cb:
         st.markdown("### 🚶 Movement")
@@ -182,6 +187,7 @@ with tabs[0]:
         else:
             if st.button("📥 LOG TIME IN", use_container_width=True, type="primary"):
                 conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", active_move[0]['id']).execute(); st.rerun()
+
     with cc:
         st.markdown("### 📝 Work log")
         with st.form("manual_work_log"):
@@ -235,7 +241,6 @@ with tabs[2]:
                     if r['status'] == 'Pending':
                         if col_c.button("Withdraw", key=f"wd_{r['id']}"):
                             conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.rerun()
-        else: st.info("No leave records found.")
 
 # --- TAB 3: BALANCE ---
 with tabs[3]:
@@ -263,7 +268,7 @@ with tabs[4]:
         admin_tabs = st.tabs(["📈 Analytics & Efficiency", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
         with admin_tabs[0]: # ANALYTICS
-            st.subheader(f"🏢 Operational Data ({sr} to {er})")
+            st.subheader(f"🏢 Operational Data tracking ({sr} to {er})")
             t_att = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             if t_att:
@@ -276,20 +281,16 @@ with tabs[4]:
                     df_att = df_att[df_att['employee_name'] != FREELANCER_NAME]
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
 
-                st.markdown("#### ⌛ 1. Late Comers List")
-                df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
-                late = df_att[df_att['p_in_t'] > LATE_THRESHOLD][['work_date', 'employee_name', 'p_in_t']]
-                st.dataframe(late, use_container_width=True, hide_index=True)
-
-                st.markdown("#### 🚀 2. Efficiency Index")
+                st.markdown("#### 🚀 workforce Efficiency Index")
                 df_att['pi_dt'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST)
                 df_att['po_dt'] = pd.to_datetime(df_att['punch_out']).dt.tz_convert(IST).fillna(get_now_ist())
-                df_att['pres_hrs'] = (df_att['po_dt'] - df_att['pi_dt']).dt.total_seconds() / 3600
-                eff = df_att.groupby('employee_name')['pres_hrs'].sum().reset_index()
-                w_sum = df_work.groupby('employee_name')['hours_spent'].sum().reset_index()
-                eff = pd.merge(eff, w_sum, on='employee_name', how='left').fillna(0)
-                eff['Eff %'] = (eff['hours_spent'] / eff['pres_hrs'] * 100).round(1)
-                st.dataframe(eff, use_container_width=True, hide_index=True)
+                df_att['presence_hrs'] = (df_att['po_dt'] - df_att['pi_dt']).dt.total_seconds() / 3600
+                att_sum = df_att.groupby('employee_name')['presence_hrs'].sum().reset_index()
+                work_sum = df_work.groupby('employee_name')['hours_spent'].sum().reset_index()
+                eff = pd.merge(att_sum, work_sum, on='employee_name', how='left').fillna(0)
+                eff.columns = ['Employee', 'Total Presence (Hrs)', 'Total Work (Hrs)']
+                eff['Eff %'] = (eff['Total Work (Hrs)'] / eff['Total Presence (Hrs)'] * 100).round(1)
+                st.dataframe(eff.sort_values('Eff %', ascending=False), use_container_width=True, hide_index=True)
 
         with admin_tabs[3]: # LEAVE APPROVALS
             df_all = get_leave_requests()
