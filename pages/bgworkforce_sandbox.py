@@ -152,6 +152,8 @@ with tabs[0]:
                         st.rerun()
             else:
                 st.success("Shift Completed")
+                if emp_summ_res[0].get('work_satisfaction'):
+                    st.write(f"My Potential Rating: {'⭐' * int(emp_summ_res[0]['work_satisfaction'])}")
 
     with cb:
         st.markdown("### 🚶 Movement")
@@ -187,6 +189,7 @@ with tabs[1]:
         hist_res = conn.table(table_name).select("*").eq("employee_name", att_user).gte(date_col, str(start_d)).lte(date_col, str(end_d)).order(date_col, desc=True).execute().data
         if hist_res:
             df_hist = pd.DataFrame(hist_res)
+            # Ensure new columns are included in view
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"my_history.csv")
 
@@ -237,7 +240,7 @@ with tabs[4]:
                 late = df_a[(df_a['work_date'] == str(date.today())) & (df_a['p_in_t'] > LATE_THRESHOLD)]
                 st.dataframe(late[['employee_name', 'p_in_t']], use_container_width=True, hide_index=True)
                 
-                st.markdown("#### 🚀 Work Log Ranking (Efficiency)")
+                st.markdown("#### 🚀 Work Log Efficiency")
                 if t_work_raw.data:
                     df_w = pd.DataFrame(t_work_raw.data)
                     w_sum = df_w.groupby('employee_name')['hours_spent'].sum().reset_index().sort_values('hours_spent', ascending=False)
@@ -255,9 +258,10 @@ with tabs[4]:
                     st.dataframe(l_sum, use_container_width=True, hide_index=True)
 
         with admin_tabs[2]: # DETAILED LOGS (FIXED API ERROR)
-            l_type = st.radio("Select Category", ["Attendance", "Work Logs", "Movement"], horizontal=True)
+            l_type = st.radio("Select Log Type", ["Attendance", "Work Logs", "Movement"], horizontal=True)
             tbl_map = {"Attendance": "attendance_logs", "Work Logs": "work_logs", "Movement": "movement_logs"}
-            # Use work_date for logs, but exit_time for movement (Exit time includes date)
+            
+            # API FIX: standardized date filtering logic
             if l_type == "Movement":
                 res_det = conn.table("movement_logs").select("*").gte("exit_time", str(sr)).execute()
             else:
