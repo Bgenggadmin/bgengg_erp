@@ -47,7 +47,6 @@ def get_master_data():
 
 df_projects, df_logs, df_master_gates, df_job_plans, df_purchase = get_master_data()
 
-# Mappings
 all_staff = master.get('staff', [])
 all_workers = sorted(list(set(master.get('workers', []))))
 all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
@@ -57,13 +56,13 @@ tab_plan, tab_entry, tab_analytics, tab_master = st.tabs([
     "🏗️ Scheduling & Execution", "👷 Daily Entry", "📊 Analytics & Reports", "⚙️ Master Settings"
 ])
 
-# --- TAB 1: SCHEDULING & EXECUTION (RESTORED FULL LIVE LOGIC) ---
+# --- TAB 1: SCHEDULING & EXECUTION ---
 with tab_plan:
     st.subheader("📋 Production Control Center")
     target_job = st.selectbox("Select Job to Manage", ["-- Select --"] + all_jobs)
     
     if target_job != "-- Select --":
-        # A. RESTORED DELIVERY DASHBOARD
+        # A. DELIVERY DASHBOARD (LIVE LOGIC)
         proj_match = df_projects[df_projects['job_no'] == target_job]
         if not proj_match.empty:
             p_data = proj_match.iloc[0]
@@ -82,8 +81,6 @@ with tab_plan:
                 if final_target:
                     days_left = (final_target - date.today()).days
                     c4.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
-                else:
-                    c4.caption("⏳ No target date set")
 
                 if st.button("📝 Update Schedule", key="edit_delivery"):
                     @st.dialog("Update Commitment")
@@ -95,7 +92,7 @@ with tab_plan:
                             st.cache_data.clear(); st.rerun()
                     update_dates()
 
-        # B. RESTORED URGENT MATERIAL TRIGGER
+        # B. URGENT MATERIAL (LIVE LOGIC)
         with st.expander("🚨 Trigger Urgent Purchase Requisition", expanded=False):
             with st.form("urgent_purchase_form", clear_on_submit=True):
                 r1, r2, r3 = st.columns([2, 1, 1])
@@ -112,33 +109,28 @@ with tab_plan:
                         }).execute()
                         st.cache_data.clear(); st.success("Urgent request sent!"); st.rerun()
 
-        # C. RESTORED MATERIAL STATUS
-        with st.expander("🛒 Current Material Status", expanded=False):
-            job_purchase = df_purchase[df_purchase['job_no'] == target_job] if not df_purchase.empty else pd.DataFrame()
-            if not job_purchase.empty:
-                for _, p_item in job_purchase.iterrows():
-                    pc1, pc2, pc3 = st.columns([2, 2, 1])
-                    pc1.write(f"🔹 **{p_item['item_name']}**")
-                    pc2.caption(f"{p_item['specs']}")
-                    if p_item['status'] == "Received": pc3.success(p_item['status'])
-                    else: pc3.warning(p_item['status'])
-            else: st.info("No materials tracked.")
-
         st.divider()
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
         
-        # D. RESTORED CLONE LOGIC
-        if current_job_steps.empty:
-            st.warning("⚠️ No Plan Detected")
-            src_job = st.selectbox("Clone from Template:", ["-- Select --"] + all_jobs, key="clone_src")
-            if st.button("🚀 Clone Sequence") and src_job != "-- Select --":
-                source_steps = df_job_plans[df_job_plans['job_no'] == src_job]
-                if not source_steps.empty:
-                    new_steps = [{"job_no": target_job, "gate_name": s['gate_name'], "step_order": s['step_order'], "planned_start_date": date.today().isoformat(), "planned_end_date": (date.today()+timedelta(days=5)).isoformat(), "current_status": "Pending"} for _, s in source_steps.iterrows()]
-                    conn.table("job_planning").insert(new_steps).execute()
-                    st.cache_data.clear(); st.rerun()
+        # C. RESTORED GATE ADDING OPTION
+        with st.expander("➕ Add Single Gate to Plan", expanded=False):
+            with st.form("add_gate_form", clear_on_submit=True):
+                sc1, sc2, sc3 = st.columns([2, 2, 1])
+                # Fetch only Gate Names from master
+                gate_names_list = sorted(df_master_gates['gate_name'].unique().tolist())
+                ng_gate = sc1.selectbox("Process Gate", gate_names_list)
+                ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
+                ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
+                if st.form_submit_button("🚀 Add to Plan"):
+                    if len(ng_dates) == 2:
+                        conn.table("job_planning").insert({
+                            "job_no": target_job, "gate_name": ng_gate, "step_order": ng_order, 
+                            "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(), 
+                            "current_status": "Pending"
+                        }).execute()
+                        st.cache_data.clear(); st.rerun()
 
-        # E. RESTORED STEP MANAGEMENT & EXECUTION
+        # D. EXECUTION BUTTONS (LIVE LOGIC)
         if not current_job_steps.empty:
             st.subheader(f"🏁 Execution: {target_job}")
             for _, row in current_job_steps.sort_values('step_order').iterrows():
@@ -185,8 +177,9 @@ with tab_entry:
                 f1, f2, f3 = st.columns(3)
                 f_gate = f1.selectbox("Main Gate", active_gates['gate_name'].tolist())
                 
-                # Dynamic Sub-Task Splitting
+                # Fetching sub-tasks linked to this gate from Master
                 gate_rec = df_master_gates[df_master_gates['gate_name'] == f_gate].iloc[0]
+                # Splits "General, Tagging, Bending" into a list
                 sub_tasks = [s.strip() for s in str(gate_rec.get('sub_task', 'General')).split(",")]
                 
                 f_sub = f1.selectbox("Specific Sub-Task", sub_tasks)
@@ -205,7 +198,7 @@ with tab_entry:
                         }).execute()
                         st.cache_data.clear(); st.success("Logged!"); st.rerun()
 
-# --- TAB 3: ANALYTICS (RESTORED TABLES) ---
+# --- TAB 3: ANALYTICS (TABLES ONLY) ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     if not df_logs.empty:
@@ -220,7 +213,7 @@ with tab_analytics:
             wsum = df_logs.groupby('Worker').agg({'Hours':'sum'}).reset_index()
             st.dataframe(wsum.sort_values('Hours', ascending=False), hide_index=True, use_container_width=True)
 
-# --- TAB 4: MASTER SETTINGS (RESTORED APPEND LOGIC) ---
+# --- TAB 4: MASTER SETTINGS (APPEND SUB-TASK LOGIC) ---
 with tab_master:
     st.subheader("⚙️ Gate & Sub-Task Master")
     with st.form("append_subtask"):
