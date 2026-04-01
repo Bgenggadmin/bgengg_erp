@@ -211,10 +211,9 @@ with tabs[4]:
         admin_tabs = st.tabs(["📈 Analytics & Efficiency", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
         with admin_tabs[0]: # ANALYTICS
-            st.subheader(f"🏢 Operational Performance ({sr} to {er})")
+            st.subheader(f"🏢 Operational Data Table ({sr} to {er})")
             t_att = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
-            
             if t_att:
                 df_att = pd.DataFrame(t_att); df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent', 'task_description'])
                 if s_name == "All Staff":
@@ -265,18 +264,25 @@ with tabs[4]:
                 else: df_v = df_v[df_v['employee_name'] == s_name]
                 st.dataframe(df_v, hide_index=True, use_container_width=True)
 
-        with admin_tabs[3]: # LEAVE APPROVALS (REJECT RESTORED)
+        with admin_tabs[3]: # LEAVE APPROVALS (UPDATED WITH DETAILS)
             st.subheader("📬 Pending Leave Requests")
             df_all = get_leave_requests()
             if not df_all.empty:
                 pend = df_all[df_all['status'] == 'Pending']
                 for _, row in pend.iterrows():
                     with st.container(border=True):
-                        c1l, c2l, c3l = st.columns([2, 2, 2])
+                        # Show main details in columns
+                        c1l, c2l, c3l = st.columns([2, 3, 2])
                         c1l.write(f"**{row['employee_name']}**")
+                        c1l.caption(f"Type: {row['leave_type']}")
+                        
+                        c2l.write(f"📅 {row['start_date']} to {row['end_date']}")
+                        c2l.info(f"Reason: {row['reason']}")
+                        
+                        # Action Buttons
                         if c3l.button("✅ Approve", key=f"ap_{row['id']}"):
                             conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
                         with c3l.popover("❌ Reject"):
-                            rn = st.text_input("Reason", key=f"rn_{row['id']}")
+                            rn = st.text_input("Reject Reason", key=f"rn_{row['id']}")
                             if st.button("Confirm Reject", key=f"rb_{row['id']}"):
                                 conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.rerun()
