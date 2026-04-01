@@ -64,7 +64,7 @@ def is_log_due(employee_name):
 # --- 4. NAVIGATION ---
 tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Leave Application", "📊 My Balance", "🔐 HR Admin Panel"])
 
-# --- TAB 0: ATTENDANCE & WORK LOGS ---
+# --- TAB 0: STAFF INTERFACE ---
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
@@ -123,10 +123,10 @@ with tabs[0]:
             slot_time = st.selectbox("Slot", LOG_SLOTS, index=LOG_SLOTS.index(due_slot), format_func=get_ampm_label)
             job_code = st.selectbox("Job No", get_job_codes())
             task_desc = st.text_area("Detail")
-            c1_f, c2_f = st.columns(2)
-            if c1_f.form_submit_button("✅ Submit"):
+            cf1, cf2 = st.columns(2)
+            if cf1.form_submit_button("✅ Submit"):
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
-            if c2_f.form_submit_button("🕒 Snooze (10 Mins)"):
+            if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
@@ -216,7 +216,9 @@ with tabs[4]:
             t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             
             if t_att:
-                df_att = pd.DataFrame(t_att); df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent', 'task_description'])
+                df_att = pd.DataFrame(t_att)
+                df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent', 'task_description'])
+                
                 if s_name == "All Staff":
                     df_att = df_att[df_att['employee_name'] != FREELANCER_NAME]
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
@@ -224,20 +226,28 @@ with tabs[4]:
                     df_att = df_att[df_att['employee_name'] == s_name]
                     df_work = df_work[df_work['employee_name'] == s_name]
 
-                st.markdown("#### ⌛ Late Comers List")
+                # --- 1. LATE COMERS TABLE ---
+                st.markdown("#### ⌛ 1. Late Comers List")
                 df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
                 late = df_att[df_att['p_in_t'] > LATE_THRESHOLD][['work_date', 'employee_name', 'p_in_t']]
                 st.dataframe(late, use_container_width=True, hide_index=True)
 
-                st.markdown("#### 🚀 Workforce Efficiency Index")
-                df_att['pi'] = pd.to_datetime(df_att['punch_in']); df_att['po'] = pd.to_datetime(df_att['punch_out']).fillna(datetime.now())
-                df_att['hrs'] = (df_att['po'] - df_att['pi']).dt.total_seconds() / 3600
-                att_sum = df_att.groupby('employee_name')['hrs'].sum().reset_index()
+                # --- 2. EFFICIENCY TABLE (FIXED SUBTRACTION ERROR) ---
+                st.markdown("#### 🚀 2. Workforce Efficiency Index")
+                # Normalize timezones to prevent subtraction error
+                df_att['pi_dt'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST)
+                # Fill missing punch outs with current time in IST
+                df_att['po_dt'] = pd.to_datetime(df_att['punch_out']).dt.tz_convert(IST).fillna(get_now_ist())
+                
+                df_att['presence_hrs'] = (df_att['po_dt'] - df_att['pi_dt']).dt.total_seconds() / 3600
+                
+                att_sum = df_att.groupby('employee_name')['presence_hrs'].sum().reset_index()
                 work_sum = df_work.groupby('employee_name')['hours_spent'].sum().reset_index()
+                
                 eff = pd.merge(att_sum, work_sum, on='employee_name', how='left').fillna(0)
-                eff.columns = ['Employee', 'Presence (Hrs)', 'Work Logged (Hrs)']
-                eff['Eff %'] = (eff['Work Logged (Hrs)'] / eff['Presence (Hrs)'] * 100).round(1)
-                st.dataframe(eff.sort_values('Eff %', ascending=False), use_container_width=True, hide_index=True)
+                eff.columns = ['Employee', 'Total Presence (Hrs)', 'Total Work Logged (Hrs)']
+                eff['Efficiency %'] = (eff['Total Work Logged (Hrs)'] / eff['Total Presence (Hrs)'] * 100).round(1)
+                st.dataframe(eff.sort_values('Efficiency %', ascending=False), use_container_width=True, hide_index=True)
             else:
                 st.info("No records found for selected period.")
 
