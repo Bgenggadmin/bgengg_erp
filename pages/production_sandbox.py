@@ -116,7 +116,6 @@ with tab_plan:
         with st.expander("➕ Add Single Gate to Plan", expanded=False):
             with st.form("add_gate_form", clear_on_submit=True):
                 sc1, sc2, sc3 = st.columns([2, 2, 1])
-                # Fetch only Gate Names from master
                 gate_names_list = sorted(df_master_gates['gate_name'].unique().tolist())
                 ng_gate = sc1.selectbox("Process Gate", gate_names_list)
                 ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
@@ -179,7 +178,6 @@ with tab_entry:
                 
                 # Fetching sub-tasks linked to this gate from Master
                 gate_rec = df_master_gates[df_master_gates['gate_name'] == f_gate].iloc[0]
-                # Splits "General, Tagging, Bending" into a list
                 sub_tasks = [s.strip() for s in str(gate_rec.get('sub_task', 'General')).split(",")]
                 
                 f_sub = f1.selectbox("Specific Sub-Task", sub_tasks)
@@ -220,12 +218,12 @@ with tab_master:
         st.write("➕ Add Sub-Tasks to Existing Gate")
         target_g = st.selectbox("Select Gate", sorted(df_master_gates['gate_name'].unique().tolist()))
         current_data = df_master_gates[df_master_gates['gate_name'] == target_g].iloc[0]
-        st.caption(f"Existing: {current_data['sub_task']}")
+        st.caption(f"Existing Tasks: {current_data['sub_task']}")
         new_sub_input = st.text_input("Enter New Sub-Task")
         if st.form_submit_button("Append Sub-Task"):
             if new_sub_input:
                 existing_subs = str(current_data['sub_task'])
-                updated = new_sub_input if existing_subs == "General" else f"{existing_subs}, {new_sub_input}"
+                updated = new_sub_input if existing_subs == "General" or existing_subs == "None" else f"{existing_subs}, {new_sub_input}"
                 conn.table("production_gates").update({"sub_task": updated}).eq("gate_name", target_g).execute()
                 st.cache_data.clear(); st.success("Updated!"); st.rerun()
     st.divider()
