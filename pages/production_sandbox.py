@@ -3,6 +3,7 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date, timedelta
 import pytz
+import plotly.express as px
 
 # --- 1. SETUP & CONNECTION ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -51,7 +52,6 @@ df_projects, df_logs, df_master_gates, df_job_plans, df_purchase = get_master_da
 all_staff = master.get('staff', [])
 all_workers = sorted(list(set(master.get('workers', []))))
 all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
-# Displays as "Welding | Tagging" in dropdowns
 all_activities = [f"{g['gate_name']} | {g['sub_task']}" for g in master.get('gates_full', [])]
 
 # --- 4. NAVIGATION ---
@@ -95,7 +95,7 @@ with tab_plan:
                             st.cache_data.clear(); st.rerun()
                     update_dates()
 
-        # B. URGENT MATERIAL (PRESERVED)
+        # B. URGENT MATERIAL TRIGGER (PRESERVED)
         with st.expander("🚨 Trigger Urgent Purchase Requisition", expanded=False):
             with st.form("urgent_purchase_form", clear_on_submit=True):
                 r1, r2, r3 = st.columns([2, 1, 1])
@@ -138,7 +138,7 @@ with tab_plan:
                         conn.table("job_planning").insert({"job_no": target_job, "gate_name": gate_main, "step_order": ng_order, "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(), "current_status": "Pending"}).execute()
                         st.cache_data.clear(); st.rerun()
 
-# --- TAB 2: DAILY ENTRY (MULTI-WORKER INTEGRATED) ---
+# --- TAB 2: DAILY ENTRY (INTEGRATED MULTI-WORKER SELECTION) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
@@ -153,7 +153,10 @@ with tab_entry:
             with st.form("prod_form", clear_on_submit=True):
                 f1, f2, f3 = st.columns(3)
                 f_act = f1.selectbox("Gate", form_gates)
+                
+                # MULTI-WORKER SELECTION
                 f_wrk_list = f1.multiselect("Workers Involved", all_workers)
+                
                 f_hrs = f2.number_input("Hrs (Per Person)", min_value=0.0, step=0.5)
                 f_unit = f2.selectbox("Unit", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Joints"])
                 f_out = f3.number_input("Qty Produced", min_value=0.0, step=0.1)
@@ -211,7 +214,7 @@ with tab_analytics:
             wsum = df_logs.groupby('Worker').agg({'Hours':'sum', 'Job_Code':'nunique'}).reset_index()
             st.dataframe(wsum.sort_values('Hours', ascending=False), hide_index=True, use_container_width=True)
 
-# --- TAB 4: MASTER SETTINGS (SUB-TASK SUPPORT) ---
+# --- TAB 4: MASTER SETTINGS (SUB-TASK SUPPORTED) ---
 with tab_master:
     st.subheader("⚙️ Gate Master")
     with st.form("new_gate"):
@@ -220,7 +223,6 @@ with tab_master:
         ng_sub = mg2.text_input("Sub-Task (e.g., Pre-bending, Helper)")
         ng_order = mg3.number_input("Unique Step Order (e.g., 3.1)", value=float(len(df_master_gates)+1), step=0.1)
         if st.form_submit_button("Add to Master"):
-            # IMPORTANT: Using a unique ng_order avoids the Primary Key/Unique crash
             conn.table("production_gates").insert({"gate_name": ng_name, "sub_task": ng_sub, "step_order": ng_order}).execute()
             st.cache_data.clear(); st.rerun()
     if not df_master_gates.empty:
