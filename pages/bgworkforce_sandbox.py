@@ -12,7 +12,7 @@ LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
 
 # --- DEFINE FREELANCER HERE ---
-FREELANCER_NAME = "Freelancer Name" # Replace with actual name
+FREELANCER_NAME = "Freelancer" 
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -84,6 +84,14 @@ tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Lea
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
+    
+    # --- FREELANCER PASSWORD PROVISION ---
+    if att_user == FREELANCER_NAME:
+        f_key = st.text_input("Freelancer Access Key", type="password")
+        if f_key != "abhi2026":
+            st.warning("Please enter valid key to access Freelancer portal.")
+            st.stop()
+            
     today = str(date.today())
 
     st.markdown("### 🏗️ My Work Plan & Pending Tasks")
@@ -199,7 +207,7 @@ with tabs[1]:
             st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"{att_user}_{table_name}.csv")
         else: st.info(f"No records found.")
 
-# --- TAB 2 & 3: LEAVE & BALANCE ---
+# --- TAB 2 & 3: LEAVE ---
 with tabs[2]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
@@ -219,7 +227,7 @@ with tabs[3]:
         used = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
         st.metric("Casual Leave Balance", f"{int(12 - used)} Left", f"Used: {int(used)}")
 
-# --- TAB 4: HR ADMIN PANEL ---
+# --- TAB 4: HR ADMIN PANEL (SNOOZE REMOVED) ---
 with tabs[4]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
@@ -234,12 +242,11 @@ with tabs[4]:
         
         admin_tabs = st.tabs(["📈 Analytics", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
-        with admin_tabs[0]: # ANALYTICS (Filtered Freelancer)
+        with admin_tabs[0]: # ANALYTICS
             t_att = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
             t_work = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
             if t_att:
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent'])
-                # HIDE FREELANCER FROM GENERAL LIST UNLESS SELECTED
                 if s_name == "All Staff":
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
                 work_sums = df_work.groupby('employee_name')['hours_spent'].sum().reset_index() if not df_work.empty else pd.DataFrame()
@@ -251,11 +258,11 @@ with tabs[4]:
                     c2_a.success("High Logs (>7.5h)")
                     c2_a.dataframe(work_sums[work_sums['hours_spent'] > 7.5], hide_index=True)
 
-        with admin_tabs[1]: # STAFF LEAVE POSITION (Filtered Freelancer)
+        with admin_tabs[1]: # LEAVE POSITION
             st.subheader("📊 Yearly Staff Leave Master Position")
             all_l = get_leave_requests()
             if not all_l.empty:
-                all_l = all_l[all_l['employee_name'] != FREELANCER_NAME] # Hide Freelancer
+                all_l = all_l[all_l['employee_name'] != FREELANCER_NAME]
                 app_l = all_l[all_l['status'] == 'Approved'].copy()
                 if not app_l.empty:
                     app_l['s'], app_l['e'] = pd.to_datetime(app_l['start_date']), pd.to_datetime(app_l['end_date'])
@@ -265,7 +272,7 @@ with tabs[4]:
                     leave_sum['Balance'] = 12 - leave_sum['Used']
                     st.dataframe(leave_sum, use_container_width=True, hide_index=True)
 
-        with admin_tabs[2]: # DETAILED LOGS (Filtered Freelancer)
+        with admin_tabs[2]: # DETAILED LOGS
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             if st.button("📥 Export CSV"):
                 tbl_map = {"Work Logs": "work_logs", "Movement": "movement_logs", "Attendance": "attendance_logs", "Plans": "work_plans"}
@@ -274,7 +281,6 @@ with tabs[4]:
                 exp = q.execute().data
                 if exp: st.download_button("Download Now", data=convert_df(pd.DataFrame(exp)), file_name=f"{l_type}.csv")
             
-            # Map selection to correct filtering logic
             if l_type == "Work Logs": res = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
             elif l_type == "Movement": res = conn.table("movement_logs").select("*").gte("exit_time", f"{today_str}T00:00:00").execute().data
             elif l_type == "Plans": res = conn.table("work_plans").select("*").eq("plan_date", today_str).execute().data
@@ -282,7 +288,6 @@ with tabs[4]:
 
             if res:
                 df_v = pd.DataFrame(res)
-                # PRIVACY LOGIC: Filter out Freelancer from "All Staff" view
                 if s_name == "All Staff":
                     df_v = df_v[df_v['employee_name'] != FREELANCER_NAME]
                 elif s_name != "All Staff":
@@ -297,11 +302,7 @@ with tabs[4]:
                 pend = df_all[df_all['status'] == 'Pending']
                 for _, row in pend.iterrows():
                     with st.container(border=True):
-                        c1_l, c2_l, c3_l = st.columns([2, 2, 2])
-                        c1_l.write(f"**{row['employee_name']}**")
-                        if c3_l.button("✅ Approve", key=f"ap_{row['id']}"):
+                        c1l, c2l, c3l = st.columns([2, 2, 2])
+                        c1l.write(f"**{row['employee_name']}**")
+                        if c3l.button("✅ Approve", key=f"ap_{row['id']}"):
                             conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
-                        with c3_l.popover("❌ Reject"):
-                            rn = st.text_input("Reason", key=f"rn_{row['id']}")
-                            if st.button("Confirm", key=f"rb_{row['id']}"):
-                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.rerun()
