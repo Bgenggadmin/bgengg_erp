@@ -193,6 +193,7 @@ with tabs[1]:
     with h_col1:
         hist_type = st.radio("Select View", ["My Work Logs", "My Attendance History", "My Work Plans"], horizontal=True)
         hist_range = st.date_input("Select Date Range", [date.today() - timedelta(days=7), date.today()])
+
     if len(hist_range) == 2:
         start_d, end_d = hist_range
         table_name, date_col = ("work_logs", "work_date") if hist_type == "My Work Logs" else ("attendance_logs", "work_date") if hist_type == "My Attendance History" else ("work_plans", "plan_date")
@@ -240,28 +241,34 @@ with tabs[4]:
         
         admin_tabs = st.tabs(["📈 Analytics", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
-        with admin_tabs[0]: # FIXED ANALYTICS INDENTATION
+        with admin_tabs[0]: # --- ANALYTICS TAB ---
             st.subheader("🏢 Operational Performance Tracking")
             t_att = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
             t_work = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
+            
             if t_att:
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent'])
+                # Filter out Freelancer if "All Staff" is selected
                 if s_name == "All Staff":
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
+                
                 work_sums = df_work.groupby('employee_name')['hours_spent'].sum().reset_index() if not df_work.empty else pd.DataFrame()
                 st.info(f"Total Active Today: {len(t_att)}")
+                
                 if not work_sums.empty:
                     c1_a, c2_a = st.columns(2)
                     c1_a.warning("Low Logs (<4h)")
                     c1_a.dataframe(work_sums[work_sums['hours_spent'] < 4.0], hide_index=True)
                     c2_a.success("High Logs (>7.5h)")
                     c2_a.dataframe(work_sums[work_sums['hours_spent'] > 7.5], hide_index=True)
+            else:
+                st.info("No attendance records for today yet.")
 
-        with admin_tabs[1]: # FIXED LEAVE POSITION INDENTATION
+        with admin_tabs[1]: # --- LEAVE POSITION TAB ---
             st.subheader("📊 Yearly Staff Leave Master Position")
             all_l = get_leave_requests()
             if not all_l.empty:
-                all_l = all_l[all_l['employee_name'] != FREELANCER_NAME] 
+                all_l = all_l[all_l['employee_name'] != FREELANCER_NAME]
                 app_l = all_l[all_l['status'] == 'Approved'].copy()
                 if not app_l.empty:
                     app_l['s'], app_l['e'] = pd.to_datetime(app_l['start_date']), pd.to_datetime(app_l['end_date'])
@@ -271,7 +278,7 @@ with tabs[4]:
                     leave_sum['Balance'] = 12 - leave_sum['Used']
                     st.dataframe(leave_sum, use_container_width=True, hide_index=True)
 
-        with admin_tabs[2]: # FIXED DETAILED LOGS INDENTATION
+        with admin_tabs[2]: # --- DETAILED LOGS TAB ---
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             if st.button("📥 Export CSV"):
                 tbl_map = {"Work Logs": "work_logs", "Movement": "movement_logs", "Attendance": "attendance_logs", "Plans": "work_plans"}
@@ -284,6 +291,7 @@ with tabs[4]:
             elif l_type == "Movement": res = conn.table("movement_logs").select("*").gte("exit_time", f"{today_str}T00:00:00").execute().data
             elif l_type == "Plans": res = conn.table("work_plans").select("*").eq("plan_date", today_str).execute().data
             else: res = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
+
             if res:
                 df_v = pd.DataFrame(res)
                 if s_name == "All Staff":
@@ -293,14 +301,14 @@ with tabs[4]:
                 st.write(f"### {l_type} for Today")
                 st.dataframe(df_v, hide_index=True, use_container_width=True)
 
-        with admin_tabs[3]: # FIXED LEAVE APPROVALS INDENTATION
+        with admin_tabs[3]: # --- LEAVE APPROVALS TAB ---
             st.subheader("📬 Pending Leave Requests")
             df_all = get_leave_requests()
             if not df_all.empty:
                 pend = df_all[df_all['status'] == 'Pending']
                 for _, row in pend.iterrows():
                     with st.container(border=True):
-                        c1_l, c2_l, c3_l = st.columns([2, 2, 2])
-                        c1_l.write(f"**{row['employee_name']}**")
-                        if c3_l.button("✅ Approve", key=f"ap_{row['id']}"):
+                        c1l, c2l, c3l = st.columns([2, 2, 2])
+                        c1l.write(f"**{row['employee_name']}**")
+                        if c3l.button("✅ Approve", key=f"ap_{row['id']}"):
                             conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
