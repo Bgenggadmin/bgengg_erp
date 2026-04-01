@@ -105,7 +105,7 @@ with tabs[0]:
                     conn.table("work_plans").insert({"employee_name": att_user, "job_no": p_job, "planned_task": p_task, "planned_hours": p_hrs, "plan_date": today, "status": "Pending"}).execute()
                     st.rerun()
     with plan_col2:
-        my_plans = conn.table("work_plans").select("*").eq("employee_name", att_user).eq("plan_date", today).order("created_at").execute().data
+        my_plans = conn.table("work_plans").select("*").eq("employee_name", att_user).or_(f"plan_date.eq.{today},status.eq.Pending").execute().data
         if my_plans:
             for p in my_plans:
                 t_col, b_col = st.columns([4, 1.2])
@@ -230,41 +230,47 @@ with tabs[3]:
 with tabs[4]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
-        today_str = str(date.today())
         st.markdown("### ⚙️ Admin Controls")
         ac1, ac2 = st.columns(2)
         s_name = ac1.selectbox("Filter Staff", ["All Staff"] + get_staff_list(), key="adm_filt")
         export_mode = ac2.selectbox("Range", ["Weekly", "Monthly", "Custom Date"])
+        
+        # Calculate range dates based on selection
         if export_mode == "Weekly": sr, er = date.today() - timedelta(days=7), date.today()
         elif export_mode == "Monthly": sr, er = date.today() - timedelta(days=30), date.today()
         else: sr, er = st.date_input("From"), st.date_input("To")
         
         admin_tabs = st.tabs(["📈 Analytics", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
-        with admin_tabs[0]: # --- ANALYTICS TAB ---
-            st.subheader("🏢 Operational Performance Tracking")
-            t_att = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
-            t_work = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
+        with admin_tabs[0]: # --- ANALYTICS TAB (UPDATED FOR RANGE) ---
+            st.subheader(f"🏢 Performance Tracking ({sr} to {er})")
+            
+            # Use gte and lte to fetch data within the selected range
+            t_att = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
+            t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             
             if t_att:
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent'])
-                # Filter out Freelancer if "All Staff" is selected
+                # Filter out Freelancer from group totals
                 if s_name == "All Staff":
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
+                elif s_name != "All Staff":
+                    df_work = df_work[df_work['employee_name'] == s_name]
                 
                 work_sums = df_work.groupby('employee_name')['hours_spent'].sum().reset_index() if not df_work.empty else pd.DataFrame()
-                st.info(f"Total Active Today: {len(t_att)}")
+                st.info(f"Total Unique Punch-ins in period: {len(t_att)}")
                 
                 if not work_sums.empty:
                     c1_a, c2_a = st.columns(2)
-                    c1_a.warning("Low Logs (<4h)")
-                    c1_a.dataframe(work_sums[work_sums['hours_spent'] < 4.0], hide_index=True)
-                    c2_a.success("High Logs (>7.5h)")
-                    c2_a.dataframe(work_sums[work_sums['hours_spent'] > 7.5], hide_index=True)
+                    c1_a.warning("Hours Logged Summary")
+                    c1_a.dataframe(work_sums, hide_index=True)
+                    
+                    # Add a simple chart for quick overview
+                    c2_a.plotly_chart(px.bar(work_sums, x='employee_name', y='hours_spent', title="Productivity by Employee"), use_container_width=True)
             else:
-                st.info("No attendance records for today yet.")
+                st.info(f"No records found for the range {sr} to {er}.")
 
-        with admin_tabs[1]: # --- LEAVE POSITION TAB ---
+        with admin_tabs[1]: # --- LEAVE POSITION ---
             st.subheader("📊 Yearly Staff Leave Master Position")
             all_l = get_leave_requests()
             if not all_l.empty:
@@ -278,7 +284,7 @@ with tabs[4]:
                     leave_sum['Balance'] = 12 - leave_sum['Used']
                     st.dataframe(leave_sum, use_container_width=True, hide_index=True)
 
-        with admin_tabs[2]: # --- DETAILED LOGS TAB ---
+        with admin_tabs[2]: # --- DETAILED LOGS ---
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             if st.button("📥 Export CSV"):
                 tbl_map = {"Work Logs": "work_logs", "Movement": "movement_logs", "Attendance": "attendance_logs", "Plans": "work_plans"}
@@ -287,10 +293,11 @@ with tabs[4]:
                 exp = q.execute().data
                 if exp: st.download_button("Download Now", data=convert_df(pd.DataFrame(exp)), file_name=f"{l_type}.csv")
             
-            if l_type == "Work Logs": res = conn.table("work_logs").select("*").eq("work_date", today_str).execute().data
-            elif l_type == "Movement": res = conn.table("movement_logs").select("*").gte("exit_time", f"{today_str}T00:00:00").execute().data
-            elif l_type == "Plans": res = conn.table("work_plans").select("*").eq("plan_date", today_str).execute().data
-            else: res = conn.table("attendance_logs").select("*").eq("work_date", today_str).execute().data
+            # Map selection to correct filtering logic using the selected range
+            if l_type == "Work Logs": res = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
+            elif l_type == "Movement": res = conn.table("movement_logs").select("*").gte("exit_time", f"{sr}T00:00:00").lte("exit_time", f"{er}T23:59:59").execute().data
+            elif l_type == "Plans": res = conn.table("work_plans").select("*").gte("plan_date", str(sr)).lte("plan_date", str(er)).execute().data
+            else: res = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
 
             if res:
                 df_v = pd.DataFrame(res)
@@ -298,10 +305,9 @@ with tabs[4]:
                     df_v = df_v[df_v['employee_name'] != FREELANCER_NAME]
                 elif s_name != "All Staff":
                     df_v = df_v[df_v['employee_name'] == s_name]
-                st.write(f"### {l_type} for Today")
                 st.dataframe(df_v, hide_index=True, use_container_width=True)
 
-        with admin_tabs[3]: # --- LEAVE APPROVALS TAB ---
+        with admin_tabs[3]: # --- LEAVE APPROVALS ---
             st.subheader("📬 Pending Leave Requests")
             df_all = get_leave_requests()
             if not df_all.empty:
