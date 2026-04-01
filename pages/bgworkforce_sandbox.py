@@ -160,7 +160,7 @@ with tabs[0]:
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- TAB 1: STAFF DATA HISTORY ---
+# --- TAB 1: HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
     h_col1, h_col2 = st.columns([1, 2])
@@ -174,7 +174,7 @@ with tabs[1]:
         if hist_res:
             df_hist = pd.DataFrame(hist_res)
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
-            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
+            st.download_button(f"📥 Download CSV", data=convert_df(df_hist), file_name=f"history.csv")
 
 # --- TAB 2 & 3: LEAVE & BALANCE ---
 with tabs[2]:
@@ -216,9 +216,7 @@ with tabs[4]:
             t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             
             if t_att:
-                df_att = pd.DataFrame(t_att)
-                df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent', 'task_description'])
-                
+                df_att = pd.DataFrame(t_att); df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent', 'task_description'])
                 if s_name == "All Staff":
                     df_att = df_att[df_att['employee_name'] != FREELANCER_NAME]
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
@@ -226,30 +224,22 @@ with tabs[4]:
                     df_att = df_att[df_att['employee_name'] == s_name]
                     df_work = df_work[df_work['employee_name'] == s_name]
 
-                # --- 1. LATE COMERS TABLE ---
                 st.markdown("#### ⌛ 1. Late Comers List")
                 df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
                 late = df_att[df_att['p_in_t'] > LATE_THRESHOLD][['work_date', 'employee_name', 'p_in_t']]
                 st.dataframe(late, use_container_width=True, hide_index=True)
 
-                # --- 2. EFFICIENCY TABLE (FIXED SUBTRACTION ERROR) ---
                 st.markdown("#### 🚀 2. Workforce Efficiency Index")
-                # Normalize timezones to prevent subtraction error
                 df_att['pi_dt'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST)
-                # Fill missing punch outs with current time in IST
                 df_att['po_dt'] = pd.to_datetime(df_att['punch_out']).dt.tz_convert(IST).fillna(get_now_ist())
-                
                 df_att['presence_hrs'] = (df_att['po_dt'] - df_att['pi_dt']).dt.total_seconds() / 3600
-                
                 att_sum = df_att.groupby('employee_name')['presence_hrs'].sum().reset_index()
                 work_sum = df_work.groupby('employee_name')['hours_spent'].sum().reset_index()
-                
                 eff = pd.merge(att_sum, work_sum, on='employee_name', how='left').fillna(0)
                 eff.columns = ['Employee', 'Total Presence (Hrs)', 'Total Work Logged (Hrs)']
                 eff['Efficiency %'] = (eff['Total Work Logged (Hrs)'] / eff['Total Presence (Hrs)'] * 100).round(1)
                 st.dataframe(eff.sort_values('Efficiency %', ascending=False), use_container_width=True, hide_index=True)
-            else:
-                st.info("No records found for selected period.")
+            else: st.info("No records found.")
 
         with admin_tabs[1]: # LEAVE POSITION
             all_l = get_leave_requests()
@@ -275,7 +265,8 @@ with tabs[4]:
                 else: df_v = df_v[df_v['employee_name'] == s_name]
                 st.dataframe(df_v, hide_index=True, use_container_width=True)
 
-        with admin_tabs[3]: # APPROVALS
+        with admin_tabs[3]: # LEAVE APPROVALS (REJECT RESTORED)
+            st.subheader("📬 Pending Leave Requests")
             df_all = get_leave_requests()
             if not df_all.empty:
                 pend = df_all[df_all['status'] == 'Pending']
@@ -283,5 +274,13 @@ with tabs[4]:
                     with st.container(border=True):
                         c1l, c2l, c3l = st.columns([2, 2, 2])
                         c1l.write(f"**{row['employee_name']}**")
+                        # Approve Logic
                         if c3l.button("✅ Approve", key=f"ap_{row['id']}"):
-                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
+                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute()
+                            st.rerun()
+                        # Reject Logic with Reason
+                        with c3l.popover("❌ Reject"):
+                            rn = st.text_input("Reason", key=f"rn_{row['id']}")
+                            if st.button("Confirm Reject", key=f"rb_{row['id']}"):
+                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute()
+                                st.rerun()
