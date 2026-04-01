@@ -160,7 +160,7 @@ with tabs[0]:
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- TAB 1: HISTORY ---
+# --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
     h_col1, h_col2 = st.columns([1, 2])
@@ -174,7 +174,7 @@ with tabs[1]:
         if hist_res:
             df_hist = pd.DataFrame(hist_res)
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
-            st.download_button(f"📥 Download CSV", data=convert_df(df_hist), file_name=f"history.csv")
+            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
 # --- TAB 2 & 3: LEAVE & BALANCE ---
 with tabs[2]:
@@ -211,7 +211,7 @@ with tabs[4]:
         admin_tabs = st.tabs(["📈 Analytics & Efficiency", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
         with admin_tabs[0]: # ANALYTICS
-            st.subheader(f"🏢 Operational Data Table ({sr} to {er})")
+            st.subheader(f"🏢 Operational Performance ({sr} to {er})")
             t_att = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             
@@ -274,13 +274,9 @@ with tabs[4]:
                     with st.container(border=True):
                         c1l, c2l, c3l = st.columns([2, 2, 2])
                         c1l.write(f"**{row['employee_name']}**")
-                        # Approve Logic
                         if c3l.button("✅ Approve", key=f"ap_{row['id']}"):
-                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute()
-                            st.rerun()
-                        # Reject Logic with Reason
+                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
                         with c3l.popover("❌ Reject"):
                             rn = st.text_input("Reason", key=f"rn_{row['id']}")
                             if st.button("Confirm Reject", key=f"rb_{row['id']}"):
-                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute()
-                                st.rerun()
+                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.rerun()
