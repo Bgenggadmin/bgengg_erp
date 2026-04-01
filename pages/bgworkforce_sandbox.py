@@ -131,16 +131,6 @@ with tabs[0]:
         c2.metric("Shift Duration", f"{dur:.2f} hrs")
         c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
         
-        sl, sr = st.columns(2)
-        with sl:
-            with st.expander("Today's Work Logs"):
-                for w in work_summ_res: st.caption(f"✅ {w['task_description']} ({w['hours_spent']}h)")
-        with sr:
-            move_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
-            with st.expander("Today's Movements"):
-                if move_res:
-                    for m in move_res: st.caption(f"🚶 {pd.to_datetime(m['exit_time']).tz_convert(IST).strftime('%I:%M %p')} | {m['destination']}")
-
     st.divider()
     due_slot = is_log_due(att_user)
     if due_slot:
@@ -152,7 +142,7 @@ with tabs[0]:
             c1_f, c2_f = st.columns(2)
             if c1_f.form_submit_button("✅ Submit"):
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
-            if c2_f.form_submit_button("🕒 Snooze"):
+            if c2_f.form_submit_button("🕒 Snooze (10 Mins)"):
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
@@ -193,7 +183,6 @@ with tabs[1]:
     with h_col1:
         hist_type = st.radio("Select View", ["My Work Logs", "My Attendance History", "My Work Plans"], horizontal=True)
         hist_range = st.date_input("Select Date Range", [date.today() - timedelta(days=7), date.today()])
-
     if len(hist_range) == 2:
         start_d, end_d = hist_range
         table_name, date_col = ("work_logs", "work_date") if hist_type == "My Work Logs" else ("attendance_logs", "work_date") if hist_type == "My Attendance History" else ("work_plans", "plan_date")
@@ -203,8 +192,7 @@ with tabs[1]:
             display_cols = ['plan_date', 'job_no', 'planned_task', 'planned_hours', 'status'] if hist_type == "My Work Plans" else ['work_date', 'task_description', 'hours_spent'] if hist_type == "My Work Logs" else ['work_date', 'punch_in', 'punch_out']
             existing_cols = [c for c in display_cols if c in df_hist.columns]
             st.dataframe(df_hist[existing_cols], use_container_width=True, hide_index=True)
-            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"{att_user}_{table_name}.csv")
-        else: st.info(f"No records found.")
+            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"{att_user}_history.csv")
 
 # --- TAB 2 & 3: LEAVE & BALANCE ---
 with tabs[2]:
@@ -235,42 +223,36 @@ with tabs[4]:
         s_name = ac1.selectbox("Filter Staff", ["All Staff"] + get_staff_list(), key="adm_filt")
         export_mode = ac2.selectbox("Range", ["Weekly", "Monthly", "Custom Date"])
         
-        # Calculate range dates based on selection
         if export_mode == "Weekly": sr, er = date.today() - timedelta(days=7), date.today()
         elif export_mode == "Monthly": sr, er = date.today() - timedelta(days=30), date.today()
         else: sr, er = st.date_input("From"), st.date_input("To")
         
         admin_tabs = st.tabs(["📈 Analytics", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
-        with admin_tabs[0]: # --- ANALYTICS TAB (UPDATED FOR RANGE) ---
+        with admin_tabs[0]: # ANALYTICS
             st.subheader(f"🏢 Performance Tracking ({sr} to {er})")
-            
-            # Use gte and lte to fetch data within the selected range
             t_att = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             
             if t_att:
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent'])
-                # Filter out Freelancer from group totals
                 if s_name == "All Staff":
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
                 elif s_name != "All Staff":
                     df_work = df_work[df_work['employee_name'] == s_name]
                 
                 work_sums = df_work.groupby('employee_name')['hours_spent'].sum().reset_index() if not df_work.empty else pd.DataFrame()
-                st.info(f"Total Unique Punch-ins in period: {len(t_att)}")
+                st.info(f"Unique Punch-ins in period: {len(t_att)}")
                 
                 if not work_sums.empty:
                     c1_a, c2_a = st.columns(2)
                     c1_a.warning("Hours Logged Summary")
                     c1_a.dataframe(work_sums, hide_index=True)
-                    
-                    # Add a simple chart for quick overview
-                    c2_a.plotly_chart(px.bar(work_sums, x='employee_name', y='hours_spent', title="Productivity by Employee"), use_container_width=True)
+                    c2_a.plotly_chart(px.bar(work_sums, x='employee_name', y='hours_spent', title="Productivity Overview"), use_container_width=True)
             else:
-                st.info(f"No records found for the range {sr} to {er}.")
+                st.info(f"No records found for {sr} to {er}.")
 
-        with admin_tabs[1]: # --- LEAVE POSITION ---
+        with admin_tabs[1]: # LEAVE POSITION
             st.subheader("📊 Yearly Staff Leave Master Position")
             all_l = get_leave_requests()
             if not all_l.empty:
@@ -284,7 +266,7 @@ with tabs[4]:
                     leave_sum['Balance'] = 12 - leave_sum['Used']
                     st.dataframe(leave_sum, use_container_width=True, hide_index=True)
 
-        with admin_tabs[2]: # --- DETAILED LOGS ---
+        with admin_tabs[2]: # DETAILED LOGS
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             if st.button("📥 Export CSV"):
                 tbl_map = {"Work Logs": "work_logs", "Movement": "movement_logs", "Attendance": "attendance_logs", "Plans": "work_plans"}
@@ -293,7 +275,6 @@ with tabs[4]:
                 exp = q.execute().data
                 if exp: st.download_button("Download Now", data=convert_df(pd.DataFrame(exp)), file_name=f"{l_type}.csv")
             
-            # Map selection to correct filtering logic using the selected range
             if l_type == "Work Logs": res = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             elif l_type == "Movement": res = conn.table("movement_logs").select("*").gte("exit_time", f"{sr}T00:00:00").lte("exit_time", f"{er}T23:59:59").execute().data
             elif l_type == "Plans": res = conn.table("work_plans").select("*").gte("plan_date", str(sr)).lte("plan_date", str(er)).execute().data
@@ -307,7 +288,7 @@ with tabs[4]:
                     df_v = df_v[df_v['employee_name'] == s_name]
                 st.dataframe(df_v, hide_index=True, use_container_width=True)
 
-        with admin_tabs[3]: # --- LEAVE APPROVALS ---
+        with admin_tabs[3]: # LEAVE APPROVALS
             st.subheader("📬 Pending Leave Requests")
             df_all = get_leave_requests()
             if not df_all.empty:
