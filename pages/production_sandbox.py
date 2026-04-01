@@ -119,19 +119,48 @@ with tab_analytics:
             work_sum = df_logs.groupby('Worker').agg({'Hours':'sum', 'Job_Code':'nunique'}).reset_index()
             st.dataframe(work_sum.sort_values('Hours', ascending=False), use_container_width=True, hide_index=True)
 
-# --- TAB 4: MASTER SETTINGS (FIXED INSERT LOGIC) ---
+# --- TAB 4: MASTER SETTINGS (FIXED TO UPDATE INSTEAD OF INSERT) ---
 with tab_master:
-    st.subheader("⚙️ Gate Master")
-    with st.form("new_gate"):
-        mg1, mg2, mg3 = st.columns([2, 2, 1])
-        ng_name = mg1.text_input("Main Gate Name")
-        ng_sub = mg2.text_input("Sub-Task Name")
-        ng_order = mg3.number_input("Unique Step Order (e.g., 3.1)", value=float(len(df_master_gates)+1), step=0.1)
-        if st.form_submit_button("Add to Master"):
-            # Providing 0 defaults for numeric buffer columns to prevent DB rejection
+    st.subheader("⚙️ Gate & Sub-Task Master")
+    
+    # NEW LOGIC: Select an existing gate to add/edit its sub-task
+    existing_gate_names = sorted(df_master_gates['gate_name'].unique().tolist())
+    
+    with st.form("edit_subtask_form"):
+        st.write("📝 Add/Edit Sub-Task for Existing Gate")
+        target_g = st.selectbox("Select Main Gate", existing_gate_names)
+        new_s = st.text_input("Enter Sub-Task Name (e.g., Pre-bending, Assistant)")
+        
+        if st.form_submit_button("Update Gate Sub-Task"):
+            if new_s:
+                # We UPDATE the existing row instead of INSERTING a new one
+                conn.table("production_gates").update({
+                    "sub_task": new_s
+                }).eq("gate_name", target_g).execute()
+                
+                st.cache_data.clear()
+                st.success(f"Updated {target_g} with sub-task: {new_s}")
+                st.rerun()
+            else:
+                st.error("Please enter a sub-task name.")
+
+    st.divider()
+    
+    # PRESERVED: Add entirely NEW gate (only if the name is unique)
+    with st.form("new_gate_form"):
+        st.write("➕ Add Entirely New Process Gate")
+        mg1, mg2 = st.columns([3, 1])
+        ng_name = mg1.text_input("New Gate Name")
+        ng_order = mg2.number_input("Order", value=len(df_master_gates)+1)
+        if st.form_submit_button("Create New Gate"):
             conn.table("production_gates").insert({
-                "gate_name": ng_name, "sub_task": ng_sub or "General", "step_order": ng_order,
+                "gate_name": ng_name, 
+                "step_order": ng_order,
+                "sub_task": "General",
                 "days_buffer": 0, "days_small": 0, "days_medium": 0, "days_large": 0
             }).execute()
-            st.cache_data.clear(); st.rerun()
-    st.dataframe(df_master_gates.sort_values('step_order')[['step_order', 'gate_name', 'sub_task']], use_container_width=True, hide_index=True)
+            st.cache_data.clear()
+            st.rerun()
+
+    if not df_master_gates.empty:
+        st.dataframe(df_master_gates.sort_values('step_order')[['step_order', 'gate_name', 'sub_task']], use_container_width=True, hide_index=True)
