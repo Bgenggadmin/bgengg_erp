@@ -74,10 +74,10 @@ def is_log_due(employee_name):
     last_log_t = pd.to_datetime(res[0]['created_at']).tz_convert(IST).strftime("%H:%M")
     return latest_slot if last_log_t < latest_slot else None
 
-# --- 4. NAVIGATION (Added "My Past Data") ---
+# --- 4. NAVIGATION ---
 tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Leave Application", "📊 My Balance", "🔐 HR Admin Panel"])
 
-# --- TAB 1: ATTENDANCE & WORK LOGS ---
+# --- TAB 0: ATTENDANCE & WORK LOGS ---
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
@@ -120,7 +120,17 @@ with tabs[0]:
         c1.metric("Punch In", start_t.strftime('%I:%M %p'))
         c2.metric("Shift Duration", f"{dur:.2f} hrs")
         c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
-    
+        
+        sl, sr = st.columns(2)
+        with sl:
+            with st.expander("Today's Work Logs"):
+                for w in work_summ_res: st.caption(f"✅ {w['task_description']} ({w['hours_spent']}h)")
+        with sr:
+            move_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
+            with st.expander("Today's Movements"):
+                if move_res:
+                    for m in move_res: st.caption(f"🚶 {pd.to_datetime(m['exit_time']).tz_convert(IST).strftime('%I:%M %p')} | {m['destination']}")
+
     st.divider()
     due_slot = is_log_due(att_user)
     if due_slot:
@@ -166,54 +176,43 @@ with tabs[0]:
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- TAB 2: STAFF DATA HISTORY ---
-    with tabs[1]:
-        st.subheader(f"📊 Personal History: {att_user}")
+# --- TAB 1: STAFF DATA HISTORY ---
+with tabs[1]:
+    st.subheader(f"📊 Personal History: {att_user}")
     
-        h_col1, h_col2 = st.columns([1, 2])
-        with h_col1:
-        # Added "My Work Plans" to the options
-            hist_type = st.radio("Select View", ["My Work Logs", "My Attendance History", "My Work Plans"], horizontal=True)
-            hist_range = st.date_input("Select Date Range", [date.today() - timedelta(days=7), date.today()])
+    h_col1, h_col2 = st.columns([1, 2])
+    with h_col1:
+        hist_type = st.radio("Select View", ["My Work Logs", "My Attendance History", "My Work Plans"], horizontal=True)
+        hist_range = st.date_input("Select Date Range", [date.today() - timedelta(days=7), date.today()])
 
-        if len(hist_range) == 2:
-            start_d, end_d = hist_range
+    if len(hist_range) == 2:
+        start_d, end_d = hist_range
+        if hist_type == "My Work Logs":
+            table_name, date_col = "work_logs", "work_date"
+        elif hist_type == "My Attendance History":
+            table_name, date_col = "attendance_logs", "work_date"
+        else: 
+            table_name, date_col = "work_plans", "plan_date"
         
-        # Determine correct table and date column
-            if hist_type == "My Work Logs":
-                table_name = "work_logs"
-                date_col = "work_date"
-            elif hist_type == "My Attendance History":
-                table_name = "attendance_logs"
-                date_col = "work_date"
-            else: # My Work Plans
-                table_name = "work_plans"
-                date_col = "plan_date"
+        hist_res = conn.table(table_name).select("*").eq("employee_name", att_user).gte(date_col, str(start_d)).lte(date_col, str(end_d)).order(date_col, desc=True).execute().data
         
-        # Fetch data filtered by identified user and date range
-            hist_res = conn.table(table_name).select("*").eq("employee_name", att_user).gte(date_col, str(start_d)).lte(date_col, str(end_d)).order(date_col, desc=True).execute().data
-        
-            if hist_res:
-                df_hist = pd.DataFrame(hist_res)
-            
-            # Clean up display columns based on type
-                if hist_type == "My Work Plans":
-                    display_cols = ['plan_date', 'job_no', 'planned_task', 'planned_hours', 'status']
-                elif hist_type == "My Work Logs":
-                    display_cols = ['work_date', 'task_description', 'hours_spent']
-                else:
-                    display_cols = ['work_date', 'punch_in', 'punch_out']
-
-            # Ensure only available columns are shown
-                existing_cols = [c for c in display_cols if c in df_hist.columns]
-            
-                st.write(f"### {hist_type} Records")
-                st.dataframe(df_hist[existing_cols], use_container_width=True, hide_index=True)
-                st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"{att_user}_{table_name}.csv")
+        if hist_res:
+            df_hist = pd.DataFrame(hist_res)
+            if hist_type == "My Work Plans":
+                display_cols = ['plan_date', 'job_no', 'planned_task', 'planned_hours', 'status']
+            elif hist_type == "My Work Logs":
+                display_cols = ['work_date', 'task_description', 'hours_spent']
             else:
-                st.info(f"No {hist_type} records found for the selected range.")
+                display_cols = ['work_date', 'punch_in', 'punch_out']
+            
+            existing_cols = [c for c in display_cols if c in df_hist.columns]
+            st.write(f"### {hist_type} Records")
+            st.dataframe(df_hist[existing_cols], use_container_width=True, hide_index=True)
+            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"{att_user}_{table_name}.csv")
+        else:
+            st.info(f"No {hist_type} records found for the selected range.")
 
-# --- TAB 3 & 4: LEAVE & BALANCE ---
+# --- TAB 2 & 3: LEAVE & BALANCE ---
 with tabs[2]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
@@ -233,7 +232,7 @@ with tabs[3]:
         used = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
         st.metric("Casual Leave Balance", f"{int(12 - used)} Left", f"Used: {int(used)}")
 
-# --- TAB 5: HR ADMIN PANEL ---
+# --- TAB 4: HR ADMIN PANEL ---
 with tabs[4]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
@@ -276,6 +275,7 @@ with tabs[4]:
                     leave_sum['Balance'] = 12 - leave_sum['Used']
                     st.dataframe(leave_sum, use_container_width=True, hide_index=True)
                     st.download_button("Download Leave Report", data=convert_df(leave_sum), file_name="Leave_Position.csv")
+                else: st.info("No approved leaves yet.")
 
         with admin_tabs[2]: # DETAILED LOGS
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
