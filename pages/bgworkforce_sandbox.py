@@ -9,6 +9,8 @@ IST = pytz.timezone('Asia/Kolkata')
 LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
+
+# --- DEFINE FREELANCER HERE ---
 FREELANCER_NAME = "Freelancer" 
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
@@ -75,7 +77,6 @@ with tabs[0]:
             
     today = str(date.today())
 
-    # WORK PLAN SECTION
     st.markdown("### 🏗️ My Work Plan & Pending Tasks")
     plan_col1, plan_col2 = st.columns([1.5, 2.5])
     with plan_col1:
@@ -143,40 +144,34 @@ with tabs[0]:
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
-    # --- PUNCH OUT RATING DIALOG DEFINITION ---
-    @st.dialog("Daily Performance Rating")
-    def show_punch_out_rating(log_id):
-        st.write("Please rate your productivity and quality of work today.")
-        rating = st.feedback("stars", key="shift_rating_stars")
-        remarks = st.text_area("Final Remarks / Work Summary", key="shift_remarks_text")
-        
-        if st.button("Submit & Punch Out", type="primary", use_container_width=True):
-            conn.table("attendance_logs").update({
-                "punch_out": get_now_ist().isoformat(),
-                "rating": rating,
-                "punch_out_remarks": remarks
-            }).eq("id", log_id).execute()
-            st.cache_data.clear()
-            st.rerun()
-
     ca, cb, cc = st.columns([1.5, 1.5, 2.5])
     with ca:
-        st.markdown("### 🏢 Shift")
+        st.markdown("### 🏢 Shift Control")
         if not emp_summ_res:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute(); st.rerun()
         else:
             if not emp_summ_res[0].get('punch_out'):
-                # BUTTON TRIGGERS THE DIALOG
-                if st.button("🏁 PUNCH OUT", use_container_width=True):
-                    show_punch_out_rating(emp_summ_res[0]['id'])
+                # --- NEW RATING & REMARKS SECTION (ALWAYS ON DASHBOARD WHILE IN SHIFT) ---
+                with st.container(border=True):
+                    st.write("**Shift Performance Review**")
+                    user_rating = st.feedback("stars", key="live_rating")
+                    user_remarks = st.text_area("Accomplishments so far...", key="live_remarks")
+                    
+                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+                        conn.table("attendance_logs").update({
+                            "punch_out": get_now_ist().isoformat(),
+                            "rating": user_rating,
+                            "punch_out_remarks": user_remarks
+                        }).eq("id", emp_summ_res[0]['id']).execute()
+                        st.cache_data.clear()
+                        st.rerun()
             else:
                 st.success("Shift Completed")
-                r_val = emp_summ_res[0].get('rating')
-                if r_val is not None:
-                    st.markdown(f"**My Rating:** {'⭐' * int(r_val)}")
+                if emp_summ_res[0].get('rating'):
+                    st.write(f"My Rating: {'⭐' * int(emp_summ_res[0]['rating'])}")
                 if emp_summ_res[0].get('punch_out_remarks'):
-                    st.caption(f"**Notes:** {emp_summ_res[0]['punch_out_remarks']}")
+                    st.caption(f"**Remarks:** {emp_summ_res[0]['punch_out_remarks']}")
 
     with cb:
         st.markdown("### 🚶 Movement")
@@ -190,7 +185,6 @@ with tabs[0]:
         else:
             if st.button("📥 LOG TIME IN", use_container_width=True, type="primary"):
                 conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", active_move[0]['id']).execute(); st.rerun()
-
     with cc:
         st.markdown("### 📝 Work log")
         with st.form("manual_work_log"):
@@ -284,7 +278,7 @@ with tabs[4]:
                     df_att = df_att[df_att['employee_name'] != FREELANCER_NAME]
                     df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
 
-                st.markdown("#### 🚀 Workforce Efficiency Index")
+                st.markdown("#### 🚀 workforce Efficiency Index")
                 df_att['pi_dt'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST)
                 df_att['po_dt'] = pd.to_datetime(df_att['punch_out']).dt.tz_convert(IST).fillna(get_now_ist())
                 df_att['presence_hrs'] = (df_att['po_dt'] - df_att['pi_dt']).dt.total_seconds() / 3600
