@@ -3,7 +3,6 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date, timedelta
 import pytz
-import plotly.express as px
 
 # --- 1. SETUP & CONNECTION ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -37,13 +36,11 @@ def get_master_data():
         j_res = conn.table("job_planning").select("*").order("step_order").execute()
         pur_res = conn.table("purchase_orders").select("*").execute()
         
-        df_p = pd.DataFrame(p_res.data or []).fillna("")
-        df_l = pd.DataFrame(l_res.data or []).fillna({"notes": "", "Activity": "Uncategorized"})
-        df_m = pd.DataFrame(m_res.data or []).fillna("Unknown Gate")
-        df_j = pd.DataFrame(j_res.data or []).fillna("")
-        df_pur = pd.DataFrame(pur_res.data or []).fillna("")
-        
-        return df_p, df_l, df_m, df_j, df_pur
+        return (pd.DataFrame(p_res.data or []), 
+                pd.DataFrame(l_res.data or []), 
+                pd.DataFrame(m_res.data or []), 
+                pd.DataFrame(j_res.data or []),
+                pd.DataFrame(pur_res.data or []))
     except Exception as e:
         st.error(f"Data Load Error: {e}")
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -73,25 +70,27 @@ with tab_plan:
             p_data = proj_match.iloc[0]
             with st.container(border=True):
                 po_num = p_data.get('po_no') or "---"
-                po_placed_dt = pd.to_datetime(p_data.get('po_date')).date() if pd.notnull(p_data.get('po_date')) and p_data.get('po_date') != "" else None
-                po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) and p_data.get('po_delivery_date') != "" else None
-                rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) and p_data.get('revised_delivery_date') != "" else None
+                po_placed_dt = pd.to_datetime(p_data.get('po_date')).date() if pd.notnull(p_data.get('po_date')) else None
+                po_disp_dt = pd.to_datetime(p_data.get('po_delivery_date')).date() if pd.notnull(p_data.get('po_delivery_date')) else None
+                rev_dt = pd.to_datetime(p_data.get('revised_delivery_date')).date() if pd.notnull(p_data.get('revised_delivery_date')) else None
                 
                 c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
                 c1.write(f"📄 **PO No: {po_num}**\nDate: {po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else '---'}")
-                c2.write(f"🚚 **Anchor Commitment**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else '---'}")
+                c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else '---'}")
                 c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else '---'}")
                 
                 final_target = rev_dt if rev_dt else po_disp_dt
                 if final_target:
                     days_left = (final_target - date.today()).days
                     c4.metric("Days to Dispatch", f"{days_left} Days", delta=days_left, delta_color="normal" if days_left > 7 else "inverse")
+                else:
+                    c4.caption("⏳ No target date set")
 
-                if st.button("📝 Update Dispatch Dates"):
-                    @st.dialog("Update Schedule")
+                if st.button("📝 Update Schedule", key="edit_delivery"):
+                    @st.dialog("Update Commitment")
                     def update_dates():
-                        n_po_disp = st.date_input("PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
-                        n_rev = st.date_input("Revised Date", value=rev_dt if rev_dt else n_po_disp)
+                        n_po_disp = st.date_input("Original PO Dispatch Date", value=po_disp_dt if po_disp_dt else date.today())
+                        n_rev = st.date_input("Revised Delivery Date", value=rev_dt if rev_dt else n_po_disp)
                         if st.button("Save Changes"):
                             conn.table("anchor_projects").update({"po_delivery_date": str(n_po_disp), "revised_delivery_date": str(n_rev)}).eq("job_no", target_job).execute()
                             st.cache_data.clear(); st.rerun()
@@ -101,12 +100,12 @@ with tab_plan:
         with st.expander("🚨 Trigger Urgent Purchase Requisition", expanded=False):
             with st.form("urgent_purchase_form", clear_on_submit=True):
                 r1, r2, r3 = st.columns([2, 1, 1])
-                it_name = r1.text_input("Item Name")
+                it_name = r1.text_input("Material Item Name")
                 it_qty = r2.text_input("Qty")
-                it_date = r3.date_input("Need By", value=date.today() + timedelta(days=2))
-                it_specs = st.text_area("Reason/Specs")
+                it_date = r3.date_input("Required By", value=date.today() + timedelta(days=2))
+                it_specs = st.text_area("Specs / Reason for Urgency")
                 if st.form_submit_button("🔥 Send Urgent Request"):
-                    if it_name:
+                    if it_name and it_qty:
                         conn.table("purchase_orders").insert({
                             "job_no": target_job, "item_name": it_name,
                             "specs": f"URGENT (By {it_date.strftime('%d-%b')}): {it_specs} (Qty: {it_qty})",
@@ -115,42 +114,38 @@ with tab_plan:
                         st.cache_data.clear(); st.success("Urgent request sent!"); st.rerun()
 
         st.divider()
-        current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
 
-        # C. CLONE LOGIC
+        # D. PLANNING TOOLS
+        current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
+        
         if current_job_steps.empty:
             st.warning("⚠️ No Plan Detected")
-            src_job = st.selectbox("Clone Sequence from:", ["-- Select --"] + all_jobs, key="clone_src")
+            src_job = st.selectbox("Clone from Template:", ["-- Select --"] + all_jobs, key="clone_src")
             if st.button("🚀 Clone Sequence") and src_job != "-- Select --":
                 source_steps = df_job_plans[df_job_plans['job_no'] == src_job]
                 if not source_steps.empty:
-                    new_steps = [{"job_no": target_job, "gate_name": s['gate_name'], "sub_task": s.get('sub_task', ''), "step_order": s['step_order'], "planned_start_date": date.today().isoformat(), "planned_end_date": (date.today()+timedelta(days=5)).isoformat(), "current_status": "Pending"} for _, s in source_steps.iterrows()]
+                    new_steps = [{"job_no": target_job, "gate_name": s['gate_name'], "step_order": s['step_order'], "planned_start_date": date.today().isoformat(), "planned_end_date": (date.today()+timedelta(days=5)).isoformat(), "current_status": "Pending"} for _, s in source_steps.iterrows()]
                     conn.table("job_planning").insert(new_steps).execute()
                     st.cache_data.clear(); st.rerun()
 
-        # D. MANAGE SEQUENCE
-        with st.expander("➕ Add Single Gate to Sequence", expanded=False):
+        with st.expander("➕ Add Single Gate to Plan", expanded=False):
             with st.form("add_gate_form", clear_on_submit=True):
                 sc1, sc2, sc3 = st.columns([2, 2, 1])
-                ng_gate_raw = sc1.selectbox("Process Gate", all_activities if all_activities else ["No Gates Defined"])
+                ng_gate_raw = sc1.selectbox("Process Gate", all_activities)
                 ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
-                ng_order = sc3.number_input("Order", min_value=1, value=len(current_job_steps)+1)
+                ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
                 if st.form_submit_button("🚀 Add to Plan"):
                     if len(ng_dates) == 2 and " | " in ng_gate_raw:
-                        ng_gate, ng_sub = ng_gate_raw.split(" | ")
-                        conn.table("job_planning").insert({
-                            "job_no": target_job, "gate_name": ng_gate, "sub_task": ng_sub, "step_order": ng_order,
-                            "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(), "current_status": "Pending"
-                        }).execute()
+                        gate_main, gate_sub = ng_gate_raw.split(" | ")
+                        conn.table("job_planning").insert({"job_no": target_job, "gate_name": gate_main, "step_order": ng_order, "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(), "current_status": "Pending"}).execute()
                         st.cache_data.clear(); st.rerun()
 
         if not current_job_steps.empty:
-            with st.expander("📝 Edit Sequence & Milestones", expanded=False):
+            with st.expander("📝 Manage Sequence & Dates", expanded=False):
                 for _, edit_row in current_job_steps.sort_values('step_order').iterrows():
                     e_id = edit_row['id']
                     with st.container(border=True):
                         ec1, ec2, ec3, ec4 = st.columns([2, 2, 1, 1])
-                        u_gate_label = f"{edit_row['gate_name']} | {edit_row.get('sub_task','')}"
                         ec1.write(f"**Step {edit_row['step_order']}: {edit_row['gate_name']}**")
                         u_dates = ec2.date_input("Dates", [pd.to_datetime(edit_row['planned_start_date']).date(), pd.to_datetime(edit_row['planned_end_date']).date()], key=f"ed_{e_id}")
                         u_order = ec3.number_input("Order", value=int(edit_row['step_order']), key=f"eo_{e_id}")
@@ -191,7 +186,7 @@ with tab_plan:
                             act_end = pd.to_datetime(row['actual_end_date']).date()
                             col3.caption(f"Finished: {act_end.strftime('%d %b')}")
 
-# --- TAB 2: DAILY ENTRY (WITH MULTI-WORKER) ---
+# --- TAB 2: DAILY ENTRY (WITH MULTI-WORKER SELECTION) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
@@ -201,12 +196,15 @@ with tab_entry:
         fallback_list = active_gates_df['gate_name'].tolist()
         form_gates = active_list if active_list else fallback_list
         if not form_gates:
-            st.warning("⚠️ No gates found in plan.")
+            st.warning("⚠️ No gates found in plan for this job.")
         else:
             with st.form("prod_form", clear_on_submit=True):
                 f1, f2, f3 = st.columns(3)
                 f_act = f1.selectbox("Gate", form_gates)
-                f_wrk_list = f1.multiselect("Workers Involved", all_workers)
+                
+                # UPDATED: Multi-worker selection
+                f_wrk_list = f1.multiselect("Workers (Select all involved)", all_workers)
+                
                 f_hrs = f2.number_input("Hrs (Per Person)", min_value=0.0, step=0.5)
                 f_unit = f2.selectbox("Unit", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Joints"])
                 f_out = f3.number_input("Qty Produced", min_value=0.0, step=0.1)
@@ -244,7 +242,7 @@ with tab_entry:
                     edit_log(last_row)
         st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'notes']].head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 3: ANALYTICS & REPORTS (CHARTS CONVERTED TO TABLES) ---
+# --- TAB 3: ANALYTICS & REPORTS (TABLES ONLY) ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     if not df_logs.empty:
@@ -265,47 +263,37 @@ with tab_analytics:
             f_workers = c3.multiselect("Filter Workers", all_workers, default=all_workers)
 
         if len(d_range) == 2:
-            # Mask to find worker even in multi-worker strings
             worker_regex = '|'.join(f_workers) if f_workers else ".*"
             mask = ((df_logs['date_only'] >= d_range[0]) & (df_logs['date_only'] <= d_range[1]) & (df_logs['Job_Code'].isin(f_jobs)) & (df_logs['Worker'].str.contains(worker_regex, na=False)))
             rdf = df_logs.loc[mask].copy()
-            
             if not rdf.empty:
-                kpi_col, dl_col = st.columns([3, 1])
+                kpi1, kpi2, kpi3 = st.columns(3)
                 total_hrs = rdf['Hours'].sum()
-                with kpi_col:
-                    k1, k2, k3 = st.columns(3)
-                    k1.metric("Total Man-Hours", f"{total_hrs:.1f} hrs")
-                    k2.metric("Total Qty", f"{rdf['Output'].sum():.0f} Units")
-                    k3.metric("Productivity Index", f"{(rdf['Output'].sum() / total_hrs if total_hrs > 0 else 0):.2f} U/Hr")
-                with dl_col:
-                    st.download_button("📂 Export Logs", data=rdf.to_csv(index=False).encode('utf-8'), file_name=f"bg_logs_{period}.csv", mime="text/csv", use_container_width=True)
+                kpi1.metric("Total Man-Hours", f"{total_hrs:.1f} hrs")
+                kpi2.metric("Total Qty", f"{rdf['Output'].sum():.0f} Units")
+                kpi3.metric("Productivity Index", f"{(rdf['Output'].sum() / total_hrs if total_hrs > 0 else 0):.2f} U/Hr")
                 
                 st.divider()
-                
-                # --- TABLES REPLACING CHARTS ---
-                v1, v2 = st.columns(2)
-                with v1:
+                # TABLES REPLACING CHARTS
+                t_col1, t_col2 = st.columns(2)
+                with t_col1:
                     st.markdown("##### 🕒 Hours per Job Summary")
-                    job_sum = rdf.groupby('Job_Code').agg({'Hours': 'sum', 'Output': 'sum'}).reset_index()
-                    job_sum.columns = ['Job No', 'Total Hours', 'Total Qty']
-                    st.dataframe(job_sum.sort_values('Total Hours', ascending=False), use_container_width=True, hide_index=True)
-                
-                with v2:
-                    st.markdown("##### 👷 Worker/Group Contribution")
-                    worker_sum = rdf.groupby('Worker').agg({'Hours': 'sum', 'Job_Code': 'nunique'}).reset_index()
-                    worker_sum.columns = ['Worker / Team', 'Hours Contributed', 'Jobs Handled']
-                    st.dataframe(worker_sum.sort_values('Hours Contributed', ascending=False), use_container_width=True, hide_index=True)
+                    jsum = rdf.groupby('Job_Code').agg({'Hours':'sum', 'Output':'sum'}).reset_index()
+                    st.dataframe(jsum.sort_values('Hours', ascending=False), hide_index=True, use_container_width=True)
+                with t_col2:
+                    st.markdown("##### 👷 Worker Contribution Summary")
+                    wsum = rdf.groupby('Worker').agg({'Hours':'sum', 'Job_Code':'nunique'}).reset_index()
+                    st.dataframe(wsum.sort_values('Hours', ascending=False), hide_index=True, use_container_width=True)
 
                 st.markdown("##### 📋 Process Deep-Dive")
                 summary_df = rdf.groupby(['Job_Code', 'Activity']).agg({'Hours': 'sum', 'Output': 'sum', 'Worker': 'nunique'}).reset_index()
                 st.dataframe(summary_df, use_container_width=True, hide_index=True)
                 st.download_button("📊 Export Summary Table", data=summary_df.to_csv(index=False).encode('utf-8'), file_name=f"bg_summary_{period}.csv", mime="text/csv")
-            else: st.warning("No data matches the selected filters.")
+            else: st.warning("No data matches filters.")
 
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
-    st.subheader("⚙️ Production Master Settings")
+    st.subheader("⚙️ Gate Master")
     with st.form("new_gate"):
         mg1, mg2, mg3 = st.columns([2, 2, 1])
         ng_name = mg1.text_input("Gate Name")
@@ -314,4 +302,5 @@ with tab_master:
         if st.form_submit_button("Add to Master"):
             conn.table("production_gates").insert({"gate_name": ng_name, "sub_task": ng_sub, "step_order": ng_order}).execute()
             st.cache_data.clear(); st.rerun()
-    st.dataframe(df_master_gates.sort_values('step_order'), use_container_width=True, hide_index=True)
+    if not df_master_gates.empty:
+        st.dataframe(df_master_gates.sort_values('step_order')[['step_order', 'gate_name', 'sub_task']], hide_index=True)
