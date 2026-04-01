@@ -9,6 +9,8 @@ IST = pytz.timezone('Asia/Kolkata')
 LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
+
+# --- DEFINE FREELANCER HERE ---
 FREELANCER_NAME = "Freelancer" 
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
@@ -142,39 +144,40 @@ with tabs[0]:
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
-    ca, cb, cc = st.columns([2.2, 1.8, 2.5])
+    ca, cb, cc = st.columns([1.5, 1.5, 2.5])
     with ca:
-        st.markdown("### 🏢 Shift Control")
+        st.markdown("### 🏢 Shift")
         if not emp_summ_res:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute(); st.rerun()
         else:
             if not emp_summ_res[0].get('punch_out'):
-                # --- NEW RATING & PROMISE COLUMNS ---
+                # --- NEW REVIEWS COLUMNS ---
                 with st.container(border=True):
-                    st.write("**Shift Performance Review**")
+                    st.markdown("**🛡️ System & Growth Commitment**")
                     
-                    # Column 1: System Promise
-                    promise = st.checkbox("I promise to follow B&G systems perfectly today.", 
-                                        help="Strong systems create a strong team. By checking this, you commit to precision and discipline.")
+                    # Column 1: Promise
+                    promise = st.checkbox("I promise to uphold B&G systems with discipline.", 
+                                        help="Excellence is not an act, but a habit. Consistent systems lead to reliable success.")
                     
-                    # Column 2: Satisfaction Rating
-                    rating = st.feedback("stars", key="shift_satisfaction")
-                    st.caption("How satisfied are you with your contribution today?")
-                    
+                    # Column 2: Rating
+                    st.write("**Full Potential Contribution**")
+                    sat_rating = st.feedback("stars", key="growth_sat")
+                    st.caption("When you work to your full potential, you don't just grow the company—you grow yourself.")
+
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
                         conn.table("attendance_logs").update({
                             "punch_out": get_now_ist().isoformat(),
                             "system_promise": promise,
-                            "work_satisfaction": rating
+                            "work_satisfaction": sat_rating
                         }).eq("id", emp_summ_res[0]['id']).execute()
                         st.cache_data.clear()
                         st.rerun()
             else:
                 st.success("Shift Completed")
-                st.write(f"Promise Kept: {'✅' if emp_summ_res[0].get('system_promise') else '❌'}")
+                st.write(f"Commitment: {'✅' if emp_summ_res[0].get('system_promise') else '❌'}")
                 if emp_summ_res[0].get('work_satisfaction'):
-                    st.write(f"Satisfaction: {'⭐' * int(emp_summ_res[0]['work_satisfaction'])}")
+                    st.write(f"Performance Score: {'⭐' * int(emp_summ_res[0]['work_satisfaction'])}")
 
     with cb:
         st.markdown("### 🚶 Movement")
@@ -214,7 +217,7 @@ with tabs[1]:
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
-# --- TAB 2: LEAVE APPLICATION ---
+# --- TAB 2: LEAVE APPLICATION (FIXED WITH STATUS & WITHDRAW) ---
 with tabs[2]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
@@ -297,22 +300,3 @@ with tabs[4]:
                 eff['Eff %'] = (eff['Total Work (Hrs)'] / eff['Total Presence (Hrs)'] * 100).round(1)
                 st.dataframe(eff.sort_values('Eff %', ascending=False), use_container_width=True, hide_index=True)
             else: st.info("No records found.")
-
-        with admin_tabs[3]: # LEAVE APPROVALS
-            st.subheader("📬 Pending Leave Requests")
-            df_all = get_leave_requests()
-            if not df_all.empty:
-                pend = df_all[df_all['status'] == 'Pending']
-                for _, row in pend.iterrows():
-                    with st.container(border=True):
-                        col1, col2, col3 = st.columns([2, 3, 2])
-                        col1.write(f"**{row['employee_name']}**")
-                        col1.caption(f"Type: {row['leave_type']}")
-                        col2.write(f"📅 {row['start_date']} to {row['end_date']}")
-                        col2.info(f"Reason: {row['reason']}")
-                        if col3.button("✅ Approve", key=f"ap_{row['id']}"):
-                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
-                        with col3.popover("❌ Reject"):
-                            rn = st.text_input("Reason", key=f"rn_{row['id']}")
-                            if st.button("Confirm Reject", key=f"rb_{row['id']}"):
-                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.rerun()
