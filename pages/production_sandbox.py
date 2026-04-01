@@ -48,7 +48,6 @@ def get_master_data():
 
 df_projects, df_logs, df_master_gates, df_job_plans, df_purchase = get_master_data()
 
-# Mappings
 all_staff = master.get('staff', [])
 all_workers = sorted(list(set(master.get('workers', []))))
 all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
@@ -193,7 +192,7 @@ with tab_plan:
                             act_end = pd.to_datetime(row['actual_end_date']).date()
                             col3.caption(f"Finished: {act_end.strftime('%d %b')}")
 
-# --- TAB 2: DAILY ENTRY (INTEGRATED MULTI-WORKER SELECTION) ---
+# --- TAB 2: DAILY ENTRY (UPDATED FOR MULTIPLE WORKERS) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
@@ -218,7 +217,6 @@ with tab_entry:
                 f_notes = st.text_input("Remarks / Notes")
                 if st.form_submit_button("🚀 Log Progress"):
                     if f_wrk_list:
-                        # Join workers into a comma-separated string for existing 'Worker' column
                         worker_string = ", ".join(f_wrk_list)
                         conn.table("production").insert({
                             "Job_Code": f_job, "Activity": f_act, "Worker": worker_string, 
@@ -250,7 +248,7 @@ with tab_entry:
                     edit_log(last_row)
         st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'notes']].head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 3: ANALYTICS & REPORTS (FULL ORIGINAL LOGIC) ---
+# --- TAB 3: ANALYTICS & REPORTS (TABLES ONLY) ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     if not df_logs.empty:
@@ -282,6 +280,7 @@ with tab_analytics:
                 kpi3.metric("Productivity Index", f"{(rdf['Output'].sum() / total_hrs if total_hrs > 0 else 0):.2f} U/Hr")
                 
                 st.divider()
+                # TABLES INSTEAD OF CHARTS
                 t_col1, t_col2 = st.columns(2)
                 with t_col1:
                     st.markdown("##### 🕒 Hours per Job Summary")
@@ -305,8 +304,7 @@ with tab_master:
         mg1, mg2 = st.columns([3, 1])
         ng_name = mg1.text_input("Gate Name")
         ng_order = mg2.number_input("Order", value=len(df_master_gates)+1)
-        if st.form_submit_button("Add to Master"):
-            # FIXED: Removed 'sub_task' from insert to match your table schema
+        if st.form_submit_button("Add Gate"):
             conn.table("production_gates").insert({"gate_name": ng_name, "step_order": ng_order}).execute()
             st.cache_data.clear(); st.rerun()
     if not df_master_gates.empty:
