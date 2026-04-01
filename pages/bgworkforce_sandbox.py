@@ -151,29 +151,31 @@ with tabs[0]:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute(); st.rerun()
         else:
+            # --- IMPROVED PUNCH OUT DIALOG TRIGGER ---
             if not emp_summ_res[0].get('punch_out'):
                 if st.button("🏁 PUNCH OUT", use_container_width=True):
-                    @st.dialog("Daily Rating & Remarks")
-                    def punch_out_dialog(log_id):
-                        st.write("Rate your productivity for this shift:")
-                        rating_val = st.feedback("stars")
-                        remarks_val = st.text_area("Key Accomplishments / Remarks")
-                        if st.form_submit_button("Confirm Punch Out") or st.button("Confirm Punch Out", type="primary"):
+                    @st.dialog("Daily Performance Rating")
+                    def punch_out_flow(row_id):
+                        st.write("Please rate your productivity and quality of work today.")
+                        rating = st.feedback("stars")
+                        remarks = st.text_area("Final Remarks / Work Summary")
+                        
+                        if st.button("Confirm Punch Out", type="primary"):
                             conn.table("attendance_logs").update({
                                 "punch_out": get_now_ist().isoformat(),
-                                "rating": rating_val,
-                                "punch_out_remarks": remarks_val
-                            }).eq("id", log_id).execute()
+                                "rating": rating,
+                                "punch_out_remarks": remarks
+                            }).eq("id", row_id).execute()
+                            st.cache_data.clear()
                             st.rerun()
-                    punch_out_dialog(emp_summ_res[0]['id'])
+                    
+                    punch_out_flow(emp_summ_res[0]['id'])
             else:
-                # --- CHECK LOGIC (Showing result of Punch Out) ---
                 st.success("Shift Completed")
-                current_rating = emp_summ_res[0].get('rating')
-                if current_rating:
-                    st.markdown(f"**Rating:** {'⭐' * int(current_rating)}")
+                if emp_summ_res[0].get('rating'):
+                    st.markdown(f"**My Rating:** {'⭐' * int(emp_summ_res[0]['rating'])}")
                 if emp_summ_res[0].get('punch_out_remarks'):
-                    st.caption(f"**Remarks:** {emp_summ_res[0]['punch_out_remarks']}")
+                    st.caption(f"**Notes:** {emp_summ_res[0]['punch_out_remarks']}")
 
     with cb:
         st.markdown("### 🚶 Movement")
