@@ -15,12 +15,13 @@ if 'master_data' not in st.session_state or not st.session_state.master_data:
     try:
         w_res = conn.table("master_workers").select("name").order("name").execute()
         s_res = conn.table("master_staff").select("name").order("name").execute()
-        g_res = conn.table("production_gates").select("gate_name").order("step_order").execute()
+        # Updated to fetch sub_task from existing table
+        g_res = conn.table("production_gates").select("gate_name, sub_task").order("step_order").execute()
         
         st.session_state.master_data = {
             "workers": [w['name'] for w in (w_res.data or [])],
             "staff": [s['name'] for s in (s_res.data or [])],
-            "gates": [g['gate_name'] for g in (g_res.data or [])]
+            "gates_full": g_res.data or []
         }
     except Exception as e:
         st.error(f"Master Sync Error: {e}")
@@ -48,10 +49,12 @@ def get_master_data():
 
 df_projects, df_logs, df_master_gates, df_job_plans, df_purchase = get_master_data()
 
+# Mappings
 all_staff = master.get('staff', [])
 all_workers = sorted(list(set(master.get('workers', []))))
 all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df_projects.empty else []
-all_activities = master.get('gates', [])
+# Updated activity list to show Gate + Sub Task
+all_activities = [f"{g['gate_name']} | {g['sub_task']}" for g in master.get('gates_full', [])]
 
 # --- 4. NAVIGATION ---
 tab_plan, tab_entry, tab_analytics, tab_master = st.tabs([
@@ -75,7 +78,7 @@ with tab_plan:
                 
                 c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 1.5])
                 c1.write(f"📄 **PO No: {po_num}**\nDate: {po_placed_dt.strftime('%d-%b-%Y') if po_placed_dt else '---'}")
-                c2.write(f"🚚 **Anchor Commitment**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else '---'}")
+                c2.write(f"🚚 **PO Dispatch**\n{po_disp_dt.strftime('%d-%b-%Y') if po_disp_dt else '---'}")
                 c3.write(f"🔴 **Revised Date**\n{rev_dt.strftime('%d-%b-%Y') if rev_dt else '---'}")
                 
                 final_target = rev_dt if rev_dt else po_disp_dt
@@ -111,17 +114,6 @@ with tab_plan:
                         }).execute()
                         st.cache_data.clear(); st.success("Urgent request sent!"); st.rerun()
 
-        with st.expander("🛒 Current Material Status", expanded=False):
-            job_purchase = df_purchase[df_purchase['job_no'] == target_job] if not df_purchase.empty else pd.DataFrame()
-            if not job_purchase.empty:
-                for _, p_item in job_purchase.iterrows():
-                    pc1, pc2, pc3 = st.columns([2, 2, 1])
-                    pc1.write(f"🔹 **{p_item['item_name']}**")
-                    pc2.caption(f"{p_item['specs']}")
-                    if p_item['status'] == "Received": pc3.success(p_item['status'])
-                    else: pc3.warning(p_item['status'])
-            else: st.info("No materials tracked.")
-
         st.divider()
         current_job_steps = df_job_plans[df_job_plans['job_no'] == target_job] if not df_job_plans.empty else pd.DataFrame()
         
@@ -138,12 +130,13 @@ with tab_plan:
         with st.expander("➕ Add Single Gate to Plan", expanded=False):
             with st.form("add_gate_form", clear_on_submit=True):
                 sc1, sc2, sc3 = st.columns([2, 2, 1])
-                ng_gate = sc1.selectbox("Process Gate", all_activities)
+                ng_gate_raw = sc1.selectbox("Process Gate", all_activities)
                 ng_dates = sc2.date_input("Planned Window", [date.today(), date.today()+timedelta(days=5)])
                 ng_order = sc3.number_input("Step Order", min_value=1, value=len(current_job_steps)+1)
                 if st.form_submit_button("🚀 Add to Plan"):
-                    if len(ng_dates) == 2:
-                        conn.table("job_planning").insert({"job_no": target_job, "gate_name": ng_gate, "step_order": ng_order, "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(), "current_status": "Pending"}).execute()
+                    if len(ng_dates) == 2 and " | " in ng_gate_raw:
+                        gate_main, gate_sub = ng_gate_raw.split(" | ")
+                        conn.table("job_planning").insert({"job_no": target_job, "gate_name": gate_main, "step_order": ng_order, "planned_start_date": ng_dates[0].isoformat(), "planned_end_date": ng_dates[1].isoformat(), "current_status": "Pending"}).execute()
                         st.cache_data.clear(); st.rerun()
 
         if not current_job_steps.empty:
@@ -152,11 +145,11 @@ with tab_plan:
                     e_id = edit_row['id']
                     with st.container(border=True):
                         ec1, ec2, ec3, ec4 = st.columns([2, 2, 1, 1])
-                        u_gate = ec1.selectbox("Gate", all_activities, index=all_activities.index(edit_row['gate_name']) if edit_row['gate_name'] in all_activities else 0, key=f"en_{e_id}")
+                        ec1.write(f"**Step {edit_row['step_order']}: {edit_row['gate_name']}**")
                         u_dates = ec2.date_input("Dates", [pd.to_datetime(edit_row['planned_start_date']).date(), pd.to_datetime(edit_row['planned_end_date']).date()], key=f"ed_{e_id}")
                         u_order = ec3.number_input("Order", value=int(edit_row['step_order']), key=f"eo_{e_id}")
                         if ec4.button("💾", key=f"sv_{e_id}"):
-                            conn.table("job_planning").update({"gate_name": u_gate, "planned_start_date": u_dates[0].isoformat(), "planned_end_date": u_dates[1].isoformat(), "step_order": u_order}).eq("id", e_id).execute()
+                            conn.table("job_planning").update({"planned_start_date": u_dates[0].isoformat(), "planned_end_date": u_dates[1].isoformat(), "step_order": u_order}).eq("id", e_id).execute()
                             st.cache_data.clear(); st.rerun()
                         if ec4.button("🗑️", key=f"dl_{e_id}"):
                             conn.table("job_planning").delete().eq("id", e_id).execute(); st.cache_data.clear(); st.rerun()
@@ -192,7 +185,7 @@ with tab_plan:
                             act_end = pd.to_datetime(row['actual_end_date']).date()
                             col3.caption(f"Finished: {act_end.strftime('%d %b')}")
 
-# --- TAB 2: DAILY ENTRY (UPDATED FOR MULTIPLE WORKERS) ---
+# --- TAB 2: DAILY ENTRY (MULTIPLE WORKERS SUPPORT) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
@@ -208,8 +201,8 @@ with tab_entry:
                 f1, f2, f3 = st.columns(3)
                 f_act = f1.selectbox("Gate", form_gates)
                 
-                # --- NEW MULTI-WORKER SELECTION ---
-                f_wrk_list = f1.multiselect("Workers (Select all involved)", all_workers)
+                # UPDATED: Support for multiple workers selection
+                f_wrk_list = f1.multiselect("Workers Involved", all_workers)
                 
                 f_hrs = f2.number_input("Hrs (Per Person)", min_value=0.0, step=0.5)
                 f_unit = f2.selectbox("Unit", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Joints"])
@@ -217,6 +210,7 @@ with tab_entry:
                 f_notes = st.text_input("Remarks / Notes")
                 if st.form_submit_button("🚀 Log Progress"):
                     if f_wrk_list:
+                        # Join names into a string for the existing 'Worker' column
                         worker_string = ", ".join(f_wrk_list)
                         conn.table("production").insert({
                             "Job_Code": f_job, "Activity": f_act, "Worker": worker_string, 
@@ -248,7 +242,7 @@ with tab_entry:
                     edit_log(last_row)
         st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'notes']].head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 3: ANALYTICS & REPORTS (TABLES ONLY) ---
+# --- TAB 3: ANALYTICS & REPORTS ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence")
     if not df_logs.empty:
@@ -280,7 +274,6 @@ with tab_analytics:
                 kpi3.metric("Productivity Index", f"{(rdf['Output'].sum() / total_hrs if total_hrs > 0 else 0):.2f} U/Hr")
                 
                 st.divider()
-                # TABLES INSTEAD OF CHARTS
                 t_col1, t_col2 = st.columns(2)
                 with t_col1:
                     st.markdown("##### 🕒 Hours per Job Summary")
@@ -297,15 +290,19 @@ with tab_analytics:
                 st.download_button("📊 Export Summary Table", data=summary_df.to_csv(index=False).encode('utf-8'), file_name=f"bg_summary_{period}.csv", mime="text/csv")
             else: st.warning("No data matches filters.")
 
-# --- TAB 4: MASTER SETTINGS ---
+# --- TAB 4: MASTER SETTINGS (WITH SUB TASK SUPPORT) ---
 with tab_master:
-    st.subheader("⚙️ Gate Master")
+    st.subheader("⚙️ Gate & Sub Task Master")
     with st.form("new_gate"):
-        mg1, mg2 = st.columns([3, 1])
-        ng_name = mg1.text_input("Gate Name")
-        ng_order = mg2.number_input("Order", value=len(df_master_gates)+1)
-        if st.form_submit_button("Add Gate"):
-            conn.table("production_gates").insert({"gate_name": ng_name, "step_order": ng_order}).execute()
+        mg1, mg2, mg3 = st.columns([2, 2, 1])
+        ng_name = mg1.text_input("Main Gate Name")
+        # Added sub_task input for existing schema support
+        ng_sub = mg2.text_input("Sub Task Name (e.g., General, Helper, Assistant)")
+        ng_order = mg3.number_input("Step Order", value=len(df_master_gates)+1)
+        if st.form_submit_button("Add to Master"):
+            # Updated insert to include the existing sub_task column
+            conn.table("production_gates").insert({"gate_name": ng_name, "sub_task": ng_sub, "step_order": ng_order}).execute()
             st.cache_data.clear(); st.rerun()
     if not df_master_gates.empty:
-        st.dataframe(df_master_gates.sort_values('step_order')[['step_order', 'gate_name']], hide_index=True)
+        # Displaying the existing columns including sub_task
+        st.dataframe(df_master_gates.sort_values('step_order')[['step_order', 'gate_name', 'sub_task']], hide_index=True)
