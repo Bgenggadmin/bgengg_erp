@@ -9,6 +9,8 @@ IST = pytz.timezone('Asia/Kolkata')
 LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
+
+# --- DEFINE FREELANCER HERE ---
 FREELANCER_NAME = "Freelancer" 
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
@@ -26,7 +28,7 @@ def get_now_ist():
     return datetime.now(IST)
 
 # --- 3. DATA LOADERS ---
-@st.cache_data(ttl=2) # Reduced TTL for immediate rerun visibility
+@st.cache_data(ttl=5)
 def get_leave_requests():
     try:
         res = conn.table("leave_requests").select("*").order("created_at", desc=True).execute()
@@ -85,7 +87,6 @@ with tabs[0]:
             if st.form_submit_button("📌 Add to Plan"):
                 if p_task:
                     conn.table("work_plans").insert({"employee_name": att_user, "job_no": p_job, "planned_task": p_task, "planned_hours": p_hrs, "plan_date": today, "status": "Pending"}).execute()
-                    st.cache_data.clear()
                     st.rerun()
     with plan_col2:
         my_plans = conn.table("work_plans").select("*").eq("employee_name", att_user).or_(f"plan_date.eq.{today},status.eq.Pending").execute().data
@@ -95,9 +96,7 @@ with tabs[0]:
                 if p['status'] == 'Pending':
                     t_col.info(f"📍 **[{p['job_no']}]** {p['planned_task']} — ({p['planned_hours']}h)")
                     if b_col.button("✅ Done", key=f"done_{p['id']}"):
-                        conn.table("work_plans").update({"status": "Completed"}).eq("id", p['id']).execute()
-                        st.cache_data.clear()
-                        st.rerun()
+                        conn.table("work_plans").update({"status": "Completed"}).eq("id", p['id']).execute(); st.rerun()
                 else: t_col.success(f"✔️ ~~**[{p['job_no']}]** {p['planned_task']}~~")
         else: st.caption("No plans noted for today yet.")
 
@@ -138,40 +137,34 @@ with tabs[0]:
             task_desc = st.text_area("Detail")
             cf1, cf2 = st.columns(2)
             if cf1.form_submit_button("✅ Submit"):
-                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute()
-                st.cache_data.clear()
-                st.rerun()
+                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
             if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
-    ca, cb, cc = st.columns([1.8, 1.4, 2.5]) # Expanded ca width to accommodate text prompts
+    ca, cb, cc = st.columns([1.8, 1.5, 2.5])
     with ca:
         st.markdown("### 🏢 Shift")
         if not emp_summ_res:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
-                conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute()
-                st.cache_data.clear()
-                st.rerun()
+                conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute(); st.rerun()
         else:
             if not emp_summ_res[0].get('punch_out'):
-                # --- ADDED: NEW TRACKING COLUMNS IN SHIFT SECTION ---
+                # --- NEW COMMITMENT & RATING INTEGRATION ---
                 with st.container(border=True):
                     st.markdown("**🛡️ System Commitment**")
                     sys_promise = st.checkbox("I am dedicated to B&G’s systems. Following the system today is my path to precision.", key="sys_promise")
                     
-                    st.markdown("**🌟 Productivity Self-Rating**")
-                    work_sat = st.feedback("stars", key="productivity_rating")
+                    st.markdown("**🌟 Growth Rating**")
+                    work_sat = st.feedback("stars", key="potential_rating")
                     st.caption("I am working at my 100% potential. My growth fuels B&G’s growth.")
-                    
-                    st.markdown("---")
-                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+
+                    if st.button("🏁 PUNCH OUT", use_container_width=True):
                         conn.table("attendance_logs").update({
                             "punch_out": get_now_ist().isoformat(),
                             "system_promise": sys_promise,
                             "work_satisfaction": work_sat
                         }).eq("id", emp_summ_res[0]['id']).execute()
-                        st.cache_data.clear()
                         st.rerun()
             else:
                 st.success("Shift Completed")
@@ -186,14 +179,10 @@ with tabs[0]:
                 reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Inspection", "Vendor Visit", "Lunch", "Personal"])
                 dest = st.text_input("Destination")
                 if st.form_submit_button("📤 TIME OUT") and dest:
-                    conn.table("movement_logs").insert({"employee_name": att_user, "reason": reason, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute()
-                    st.cache_data.clear()
-                    st.rerun()
+                    conn.table("movement_logs").insert({"employee_name": att_user, "reason": reason, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
         else:
             if st.button("📥 LOG TIME IN", use_container_width=True, type="primary"):
-                conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", active_move[0]['id']).execute()
-                st.cache_data.clear()
-                st.rerun()
+                conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", active_move[0]['id']).execute(); st.rerun()
     with cc:
         st.markdown("### 📝 Work log")
         with st.form("manual_work_log"):
@@ -201,11 +190,9 @@ with tabs[0]:
             job_c = st.selectbox("Job", get_job_codes(), key="man_log_job")
             task = st.text_area("Update")
             if st.form_submit_button("Post Log") and task:
-                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute()
-                st.cache_data.clear()
-                st.rerun()
+                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- REMAINING TABS REMAIN 100% INTACT AS PER ORIGINAL SCRIPT ---
+# --- ALL OTHER TABS REMAIN INTACT AS PER ORIGINAL ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
     h_col1, h_col2 = st.columns([1, 2])
@@ -229,7 +216,6 @@ with tabs[2]:
         reason_l = st.text_area("Reason")
         if st.form_submit_button("Submit"):
             conn.table("leave_requests").insert({"employee_name": l_emp, "leave_type": "Casual Leave", "start_date": str(sd), "end_date": str(ed), "reason": reason_l, "status": "Pending"}).execute()
-            st.cache_data.clear()
             st.success("Submitted"); st.rerun()
 
     st.divider()
@@ -242,14 +228,11 @@ with tabs[2]:
                 with st.container(border=True):
                     col_a, col_b, col_c = st.columns([3, 2, 1])
                     col_a.write(f"📅 **{r['start_date']} to {r['end_date']}**")
-                    col_a.caption(f"Reason: {r['reason']}")
                     s_color = "orange" if r['status'] == 'Pending' else "green" if r['status'] == 'Approved' else "red"
                     col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
                     if r['status'] == 'Pending':
                         if col_c.button("Withdraw", key=f"wd_{r['id']}"):
-                            conn.table("leave_requests").delete().eq("id", r['id']).execute()
-                            st.cache_data.clear()
-                            st.rerun()
+                            conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.rerun()
 
 with tabs[3]:
     st.subheader("📊 Your Leave Balance")
@@ -274,7 +257,7 @@ with tabs[4]:
         
         admin_tabs = st.tabs(["📈 Analytics & Efficiency", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
-        with admin_tabs[0]:
+        with admin_tabs[0]: # ANALYTICS
             st.subheader(f"🏢 Operational Data tracking ({sr} to {er})")
             t_att = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
             t_work = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
