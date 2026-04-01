@@ -88,7 +88,7 @@ with tab_plan:
                         }).execute()
                         st.cache_data.clear(); st.rerun()
 
-# --- TAB 2: DAILY ENTRY ---
+# --- TAB 2: DAILY ENTRY (UPDATED FOR MULTIPLE WORKERS) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
@@ -105,23 +105,27 @@ with tab_entry:
                 gate_options = {f"{r['gate_name']} ({r['sub_task']})": r for _, r in active_list.iterrows()}
                 f_gate_label = f1.selectbox("Active Process", list(gate_options.keys()))
                 
-                f_wrk = f1.selectbox("Worker", ["-- Select --"] + all_workers)
-                f_hrs = f2.number_input("Hrs", min_value=0.0, step=0.5)
+                # CHANGED TO MULTISELECT
+                f_wrk_list = f1.multiselect("Workers (Select all involved)", all_workers)
+                
+                f_hrs = f2.number_input("Hrs (Per Person)", min_value=0.0, step=0.5)
                 f_unit = f2.selectbox("Unit", ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Joints"])
-                f_out = f3.number_input("Qty", min_value=0.0, step=0.1)
+                f_out = f3.number_input("Total Qty Produced", min_value=0.0, step=0.1)
                 f_notes = st.text_input("Remarks / Notes")
                 
                 if st.form_submit_button("🚀 Log Progress"):
-                    # INDENTED VALIDATION LOGIC
-                    if f_wrk == "-- Select --":
-                        st.error("Please select a worker.")
+                    if not f_wrk_list:
+                        st.error("Please select at least one worker.")
                     elif not f_gate_label:
                         st.error("Gate/Activity is missing.")
                     else:
+                        # Convert list of workers to a single string for storage
+                        worker_string = ", ".join(f_wrk_list)
+                        
                         conn.table("production").insert({
                             "Job_Code": f_job, 
                             "Activity": str(f_gate_label),
-                            "Worker": f_wrk, 
+                            "Worker": worker_string, # Now stores "Fitter, Helper1, Helper2"
                             "Hours": f_hrs, 
                             "Output": f_out, 
                             "Unit": f_unit,
@@ -129,7 +133,7 @@ with tab_entry:
                             "created_at": datetime.now(IST).isoformat()
                         }).execute()
                         st.cache_data.clear()
-                        st.success("Logged successfully!")
+                        st.success(f"Logged {len(f_wrk_list)} workers successfully!")
                         st.rerun()
 
 # --- TAB 4: MASTER SETTINGS ---
