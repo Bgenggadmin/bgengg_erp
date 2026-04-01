@@ -166,28 +166,52 @@ with tabs[0]:
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- NEW TAB: STAFF DATA HISTORY ---
+# --- TAB 2: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
     
     h_col1, h_col2 = st.columns([1, 2])
     with h_col1:
-        hist_type = st.radio("Select View", ["My Work Logs", "My Attendance History"], horizontal=True)
+        # Added "My Work Plans" to the options
+        hist_type = st.radio("Select View", ["My Work Logs", "My Attendance History", "My Work Plans"], horizontal=True)
         hist_range = st.date_input("Select Date Range", [date.today() - timedelta(days=7), date.today()])
 
     if len(hist_range) == 2:
         start_d, end_d = hist_range
-        table_name = "work_logs" if hist_type == "My Work Logs" else "attendance_logs"
-        date_col = "work_date"
         
+        # Determine correct table and date column
+        if hist_type == "My Work Logs":
+            table_name = "work_logs"
+            date_col = "work_date"
+        elif hist_type == "My Attendance History":
+            table_name = "attendance_logs"
+            date_col = "work_date"
+        else: # My Work Plans
+            table_name = "work_plans"
+            date_col = "plan_date"
+        
+        # Fetch data filtered by identified user and date range
         hist_res = conn.table(table_name).select("*").eq("employee_name", att_user).gte(date_col, str(start_d)).lte(date_col, str(end_d)).order(date_col, desc=True).execute().data
         
         if hist_res:
             df_hist = pd.DataFrame(hist_res)
-            st.dataframe(df_hist, use_container_width=True, hide_index=True)
-            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"{att_user}_history.csv")
+            
+            # Clean up display columns based on type
+            if hist_type == "My Work Plans":
+                display_cols = ['plan_date', 'job_no', 'planned_task', 'planned_hours', 'status']
+            elif hist_type == "My Work Logs":
+                display_cols = ['work_date', 'task_description', 'hours_spent']
+            else:
+                display_cols = ['work_date', 'punch_in', 'punch_out']
+
+            # Ensure only available columns are shown
+            existing_cols = [c for c in display_cols if c in df_hist.columns]
+            
+            st.write(f"### {hist_type} Records")
+            st.dataframe(df_hist[existing_cols], use_container_width=True, hide_index=True)
+            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"{att_user}_{table_name}.csv")
         else:
-            st.info("No records found for the selected range.")
+            st.info(f"No {hist_type} records found for the selected range.")
 
 # --- TAB 3 & 4: LEAVE & BALANCE ---
 with tabs[2]:
