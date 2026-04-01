@@ -64,23 +64,24 @@ tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Lea
 
 # --- TAB 0: ATTENDANCE & WORK LOGS ---
 with tabs[0]:
-    st.subheader("🕒 Daily Tracker")
+    st.subheader("🕒 Daily Time Office & Productivity Tracker")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     
     if att_user == FREELANCER_NAME:
         f_key = st.text_input("Freelancer Access Key", type="password")
         if f_key != "abhi2026":
-            st.warning("Please enter valid key."); st.stop()
+            st.warning("Please enter valid key.")
+            st.stop()
             
     today = str(date.today())
 
-    st.markdown("### 🏗️ My Work Plan")
+    st.markdown("### 🏗️ My Work Plan & Pending Tasks")
     plan_col1, plan_col2 = st.columns([1.5, 2.5])
     with plan_col1:
         with st.form("quick_plan_form", clear_on_submit=True):
             p_job = st.selectbox("Job No", get_job_codes(), key="quick_p_job")
             p_task = st.text_input("Task/Pending Work")
-            p_hrs = st.number_input("Est. Hours", min_value=0.5, value=1.0, step=0.5)
+            p_hrs = st.number_input("Est. Hours", min_value=0.5, max_value=12.0, value=1.0, step=0.5)
             if st.form_submit_button("📌 Add to Plan"):
                 if p_task:
                     conn.table("work_plans").insert({"employee_name": att_user, "job_no": p_job, "planned_task": p_task, "planned_hours": p_hrs, "plan_date": today, "status": "Pending"}).execute()
@@ -91,14 +92,16 @@ with tabs[0]:
             for p in my_plans:
                 t_col, b_col = st.columns([4, 1.2])
                 if p['status'] == 'Pending':
-                    t_col.info(f"📍 **[{p['job_no']}]** {p['planned_task']}")
+                    t_col.info(f"📍 **[{p['job_no']}]** {p['planned_task']} — ({p['planned_hours']}h)")
                     if b_col.button("✅ Done", key=f"done_{p['id']}"):
                         conn.table("work_plans").update({"status": "Completed"}).eq("id", p['id']).execute(); st.rerun()
-                else: t_col.success(f"✔️ ~~{p['planned_task']}~~")
+                else: t_col.success(f"✔️ ~~**[{p['job_no']}]** {p['planned_task']}~~")
+        else: st.caption("No plans noted for today yet.")
 
     st.divider()
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
+    move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
     
     if emp_summ_res:
         log_data = emp_summ_res[0]
@@ -110,6 +113,17 @@ with tabs[0]:
         c1.metric("Punch In", start_t.strftime('%I:%M %p'))
         c2.metric("Shift Duration", f"{dur:.2f} hrs")
         c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100 if dur > 0 else 0)}% Eff.")
+        
+        st.write("#### 📑 Activity Summaries")
+        sl, sr = st.columns(2)
+        with sl:
+            with st.expander(f"Today's Work Logs ({len(work_summ_res)})"):
+                for w in work_summ_res: st.caption(f"✅ {w['task_description']} ({w['hours_spent']}h)")
+        with sr:
+            with st.expander(f"Today's Movements ({len(move_summ_res)})"):
+                for m in move_summ_res:
+                    out_t = pd.to_datetime(m['exit_time']).tz_convert(IST).strftime('%I:%M %p')
+                    st.caption(f"🚶 {out_t} | {m['destination']}")
 
     st.divider()
     due_slot = is_log_due(att_user)
@@ -119,8 +133,11 @@ with tabs[0]:
             slot_time = st.selectbox("Slot", LOG_SLOTS, index=LOG_SLOTS.index(due_slot), format_func=get_ampm_label)
             job_code = st.selectbox("Job No", get_job_codes())
             task_desc = st.text_area("Detail")
-            if st.form_submit_button("✅ Submit"):
+            cf1, cf2 = st.columns(2)
+            if cf1.form_submit_button("✅ Submit"):
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
+            if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
+                st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
     ca, cb, cc = st.columns([1.8, 1.5, 2.5])
@@ -131,27 +148,33 @@ with tabs[0]:
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute(); st.rerun()
         else:
             if not emp_summ_res[0].get('punch_out'):
+                # --- ADDED: SYSTEM PROMISE & RATING ---
                 with st.container(border=True):
                     st.markdown("**🛡️ System Commitment**")
                     sys_promise = st.checkbox("I am dedicated to B&G’s systems. Following the system today is my path to precision.", key="sys_promise")
+                    
                     st.markdown("**🌟 Productivity Self-Rating**")
-                    work_sat = st.feedback("stars", key="productivity_stars")
+                    work_sat = st.feedback("stars", key="potential_rating")
                     st.caption("I am working at my 100% potential. My growth fuels B&G’s growth.")
+
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
                         conn.table("attendance_logs").update({
                             "punch_out": get_now_ist().isoformat(),
                             "system_promise": sys_promise,
                             "work_satisfaction": work_sat
                         }).eq("id", emp_summ_res[0]['id']).execute()
-                        st.cache_data.clear(); st.rerun()
-            else: st.success("Shift Completed")
+                        st.rerun()
+            else:
+                st.success("Shift Completed")
+                if emp_summ_res[0].get('work_satisfaction'):
+                    st.write(f"Rating: {'⭐' * int(emp_summ_res[0]['work_satisfaction'])}")
 
     with cb:
         st.markdown("### 🚶 Movement")
         active_move = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         if not active_move:
             with st.form("move_form"):
-                reason = st.selectbox("Category", ["Meeting", "Inspection", "Material", "Lunch", "Personal"])
+                reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Inspection", "Vendor Visit", "Lunch", "Personal"])
                 dest = st.text_input("Destination")
                 if st.form_submit_button("📤 TIME OUT") and dest:
                     conn.table("movement_logs").insert({"employee_name": att_user, "reason": reason, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
@@ -162,87 +185,128 @@ with tabs[0]:
         st.markdown("### 📝 Work log")
         with st.form("manual_work_log"):
             slot_t = st.selectbox("Slot", LOG_SLOTS, format_func=get_ampm_label)
-            job_c = st.selectbox("Job", get_job_codes())
+            job_c = st.selectbox("Job", get_job_codes(), key="man_log_job")
             task = st.text_area("Update")
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- TAB 1: HISTORY ---
+# --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
-    st.subheader(f"📊 Personal History")
-    h_type = st.radio("View", ["Attendance", "Work Logs", "Plans"], horizontal=True)
-    h_range = st.date_input("Select Range", [date.today() - timedelta(days=7), date.today()], key="pers_h_range")
-    if len(h_range) == 2:
-        sd, ed = h_range
-        table, d_col = ("attendance_logs", "work_date") if h_type == "Attendance" else ("work_logs", "work_date") if h_type == "Work Logs" else ("work_plans", "plan_date")
-        h_res = conn.table(table).select("*").eq("employee_name", att_user).gte(d_col, str(sd)).lte(d_col, str(ed)).order(d_col, desc=True).execute().data
-        if h_res:
-            df_h = pd.DataFrame(h_res)
-            st.dataframe(df_h, use_container_width=True, hide_index=True)
-            st.download_button(f"📥 Download {h_type} CSV", data=convert_df(df_h), file_name=f"history.csv")
+    st.subheader(f"📊 Personal History: {att_user}")
+    h_col1, h_col2 = st.columns([1, 2])
+    with h_col1:
+        hist_type = st.radio("Select View", ["My Attendance History", "My Work Logs", "My Work Plans"], horizontal=True)
+        hist_range = st.date_input("Select Date Range", [date.today() - timedelta(days=7), date.today()], key="pers_hist_range")
+    if len(hist_range) == 2:
+        start_d, end_d = hist_range
+        table_name, date_col = ("attendance_logs", "work_date") if hist_type == "My Attendance History" else ("work_logs", "work_date") if hist_type == "My Work Logs" else ("work_plans", "plan_date")
+        hist_res = conn.table(table_name).select("*").eq("employee_name", att_user).gte(date_col, str(start_d)).lte(date_col, str(end_d)).order(date_col, desc=True).execute().data
+        if hist_res:
+            df_hist = pd.DataFrame(hist_res)
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
-# --- TAB 2 & 3 ---
+# --- TAB 2: LEAVE APPLICATION ---
 with tabs[2]:
-    st.subheader("Leave Application")
+    st.subheader("New Leave Application")
     with st.form("leave_form"):
-        l_nm = st.selectbox("Name", get_staff_list(), index=get_staff_list().index(att_user) if att_user in get_staff_list() else 0)
-        l_s, l_e = st.date_input("Start"), st.date_input("End")
-        l_r = st.text_area("Reason")
+        l_emp = st.selectbox("Confirm Your Name", get_staff_list(), index=get_staff_list().index(att_user) if att_user in get_staff_list() else 0)
+        sd, ed = st.date_input("Start"), st.date_input("End")
+        reason_l = st.text_area("Reason")
         if st.form_submit_button("Submit"):
-            conn.table("leave_requests").insert({"employee_name": l_nm, "start_date": str(l_s), "end_date": str(l_e), "reason": l_r, "status": "Pending"}).execute()
+            conn.table("leave_requests").insert({"employee_name": l_emp, "leave_type": "Casual Leave", "start_date": str(sd), "end_date": str(ed), "reason": reason_l, "status": "Pending"}).execute()
             st.success("Submitted"); st.rerun()
 
-with tabs[3]:
-    st.subheader("Balance")
-    u_sel = st.selectbox("Check:", get_staff_list(), key="bal_u")
-    ldf = get_leave_requests()
-    if not ldf.empty:
-        app = ldf[(ldf['employee_name'] == u_sel) & (ldf['status'] == 'Approved')].copy()
-        used = ((pd.to_datetime(app['end_date']) - pd.to_datetime(app['start_date'])).dt.days + 1).sum() if not app.empty else 0
-        st.metric("Casual Leave", f"{int(12 - used)} Left")
+    st.divider()
+    st.subheader("📜 Your Recent Requests & Status")
+    df_l_all = get_leave_requests()
+    if not df_l_all.empty:
+        my_requests = df_l_all[df_l_all['employee_name'] == l_emp].copy()
+        if not my_requests.empty:
+            for _, r in my_requests.head(10).iterrows():
+                with st.container(border=True):
+                    col_a, col_b, col_c = st.columns([3, 2, 1])
+                    col_a.write(f"📅 **{r['start_date']} to {r['end_date']}**")
+                    col_a.caption(f"Reason: {r['reason']}")
+                    s_color = "orange" if r['status'] == 'Pending' else "green" if r['status'] == 'Approved' else "red"
+                    col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
+                    if r['status'] == 'Pending':
+                        if col_c.button("Withdraw", key=f"wd_{r['id']}"):
+                            conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.rerun()
+        else: st.info("No leave records found for you.")
 
-# --- TAB 4: HR ADMIN PANEL (REPAIRED) ---
+# --- TAB 3: BALANCE ---
+with tabs[3]:
+    st.subheader("📊 Your Leave Balance")
+    df_l = get_leave_requests()
+    u_sel = st.selectbox("View Records for:", get_staff_list(), key="bal_u")
+    if not df_l.empty:
+        u_df = df_l[df_l['employee_name'] == u_sel].copy()
+        app_df = u_df[u_df['status'] == 'Approved'].copy()
+        used = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
+        st.metric("Casual Leave Balance", f"{int(12 - used)} Left", f"Used: {int(used)}")
+
+# --- TAB 4: HR ADMIN PANEL ---
 with tabs[4]:
-    if st.text_input("Admin Password", type="password") == "bgadmin":
+    admin_pass = st.text_input("Admin Password", type="password")
+    if admin_pass == "bgadmin":
+        st.markdown("### ⚙️ Admin Controls")
         ac1, ac2 = st.columns(2)
-        s_filt = ac1.selectbox("Filter Staff", ["All Staff"] + get_staff_list())
-        r_filt = ac2.selectbox("Range", ["Today", "Weekly", "Monthly"])
+        s_name = ac1.selectbox("Filter Staff", ["All Staff"] + get_staff_list(), key="adm_filt")
+        export_mode = ac2.selectbox("Range", ["Today", "Weekly", "Monthly"])
         
-        if r_filt == "Today": sr, er = date.today(), date.today()
-        elif r_filt == "Weekly": sr, er = date.today() - timedelta(days=7), date.today()
+        if export_mode == "Today": sr, er = date.today(), date.today()
+        elif export_mode == "Weekly": sr, er = date.today() - timedelta(days=7), date.today()
         else: sr, er = date.today() - timedelta(days=30), date.today()
         
-        adm_tabs = st.tabs(["📈 Analytics", "📜 Leave Position", "🕒 Master Logs", "📬 Leave Approvals"])
+        admin_tabs = st.tabs(["📈 Analytics & Efficiency", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
         
-        with adm_tabs[0]: # Analytics
-            res_a = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
-            if res_a:
-                df_a = pd.DataFrame(res_a)
-                st.markdown("#### ⌛ Late Comers (Today)")
-                df_a['pi_t'] = pd.to_datetime(df_a['punch_in']).dt.tz_convert(IST).dt.time
-                late = df_a[(df_a['work_date'] == str(date.today())) & (df_a['pi_t'] > LATE_THRESHOLD)]
-                st.dataframe(late[['employee_name', 'pi_t']], use_container_width=True)
+        with admin_tabs[0]: # ANALYTICS
+            t_att_raw = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
+            t_work_raw = conn.table("work_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
+            
+            if t_att_raw:
+                df_att = pd.DataFrame(t_att_raw)
+                df_work = pd.DataFrame(t_work_raw) if t_work_raw else pd.DataFrame(columns=['employee_name','hours_spent'])
+                
+                st.markdown("#### ⌛ 1. Late Comers List (Today)")
+                df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
+                late = df_att[(df_att['work_date'] == str(date.today())) & (df_att['p_in_t'] > LATE_THRESHOLD)]
+                st.dataframe(late[['employee_name', 'p_in_t', 'work_date']], use_container_width=True, hide_index=True)
 
-        with adm_tabs[2]: # Master Logs (Standardized Fix)
-            cat = st.radio("Log Category", ["Attendance", "Work Logs", "Movement"], horizontal=True)
-            tbl_n = "attendance_logs" if cat == "Attendance" else "work_logs" if cat == "Work Logs" else "movement_logs"
-            # standardized date filtering column
-            date_col_n = "work_date" if cat != "Movement" else "exit_time"
-            res_logs = conn.table(tbl_n).select("*").gte(date_col_n, str(sr)).execute().data
+                st.markdown("#### 🚀 2. Workforce Log Ranking")
+                work_sum = df_work.groupby('employee_name')['hours_spent'].sum().reset_index().sort_values('hours_spent', ascending=False)
+                st.dataframe(work_sum, use_container_width=True, hide_index=True)
+
+        with admin_tabs[1]: # LEAVE POSITION
+            all_l = get_leave_requests()
+            if not all_l.empty:
+                app_l = all_l[all_l['status'] == 'Approved'].copy()
+                if not app_l.empty:
+                    app_l['days'] = (pd.to_datetime(app_l['end_date']) - pd.to_datetime(app_l['start_date'])).dt.days + 1
+                    l_sum = app_l.groupby('employee_name')['days'].sum().reset_index()
+                    l_sum['Balance'] = 12 - l_sum['days']
+                    st.dataframe(l_sum, use_container_width=True, hide_index=True)
+
+        with admin_tabs[2]: # MASTER LOGS (WITH CSV EXPORT)
+            l_cat = st.radio("Log Category", ["Attendance", "Work Logs", "Movement"], horizontal=True)
+            tbl_n = "attendance_logs" if l_cat == "Attendance" else "work_logs" if l_cat == "Work Logs" else "movement_logs"
+            # Standardized date column for filtering
+            d_col_n = "work_date" if l_cat != "Movement" else "exit_time"
+            res_logs = conn.table(tbl_n).select("*").gte(d_col_n, str(sr)).execute().data
             if res_logs:
                 df_logs = pd.DataFrame(res_logs)
                 st.dataframe(df_logs, use_container_width=True)
-                st.download_button(f"📥 Export {cat} CSV", convert_df(df_logs), f"{cat}_export.csv")
+                st.download_button(f"📥 Export {l_cat} CSV", convert_df(df_logs), f"{l_cat}_export.csv")
 
-        with adm_tabs[3]: # Leave Approvals (Restored)
-            fresh_req = conn.table("leave_requests").select("*").eq("status", "Pending").execute().data
-            if fresh_req:
-                for req in fresh_req:
+        with admin_tabs[3]: # LEAVE APPROVALS
+            pend = conn.table("leave_requests").select("*").eq("status", "Pending").execute().data
+            if pend:
+                for r in pend:
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([2, 3, 1])
-                        c1.write(f"**{req['employee_name']}**")
-                        c2.write(f"📅 {req['start_date']} to {req['end_date']}\n{req['reason']}")
-                        if c3.button("✅ Approve", key=f"ap_{req['id']}"):
-                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", req['id']).execute()
-                            st.cache_data.clear(); st.rerun()
-            else: st.info("No pending requests.")
+                        c1.write(f"**{r['employee_name']}**")
+                        c2.write(f"📅 {r['start_date']} to {r['end_date']}\n{r['reason']}")
+                        if c3.button("✅ Approve", key=f"ap_{r['id']}"):
+                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", r['id']).execute()
+                            st.rerun()
