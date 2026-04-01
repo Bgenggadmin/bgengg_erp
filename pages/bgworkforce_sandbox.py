@@ -64,7 +64,7 @@ def is_log_due(employee_name):
 # --- 4. NAVIGATION ---
 tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Leave Application", "📊 My Balance", "🔐 HR Admin Panel"])
 
-# --- TAB 0: STAFF INTERFACE ---
+# --- TAB 0: ATTENDANCE & WORK LOGS ---
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
@@ -176,41 +176,44 @@ with tabs[1]:
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
-# --- TAB 2: LEAVE APPLICATION (UPDATED WITH STATUS & WITHDRAW) ---
+# --- TAB 2: LEAVE APPLICATION (FIXED) ---
 with tabs[2]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
-        l_emp = st.selectbox("Employee Name", get_staff_list(), key="leave_staff")
+        # We use att_user from the first tab for consistency
+        l_emp = st.selectbox("Confirm Your Name", get_staff_list(), index=get_staff_list().index(att_user) if att_user in get_staff_list() else 0)
         sd, ed = st.date_input("Start"), st.date_input("End")
         reason_l = st.text_area("Reason")
-        if st.form_submit_button("Submit Application"):
+        if st.form_submit_button("Submit"):
             conn.table("leave_requests").insert({"employee_name": l_emp, "leave_type": "Casual Leave", "start_date": str(sd), "end_date": str(ed), "reason": reason_l, "status": "Pending"}).execute()
-            st.success("Submitted successfully!"); st.rerun()
+            st.success("Submitted"); st.rerun()
 
     st.divider()
-    st.subheader("📝 Your Leave Request Status")
-    all_leaves = get_leave_requests()
-    if not all_leaves.empty:
-        my_leaves = all_leaves[all_leaves['employee_name'] == l_emp].copy()
-        if not my_leaves.empty:
-            for _, r in my_leaves.head(5).iterrows():
+    st.subheader("📜 Your Recent Requests & Status")
+    df_l_all = get_leave_requests()
+    if not df_l_all.empty:
+        # Filter only for the person selected in this tab
+        my_requests = df_l_all[df_l_all['employee_name'] == l_emp].copy()
+        if not my_requests.empty:
+            for _, r in my_requests.head(10).iterrows():
                 with st.container(border=True):
-                    c1, c2, c3 = st.columns([3, 2, 1])
-                    c1.write(f"**{r['start_date']} to {r['end_date']}**")
-                    c1.caption(f"Reason: {r['reason']}")
+                    col_a, col_b, col_c = st.columns([3, 2, 1])
+                    col_a.write(f"📅 **{r['start_date']} to {r['end_date']}**")
+                    col_a.caption(f"Reason: {r['reason']}")
                     
-                    status_color = "orange" if r['status'] == "Pending" else "green" if r['status'] == "Approved" else "red"
-                    c2.markdown(f"Status: **:{status_color}[{r['status']}]**")
+                    # Status Color Logic
+                    s_color = "orange" if r['status'] == 'Pending' else "green" if r['status'] == 'Approved' else "red"
+                    col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
                     if r.get('reject_reason'):
-                        c2.caption(f"Admin Note: {r['reject_reason']}")
+                        col_b.caption(f"Note: {r['reject_reason']}")
                     
-                    # Withdrawal Logic
-                    if r['status'] == "Pending":
-                        if c3.button("Withdraw", key=f"wd_{r['id']}"):
+                    # Withdrawal Logic (Only for Pending)
+                    if r['status'] == 'Pending':
+                        if col_c.button("Withdraw", key=f"wd_{r['id']}"):
                             conn.table("leave_requests").delete().eq("id", r['id']).execute()
                             st.rerun()
         else:
-            st.info("No leave history found for you.")
+            st.info("No leave records found for you.")
 
 # --- TAB 3: BALANCE ---
 with tabs[3]:
