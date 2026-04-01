@@ -103,6 +103,7 @@ with tabs[0]:
     st.divider()
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
+    move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
     
     if emp_summ_res:
         log_data = emp_summ_res[0]
@@ -115,6 +116,18 @@ with tabs[0]:
         c2.metric("Shift Duration", f"{dur:.2f} hrs")
         c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
         
+        # --- ADDED MOVEMENT & WORK LOG SUMMARY COLUMNS ---
+        st.write("#### 📑 Activity Summaries")
+        sl, sr = st.columns(2)
+        with sl:
+            with st.expander(f"Today's Work Logs ({len(work_summ_res)})"):
+                for w in work_summ_res: st.caption(f"✅ {w['task_description']} ({w['hours_spent']}h)")
+        with sr:
+            with st.expander(f"Today's Movements ({len(move_summ_res)})"):
+                for m in move_summ_res:
+                    out_t = pd.to_datetime(m['exit_time']).tz_convert(IST).strftime('%I:%M %p')
+                    st.caption(f"🚶 {out_t} | {m['destination']}")
+
     st.divider()
     due_slot = is_log_due(att_user)
     if due_slot:
@@ -176,11 +189,10 @@ with tabs[1]:
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
-# --- TAB 2: LEAVE APPLICATION (FIXED) ---
+# --- TAB 2: LEAVE APPLICATION (FIXED WITH STATUS & WITHDRAW) ---
 with tabs[2]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
-        # We use att_user from the first tab for consistency
         l_emp = st.selectbox("Confirm Your Name", get_staff_list(), index=get_staff_list().index(att_user) if att_user in get_staff_list() else 0)
         sd, ed = st.date_input("Start"), st.date_input("End")
         reason_l = st.text_area("Reason")
@@ -192,7 +204,6 @@ with tabs[2]:
     st.subheader("📜 Your Recent Requests & Status")
     df_l_all = get_leave_requests()
     if not df_l_all.empty:
-        # Filter only for the person selected in this tab
         my_requests = df_l_all[df_l_all['employee_name'] == l_emp].copy()
         if not my_requests.empty:
             for _, r in my_requests.head(10).iterrows():
