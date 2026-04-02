@@ -214,7 +214,7 @@ with tabs[1]:
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
-# --- TAB 2, 3, 4 (LEAVE & ADMIN) REMAIN COMPLETELY UNTOUCHED AS PER YOUR INSTRUCTION ---
+# --- TAB 2: LEAVE APPLICATION (INTEGRATED REQUEST STATUS) ---
 with tabs[2]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
@@ -225,6 +225,32 @@ with tabs[2]:
             conn.table("leave_requests").insert({"employee_name": l_emp, "leave_type": "Casual Leave", "start_date": str(sd), "end_date": str(ed), "reason": reason_l, "status": "Pending"}).execute()
             st.success("Submitted"); st.rerun()
 
+    st.divider()
+    st.subheader("📜 Your Recent Requests & Status")
+    df_l_all = get_leave_requests()
+    if not df_l_all.empty:
+        my_requests = df_l_all[df_l_all['employee_name'] == l_emp].copy()
+        if not my_requests.empty:
+            for _, r in my_requests.head(10).iterrows():
+                with st.container(border=True):
+                    col_a, col_b, col_c = st.columns([3, 2, 1])
+                    col_a.write(f"📅 **{r['start_date']} to {r['end_date']}**")
+                    col_a.caption(f"Reason: {r['reason']}")
+                    
+                    # Status Color Logic
+                    s_color = "orange" if r['status'] == 'Pending' else "green" if r['status'] == 'Approved' else "red"
+                    col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
+                    if r.get('reject_reason'):
+                        col_b.caption(f"Note: {r['reject_reason']}")
+                    
+                    # Withdrawal Logic (Only for Pending)
+                    if r['status'] == 'Pending':
+                        if col_c.button("Withdraw", key=f"wd_{r['id']}"):
+                            conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.rerun()
+        else:
+            st.info("No leave records found for you.")
+
+# --- TAB 3: BALANCE ---
 with tabs[3]:
     st.subheader("📊 Your Leave Balance")
     df_l = get_leave_requests()
@@ -235,6 +261,7 @@ with tabs[3]:
         used = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
         st.metric("Casual Leave Balance", f"{int(12 - used)} Left", f"Used: {int(used)}")
 
+# --- TAB 4: HR ADMIN PANEL ---
 with tabs[4]:
     admin_pass = st.text_input("Admin Password", type="password")
     if admin_pass == "bgadmin":
@@ -261,12 +288,12 @@ with tabs[4]:
                     df_att = df_att[df_att['employee_name'] == s_name]
                     df_work = df_work[df_work['employee_name'] == s_name]
 
-                st.markdown("#### ⌛ Late Comers List")
+                st.markdown("#### ⌛ 1. Late Comers List")
                 df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
                 late = df_att[df_att['p_in_t'] > LATE_THRESHOLD][['work_date', 'employee_name', 'p_in_t']]
                 st.dataframe(late.sort_values('work_date', ascending=False), use_container_width=True, hide_index=True)
 
-                st.markdown("#### 🚀 Workforce Efficiency Ranking")
+                st.markdown("#### 🚀 2. Workforce Efficiency Ranking")
                 df_att['pi_dt'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST)
                 df_att['po_dt'] = pd.to_datetime(df_att['punch_out']).dt.tz_convert(IST).fillna(get_now_ist())
                 df_att['presence_hrs'] = (df_att['po_dt'] - df_att['pi_dt']).dt.total_seconds() / 3600
