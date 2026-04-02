@@ -86,6 +86,7 @@ def generate_pdf(logs):
             pdf.rect(60, pdf.get_y() + 2, (ov_p / 100) * 130, 4, 'F')
         pdf.ln(10)
 
+        # Milestone Table Headers
         pdf.set_font("Arial", "B", 9); pdf.set_fill_color(0, 51, 102); pdf.set_text_color(255, 255, 255)
         pdf.cell(50, 8, " Milestone Item", 1, 0, 'L', True)
         pdf.cell(30, 8, " Status", 1, 0, 'C', True)
@@ -93,23 +94,42 @@ def generate_pdf(logs):
         pdf.cell(80, 8, " Remarks", 1, 1, 'L', True)
         
         pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 8)
+        
         for label, s_key, n_key in MILESTONE_MAP:
             pk = f"{s_key}_prog"
             m_p = int(log.get(pk, 0) or 0)
-            pdf.cell(50, 10, f" {label}", 1)
-            pdf.cell(30, 10, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
-            curr_x, curr_y = pdf.get_x(), pdf.get_y()
-            pdf.cell(30, 10, "", 1, 0) 
-            pdf.set_fill_color(240, 240, 240); pdf.rect(curr_x + 3, curr_y + 4, 24, 2, 'F')
+            remark_text = f" {str(log.get(n_key,'-'))}"
+            
+            curr_x = pdf.get_x()
+            curr_y = pdf.get_y()
+            
+            # Dynamic height calculation for wrapped remarks
+            line_height = 5 
+            nb_lines = len(pdf.multi_cell(80, line_height, remark_text, split_only=True))
+            row_height = max(10, nb_lines * line_height)
+
+            pdf.set_xy(curr_x, curr_y)
+            pdf.cell(50, row_height, f" {label}", 1)
+            pdf.cell(30, row_height, f" {str(log.get(s_key, 'Pending'))}", 1, 0, 'C')
+            
+            prog_x = pdf.get_x()
+            pdf.cell(30, row_height, "", 1, 0) 
+            bar_offset_y = (row_height / 2) - 1 
+            pdf.set_fill_color(240, 240, 240); pdf.rect(prog_x + 3, curr_y + bar_offset_y, 24, 2, 'F')
             if m_p > 0:
-                pdf.set_fill_color(0, 153, 76); pdf.rect(curr_x + 3, curr_y + 4, (min(m_p, 100) / 100) * 24, 2, 'F')
-            pdf.set_xy(curr_x + 30, curr_y)
-            pdf.cell(80, 10, f" {str(log.get(n_key,'-'))}", 1, 1)
+                pdf.set_fill_color(0, 153, 76); pdf.rect(prog_x + 3, curr_y + bar_offset_y, (min(m_p, 100) / 100) * 24, 2, 'F')
+            
+            pdf.set_xy(prog_x + 30, curr_y)
+            pdf.multi_cell(80, (row_height/nb_lines) if nb_lines > 0 else row_height, remark_text, 1, 'L')
+            pdf.set_xy(curr_x, curr_y + row_height)
 
         pdf.ln(10) 
         pdf.set_font("Arial", "B", 10)
         pdf.cell(0, 10, "Progress Documentation Photos:", 0, 1, "L")
         
+        if pdf.get_y() > 230:
+            pdf.add_page()
+            
         start_y = pdf.get_y() 
         img_x = 10
         photo_count = 0
@@ -126,13 +146,12 @@ def generate_pdf(logs):
                         img_x += 48
                         photo_count += 1
                         t_name = tmp_img.name
-                    os.unlink(t_name)
+                        os.unlink(t_name)
             except: continue
 
     if logo_path and os.path.exists(logo_path):
         os.unlink(logo_path)
     return bytes(pdf.output(dest='S'), encoding='latin-1')
-
 # --- 3. DATA FETCH ---
 @st.cache_data(ttl=60)
 def get_master_data():
