@@ -259,8 +259,11 @@ with tab_entry:
 # --- TAB 3: ANALYTICS & REPORTS (TABLES ONLY) ---
 with tab_analytics:
     st.subheader("📊 Production Intelligence Reports")
+    
+    def convert_df_to_csv(df):
+        return df.to_csv(index=False).encode('utf-8')
+
     if not df_logs.empty:
-        # standardizing data types
         df_logs['dt'] = pd.to_datetime(df_logs['created_at'], utc=True, errors='coerce').dt.tz_convert(IST)
         df_logs['date_only'] = df_logs['dt'].dt.date
         df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce').fillna(0)
@@ -283,41 +286,40 @@ with tab_analytics:
             rdf = df_logs.loc[mask].copy()
             
             if not rdf.empty:
-                # Top Row: KPIs
+                # 1. Master KPI Summary
                 k1, k2, k3 = st.columns(3)
                 total_hrs = rdf['Hours'].sum()
                 k1.metric("Total Man-Hours", f"{total_hrs:.1f} hrs")
                 k2.metric("Total Output", f"{rdf['Output'].sum():.0f}")
                 k3.metric("Productivity Index", f"{(rdf['Output'].sum() / total_hrs if total_hrs > 0 else 0):.2f} U/Hr")
                 
-                # Report Export for Raw Data
-                st.download_button("📂 Export Raw Filtered Data", convert_df(rdf), f"raw_report_{period}.csv", "text/csv")
+                st.download_button("📂 Export All Filtered Data (Heads)", convert_df_to_csv(rdf), f"bg_full_report_{period}.csv", "text/csv")
                 
                 st.divider()
                 
-                # Head 1: Job Summary Table
-                st.markdown("#### 🏗️ Job-wise Performance Summary")
+                # 2. Job-wise Summary Table
+                st.markdown("#### 🏗️ Job-wise Performance Report")
                 job_sum = rdf.groupby('Job_Code').agg({
                     'Hours': 'sum',
                     'Output': 'sum'
-                }).reset_index()
-                job_sum['Eff Index'] = (job_sum['Output'] / job_sum['Hours']).round(2)
+                }).reset_index().rename(columns={'Hours': 'Total Hours', 'Output': 'Total Output'})
+                job_sum['Efficiency (U/Hr)'] = (job_sum['Total Output'] / job_sum['Total Hours']).round(2).fillna(0)
                 st.dataframe(job_sum, use_container_width=True, hide_index=True)
-                st.download_button("📥 Export Job Summary", convert_df(job_sum), f"job_summary_{period}.csv")
+                st.download_button("📥 Export Job Summary", convert_df_to_csv(job_sum), f"job_summary_{period}.csv")
                 
                 st.divider()
 
-                # Head 2: Worker Contribution Table
-                st.markdown("#### 👷 Worker Contribution Summary")
+                # 3. Worker Contribution Table
+                st.markdown("#### 👷 Worker Contribution Report")
                 worker_sum = rdf.groupby('Worker').agg({
                     'Hours': 'sum',
                     'Output': 'sum'
-                }).reset_index()
+                }).reset_index().rename(columns={'Hours': 'Hours Logged', 'Output': 'Units Completed'})
                 st.dataframe(worker_sum, use_container_width=True, hide_index=True)
-                st.download_button("📥 Export Worker Summary", convert_df(worker_sum), f"worker_summary_{period}.csv")
+                st.download_button("📥 Export Worker Summary", convert_df_to_csv(worker_sum), f"worker_summary_{period}.csv")
 
             else:
-                st.warning("No data matches filters.")
+                st.warning("No data matches the selected filters.")
 
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
