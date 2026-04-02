@@ -107,10 +107,8 @@ with tabs[0]:
     
     if emp_summ_res:
         log_data = emp_summ_res[0]
-        # SAFETY FIX: Handling Null Punch data
         raw_in = log_data.get('punch_in')
         start_t = pd.to_datetime(raw_in).tz_convert(IST) if pd.notnull(raw_in) else None
-        
         raw_out = log_data.get('punch_out')
         end_t = pd.to_datetime(raw_out).tz_convert(IST) if pd.notnull(raw_out) else get_now_ist()
         
@@ -121,8 +119,6 @@ with tabs[0]:
             c1.metric("Punch In", start_t.strftime('%I:%M %p'))
             c2.metric("Shift Duration", f"{dur:.2f} hrs")
             c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
-        else:
-            c1.warning("No Punch-In data found for today.")
         
         st.write("#### 📑 Activity Summaries")
         sl, sr = st.columns(2)
@@ -138,7 +134,7 @@ with tabs[0]:
     st.divider()
     due_slot = is_log_due(att_user)
     if due_slot:
-        st.warning(f"MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
+        st.warning(f"🔔 MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
         with st.form("mandatory_log_form"):
             slot_time = st.selectbox("Slot", LOG_SLOTS, index=LOG_SLOTS.index(due_slot), format_func=get_ampm_label)
             job_code = st.selectbox("Job No", get_job_codes())
@@ -146,6 +142,7 @@ with tabs[0]:
             cf1, cf2 = st.columns(2)
             if cf1.form_submit_button("✅ Submit"):
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
+            # RESTORED SNOOZE LOGIC
             if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
@@ -182,7 +179,7 @@ with tabs[0]:
         active_move = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         if not active_move:
             with st.form("move_form"):
-                reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Inspection", "Vendor Visit", "Lunch", "Personal"])
+                reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Inspection", "Lunch", "Personal"])
                 dest = st.text_input("Destination")
                 if st.form_submit_button("📤 TIME OUT") and dest:
                     conn.table("movement_logs").insert({"employee_name": att_user, "reason": reason, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
@@ -214,7 +211,7 @@ with tabs[1]:
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
-# --- TAB 2: LEAVE APPLICATION (INTEGRATED REQUEST STATUS) ---
+# --- TAB 2: LEAVE APPLICATION & STATUS ---
 with tabs[2]:
     st.subheader("New Leave Application")
     with st.form("leave_form"):
@@ -236,19 +233,13 @@ with tabs[2]:
                     col_a, col_b, col_c = st.columns([3, 2, 1])
                     col_a.write(f"📅 **{r['start_date']} to {r['end_date']}**")
                     col_a.caption(f"Reason: {r['reason']}")
-                    
-                    # Status Color Logic
                     s_color = "orange" if r['status'] == 'Pending' else "green" if r['status'] == 'Approved' else "red"
                     col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
-                    if r.get('reject_reason'):
-                        col_b.caption(f"Note: {r['reject_reason']}")
-                    
-                    # Withdrawal Logic (Only for Pending)
+                    if r.get('reject_reason'): col_b.caption(f"Note: {r['reject_reason']}")
                     if r['status'] == 'Pending':
                         if col_c.button("Withdraw", key=f"wd_{r['id']}"):
                             conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.rerun()
-        else:
-            st.info("No leave records found for you.")
+        else: st.info("No leave records found for you.")
 
 # --- TAB 3: BALANCE ---
 with tabs[3]:
@@ -288,12 +279,12 @@ with tabs[4]:
                     df_att = df_att[df_att['employee_name'] == s_name]
                     df_work = df_work[df_work['employee_name'] == s_name]
 
-                st.markdown("#### ⌛ 1. Late Comers List")
+                st.markdown("#### ⌛ Late Comers List")
                 df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
                 late = df_att[df_att['p_in_t'] > LATE_THRESHOLD][['work_date', 'employee_name', 'p_in_t']]
                 st.dataframe(late.sort_values('work_date', ascending=False), use_container_width=True, hide_index=True)
 
-                st.markdown("#### 🚀 2. Workforce Efficiency Ranking")
+                st.markdown("#### 🚀 Workforce Efficiency Ranking")
                 df_att['pi_dt'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST)
                 df_att['po_dt'] = pd.to_datetime(df_att['punch_out']).dt.tz_convert(IST).fillna(get_now_ist())
                 df_att['presence_hrs'] = (df_att['po_dt'] - df_att['pi_dt']).dt.total_seconds() / 3600
@@ -324,4 +315,4 @@ with tabs[4]:
                         with c3.popover("❌ Reject"):
                             rn = st.text_input("Reason", key=f"rn_{row['id']}")
                             if st.button("Confirm Reject", key=f"rb_{row['id']}"):
-                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.rerun()
+                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.cache_data.clear(); st.rerun()
