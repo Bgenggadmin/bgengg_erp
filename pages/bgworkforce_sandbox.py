@@ -284,6 +284,25 @@ with tabs[4]:
                 eff['Eff %'] = (eff['hours_spent'] / eff['presence_hrs'] * 100).round(1)
                 st.dataframe(eff.sort_values('Eff %', ascending=False), use_container_width=True, hide_index=True)
 
+        with admin_tabs[1]: # RESTORED: Staff Leave Position
+            st.subheader("📜 Staff Leave Balance Summary")
+            all_l_raw = get_leave_requests()
+            if not all_l_raw.empty:
+                app_l = all_l_raw[all_l_raw['status'] == 'Approved'].copy()
+                if not app_l.empty:
+                    app_l['days'] = (pd.to_datetime(app_l['end_date']) - pd.to_datetime(app_l['start_date'])).dt.days + 1
+                    leave_sum = app_l.groupby('employee_name')['days'].sum().reset_index()
+                    leave_sum.columns = ['Employee Name', 'Used Days']
+                    leave_sum['Balance'] = 12 - leave_sum['Used Days']
+                    
+                    if s_name != "All Staff":
+                        leave_sum = leave_sum[leave_sum['Employee Name'] == s_name]
+                    st.dataframe(leave_sum, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No approved leave records found.")
+            else:
+                st.info("No leave records found.")
+
         with admin_tabs[2]: # Detailed Logs
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             tbl = "attendance_logs" if l_type == "Attendance" else "work_logs" if l_type == "Work Logs" else "movement_logs" if l_type == "Movement" else "work_plans"
@@ -297,14 +316,18 @@ with tabs[4]:
         with admin_tabs[3]: # Leave Approval logic
             pend = get_leave_requests()
             if not pend.empty:
-                for _, row in pend[pend['status'] == 'Pending'].iterrows():
-                    with st.container(border=True):
-                        c1, c2, c3 = st.columns([2, 3, 2])
-                        c1.write(f"**{row['employee_name']}**")
-                        c2.write(f"📅 {row['start_date']} to {row['end_date']}\n{row['reason']}")
-                        if c3.button("✅ Approve", key=f"ap_{row['id']}"):
-                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
-                        with c3.popover("❌ Reject"):
-                            rn = st.text_input("Reason", key=f"rn_{row['id']}")
-                            if st.button("Confirm Reject", key=f"rb_{row['id']}"):
-                                conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.cache_data.clear(); st.rerun()
+                to_approve = pend[pend['status'] == 'Pending']
+                if not to_approve.empty:
+                    for _, row in to_approve.iterrows():
+                        with st.container(border=True):
+                            c1, c2, c3 = st.columns([2, 3, 2])
+                            c1.write(f"**{row['employee_name']}**")
+                            c2.write(f"📅 {row['start_date']} to {row['end_date']}\n{row['reason']}")
+                            if c3.button("✅ Approve", key=f"ap_{row['id']}"):
+                                conn.table("leave_requests").update({"status": "Approved"}).eq("id", row['id']).execute(); st.rerun()
+                            with c3.popover("❌ Reject"):
+                                rn = st.text_input("Reason", key=f"rn_{row['id']}")
+                                if st.button("Confirm Reject", key=f"rb_{row['id']}"):
+                                    conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.cache_data.clear(); st.rerun()
+                else:
+                    st.success("No pending approval requests.")
