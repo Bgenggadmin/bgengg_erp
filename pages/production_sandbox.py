@@ -223,13 +223,22 @@ with tab_entry:
                 
                 if st.form_submit_button("🚀 Log Progress"):
                     if f_wrks:
-                        conn.table("production").insert({
-                            "Job_Code": f_job, "Activity": f_act, 
-                            "Worker": ", ".join(f_wrks), "Hours": f_hrs, 
-                            "Output": f_out, "Unit": f_unit, "notes": f_notes,
+                        # Create a list of entries, one for each worker
+                        # Each worker gets the 'f_hrs' (Per Person) 
+                        # and a proportional share of the output
+                        payload = [{
+                            "Job_Code": f_job, 
+                            "Activity": f_act, 
+                            "Worker": w,                 # Individual worker name
+                            "Hours": f_hrs,             # Full hours per person
+                            "Output": f_out / len(f_wrks), # Output shared equally
+                            "Unit": f_unit, 
+                            "notes": f_notes,
                             "created_at": datetime.now(IST).isoformat()
-                        }).execute()
-                        st.cache_data.clear(); st.success("Logged!"); st.rerun()
+                        } for w in f_wrks]
+                        
+                        conn.table("production").insert(payload).execute()
+                        st.cache_data.clear(); st.success(f"Logged for {len(f_wrks)} workers!"); st.rerun()
                     else:
                         st.error("Please select at least one worker.")
 
