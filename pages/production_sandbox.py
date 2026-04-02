@@ -49,13 +49,12 @@ all_jobs = sorted(df_projects['job_no'].astype(str).unique().tolist()) if not df
 # --- 4. NAVIGATION ---
 tab_plan, tab_entry, tab_analytics, tab_master = st.tabs(["🏗️ Scheduling & Execution", "👷 Daily Entry", "📊 Analytics & Reports", "⚙️ Master Settings"])
 
-# --- TAB 1: SCHEDULING & EXECUTION (WITH RATING LOGIC) ---
+# --- TAB 1: SCHEDULING & EXECUTION ---
 with tab_plan:
     st.subheader("📋 Production Control Center")
     target_job = st.selectbox("Select Job to Manage", ["-- Select --"] + all_jobs)
     
     if target_job != "-- Select --":
-        # Delivery Dashboard Logic
         proj_match = df_projects[df_projects['job_no'] == target_job]
         if not proj_match.empty:
             p_data = proj_match.iloc[0]
@@ -85,12 +84,11 @@ with tab_plan:
                     
                     elif row['current_status'] == "Active":
                         col2.info("🚀 Active")
-                        # --- PUNCH OUT DIALOG WITH RATING ---
                         if col4.button("✅ Close", key=f"cl_{row['id']}", use_container_width=True):
                             @st.dialog("Work Performance Review")
                             def punch_out_with_rating(step_data):
                                 st.write(f"Punching out from: **{step_data['gate_name']}**")
-                                rating = st.feedback("stars") # 1-5 Scale
+                                rating = st.feedback("stars")
                                 final_rem = st.text_area("Quality / Delay Remarks")
                                 
                                 if st.button("Confirm Final Punch-Out"):
@@ -109,7 +107,7 @@ with tab_plan:
                         if pd.notnull(row.get('rating')):
                             col3.write("⭐" * int(row['rating']))
 
-# --- TAB 2: DAILY ENTRY (MULTI-WORKERS & SUB-TASKS) ---
+# --- TAB 2: DAILY ENTRY (INTEGRATED MULTI-WORKER SELECTION) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
@@ -125,20 +123,25 @@ with tab_entry:
                 sub_tasks = [s.strip() for s in str(gate_rec.get('sub_task', 'General')).split(",")]
                 
                 f_sub = f1.selectbox("Specific Sub-Task", sub_tasks)
+                # UPDATED: Changed from selectbox to multiselect for workers
                 f_wrk_list = f1.multiselect("Workers Involved", all_workers)
+                
                 f_hrs = f2.number_input("Hrs (Per Person)", min_value=0.0, step=0.5)
                 f_out = f3.number_input("Qty Produced", min_value=0.0)
                 f_notes = st.text_input("Remarks")
                 
                 if st.form_submit_button("🚀 Log Progress"):
                     if f_wrk_list:
+                        # Logic converts list to comma-separated string for database Worker column
                         conn.table("production").insert({
                             "Job_Code": f_job, "Activity": f_gate, "sub_task": f_sub,
                             "Worker": ", ".join(f_wrk_list), "Hours": f_hrs, "Output": f_out, "notes": f_notes
                         }).execute()
                         st.cache_data.clear(); st.success("Logged!"); st.rerun()
+                    else:
+                        st.error("Please select at least one worker.")
 
-# --- TAB 4: MASTER SETTINGS (APPEND SUB-TASK LOGIC) ---
+# --- TAB 4: MASTER SETTINGS ---
 with tab_master:
     st.subheader("⚙️ Gate & Sub-Task Master")
     with st.form("append_subtask"):
