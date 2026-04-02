@@ -291,7 +291,12 @@ with tab_analytics:
             f_workers = c3.multiselect("Filter Workers", all_workers, default=all_workers)
 
         if len(d_range) == 2:
-            mask = (df_logs['date_only'] >= d_range[0]) & (df_logs['date_only'] <= d_range[1]) & (df_logs['Job_Code'].isin(f_jobs))
+            # Updated Mask includes the worker filter
+            mask = (df_logs['date_only'] >= d_range[0]) & \
+                   (df_logs['date_only'] <= d_range[1]) & \
+                   (df_logs['Job_Code'].isin(f_jobs)) & \
+                   (df_logs['Worker'].isin(f_workers)) # <--- ADD THIS LINE
+
             rdf = df_logs.loc[mask].copy()
             
             if not rdf.empty:
