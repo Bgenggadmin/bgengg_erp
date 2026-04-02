@@ -207,12 +207,23 @@ with tabs[1]:
 
                     st.divider()
                     
-                    # Financials
+                    # Financials Row
                     f1, f2, f3, f4 = st.columns(4)
                     u_val = f1.number_input("Est. Value (₹)", value=float(row.get('estimated_value') or 0), key=f"val_{row['id']}")
                     u_act_val = f2.number_input("Actual PO Value (₹)", value=float(row.get('actual_value') or 0), key=f"act_val_{row['id']}")
                     u_qref = f3.text_input("Quote Ref.", value=row.get('quote_ref') or "", key=f"qref_{row['id']}")
-                    u_qdate = f4.date_input("Quote Date", value=pd.to_datetime(row['quote_date']).date() if row['quote_date'] else datetime.now(), key=f"qdt_{row['id']}")
+                    
+                    # --- FIXED & CRASH-PROOF QUOTE DATE (Line 215) ---
+                    raw_q_date = pd.to_datetime(row.get('quote_date'))
+                    u_qdate = f4.date_input(
+                        "Quote Date", 
+                        value=raw_q_date.date() if pd.notnull(raw_q_date) else date.today(), 
+                        key=f"qdt_{row['id']}"
+                    )
+                    
+                    if row['status'] == "Won" and u_act_val > 0:
+                        variance = u_act_val - u_val
+                        st.markdown(f"**Margin Variance:** :{'green' if variance >= 0 else 'red'}[₹{variance:,.0f}]")
                     
                     if row['status'] == "Won" and u_act_val > 0:
                         variance = u_act_val - u_val
