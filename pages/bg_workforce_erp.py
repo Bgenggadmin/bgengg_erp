@@ -102,8 +102,12 @@ with tabs[0]:
     st.divider()
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
-    move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
+    move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
     
+    # Initialize state variables
+    sys_promise = False
+    work_sat = 0
+
     if emp_summ_res:
         log_data = emp_summ_res[0]
         raw_in = log_data.get('punch_in')
@@ -111,13 +115,30 @@ with tabs[0]:
         raw_out = log_data.get('punch_out')
         end_t = pd.to_datetime(raw_out).tz_convert(IST) if pd.notnull(raw_out) else get_now_ist()
         
+        # --- NEW STATEMENT OF COMMITMENT BANNER ---
+        if not log_data.get('punch_out'):
+            st.markdown(
+                """
+                <div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:15px;">
+                    <p style="font-size:20px; font-weight:bold; color:#1f1f1f; margin:0;">
+                        "I am dedicated to B&G’s systems. Following the system today is my path to precision."
+                    </p>
+                </div>
+                """, 
+                unsafe_allow_html=True
+            )
+            # Checkbox placed right under the statement banner
+            sys_promise = st.checkbox("🛡️ I acknowledge and commit to the above statement for today's shift.", key="sys_promise")
+        
+        # --- METRICS ROW (c1, c2, c3) ---
         c1, c2, c3 = st.columns(3)
         if start_t:
             dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
             logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
+            
             c1.metric("Punch In", start_t.strftime('%I:%M %p'))
             c2.metric("Shift Duration", f"{dur:.2f} hrs")
-            c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
+            c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100 if dur > 0 else 0)}% Eff.")
 
         st.write("#### 📑 Activity Summaries")
         sl, sr = st.columns(2)
@@ -154,13 +175,16 @@ with tabs[0]:
         else:
             if not emp_summ_res[0].get('punch_out'):
                 with st.container(border=True):
-                    st.markdown("**🛡️ System Commitment**")
-                    sys_promise = st.checkbox("I am dedicated to B&G’s systems. Following the system today is my promise.", key="sys_promise")
                     st.markdown("**🌟 Productivity Rating**")
                     work_sat = st.feedback("stars", key="productivity_stars")
-                    st.caption("I am working at my 100% potential. B&G’s growth fuels My growth.")
+                    st.caption("I am working at my 100% potential. My growth fuels B&G’s growth.")
+                    
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
-                        conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat(), "system_promise": sys_promise, "work_satisfaction": work_sat}).eq("id", emp_summ_res[0]['id']).execute()
+                        conn.table("attendance_logs").update({
+                            "punch_out": get_now_ist().isoformat(), 
+                            "system_promise": sys_promise, 
+                            "work_satisfaction": work_sat
+                        }).eq("id", emp_summ_res[0]['id']).execute()
                         st.cache_data.clear(); st.rerun()
             else:
                 st.success("Shift Completed")
@@ -187,7 +211,6 @@ with tabs[0]:
             task = st.text_area("Update")
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
-
 # --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
