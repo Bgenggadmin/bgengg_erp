@@ -115,7 +115,7 @@ with tabs[0]:
         raw_out = log_data.get('punch_out')
         end_t = pd.to_datetime(raw_out).tz_convert(IST) if pd.notnull(raw_out) else get_now_ist()
         
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 1.5])
         if start_t:
             dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
             logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
@@ -128,6 +128,9 @@ with tabs[0]:
                 
             c2.metric("Shift Duration", f"{dur:.2f} hrs")
             c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
+            with c4:
+                if not log_data.get('punch_out'):
+                    sys_promise = st.checkbox("🛡️ Dedicated to B&G’s systems", key="sys_promise")
 
         st.write("#### 📑 Activity Summaries")
         sl, sr = st.columns(2)
