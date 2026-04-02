@@ -329,12 +329,29 @@ with tabs[4]:
         with admin_tabs[2]: # Detailed Logs
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             tbl = "attendance_logs" if l_type == "Attendance" else "work_logs" if l_type == "Work Logs" else "movement_logs" if l_type == "Movement" else "work_plans"
-            res = conn.table(tbl).select("*").gte("created_at", str(sr)).execute().data
-            if res:
-                df_v = pd.DataFrame(res)
-                if s_name != "All Staff": df_v = df_v[df_v['employee_name'] == s_name]
-                st.dataframe(df_v, hide_index=True, use_container_width=True)
-                st.download_button(f"📥 Export {l_type}", data=convert_df(df_v), file_name=f"admin_export.csv")
+            
+            # --- STABILIZED & CRASH-PROOF QUERY ---
+            try:
+                # We cast the date sr to a ISO string starting at midnight to ensure Supabase compares it correctly
+                start_timestamp = f"{sr}T00:00:00Z" 
+                
+                res_obj = conn.table(tbl).select("*").gte("created_at", start_timestamp).execute()
+                res = res_obj.data
+                
+                if res:
+                    df_v = pd.DataFrame(res)
+                    # Clean up data: ensure employee_name exists before filtering
+                    if 'employee_name' in df_v.columns:
+                        if s_name != "All Staff": 
+                            df_v = df_v[df_v['employee_name'] == s_name]
+                    
+                    st.dataframe(df_v, hide_index=True, use_container_width=True)
+                    st.download_button(f"📥 Export {l_type}", data=convert_df(df_v), file_name=f"{l_type}_export.csv")
+                else:
+                    st.info(f"No records found in {l_type} from {sr} onwards.")
+                    
+            except Exception as e:
+                st.error(f"⚠️ Table Error: Could not fetch data from '{tbl}'. This usually happens if a column name is missing. Details: {e}")
 
         with admin_tabs[3]: # Leave Approval logic
             pend = get_leave_requests()
