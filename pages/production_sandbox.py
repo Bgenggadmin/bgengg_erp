@@ -3,7 +3,6 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date, timedelta
 import pytz
-import plotly.express as px
 
 # --- 1. SETUP & CONNECTION ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -199,7 +198,7 @@ with tab_plan:
                             act_end = pd.to_datetime(row['actual_end_date']).date()
                             col3.caption(f"Finished: {act_end.strftime('%d %b')}")
 
-# --- TAB 2: DAILY ENTRY (UPDATED TO MULTI-WORKER) ---
+# --- TAB 2: DAILY ENTRY (MULTI-WORKER) ---
 with tab_entry:
     st.subheader("👷 Labor & Output Tracking")
     f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
@@ -215,7 +214,6 @@ with tab_entry:
             with st.form("prod_form", clear_on_submit=True):
                 f1, f2, f3 = st.columns(3)
                 f_act = f1.selectbox("Gate", form_gates)
-                # CHANGED: Selectbox to Multiselect for Workers
                 f_wrks = f1.multiselect("Workers Involved", all_workers)
                 
                 f_hrs = f2.number_input("Hrs (Per Person)", min_value=0.0, step=0.5)
@@ -225,7 +223,6 @@ with tab_entry:
                 
                 if st.form_submit_button("🚀 Log Progress"):
                     if f_wrks:
-                        # Join the list into a comma-separated string for the Worker column
                         conn.table("production").insert({
                             "Job_Code": f_job, "Activity": f_act, 
                             "Worker": ", ".join(f_wrks), "Hours": f_hrs, 
@@ -259,10 +256,11 @@ with tab_entry:
         
         st.dataframe(display_logs[['Time (IST)', 'Job_Code', 'Activity', 'Worker', 'Hours', 'Output', 'Unit', 'notes']].head(20), use_container_width=True, hide_index=True)
 
-# --- TAB 3: ENHANCED ANALYTICS ---
+# --- TAB 3: ANALYTICS & REPORTS (TABLES ONLY) ---
 with tab_analytics:
-    st.subheader("📊 Production Intelligence")
+    st.subheader("📊 Production Intelligence Reports")
     if not df_logs.empty:
+        # standardizing data types
         df_logs['dt'] = pd.to_datetime(df_logs['created_at'], utc=True, errors='coerce').dt.tz_convert(IST)
         df_logs['date_only'] = df_logs['dt'].dt.date
         df_logs['Hours'] = pd.to_numeric(df_logs['Hours'], errors='coerce').fillna(0)
@@ -276,24 +274,50 @@ with tab_analytics:
             elif period == "Last 7 Days": d_range = [today - timedelta(days=7), today]
             elif period == "Current Month": d_range = [today.replace(day=1), today]
             else: d_range = c1.date_input("Select Range", [today - timedelta(days=30), today])
+            
             f_jobs = c2.multiselect("Filter Jobs", all_jobs, default=all_jobs)
             f_workers = c3.multiselect("Filter Workers", all_workers, default=all_workers)
 
         if len(d_range) == 2:
             mask = (df_logs['date_only'] >= d_range[0]) & (df_logs['date_only'] <= d_range[1]) & (df_logs['Job_Code'].isin(f_jobs))
             rdf = df_logs.loc[mask].copy()
+            
             if not rdf.empty:
+                # Top Row: KPIs
                 k1, k2, k3 = st.columns(3)
                 total_hrs = rdf['Hours'].sum()
                 k1.metric("Total Man-Hours", f"{total_hrs:.1f} hrs")
                 k2.metric("Total Output", f"{rdf['Output'].sum():.0f}")
                 k3.metric("Productivity Index", f"{(rdf['Output'].sum() / total_hrs if total_hrs > 0 else 0):.2f} U/Hr")
                 
-                v1, v2 = st.columns(2)
-                job_data = rdf.groupby('Job_Code')['Hours'].sum().reset_index()
-                v1.plotly_chart(px.bar(job_data, x='Job_Code', y='Hours', title="Hours per Job"), use_container_width=True)
-                worker_data = rdf.groupby('Worker')['Hours'].sum().reset_index()
-                v2.plotly_chart(px.pie(worker_data, values='Hours', names='Worker', title="Worker Contribution"), use_container_width=True)
+                # Report Export for Raw Data
+                st.download_button("📂 Export Raw Filtered Data", convert_df(rdf), f"raw_report_{period}.csv", "text/csv")
+                
+                st.divider()
+                
+                # Head 1: Job Summary Table
+                st.markdown("#### 🏗️ Job-wise Performance Summary")
+                job_sum = rdf.groupby('Job_Code').agg({
+                    'Hours': 'sum',
+                    'Output': 'sum'
+                }).reset_index()
+                job_sum['Eff Index'] = (job_sum['Output'] / job_sum['Hours']).round(2)
+                st.dataframe(job_sum, use_container_width=True, hide_index=True)
+                st.download_button("📥 Export Job Summary", convert_df(job_sum), f"job_summary_{period}.csv")
+                
+                st.divider()
+
+                # Head 2: Worker Contribution Table
+                st.markdown("#### 👷 Worker Contribution Summary")
+                worker_sum = rdf.groupby('Worker').agg({
+                    'Hours': 'sum',
+                    'Output': 'sum'
+                }).reset_index()
+                st.dataframe(worker_sum, use_container_width=True, hide_index=True)
+                st.download_button("📥 Export Worker Summary", convert_df(worker_sum), f"worker_summary_{period}.csv")
+
+            else:
+                st.warning("No data matches filters.")
 
 # --- TAB 4: MASTER SETTINGS ---
 with tab_master:
