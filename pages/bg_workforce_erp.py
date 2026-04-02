@@ -155,7 +155,7 @@ with tabs[0]:
             if not emp_summ_res[0].get('punch_out'):
                 with st.container(border=True):
                     st.markdown("**🛡️ System Commitment**")
-                    sys_promise = st.checkbox("I am dedicated to B&G’s systems. Following the system today is my path to precision.", key="sys_promise")
+                    sys_promise = st.checkbox("I am dedicated to B&G’s systems. Following the system today is my promise.", key="sys_promise")
                     st.markdown("**🌟 Productivity Rating**")
                     work_sat = st.feedback("stars", key="productivity_stars")
                     st.caption("I am working at my 100% potential. B&G’s growth fuels My growth.")
