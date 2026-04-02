@@ -72,8 +72,7 @@ with tabs[0]:
     if att_user == FREELANCER_NAME:
         f_key = st.text_input("Freelancer Access Key", type="password")
         if f_key != "abhi2026":
-            st.warning("Please enter valid key.")
-            st.stop()
+            st.warning("Please enter valid key."); st.stop()
             
     today = str(date.today())
 
@@ -119,7 +118,7 @@ with tabs[0]:
             c1.metric("Punch In", start_t.strftime('%I:%M %p'))
             c2.metric("Shift Duration", f"{dur:.2f} hrs")
             c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
-        
+
         st.write("#### 📑 Activity Summaries")
         sl, sr = st.columns(2)
         with sl:
@@ -142,7 +141,6 @@ with tabs[0]:
             cf1, cf2 = st.columns(2)
             if cf1.form_submit_button("✅ Submit"):
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_code}] @{slot_time}: {task_desc}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
-            # RESTORED SNOOZE LOGIC
             if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
@@ -161,13 +159,8 @@ with tabs[0]:
                     st.markdown("**🌟 Productivity Rating**")
                     work_sat = st.feedback("stars", key="productivity_stars")
                     st.caption("I am working at my 100% potential. My growth fuels B&G’s growth.")
-                    
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
-                        conn.table("attendance_logs").update({
-                            "punch_out": get_now_ist().isoformat(),
-                            "system_promise": sys_promise,
-                            "work_satisfaction": work_sat
-                        }).eq("id", emp_summ_res[0]['id']).execute()
+                        conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat(), "system_promise": sys_promise, "work_satisfaction": work_sat}).eq("id", emp_summ_res[0]['id']).execute()
                         st.cache_data.clear(); st.rerun()
             else:
                 st.success("Shift Completed")
@@ -179,7 +172,7 @@ with tabs[0]:
         active_move = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
         if not active_move:
             with st.form("move_form"):
-                reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Inspection", "Lunch", "Personal"])
+                reason = st.selectbox("Category", ["Meeting", "Work Review", "Material", "Inspection", "Vendor Visit", "Lunch", "Personal"])
                 dest = st.text_input("Destination")
                 if st.form_submit_button("📤 TIME OUT") and dest:
                     conn.table("movement_logs").insert({"employee_name": att_user, "reason": reason, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
@@ -239,7 +232,6 @@ with tabs[2]:
                     if r['status'] == 'Pending':
                         if col_c.button("Withdraw", key=f"wd_{r['id']}"):
                             conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.rerun()
-        else: st.info("No leave records found for you.")
 
 # --- TAB 3: BALANCE ---
 with tabs[3]:
@@ -292,7 +284,7 @@ with tabs[4]:
                 eff['Eff %'] = (eff['hours_spent'] / eff['presence_hrs'] * 100).round(1)
                 st.dataframe(eff.sort_values('Eff %', ascending=False), use_container_width=True, hide_index=True)
 
-        with admin_tabs[2]: # Detailed Logs Logic
+        with admin_tabs[2]: # Detailed Logs
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             tbl = "attendance_logs" if l_type == "Attendance" else "work_logs" if l_type == "Work Logs" else "movement_logs" if l_type == "Movement" else "work_plans"
             res = conn.table(tbl).select("*").gte("created_at", str(sr)).execute().data
