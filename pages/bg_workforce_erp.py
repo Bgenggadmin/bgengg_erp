@@ -158,7 +158,7 @@ with tabs[0]:
                     sys_promise = st.checkbox("I am dedicated to B&G’s systems. Following the system today is my path to precision.", key="sys_promise")
                     st.markdown("**🌟 Productivity Rating**")
                     work_sat = st.feedback("stars", key="productivity_stars")
-                    st.caption("I am working at my 100% potential. My growth fuels B&G’s growth.")
+                    st.caption("I am working at my 100% potential. B&G’s growth fuels My growth.")
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
                         conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat(), "system_promise": sys_promise, "work_satisfaction": work_sat}).eq("id", emp_summ_res[0]['id']).execute()
                         st.cache_data.clear(); st.rerun()
