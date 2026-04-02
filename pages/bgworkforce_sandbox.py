@@ -104,6 +104,10 @@ with tabs[0]:
     work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
     move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
     
+    # Logic to capture Promise and Rating
+    sys_promise = False
+    work_sat = 0
+
     if emp_summ_res:
         log_data = emp_summ_res[0]
         raw_in = log_data.get('punch_in')
@@ -115,7 +119,13 @@ with tabs[0]:
         if start_t:
             dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
             logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
-            c1.metric("Punch In", start_t.strftime('%I:%M %p'))
+            
+            with c1:
+                st.metric("Punch In", start_t.strftime('%I:%M %p'))
+                # --- ONLY SYSTEM COMMITMENT MOVED HERE ---
+                if not log_data.get('punch_out'):
+                    sys_promise = st.checkbox("🛡️ I am dedicated to B&G’s systems. Following the system is my path to precision.", key="sys_promise")
+                
             c2.metric("Shift Duration", f"{dur:.2f} hrs")
             c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
 
@@ -154,13 +164,17 @@ with tabs[0]:
         else:
             if not emp_summ_res[0].get('punch_out'):
                 with st.container(border=True):
-                    st.markdown("**🛡️ System Commitment**")
-                    sys_promise = st.checkbox("I am dedicated to B&G’s systems. Following the system today is my path to precision.", key="sys_promise")
+                    # --- PRODUCTIVITY RATING REMAINS HERE ---
                     st.markdown("**🌟 Productivity Rating**")
                     work_sat = st.feedback("stars", key="productivity_stars")
                     st.caption("I am working at my 100% potential. My growth fuels B&G’s growth.")
+                    
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
-                        conn.table("attendance_logs").update({"punch_out": get_now_ist().isoformat(), "system_promise": sys_promise, "work_satisfaction": work_sat}).eq("id", emp_summ_res[0]['id']).execute()
+                        conn.table("attendance_logs").update({
+                            "punch_out": get_now_ist().isoformat(), 
+                            "system_promise": sys_promise, 
+                            "work_satisfaction": work_sat
+                        }).eq("id", emp_summ_res[0]['id']).execute()
                         st.cache_data.clear(); st.rerun()
             else:
                 st.success("Shift Completed")
@@ -187,7 +201,6 @@ with tabs[0]:
             task = st.text_area("Update")
             if st.form_submit_button("Post Log") and task:
                 conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
-
 # --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
