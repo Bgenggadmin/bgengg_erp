@@ -107,14 +107,20 @@ with tabs[0]:
     
     if emp_summ_res:
         log_data = emp_summ_res[0]
-        start_t = pd.to_datetime(log_data['punch_in']).tz_convert(IST)
-        end_t = pd.to_datetime(log_data['punch_out']).tz_convert(IST) if log_data.get('punch_out') else get_now_ist()
-        dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
-        logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Punch In", start_t.strftime('%I:%M %p'))
-        c2.metric("Shift Duration", f"{dur:.2f} hrs")
-        c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
+        # FIXED: Added fallback to prevent .strftime() error on NaT
+        raw_punch_in = log_data.get('punch_in')
+        start_t = pd.to_datetime(raw_punch_in).tz_convert(IST) if pd.notnull(raw_punch_in) else None
+        
+        raw_punch_out = log_data.get('punch_out')
+        end_t = pd.to_datetime(raw_punch_out).tz_convert(IST) if pd.notnull(raw_punch_out) else get_now_ist()
+        
+        if start_t:
+            dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
+            logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Punch In", start_t.strftime('%I:%M %p'))
+            c2.metric("Shift Duration", f"{dur:.2f} hrs")
+            c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
         
         st.write("#### 📑 Activity Summaries")
         sl, sr = st.columns(2)
@@ -147,7 +153,7 @@ with tabs[0]:
         st.markdown("### 🏢 Shift Control")
         if not emp_summ_res:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
-                conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today}).execute(); st.rerun()
+                conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today, "punch_in": get_now_ist().isoformat()}).execute(); st.rerun()
         else:
             if not emp_summ_res[0].get('punch_out'):
                 with st.container(border=True):
