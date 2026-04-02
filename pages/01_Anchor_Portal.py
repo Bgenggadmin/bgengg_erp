@@ -169,25 +169,39 @@ with tabs[1]:
             for index, row in df_pipeline.iterrows():
                 is_aging = row['aging_days'] > 7 and row['status'] in ["Enquiry", "Estimation"]
                 aging_label = f" [⚠️ {row['aging_days']} DAYS OLD]" if is_aging else ""
-                
+    
                 # --- MODIFIED ROW HEADER ---
                 client_part = f"{'🔥' if is_aging else '📋'} {row['client_name']}"
                 job_part = f" | Job: {row['job_no'] or 'N/A'}"
                 desc_part = f" | 📝 {row['project_description'][:50]}..." if row['project_description'] else ""
-                
+    
                 with st.expander(f"{client_part}{job_part}{desc_part}{aging_label}"):
                     # PO Details
                     pd1, pd2 = st.columns(2)
                     u_po_no = pd1.text_input("PO Number", value=row.get('po_no') or "", key=f"pono_{row['id']}")
-                    u_po_date_actual = pd2.date_input("PO Date", value=pd.to_datetime(row.get('po_date')).date() if pd.notnull(row.get('po_date')) else date.today(), key=f"podt_{row['id']}")
-                    
+        
+                    # --- SAFE DATE LOGIC: PO DATE ---
+                    raw_po_date = pd.to_datetime(row.get('po_date'))
+                    u_po_date_actual = pd2.date_input(
+                        "PO Date", 
+                        value=raw_po_date.date() if pd.notnull(raw_po_date) else date.today(), 
+                        key=f"podt_{row['id']}"
+                    )
+        
                     # Delivery Metrics
                     d1, d2, d3 = st.columns(3)
-                    curr_po_del = pd.to_datetime(row.get('po_delivery_date')).date() if pd.notnull(row.get('po_delivery_date')) else date.today()
-                    curr_rev_del = pd.to_datetime(row.get('revised_delivery_date')).date() if pd.notnull(row.get('revised_delivery_date')) else curr_po_del
+        
+                    # --- SAFE DATE LOGIC: DELIVERY DATES ---
+                    raw_po_del = pd.to_datetime(row.get('po_delivery_date'))
+                    raw_rev_del = pd.to_datetime(row.get('revised_delivery_date'))
+        
+                    curr_po_del = raw_po_del.date() if pd.notnull(raw_po_del) else date.today()
+                    curr_rev_del = raw_rev_del.date() if pd.notnull(raw_rev_del) else curr_po_del
+        
                     u_po_del = d1.date_input("Original PO Del. Date", value=curr_po_del, key=f"po_del_date_{row['id']}")
                     u_rev_del = d2.date_input("Revised Del. Date", value=curr_rev_del, key=f"rev_del_date_{row['id']}")
-                    
+        
+                    # Dispatch Calculation
                     days_to_go = (u_rev_del - date.today()).days
                     d3.metric("Days to Dispatch", f"{days_to_go} Days", delta=days_to_go)
 
