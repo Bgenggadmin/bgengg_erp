@@ -104,7 +104,7 @@ with tabs[0]:
     work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
     move_summ_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).gte("exit_time", f"{today}T00:00:00").execute().data
     
-    # Logic to capture Promise and Rating
+    # Initialize variables to capture state across columns
     sys_promise = False
     work_sat = 0
 
@@ -115,22 +115,23 @@ with tabs[0]:
         raw_out = log_data.get('punch_out')
         end_t = pd.to_datetime(raw_out).tz_convert(IST) if pd.notnull(raw_out) else get_now_ist()
         
+        # Defining 4 columns for single-row layout
         c1, c2, c3, c4 = st.columns([1, 1, 1, 1.5])
+        
         if start_t:
             dur = max(0.01, (end_t - start_t).total_seconds() / 3600)
             logged_hours = sum([float(w['hours_spent']) for w in work_summ_res]) if work_summ_res else 0.0
             
-            with c1:
-                st.metric("Punch In", start_t.strftime('%I:%M %p'))
-                # --- ONLY SYSTEM COMMITMENT MOVED HERE ---
-                if not log_data.get('punch_out'):
-                    sys_promise = st.checkbox("🛡️ I am dedicated to B&G’s systems. Following the system is my path to precision.", key="sys_promise")
-                
+            c1.metric("Punch In", start_t.strftime('%I:%M %p'))
             c2.metric("Shift Duration", f"{dur:.2f} hrs")
-            c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100)}% Eff.")
+            c3.metric("Logged Work", f"{logged_hours:.2f} hrs", delta=f"{int((logged_hours/dur)*100 if dur > 0 else 0)}% Eff.")
+            
+            # --- SYSTEM COMMITMENT IN THE 4TH COLUMN ---
             with c4:
                 if not log_data.get('punch_out'):
-                    sys_promise = st.checkbox("🛡️ Dedicated to B&G’s systems", key="sys_promise")
+                    sys_promise = st.checkbox("🛡️ I am dedicated to B&G’s systems. Following the system is my path to precision.", key="sys_promise")
+                else:
+                    st.write("✅ Commitment logged.")
 
         st.write("#### 📑 Activity Summaries")
         sl, sr = st.columns(2)
@@ -167,12 +168,12 @@ with tabs[0]:
         else:
             if not emp_summ_res[0].get('punch_out'):
                 with st.container(border=True):
-                    # --- PRODUCTIVITY RATING REMAINS HERE ---
                     st.markdown("**🌟 Productivity Rating**")
                     work_sat = st.feedback("stars", key="productivity_stars")
                     st.caption("I am working at my 100% potential. My growth fuels B&G’s growth.")
                     
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+                        # Now sys_promise is captured correctly from column c4
                         conn.table("attendance_logs").update({
                             "punch_out": get_now_ist().isoformat(), 
                             "system_promise": sys_promise, 
