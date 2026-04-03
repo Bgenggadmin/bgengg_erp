@@ -28,25 +28,35 @@ if hub_choice == "Cutting Hub":
 else:
     RES_LABEL, ACTIVITIES = "Welding Bay/Station", ["TIG Welding", "MIG Welding", "ARC Welding", "Grinding"]
 
-# 2. Data Fetching
+# --- 2. Data Fetching (UPDATED TO PULL ANCHOR JOBS) ---
 @st.cache_data(ttl=300)
 def get_master_data():
     try:
+        # Fetch Machines
         m_data = conn.table(MACH_MASTER).select("name").execute().data or []
+        # Fetch Workers
         o_data = conn.table(OP_MASTER).select("name").execute().data or []
-        return [r['name'] for r in m_data] or ["None"], [o['name'] for o in o_data] or ["None"]
-    except: return ["Error"], ["Error"]
+        # FIX: Fetch Job Numbers from anchor_projects
+        a_data = conn.table("anchor_projects").select("job_no").execute().data or []
+        
+        machines = [r['name'] for r in m_data] or ["None"]
+        workers = [o['name'] for o in o_data] or ["None"]
+        # Standardize and sort the job list
+        anchor_jobs = sorted(list(set([str(j['job_no']) for j in a_data if j.get('job_no')])))
+        
+        return machines, workers, anchor_jobs
+    except Exception as e:
+        st.error(f"Error fetching master data: {e}")
+        return ["Error"], ["Error"], []
 
 def get_logs():
-    # Fetch data filtered by Hub and Date Range for maximum speed
     query = conn.table(DB_TABLE).select("*").eq("hub_name", hub_choice)
-    
     if len(date_range) == 2:
         query = query.gte("request_date", str(date_range[0])).lte("request_date", str(date_range[1]))
-    
     return query.order("created_at", desc=True).execute().data or []
 
-resource_list, operator_list = get_master_data()
+# Update call to receive the third list
+resource_list, operator_list, anchor_job_list = get_master_data()
 df_main = pd.DataFrame(get_logs())
 
 # 3. UI Layout
@@ -58,41 +68,29 @@ with tabs[0]:
     with st.form("cut_weld_req", clear_on_submit=True):
         c1, c2, c3 = st.columns(3)
         u_no = c1.selectbox("Unit", ["1", "2", "3"])
-        j_no = c1.text_input("Job Number (Required)")
+        
+        # FIX: Changed text_input to selectbox to pull from anchor_projects
+        j_no = c1.selectbox("Job Number (Required)", ["-- Select --"] + anchor_job_list)
+        
         part = c2.text_input("Part Name")
         act = c2.selectbox("Activity", ACTIVITIES)
         req_d = c3.date_input("Required Date")
         prio = c3.selectbox("Priority", ["Normal", "Urgent", "Critical"])
         notes = st.text_area("Special Notes / Dimensions")
         
-        if st.form_submit_button("Submit to Shop Floor") and j_no and part:
-            conn.table(DB_TABLE).insert({
-                "hub_name": hub_choice, "unit_no": u_no, "part_name": part, 
-                "required_date": str(req_d), "job_no": j_no, "activity_type": act, 
-                "priority": prio, "special_notes": notes, 
-                "status": "Pending", "request_date": str(datetime.date.today())
-            }).execute(); st.rerun()
-
-    st.divider()
-    if not df_main.empty:
-        st.subheader("📋 Recent Production Entries")
-        
-        # Pulling all columns you requested
-        cols = ["job_no", "unit_no", "request_date", "required_date", "priority", "status", "special_notes"]
-        existing = [c for c in cols if c in df_main.columns]
-        st.dataframe(df_main[existing].head(10), use_container_width=True, hide_index=True)
-
-        # CSV Download Area
-        st.write("### 📥 Download filtered logs")
-        csv = df_main.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label=f"Download CSV ({date_range[0]} to {date_range[1]})",
-            data=csv,
-            file_name=f"{hub_choice}_report_{date_range[0]}_{date_range[1]}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-
+        # Updated validation for selectbox
+        if st.form_submit_button("Submit to Shop Floor"):
+            if j_no == "-- Select --" or not part:
+                st.error("Please select a Job Number and enter a Part Name.")
+            else:
+                conn.table(DB_TABLE).insert({
+                    "hub_name": hub_choice, "unit_no": u_no, "part_name": part, 
+                    "required_date": str(req_d), "job_no": j_no, "activity_type": act, 
+                    "priority": prio, "special_notes": notes, 
+                    "status": "Pending", "request_date": str(datetime.date.today())
+                }).execute()
+                st.success(f"Request for {j_no} submitted!")
+                st.rerun()
 # --- TAB 2: INCHARGE DESK ---
 with tabs[1]:
     if not df_main.empty:
