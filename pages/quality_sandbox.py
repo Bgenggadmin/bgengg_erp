@@ -153,7 +153,7 @@ with main_tabs[0]:
         if sel_job != "-- Select --":
             # PDF Presentation Mode
             with st.container(border=True):
-                st.subheader("💎 Presentation Mode")
+                st.subheader("💎 BIRTH CERTIFICATE")
                 h_match = df_anchor[df_anchor['job_no'] == sel_job]
                 h_data = {
                     "client_name": h_match.iloc[0].get('client_name', 'N/A') if not h_match.empty else "N/A",
