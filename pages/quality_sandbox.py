@@ -19,12 +19,13 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
+    # character safety helper
     def clean_text(text):
         if not text: return "N/A"
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
         return text.encode('ascii', 'ignore').decode('ascii')
 
-    # 1. DOWNLOAD LOGO FIRST
+    # 1. PREPARE LOGO (Persistent path for the class to access)
     logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
@@ -34,22 +35,13 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
                 logo_path = tmp_logo.name
     except: pass
 
-    # 2. DEFINE CLASS WITH INTERNAL STATE
+    # 2. DEFINE CUSTOM PDF CLASS
     class BrandedPDF(FPDF):
-        def __init__(self, logo_p, job_code):
-            super().__init__()
-            self.logo_p = logo_p  # Store logo path internally
-            self.job_code = job_code
-
         def header(self):
-            # Blue Branding Strip
             self.set_fill_color(0, 51, 102)
             self.rect(0, 0, 210, 25, 'F')
-            
-            # Use internal self.logo_p to ensure it shows on EVERY page
-            if self.logo_p and os.path.exists(self.logo_p):
-                self.image(self.logo_p, x=12, y=5, h=15)
-            
+            if logo_path and os.path.exists(logo_path):
+                self.image(logo_path, x=12, y=5, h=15)
             self.set_text_color(255, 255, 255)
             self.set_font("Arial", 'B', 16)
             self.set_xy(70, 5)
@@ -57,14 +49,11 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             self.set_font("Arial", "I", 10)
             self.set_xy(70, 14)
             self.cell(130, 5, "PRODUCT QUALITY BIRTH CERTIFICATE", 0, 1, "L")
-            
-            # Persistent Job ID
             self.set_font("Arial", "B", 8)
             self.set_xy(160, 14)
-            self.cell(40, 5, f"JOB: {self.job_code}", 0, 0, "R")
-            
+            self.cell(40, 5, f"JOB: {job_no}", 0, 0, "R")
             self.set_text_color(0, 0, 0)
-            self.set_y(30) # Content start point
+            self.ln(20)
 
         def footer(self):
             self.set_y(-15)
@@ -73,11 +62,11 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             self.cell(0, 10, f"B&G ERP System - Page {self.page_no()}", 0, 0, 'C')
 
     # 3. INITIALIZE
-    pdf = BrandedPDF(logo_path, job_no)
-    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf = BrandedPDF()
+    pdf.set_auto_page_break(auto=True, margin=25)
     pdf.add_page()
     
-    # 4. FIRST PAGE HEADER TABLE
+    # 4. HEADER TABLE
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
@@ -87,20 +76,15 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO No: {clean_text(header_data['po_no'])}", border=1, ln=True)
     pdf.cell(95, 8, f" Job No: {job_no}", border=1)
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
-    pdf.ln(5)
+    pdf.ln(10)
 
     # 5. MANUFACTURING LOG
     if not photo_data.empty:
         photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
         
         for idx, row in photo_data.iterrows():
-            urls = row.get('quality_photo_url', [])
-            has_imgs = isinstance(urls, list) and len(urls) > 0
-            
-            img_h = 55 if has_imgs else 0
-            # PREDICTIVE PAGE BREAK: Check if images will fit before starting the block
-            if (pdf.h - pdf.get_y() - 25) < (img_h + 20):
-                pdf.add_page()
+            # Check for page break before starting a new block
+            if pdf.get_y() > 200: pdf.add_page()
 
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             
@@ -113,30 +97,43 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             details = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
             pdf.multi_cell(190, 6, details, border="LR")
             
-            # PHOTO GRID LOGIC
-            if has_imgs:
+            # Photo Logic
+            urls = row.get('quality_photo_url', [])
+            if isinstance(urls, list) and len(urls) > 0:
+                img_w, img_h = 44, 55 
+                # Safety Page Break for Images
+                if pdf.get_y() + img_h > 250:
+                    pdf.cell(190, 1, "", border="B", ln=True) # Close current box
+                    pdf.add_page()
+
                 y_img_start = pdf.get_y()
-                # Frame the side borders for images
+                # Draw vertical lines for the image area
                 pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
 
                 for i, url in enumerate(urls[:4]):
                     try:
+                        # Attempt to get image
                         resp = requests.get(url, timeout=10)
                         if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
-                                # Image Placement: x=12(left margin) + offset, y=start point + padding
-                                pdf.image(tmp.name, x=12 + (i * 46), y=y_img_start + 2, w=44, h=img_h)
-                                os.unlink(tmp.name)
-                    except: continue
-                # Update cursor past images
+                                tmp_path = tmp.name
+                            # Calculate X position: margin(10) + offset(2) + index spacing
+                            x_pos = 12 + (i * (img_w + 2))
+                            pdf.image(tmp_path, x=x_pos, y=y_img_start + 2, w=img_w, h=img_h)
+                            os.unlink(tmp_path)
+                    except Exception as e:
+                        print(f"Image error: {e}")
+                        continue
+                
+                # Reset Y to bottom of images
                 pdf.set_y(y_img_start + img_h + 4)
             
-            # Bottom border closure
+            # Close the box
             pdf.cell(190, 1, "", border="BLR", ln=True)
-            pdf.ln(3)
+            pdf.ln(5)
 
-    # FINAL CLEANUP
+    # Cleanup Logo
     if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
     
     return pdf.output(dest='S').encode('latin-1')
