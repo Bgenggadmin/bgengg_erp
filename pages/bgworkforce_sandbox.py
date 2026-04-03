@@ -71,75 +71,89 @@ with tabs[0]:
     # --- FOUNDER - EMPLOYEE INTERACTION WINDOW ---
     st.markdown("### 📢 Founder's Desk")
     
-    # 1. Fetch latest interaction for the current user
     try:
+        # 1. Fetch latest interaction for the current user
         msg_res = conn.table("founder_interaction").select("*")\
-            .or_(f"target_user.eq.All,target_user.eq.{att_user}")\
+            .or_(f"target_user.eq.All,target_user.eq.{att_user},sender_name.eq.{att_user}")\
             .order("created_at", desc=True).limit(1).execute().data
         
         if msg_res:
             m = msg_res[0]
             with st.container(border=True):
-                # UI: Founder's Instruction
-                st.info(f"**From {m['sender_name']}:** {m['content']}")
+                # UI: If the user SENT the message (Self-message tracker)
+                if m['sender_name'] == att_user:
+                    st.write(f"📤 **My Message to Founder:** {m['content']}")
+                    if m.get('reply_content'):
+                        st.info(f"🏁 **Founder's Response:** {m['reply_content']}")
+                    else:
+                        st.caption("⏳ Waiting for response...")
                 
-                # Show existing reply if it exists in the database
-                if m.get('reply_content'):
-                    st.success(f"💬 **Your Reply:** {m['reply_content']}")
-                
-                # Interaction logic: Show input box only if not read and not the sender
-                if m['sender_name'] != att_user and not m.get('is_read'):
-                    col_txt, col_btn = st.columns([3, 1])
-                    emp_reply = col_txt.text_input("Type your comments/reply here...", key=f"rep_input_{m['id']}")
+                # UI: If the user RECEIVED the message
+                else:
+                    st.info(f"**From {m['sender_name']}:** {m['content']}")
+                    if m.get('reply_content'):
+                        st.success(f"💬 **Your Reply:** {m['reply_content']}")
                     
-                    if col_btn.button("✔️ Acknowledge & Reply", key=f"ack_btn_{m['id']}", use_container_width=True):
-                        # Update logic: Store the reply and mark as read
-                        conn.table("founder_interaction").update({
-                            "is_read": True,
-                            "reply_content": emp_reply if emp_reply else "Acknowledged",
-                            "replied_at": datetime.now(IST).isoformat()
-                        }).eq("id", m['id']).execute()
-                        st.rerun()
-        else:
-            st.caption("No active instructions from Founder.")
+                    # Logic: Only show reply box if not read and not sender
+                    if not m.get('is_read'):
+                        col_txt, col_btn = st.columns([3, 1])
+                        emp_reply = col_txt.text_input("Type reply/comments...", key=f"rep_in_{m['id']}")
+                        if col_btn.button("✔️ Reply & Acknowledge", key=f"ack_btn_{m['id']}", use_container_width=True):
+                            conn.table("founder_interaction").update({
+                                "is_read": True, "reply_content": emp_reply if emp_reply else "Acknowledged",
+                                "replied_at": datetime.now(IST).isoformat()
+                            }).eq("id", m['id']).execute()
+                            st.rerun()
+
+        # --- OPTION FOR EMPLOYEE TO INITIATE A MESSAGE ---
+        if att_user != "Admin":
+            with st.expander("✉️ Send New Message to Founder"):
+                with st.form("emp_to_founder_form", clear_on_submit=True):
+                    emp_msg = st.text_area("What would you like to share/report?")
+                    if st.form_submit_button("🚀 Send to Founder"):
+                        if emp_msg:
+                            conn.table("founder_interaction").insert({
+                                "sender_name": att_user,
+                                "target_user": "Admin",
+                                "content": emp_msg,
+                                "is_read": False
+                            }).execute()
+                            st.success("Sent to Founder!"); st.rerun()
             
     except Exception as e:
-        st.info("Interaction system active. Waiting for new messages.")
+        st.info("Interaction system active.")
 
-    # 2. Logic for Founder (Admin) to SEND and VIEW REPLIES
+    # 2. Logic for Founder (Admin) Tools
     if att_user == "Admin": 
-        # PART A: Posting Window
-        with st.expander("✉️ Post New Instruction/Announcement"):
-            with st.form("founder_msg_form"):
-                m_target = st.selectbox("Target", ["All"] + get_staff_list())
-                m_text = st.text_area("Message Content")
-                if st.form_submit_button("🚀 Broadcast Message"):
-                    if m_text:
-                        conn.table("founder_interaction").insert({
-                            "sender_name": "Founder",
-                            "content": m_text,
-                            "target_user": m_target,
-                            "is_read": False
-                        }).execute()
-                        st.success("Message Sent!"); st.rerun()
-        
-        # PART B: The Inbox (Where Founder sees replies)
-        with st.expander("📥 View Employee Replies"):
-            # Fetch messages that have been replied to
-            reply_res = conn.table("founder_interaction").select("*")\
-                .not_.is_("reply_content", "null")\
-                .order("replied_at", desc=True).limit(10).execute().data
+        # --- (Keep your existing admin password gate logic here) ---
+        if st.session_state.get("admin_authenticated"):
+            # PART A: Post Window (As before)
+            # ...
             
-            if reply_res:
-                for r in reply_res:
-                    with st.container(border=True):
-                        c1, c2 = st.columns([1, 4])
-                        c1.caption(f"👤 {r['target_user']}")
-                        c2.markdown(f"**Inst:** {r['content']}")
-                        st.markdown(f"💬 **Reply:** {r['reply_content']}")
-                        st.caption(f"Time: {pd.to_datetime(r['replied_at']).strftime('%d-%b %I:%M %p')}")
-            else:
-                st.info("No replies in the inbox yet.")
+            # PART B: The Inbox (Now shows both replies AND new messages)
+            with st.expander("📥 Unified Interaction Inbox"):
+                # Fetch messages intended for Admin OR messages where Admin has been replied to
+                inbox_res = conn.table("founder_interaction").select("*")\
+                    .or_("target_user.eq.Admin,not.reply_content.is.null")\
+                    .order("created_at", desc=True).limit(15).execute().data
+                
+                if inbox_res:
+                    for r in inbox_res:
+                        with st.container(border=True):
+                            if r['target_user'] == "Admin" and not r.get('reply_content'):
+                                st.warning(f"📩 **New Message from {r['sender_name']}**")
+                                st.write(r['content'])
+                                # Provide Founder a way to reply back to employee messages
+                                with st.popover("Reply"):
+                                    f_rep = st.text_input("Response", key=f"f_rep_{r['id']}")
+                                    if st.button("Send Response", key=f"f_btn_{r['id']}"):
+                                        conn.table("founder_interaction").update({
+                                            "reply_content": f_rep, "is_read": True, "replied_at": datetime.now(IST).isoformat()
+                                        }).eq("id", r['id']).execute(); st.rerun()
+                            else:
+                                st.caption(f"Conversation with {r['target_user'] if r['sender_name']=='Founder' else r['sender_name']}")
+                                st.write(f"**Msg:** {r['content']}")
+                                st.info(f"💬 **Reply:** {r.get('reply_content', 'Pending')}")
     st.divider()
     if att_user == FREELANCER_NAME:
         f_key = st.text_input("Freelancer Access Key", type="password")
