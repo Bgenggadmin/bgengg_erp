@@ -168,11 +168,13 @@ with main_tabs[1]:
     st.subheader("📋 Final Technical Inspection & Birth Certificate")
     
     if not df_anchor.empty:
+        # 1. HEADER SECTION
         with st.container(border=True):
             tc1, tc2, tc3 = st.columns(3)
             q_job = tc1.selectbox("Identify Job No", ["-- Select Job --"] + df_anchor['job_no'].tolist(), key="tc_job")
             
-            c_val, p_val, d_val = "", "", datetime.now()
+            c_val, p_val = "", ""
+            d_val = datetime.now()
             if q_job != "-- Select Job --":
                 match = df_anchor[df_anchor['job_no'] == q_job].iloc[0]
                 c_val, p_val = match.get('client_name', ''), match.get('po_no', '')
@@ -186,60 +188,67 @@ with main_tabs[1]:
             q_po_date = tc4.date_input("PO Date", value=d_val, key="tc_po_date")
             q_drawing = tc5.text_input("Drawing No / Revision", placeholder="BG-ENG-001", key="tc_draw")
 
+        # 2. THE "ON THE SPOT" PRESENTATION LOGIC
         if q_job != "-- Select Job --":
-            # --- ON SPOT PDF GENERATOR ---
-            st.write("### 💎 Marketing Presentation")
-            if st.button("🏗️ Generate Product Birth Certificate (PDF)", use_container_width=True):
-                # 1. Gather all data for the certificate
-                h_data = {"client_name": q_client, "po_no": q_po, "po_date": str(q_po_date), "drawing_no": q_drawing}
-                
-                # Fetch recent tech status for this job
-                tech_res = conn.table("quality_check_list").select("*").eq("job_no", q_job).order("created_at", desc=True).limit(1).execute().data
-                t_data = tech_res[0] if tech_res else {}
-                
-                # Fetch all process gate evidence (photos/status)
-                p_data = df_plan[df_plan['job_no'] == q_job]
-                
+            st.divider()
+            st.markdown("### 💎 Marketing Presentation Mode")
+            
+            # --- AUTO-PREPARE DATA ---
+            h_data = {"client_name": q_client, "po_no": q_po, "po_date": str(q_po_date), "drawing_no": q_drawing}
+            
+            # Fetch tech status (if exists)
+            tech_res = conn.table("quality_check_list").select("*").eq("job_no", q_job).order("created_at", desc=True).limit(1).execute().data
+            t_data = tech_res[0] if tech_res else {}
+            
+            # Fetch gate evidence
+            p_data = df_plan[df_plan['job_no'] == q_job]
+
+            # --- GENERATE PDF AUTOMATICALLY IN MEMORY ---
+            try:
                 pdf_bytes = create_birth_certificate(q_job, h_data, t_data, p_data)
                 
+                # Big Presentation Button
                 st.download_button(
-                    label="📂 Download & Present to Client",
+                    label=f"📂 DOWNLOAD BIRTH CERTIFICATE: {q_job}",
                     data=pdf_bytes,
-                    file_name=f"B&G_Birth_Certificate_{q_job}.pdf",
+                    file_name=f"BG_Birth_Cert_{q_job}.pdf",
                     mime="application/pdf",
-                    use_container_width=True
+                    use_container_width=True,
+                    type="primary" # Makes the button blue/noticeable
                 )
+            except Exception as e:
+                st.warning(f"Note: Ensure technical data is logged to generate full certificate. Error: {e}")
 
-            with st.form("technical_checklist_form"):
-                st.write("### ⚙️ Log Technical Inspection Data")
-                col_a, col_b = st.columns(2)
-                opts = ["Pending", "Verified/OK", "Rejected", "N/A"]
-                
-                with col_a:
-                    v1 = st.selectbox("1. Material Certification", opts)
-                    v2 = st.selectbox("2. Fit-up Examination (100%)", opts)
-                    v3 = st.selectbox("3. Dimensions & Visual Exam", opts)
-                    v4 = st.selectbox("4. Liquid Penetrant Test", opts)
-                with col_b:
-                    v5 = st.selectbox("5. Hydro / Vacuum Test", opts)
-                    v6 = st.selectbox("6. Final Inspection (Pre-Dispatch)", opts)
-                    v7 = st.selectbox("7. Identification Punching", opts)
-                    v8 = st.selectbox("8. NCR Status", ["None", "Open", "Closed"])
+            # 3. DATA ENTRY FORM (Below the presentation button)
+            with st.expander("📝 Log/Update Technical Checkpoints", expanded=False):
+                with st.form("technical_checklist_form"):
+                    col_a, col_b = st.columns(2)
+                    opts = ["Pending", "Verified/OK", "Rejected", "N/A"]
+                    
+                    with col_a:
+                        v1 = st.selectbox("1. Material Certification", opts)
+                        v2 = st.selectbox("2. Fit-up Examination (100%)", opts)
+                        v3 = st.selectbox("3. Dimensions & Visual Exam", opts)
+                        v4 = st.selectbox("4. Liquid Penetrant Test", opts)
+                    with col_b:
+                        v5 = st.selectbox("5. Hydro / Vacuum Test", opts)
+                        v6 = st.selectbox("6. Final Inspection (Pre-Dispatch)", opts)
+                        v7 = st.selectbox("7. Identification Punching", opts)
+                        v8 = st.selectbox("8. NCR Status", ["None", "Open", "Closed"])
 
-                st.divider()
-                f1, f2 = st.columns(2)
-                q_inspector = f1.selectbox("Inspector Name", ["-- Select --"] + authorized_inspectors, key="tc_insp")
-                q_remarks = f2.text_area("Technical Remarks", key="tc_notes")
+                    f1, f2 = st.columns(2)
+                    q_inspector = f1.selectbox("Inspector Name", ["-- Select --"] + authorized_inspectors, key="tc_insp")
+                    q_remarks = f2.text_area("Technical Remarks", key="tc_notes")
 
-                if st.form_submit_button("✅ Finalize Quality Record"):
-                    conn.table("quality_check_list").insert({
-                        "job_no": q_job, "client_name": q_client, "po_no": q_po, "po_date": str(q_po_date),
-                        "drawing_no": q_drawing, "mat_cert_status": v1, "fit_up_status": v2, 
-                        "visual_status": v3, "pt_weld_status": v4, "hydro_status": v5, 
-                        "final_status": v6, "punching_status": v7, "ncr_status": v8,
-                        "inspected_by": q_inspector, "technical_notes": q_remarks
-                    }).execute()
-                    st.success("Record Saved!"); st.rerun()
+                    if st.form_submit_button("✅ Finalize Quality Record"):
+                        conn.table("quality_check_list").insert({
+                            "job_no": q_job, "client_name": q_client, "po_no": q_po, "po_date": str(q_po_date),
+                            "drawing_no": q_drawing, "mat_cert_status": v1, "fit_up_status": v2, 
+                            "visual_status": v3, "pt_weld_status": v4, "hydro_status": v5, 
+                            "final_status": v6, "punching_status": v7, "ncr_status": v8,
+                            "inspected_by": q_inspector, "technical_notes": q_remarks
+                        }).execute()
+                        st.success("Record Saved!"); st.rerun()
 # --- 4. SHARED GALLERY VIEW ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
