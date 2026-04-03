@@ -95,18 +95,26 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             pdf.multi_cell(190, 6, remarks_text, border="LR")
             
             # Images
+            # ... (Existing header and text remarks code) ...
+            
+            # --- FIXED IMAGE BORDER LOGIC ---
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                y_img = pdf.get_y()
+                y_before_images = pdf.get_y()
                 img_w, img_h = 44, 55 
                 
-                # Check for page break
-                if y_img + img_h > 260:
-                    # Close current border before breaking
-                    pdf.cell(190, 1, "", border="B", ln=True)
+                # 1. Check for page break safety
+                if y_before_images + img_h > 260:
+                    pdf.cell(190, 1, "", border="B", ln=True) # Close current box before break
                     pdf.add_page()
-                    y_img = 20
+                    y_before_images = 20
                 
+                # 2. Draw the vertical side borders for the image area FIRST
+                # This ensures the 'LR' lines continue down past the images
+                pdf.set_xy(10, y_before_images)
+                pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
+
+                # 3. Place the images on top of that "framed" area
                 for i, url in enumerate(urls[:4]):
                     try:
                         resp = requests.get(url, timeout=5)
@@ -114,13 +122,16 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
                                 tmp_path = tmp.name
-                            pdf.image(tmp_path, x=12 + (i * (img_w + 2)), y=y_img + 2, w=img_w, h=img_h)
+                            x_pos = 12 + (i * (img_w + 2))
+                            # Placing image 'front' logic
+                            pdf.image(tmp_path, x=x_pos, y=y_before_images + 2, w=img_w, h=img_h)
                             os.unlink(tmp_path)
                     except: continue
                 
-                pdf.set_y(y_img + img_h + 5)
+                # 4. Update the Y cursor to the end of the image block
+                pdf.set_y(y_before_images + img_h + 4)
             
-            # Draw the closing bottom border for this section
+            # 5. Draw the final closing border for this process gate
             pdf.cell(190, 1, "", border="BLR", ln=True)
             pdf.ln(5)
     else:
