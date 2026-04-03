@@ -18,100 +18,105 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
-    # HELPER: Remove emojis to prevent 'latin-1' crash
     def clean_text(text):
         if not text: return "N/A"
-        # Manually swap common emojis for text markers
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
-        # Ignore any other unicode characters that might cause a crash
         return text.encode('ascii', 'ignore').decode('ascii')
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # --- 1. BRANDED HEADER (Matching MSN Report Style) ---
+    # --- BRANDED HEADER (Consistent with Project Progress Reports) ---
     pdf.set_font("Arial", 'B', 16)
-    pdf.set_text_color(0, 51, 102) # B&G Dark Blue
-    pdf.cell(190, 10, "B&G ENGINEERING INDUSTRIES", ln=True, align='C')
+    pdf.set_text_color(0, 51, 102) 
+    pdf.cell(190, 10, "B&G ENGINEERING INDUSTRIES", ln=True, align='C') [cite: 119]
     pdf.set_font("Arial", 'B', 10)
     pdf.set_text_color(100, 100, 100)
-    pdf.cell(190, 5, "CHEMICAL PROCESS EQUIPMENT SPECIALISTS", ln=True, align='C')
+    pdf.cell(190, 5, "CHEMICAL PROCESS EQUIPMENT SPECIALISTS", ln=True, align='C') [cite: 119]
     pdf.set_draw_color(0, 51, 102)
     pdf.line(10, 27, 200, 27)
     pdf.ln(10)
 
-    # --- 2. TITLE ---
+    # --- TITLE ---
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Arial", 'B', 14)
-    pdf.cell(190, 10, f"PRODUCT BIRTH CERTIFICATE: {job_no}", ln=True, align='L')
+    pdf.cell(190, 10, f"PRODUCT BIRTH CERTIFICATE: {job_no}", ln=True, align='L') [cite: 120]
     pdf.ln(2)
 
-    # --- 3. PRODUCT IDENTIFICATION TABLE ---
+    # --- PRODUCT IDENTIFICATION TABLE ---
     pdf.set_fill_color(245, 245, 245)
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
-    pdf.cell(95, 8, " PURCHASE ORDER DETAILS", border=1, fill=True, ln=True)
+    pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True) [cite: 121]
+    pdf.cell(95, 8, " PURCHASE ORDER DETAILS", border=1, fill=True, ln=True) [cite: 121]
     
     pdf.set_font("Arial", '', 10)
-    pdf.cell(95, 8, f" Name: {clean_text(header_data['client_name'])}", border=1)
-    pdf.cell(95, 8, f" PO No: {clean_text(header_data['po_no'])}", border=1, ln=True)
-    pdf.cell(95, 8, f" Drawing No: {clean_text(header_data.get('drawing_no', 'N/A'))}", border=1)
-    pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
+    pdf.cell(95, 8, f" Name: {clean_text(header_data['client_name'])}", border=1) [cite: 121]
+    pdf.cell(95, 8, f" PO No: {clean_text(header_data['po_no'])}", border=1, ln=True) [cite: 121]
+    pdf.cell(95, 8, f" Drawing No: {clean_text(header_data.get('drawing_no', 'N/A'))}", border=1) [cite: 121]
+    pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True) [cite: 121]
     pdf.ln(10)
 
-    # --- 4. MANUFACTURING LOG & VISUAL EVIDENCE (CHRONOLOGICAL) ---
+    # --- MANUFACTURING LOG & VISUAL EVIDENCE ---
     pdf.set_font("Arial", 'B', 12)
     pdf.set_text_color(0, 51, 102)
-    pdf.cell(190, 8, "MANUFACTURING LOG & VISUAL EVIDENCE", ln=True)
+    pdf.cell(190, 8, "MANUFACTURING LOG & VISUAL EVIDENCE", ln=True) [cite: 122]
     pdf.set_text_color(0, 0, 0)
     pdf.ln(2)
 
     if not photo_data.empty:
-        # Sort by completion time to ensure correct "Birth" sequence
-        photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
+        # Chronological sorting for the product "Birth" story
+        photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at') [cite: 123, 126, 129]
         
         for idx, row in photo_data.iterrows():
-            # Date-wise Heading
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
+            
+            # Start Gate Block
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
-            pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
+            pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True) [cite: 123, 126, 129]
             
-            # Inspector & Status
+            # Inspector and Status info
             pdf.set_font("Arial", '', 9)
-            pdf.multi_cell(190, 6, f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}", border="LR")
+            info_text = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
+            pdf.multi_cell(190, 6, info_text, border="LR") [cite: 124, 125, 127, 128, 130, 131]
             
-            # --- PHOTO EMBEDDING LOGIC ---
+            # --- IMPROVED IMAGE PLACEMENT SYSTEM ---
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                y_before_img = pdf.get_y()
-                img_w = 44 # Calculated to fit 4 images per row
+                y_current = pdf.get_y()
+                img_w = 44  # Each image width
+                img_h = 55  # Standardized height for professional look
                 
-                for i, url in enumerate(urls[:4]): # Limit to first 4 photos for neatness
+                # Check for page break before placing images
+                if y_current + img_h > 250:
+                    pdf.add_page()
+                    y_current = 20
+
+                for i, url in enumerate(urls[:4]): 
                     try:
                         resp = requests.get(url, timeout=5)
                         if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
                                 tmp_path = tmp.name
-                            # Calculate X position based on image index
                             x_pos = 12 + (i * (img_w + 2))
-                            pdf.image(tmp_path, x=x_pos, y=y_before_img + 2, w=img_w)
+                            pdf.image(tmp_path, x=x_pos, y=y_current + 2, w=img_w, h=img_h)
                     except: continue
                 
-                pdf.set_y(y_before_img + 40) # Advance the cursor past the images
+                # Push the cursor down past the images
+                pdf.set_y(y_current + img_h + 5)
             
-            pdf.cell(190, 2, "", border="BLR", ln=True) # Bottom border for the gate block
-            pdf.ln(5)
+            pdf.cell(190, 1, "", border="BLR", ln=True) # Bottom border closure
+            pdf.ln(4)
     else:
         pdf.cell(190, 10, "No visual records found.", ln=True)
 
-    # --- 5. FOOTER ---
+    # --- FOOTER ---
     pdf.set_y(-20)
     pdf.set_font("Arial", 'I', 8)
     pdf.set_text_color(128, 128, 128)
-    pdf.cell(190, 10, f"Digitally generated Birth Certificate - B&G ERP System. Page {pdf.page_no()}", align='C')
+    pdf.cell(190, 10, f"Digitally generated Birth Certificate - B&G ERP System. Page {pdf.page_no()}", align='C') [cite: 132]
 
     return pdf.output(dest='S').encode('latin-1')
 # --- 3. DATA LOADERS (Existing) ---
