@@ -71,9 +71,8 @@ with tabs[0]:
     # --- FOUNDER - EMPLOYEE INTERACTION WINDOW ---
     st.markdown("### 📢 Founder's Desk")
     
-    # 1. Fetch latest interaction
+    # 1. Fetch latest interaction for the current user
     try:
-        # Fetch latest Global Announcement or Direct Message for this user
         msg_res = conn.table("founder_interaction").select("*")\
             .or_(f"target_user.eq.All,target_user.eq.{att_user}")\
             .order("created_at", desc=True).limit(1).execute().data
@@ -81,23 +80,35 @@ with tabs[0]:
         if msg_res:
             m = msg_res[0]
             with st.container(border=True):
-                # UI for displaying the Founder's message
-                col_m, col_r = st.columns([4, 1])
-                col_m.info(f"**From {m['sender_name']}:** {m['content']}")
+                # UI: Founder's Instruction
+                st.info(f"**From {m['sender_name']}:** {m['content']}")
                 
-                # Logic for Employee to Respond/Acknowledge
-                if m['sender_name'] != att_user: # Don't reply to yourself
-                    if col_r.button("✔️ Acknowledge", key=f"ack_{m['id']}"):
-                        st.success("Message Acknowledged!"); st.rerun()
+                # Show existing reply if it exists in the database
+                if m.get('reply_content'):
+                    st.success(f"💬 **Your Reply:** {m['reply_content']}")
+                
+                # Interaction logic: Show input box only if not read and not the sender
+                if m['sender_name'] != att_user and not m.get('is_read'):
+                    col_txt, col_btn = st.columns([3, 1])
+                    emp_reply = col_txt.text_input("Type your comments/reply here...", key=f"rep_input_{m['id']}")
+                    
+                    if col_btn.button("✔️ Acknowledge & Reply", key=f"ack_btn_{m['id']}", use_container_width=True):
+                        # Update logic: Store the reply and mark as read
+                        conn.table("founder_interaction").update({
+                            "is_read": True,
+                            "reply_content": emp_reply if emp_reply else "Acknowledged",
+                            "replied_at": datetime.now(IST).isoformat()
+                        }).eq("id", m['id']).execute()
+                        st.rerun()
         else:
-            st.caption("No new messages from the Founder.")
+            st.caption("No active instructions from Founder.")
             
     except Exception as e:
-        st.info("Interaction table pending setup in Supabase.")
+        st.info("Interaction system active. Waiting for new messages.")
 
-    # 2. Logic for Founder to SEND a message (Admin Mode)
-    # Professional Logic: If user is "Admin", show the 'Send' window
+    # 2. Logic for Founder (Admin) to SEND and VIEW REPLIES
     if att_user == "Admin": 
+        # PART A: Posting Window
         with st.expander("✉️ Post New Instruction/Announcement"):
             with st.form("founder_msg_form"):
                 m_target = st.selectbox("Target", ["All"] + get_staff_list())
@@ -107,9 +118,28 @@ with tabs[0]:
                         conn.table("founder_interaction").insert({
                             "sender_name": "Founder",
                             "content": m_text,
-                            "target_user": m_target
+                            "target_user": m_target,
+                            "is_read": False
                         }).execute()
                         st.success("Message Sent!"); st.rerun()
+        
+        # PART B: The Inbox (Where Founder sees replies)
+        with st.expander("📥 View Employee Replies"):
+            # Fetch messages that have been replied to
+            reply_res = conn.table("founder_interaction").select("*")\
+                .not_.is_("reply_content", "null")\
+                .order("replied_at", desc=True).limit(10).execute().data
+            
+            if reply_res:
+                for r in reply_res:
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 4])
+                        c1.caption(f"👤 {r['target_user']}")
+                        c2.markdown(f"**Inst:** {r['content']}")
+                        st.markdown(f"💬 **Reply:** {r['reply_content']}")
+                        st.caption(f"Time: {pd.to_datetime(r['replied_at']).strftime('%d-%b %I:%M %p')}")
+            else:
+                st.info("No replies in the inbox yet.")
     st.divider()
     if att_user == FREELANCER_NAME:
         f_key = st.text_input("Freelancer Access Key", type="password")
