@@ -9,6 +9,7 @@ from fpdf import FPDF
 import base64
 import requests
 from tempfile import NamedTemporaryFile
+import os 
 
 # --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
