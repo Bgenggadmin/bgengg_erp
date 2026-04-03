@@ -24,7 +24,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
         return text.encode('ascii', 'ignore').decode('ascii')
 
-    # 1. PREPARE LOGO (Download once before class initialization)
+    # 1. DOWNLOAD LOGO FIRST
     logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
@@ -34,19 +34,19 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
                 logo_path = tmp_logo.name
     except: pass
 
-    # 2. DEFINE CLASS WITH VARIABLE PASSING
+    # 2. DEFINE CLASS WITH INTERNAL STATE
     class BrandedPDF(FPDF):
         def __init__(self, logo_p, job_code):
             super().__init__()
-            self.logo_p = logo_p
+            self.logo_p = logo_p  # Store logo path internally
             self.job_code = job_code
 
         def header(self):
-            # Blue Strip
+            # Blue Branding Strip
             self.set_fill_color(0, 51, 102)
             self.rect(0, 0, 210, 25, 'F')
             
-            # Logo (Persistent via self.logo_p)
+            # Use internal self.logo_p to ensure it shows on EVERY page
             if self.logo_p and os.path.exists(self.logo_p):
                 self.image(self.logo_p, x=12, y=5, h=15)
             
@@ -58,12 +58,13 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             self.set_xy(70, 14)
             self.cell(130, 5, "PRODUCT QUALITY BIRTH CERTIFICATE", 0, 1, "L")
             
-            # Persistent Job Code in Header
+            # Persistent Job ID
             self.set_font("Arial", "B", 8)
             self.set_xy(160, 14)
             self.cell(40, 5, f"JOB: {self.job_code}", 0, 0, "R")
+            
             self.set_text_color(0, 0, 0)
-            self.set_y(30)
+            self.set_y(30) # Content start point
 
         def footer(self):
             self.set_y(-15)
@@ -76,7 +77,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
     
-    # 4. PRODUCT IDENTIFICATION TABLE
+    # 4. FIRST PAGE HEADER TABLE
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
@@ -88,7 +89,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
     pdf.ln(5)
 
-    # 5. MANUFACTURING ENTRIES
+    # 5. MANUFACTURING LOG
     if not photo_data.empty:
         photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
         
@@ -96,13 +97,14 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             urls = row.get('quality_photo_url', [])
             has_imgs = isinstance(urls, list) and len(urls) > 0
             
-            # Calculate height to prevent white space gaps
             img_h = 55 if has_imgs else 0
-            # If entry won't fit on page, break now
+            # PREDICTIVE PAGE BREAK: Check if images will fit before starting the block
             if (pdf.h - pdf.get_y() - 25) < (img_h + 20):
                 pdf.add_page()
 
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
+            
+            # Start Gate Block
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
@@ -111,25 +113,34 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             details = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
             pdf.multi_cell(190, 6, details, border="LR")
             
+            # PHOTO GRID LOGIC
             if has_imgs:
                 y_img_start = pdf.get_y()
-                pdf.cell(190, img_h + 4, "", border="LR", ln=True) # Vertical frame
+                # Frame the side borders for images
+                pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
+
                 for i, url in enumerate(urls[:4]):
                     try:
                         resp = requests.get(url, timeout=10)
                         if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
+                                # Image Placement: x=12(left margin) + offset, y=start point + padding
                                 pdf.image(tmp.name, x=12 + (i * 46), y=y_img_start + 2, w=44, h=img_h)
                                 os.unlink(tmp.name)
                     except: continue
+                # Update cursor past images
                 pdf.set_y(y_img_start + img_h + 4)
             
+            # Bottom border closure
             pdf.cell(190, 1, "", border="BLR", ln=True)
             pdf.ln(3)
 
+    # FINAL CLEANUP
     if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
+    
     return pdf.output(dest='S').encode('latin-1')
+
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
