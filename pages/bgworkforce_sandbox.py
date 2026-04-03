@@ -68,7 +68,49 @@ tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Lea
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
+    # --- FOUNDER - EMPLOYEE INTERACTION WINDOW ---
+    st.markdown("### 📢 Founder's Desk")
     
+    # 1. Fetch latest interaction
+    try:
+        # Fetch latest Global Announcement or Direct Message for this user
+        msg_res = conn.table("founder_interaction").select("*")\
+            .or_(f"target_user.eq.All,target_user.eq.{att_user}")\
+            .order("created_at", desc=True).limit(1).execute().data
+        
+        if msg_res:
+            m = msg_res[0]
+            with st.container(border=True):
+                # UI for displaying the Founder's message
+                col_m, col_r = st.columns([4, 1])
+                col_m.info(f"**From {m['sender_name']}:** {m['content']}")
+                
+                # Logic for Employee to Respond/Acknowledge
+                if m['sender_name'] != att_user: # Don't reply to yourself
+                    if col_r.button("✔️ Acknowledge", key=f"ack_{m['id']}"):
+                        st.success("Message Acknowledged!"); st.rerun()
+        else:
+            st.caption("No new messages from the Founder.")
+            
+    except Exception as e:
+        st.info("Interaction table pending setup in Supabase.")
+
+    # 2. Logic for Founder to SEND a message (Admin Mode)
+    # Professional Logic: If user is "Admin", show the 'Send' window
+    if att_user == "Admin": 
+        with st.expander("✉️ Post New Instruction/Announcement"):
+            with st.form("founder_msg_form"):
+                m_target = st.selectbox("Target", ["All"] + get_staff_list())
+                m_text = st.text_area("Message Content")
+                if st.form_submit_button("🚀 Broadcast Message"):
+                    if m_text:
+                        conn.table("founder_interaction").insert({
+                            "sender_name": "Founder",
+                            "content": m_text,
+                            "target_user": m_target
+                        }).execute()
+                        st.success("Message Sent!"); st.rerun()
+    st.divider()
     if att_user == FREELANCER_NAME:
         f_key = st.text_input("Freelancer Access Key", type="password")
         if f_key != "abhi2026":
