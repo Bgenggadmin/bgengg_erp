@@ -77,6 +77,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             info_text = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
             pdf.multi_cell(190, 6, info_text, border="LR")
             
+            # --- IMPROVED IMAGE PLACEMENT SYSTEM ---
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
                 y_current = pdf.get_y()
@@ -102,6 +103,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     else:
         pdf.cell(190, 10, "No visual records found.", ln=True)
 
+    # --- FOOTER ---
     pdf.set_y(-20)
     pdf.set_font("Arial", 'I', 8)
     pdf.set_text_color(128, 128, 128)
@@ -124,10 +126,11 @@ def get_quality_context():
 
 df_plan, df_anchor, authorized_inspectors = get_quality_context()
 
-# --- 3. UI ---
+# --- 3. UI: TABBED NAVIGATION ---
 st.title("🔍 Quality Assurance & Inspection Portal")
 main_tabs = st.tabs(["🚪 Process Gate (Evidence)", "📋 Technical Checklist (Reports)"])
 
+# TAB 1
 with main_tabs[0]:
     if not df_plan.empty:
         st.subheader("📸 Direct Gate Inspection & Marketing Presentation")
@@ -179,16 +182,16 @@ with main_tabs[0]:
                     q_photos = st.file_uploader("Upload Evidence (Max 4)", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
                 if st.form_submit_button("🚀 Submit Gate Report", use_container_width=True):
-                    # Photo upload logic would go here
-                    pass
+                    pass # Your existing photo process logic here
 
+# TAB 2
 with main_tabs[1]:
     st.subheader("📋 Final Technical Inspection")
-    # Technical checklist code remains the same...
+    # Technical Checklist code follows here...
 
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
 if not df_plan.empty:
     inspected_df = df_plan.dropna(subset=['quality_status']).sort_values(by='quality_updated_at', ascending=False)
     if not inspected_df.empty:
-        st.dataframe(inspected_df[['job_no', 'gate_name', 'quality_status', 'quality
+        st.dataframe(inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']], use_container_width=True, hide_index=True)
