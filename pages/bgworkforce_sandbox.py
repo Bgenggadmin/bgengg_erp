@@ -116,7 +116,7 @@ with tabs[0]:
     try:
         # Fetch latest interaction for the current user (Sent or Received)
         msg_res = conn.table("founder_interaction").select("*")\
-            .or_(f"target_user.eq.All,target_user.eq.{att_user},sender_name.eq.{att_user}")\
+            .or_(f"target_user.eq.{att_user},sender_name.eq.{att_user}")
             .order("created_at", desc=True).limit(1).execute().data
         
         if msg_res:
@@ -194,13 +194,37 @@ with tabs[0]:
                     m_text = st.text_area("Instruction Content")
                     if st.form_submit_button("🚀 Broadcast Message"):
                         if m_text:
-                            conn.table("founder_interaction").insert({
-                                "sender_name": "Founder", 
-                                "content": m_text, 
-                                "target_user": m_target, 
-                                "is_read": False
-                            }).execute()
-                            st.success("Message Sent!"); st.rerun()
+                            try:
+                                if m_target == "All":
+                                    # PROFESSIONAL LOGIC: Create individual rows for everyone
+                                    all_staff = get_staff_list()
+                                    # Remove 'Admin' from the list so you don't message yourself
+                                    targets = [s for s in all_staff if s != "Admin"]
+                                    
+                                    payload = [
+                                        {
+                                            "sender_name": "Founder",
+                                            "content": m_text,
+                                            "target_user": staff_member,
+                                            "is_read": False
+                                        } for staff_member in targets
+                                    ]
+                                    conn.table("founder_interaction").insert(payload).execute()
+                                    st.success(f"Broadcast sent to {len(targets)} staff members!")
+                                
+                                else:
+                                    # Standard single-user message
+                                    conn.table("founder_interaction").insert({
+                                        "sender_name": "Founder", 
+                                        "content": m_text, 
+                                        "target_user": m_target, 
+                                        "is_read": False
+                                    }).execute()
+                                    st.success(f"Message sent to {m_target}!")
+                                
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error sending message: {e}")
             
             # PART B: The Unified Inbox
             with st.expander("📥 Unified Interaction Inbox", expanded=True):
