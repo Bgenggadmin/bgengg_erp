@@ -546,7 +546,6 @@ with tabs[4]:
                     st.success("No pending approval requests.")
         with admin_tabs[4]: 
             st.subheader("🔐 Employee Access Key Management")
-            st.caption("Use this section to update or reset employee passwords.")
             
             with st.form("admin_pw_update_form", clear_on_submit=True):
                 target_emp = st.selectbox("Select Employee", get_staff_list())
@@ -555,13 +554,20 @@ with tabs[4]:
                 if st.form_submit_button("Update Access Key"):
                     if new_key:
                         try:
-                            # upsert will update if name exists, or insert if it doesn't
-                            conn.table("employee_auth").upsert({
-                                "employee_name": target_emp,
-                                "access_key": new_key
-                            }).execute()
-                            st.success(f"✅ Access key for {target_emp} updated successfully!")
+                            # 1. We first check if the user exists in the auth table
+                            check = conn.table("employee_auth").select("id").eq("employee_name", target_emp).execute().data
+                            
+                            if check:
+                                # 2. If they exist, we UPDATE their specific row
+                                conn.table("employee_auth").update({"access_key": new_key}).eq("employee_name", target_emp).execute()
+                                st.success(f"✅ Password for {target_emp} has been updated!")
+                            else:
+                                # 3. If they are brand new, we INSERT them
+                                conn.table("employee_auth").insert({"employee_name": target_emp, "access_key": new_key}).execute()
+                                st.success(f"✅ New access record created for {target_emp}!")
+                                
+                            st.rerun()
                         except Exception as e:
                             st.error(f"Database Error: {e}")
                     else:
-                        st.warning("Please enter a key before submitting.")    
+                        st.warning("Please enter a key before submitting.")   
