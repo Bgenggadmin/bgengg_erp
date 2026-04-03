@@ -19,16 +19,47 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
+    # character safety helper
     def clean_text(text):
         if not text: return "N/A"
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
         return text.encode('ascii', 'ignore').decode('ascii')
 
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    
-    # --- 1. BRANDED LOGO & BLUE STRIP HEADER ---
+    # 1. DEFINE CUSTOM PDF CLASS FOR BRANDING
+    class BrandedPDF(FPDF):
+        def header(self):
+            # Blue Strip
+            self.set_fill_color(0, 51, 102)
+            self.rect(0, 0, 210, 25, 'F')
+            
+            # Branding and Logo
+            # Note: logo_path must be accessible to this class
+            if logo_path and os.path.exists(logo_path):
+                self.image(logo_path, x=12, y=5, h=15)
+            
+            self.set_text_color(255, 255, 255)
+            self.set_font("Arial", 'B', 16)
+            self.set_xy(70, 5)
+            self.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
+            self.set_font("Arial", "I", 10)
+            self.set_xy(70, 14)
+            self.cell(130, 5, "PRODUCT QUALITY BIRTH CERTIFICATE", 0, 1, "L")
+            
+            # Job ID reference on every page
+            self.set_font("Arial", "B", 8)
+            self.set_xy(160, 14)
+            self.cell(40, 5, f"JOB: {job_no}", 0, 0, "R")
+            
+            self.set_text_color(0, 0, 0)
+            self.ln(20)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font("Arial", 'I', 8)
+            self.set_text_color(128, 128, 128)
+            self.cell(0, 10, f"B&G ERP System - Digitally Generated Dossier - Page {self.page_no()}", 0, 0, 'C')
+
+    # 2. LOGO PREPARATION
     logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
@@ -38,25 +69,12 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
                 logo_path = tmp_logo.name
     except: pass
 
-    # Dark Blue Header Strip
-    pdf.set_fill_color(0, 51, 102) 
-    pdf.rect(0, 0, 210, 25, 'F')
+    # 3. INITIALIZE PDF
+    pdf = BrandedPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
     
-    if logo_path:
-        pdf.image(logo_path, x=12, y=5, h=15)
-    
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Arial", 'B', 16)
-    pdf.set_xy(70, 5)
-    pdf.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-    pdf.set_font("Arial", "I", 10)
-    pdf.set_xy(70, 14)
-    pdf.cell(130, 5, "PRODUCT QUALITY BIRTH CERTIFICATE", 0, 1, "L")
-
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_xy(10, 30)
-
-    # --- 2. PRODUCT IDENTIFICATION TABLE ---
+    # --- PRODUCT IDENTIFICATION TABLE (Only on 1st Page) ---
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
@@ -69,77 +87,45 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
     pdf.ln(10)
 
-    # --- 3. MANUFACTURING LOG (FIXED BORDERS) ---
-    pdf.set_font("Arial", 'B', 12)
-    pdf.set_text_color(0, 51, 102)
-    pdf.cell(190, 8, "MANUFACTURING LOG & VISUAL EVIDENCE", ln=True)
-    pdf.set_text_color(0, 0, 0)
-    pdf.ln(2)
-
+    # --- MANUFACTURING LOG (With Fixed Image Frame logic) ---
     if not photo_data.empty:
         photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
         
         for idx, row in photo_data.iterrows():
-            # Calculate dynamic height to keep borders continuous
-            start_y = pdf.get_y()
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             
-            # Entry header
+            # Start Gate Block
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
             
-            # Content (Inspector/Status)
             pdf.set_font("Arial", '', 9)
-            remarks_text = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Technical Remarks: {clean_text(row['quality_notes'])}"
-            pdf.multi_cell(190, 6, remarks_text, border="LR")
+            pdf.multi_cell(190, 6, f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}", border="LR")
             
             # Images
-            # ... (Existing header and text remarks code) ...
-            
-            # --- FIXED IMAGE BORDER LOGIC ---
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                y_before_images = pdf.get_y()
+                y_start = pdf.get_y()
                 img_w, img_h = 44, 55 
                 
-                # 1. Check for page break safety
-                if y_before_images + img_h > 260:
-                    pdf.cell(190, 1, "", border="B", ln=True) # Close current box before break
-                    pdf.add_page()
-                    y_before_images = 20
-                
-                # 2. Draw the vertical side borders for the image area FIRST
-                # This ensures the 'LR' lines continue down past the images
-                pdf.set_xy(10, y_before_images)
+                # Draw frame
                 pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
 
-                # 3. Place the images on top of that "framed" area
                 for i, url in enumerate(urls[:4]):
                     try:
                         resp = requests.get(url, timeout=5)
                         if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
-                                tmp_path = tmp.name
-                            x_pos = 12 + (i * (img_w + 2))
-                            # Placing image 'front' logic
-                            pdf.image(tmp_path, x=x_pos, y=y_before_images + 2, w=img_w, h=img_h)
-                            os.unlink(tmp_path)
+                                pdf.image(tmp.name, x=12 + (i * (img_w + 2)), y=y_start + 2, w=img_w, h=img_h)
+                                os.unlink(tmp.name)
                     except: continue
-                
-                # 4. Update the Y cursor to the end of the image block
-                pdf.set_y(y_before_images + img_h + 4)
+                pdf.set_y(y_start + img_h + 4)
             
-            # 5. Draw the final closing border for this process gate
             pdf.cell(190, 1, "", border="BLR", ln=True)
             pdf.ln(5)
-    else:
-        pdf.cell(190, 10, "No manufacturing records found.", ln=True)
 
-    if logo_path and os.path.exists(logo_path): 
-        os.unlink(logo_path)
-
+    if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 3. DATA LOADERS ---
