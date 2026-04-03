@@ -162,41 +162,56 @@ with main_tabs[0]:
                         except Exception as e: st.error(f"Error: {e}")
 
 # =========================================================
-# TAB 2: NEW TECHNICAL CHECKLIST (REPORT DATA)
+# TAB 2: UPDATED TECHNICAL CHECKLIST & ON-SPOT PDF
 # =========================================================
 with main_tabs[1]:
-    st.subheader("📋 Final Technical Inspection Report")
-    st.caption("Auto-fills data from Anchor Portal. Drawing No and technical statuses are recorded here.")
-
+    st.subheader("📋 Final Technical Inspection & Birth Certificate")
+    
     if not df_anchor.empty:
         with st.container(border=True):
             tc1, tc2, tc3 = st.columns(3)
             q_job = tc1.selectbox("Identify Job No", ["-- Select Job --"] + df_anchor['job_no'].tolist(), key="tc_job")
             
-            # --- AUTO-FILL LOGIC FROM ANCHOR ---
-            c_val, p_val = "", ""
-            d_val = datetime.now() # Default fallback
-            
+            c_val, p_val, d_val = "", "", datetime.now()
             if q_job != "-- Select Job --":
                 match = df_anchor[df_anchor['job_no'] == q_job].iloc[0]
-                c_val = match.get('client_name', '')
-                p_val = match.get('po_no', '')
-                # Process PO Date
-                raw_date = match.get('po_date')
-                if raw_date:
-                    try: d_val = pd.to_datetime(raw_date)
-                    except: d_val = datetime.now()
+                c_val, p_val = match.get('client_name', ''), match.get('po_no', '')
+                try: d_val = pd.to_datetime(match.get('po_date'))
+                except: d_val = datetime.now()
 
             q_client = tc2.text_input("Customer Name", value=c_val, key="tc_cli")
             q_po = tc3.text_input("PO Number", value=p_val, key="tc_po")
             
             tc4, tc5 = st.columns(2)
             q_po_date = tc4.date_input("PO Date", value=d_val, key="tc_po_date")
-            q_drawing = tc5.text_input("Drawing No / Revision", placeholder="e.g. BG-ENG-001 Rev 02", key="tc_draw")
+            q_drawing = tc5.text_input("Drawing No / Revision", placeholder="BG-ENG-001", key="tc_draw")
 
         if q_job != "-- Select Job --":
+            # --- ON SPOT PDF GENERATOR ---
+            st.write("### 💎 Marketing Presentation")
+            if st.button("🏗️ Generate Product Birth Certificate (PDF)", use_container_width=True):
+                # 1. Gather all data for the certificate
+                h_data = {"client_name": q_client, "po_no": q_po, "po_date": str(q_po_date), "drawing_no": q_drawing}
+                
+                # Fetch recent tech status for this job
+                tech_res = conn.table("quality_check_list").select("*").eq("job_no", q_job).order("created_at", desc=True).limit(1).execute().data
+                t_data = tech_res[0] if tech_res else {}
+                
+                # Fetch all process gate evidence (photos/status)
+                p_data = df_plan[df_plan['job_no'] == q_job]
+                
+                pdf_bytes = create_birth_certificate(q_job, h_data, t_data, p_data)
+                
+                st.download_button(
+                    label="📂 Download & Present to Client",
+                    data=pdf_bytes,
+                    file_name=f"B&G_Birth_Certificate_{q_job}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+
             with st.form("technical_checklist_form"):
-                st.write("### ⚙️ Inspection Checkpoints")
+                st.write("### ⚙️ Log Technical Inspection Data")
                 col_a, col_b = st.columns(2)
                 opts = ["Pending", "Verified/OK", "Rejected", "N/A"]
                 
@@ -205,7 +220,6 @@ with main_tabs[1]:
                     v2 = st.selectbox("2. Fit-up Examination (100%)", opts)
                     v3 = st.selectbox("3. Dimensions & Visual Exam", opts)
                     v4 = st.selectbox("4. Liquid Penetrant Test", opts)
-                
                 with col_b:
                     v5 = st.selectbox("5. Hydro / Vacuum Test", opts)
                     v6 = st.selectbox("6. Final Inspection (Pre-Dispatch)", opts)
@@ -218,21 +232,14 @@ with main_tabs[1]:
                 q_remarks = f2.text_area("Technical Remarks", key="tc_notes")
 
                 if st.form_submit_button("✅ Finalize Quality Record"):
-                    if q_inspector == "-- Select --":
-                        st.error("Please select an inspector.")
-                    else:
-                        conn.table("quality_check_list").insert({
-                            "job_no": q_job, 
-                            "client_name": q_client, 
-                            "po_no": q_po,
-                            "po_date": str(q_po_date),
-                            "drawing_no": q_drawing, # Storing the new Drawing No
-                            "mat_cert_status": v1, "fit_up_status": v2, "visual_status": v3,
-                            "pt_weld_status": v4, "hydro_status": v5, "final_status": v6,
-                            "punching_status": v7, "ncr_status": v8,
-                            "inspected_by": q_inspector, "technical_notes": q_remarks
-                        }).execute()
-                        st.success(f"Report for Job {q_job} Saved Successfully!"); st.rerun()
+                    conn.table("quality_check_list").insert({
+                        "job_no": q_job, "client_name": q_client, "po_no": q_po, "po_date": str(q_po_date),
+                        "drawing_no": q_drawing, "mat_cert_status": v1, "fit_up_status": v2, 
+                        "visual_status": v3, "pt_weld_status": v4, "hydro_status": v5, 
+                        "final_status": v6, "punching_status": v7, "ncr_status": v8,
+                        "inspected_by": q_inspector, "technical_notes": q_remarks
+                    }).execute()
+                    st.success("Record Saved!"); st.rerun()
 # --- 4. SHARED GALLERY VIEW ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
