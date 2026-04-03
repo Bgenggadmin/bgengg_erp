@@ -19,7 +19,6 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
-    # Helper for character safety
     def clean_text(text):
         if not text: return "N/A"
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
@@ -29,10 +28,9 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # --- 1. LOGO & BLUE STRIP HEADER ---
+    # --- 1. BRANDED LOGO & BLUE STRIP HEADER ---
     logo_path = None
     try:
-        # Pulling logo from your existing progress-photos bucket
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
         if logo_data:
             with NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
@@ -40,7 +38,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
                 logo_path = tmp_logo.name
     except: pass
 
-    # Dark Blue Strip
+    # Dark Blue Header Strip
     pdf.set_fill_color(0, 51, 102) 
     pdf.rect(0, 0, 210, 25, 'F')
     
@@ -55,11 +53,10 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.set_xy(70, 14)
     pdf.cell(130, 5, "PRODUCT QUALITY BIRTH CERTIFICATE", 0, 1, "L")
 
-    # Reset text to black for body
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(15)
+    pdf.set_xy(10, 30)
 
-    # --- 2. PRODUCT IDENTIFICATION TABLE (Structured Format) ---
+    # --- 2. PRODUCT IDENTIFICATION TABLE ---
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
@@ -72,7 +69,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
     pdf.ln(10)
 
-    # --- 3. MANUFACTURING LOG (With Image Grid) ---
+    # --- 3. MANUFACTURING LOG (FIXED BORDERS) ---
     pdf.set_font("Arial", 'B', 12)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(190, 8, "MANUFACTURING LOG & VISUAL EVIDENCE", ln=True)
@@ -80,53 +77,57 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.ln(2)
 
     if not photo_data.empty:
-        # Sort chronologically
         photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
         
         for idx, row in photo_data.iterrows():
+            # Calculate dynamic height to keep borders continuous
+            start_y = pdf.get_y()
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             
-            # Entry header with blue background tint
+            # Entry header
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
             
-            # Remarks and Inspector
+            # Content (Inspector/Status)
             pdf.set_font("Arial", '', 9)
-            remarks = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Technical Remarks: {clean_text(row['quality_notes'])}"
-            pdf.multi_cell(190, 6, remarks, border="LR")
+            remarks_text = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Technical Remarks: {clean_text(row['quality_notes'])}"
+            pdf.multi_cell(190, 6, remarks_text, border="LR")
             
-            # Image Grid Logic
+            # Images
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                y_current = pdf.get_y()
-                img_w, img_h = 44, 55 # Calculated aspect ratio for 4 images
+                y_img = pdf.get_y()
+                img_w, img_h = 44, 55 
                 
-                # Check for page space
-                if y_current + img_h > 260:
+                # Check for page break
+                if y_img + img_h > 260:
+                    # Close current border before breaking
+                    pdf.cell(190, 1, "", border="B", ln=True)
                     pdf.add_page()
-                    y_current = 20
-
-                for i, url in enumerate(urls[:4]): 
+                    y_img = 20
+                
+                for i, url in enumerate(urls[:4]):
                     try:
                         resp = requests.get(url, timeout=5)
                         if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
                                 tmp_path = tmp.name
-                            x_pos = 12 + (i * (img_w + 2))
-                            pdf.image(tmp_path, x=x_pos, y=y_current + 2, w=img_w, h=img_h)
+                            pdf.image(tmp_path, x=12 + (i * (img_w + 2)), y=y_img + 2, w=img_w, h=img_h)
+                            os.unlink(tmp_path)
                     except: continue
                 
-                pdf.set_y(y_current + img_h + 5) # Advance cursor past images
+                pdf.set_y(y_img + img_h + 5)
             
-            pdf.cell(190, 1, "", border="BLR", ln=True) # Close the block
-            pdf.ln(4)
+            # Draw the closing bottom border for this section
+            pdf.cell(190, 1, "", border="BLR", ln=True)
+            pdf.ln(5)
     else:
-        pdf.cell(190, 10, "No manufacturing evidence logged yet.", ln=True)
+        pdf.cell(190, 10, "No manufacturing records found.", ln=True)
 
-    # Clean up temp logo
-    if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
+    if logo_path and os.path.exists(logo_path): 
+        os.unlink(logo_path)
 
     return pdf.output(dest='S').encode('latin-1')
 
