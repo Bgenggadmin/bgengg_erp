@@ -14,17 +14,23 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
-    # Existing planning data
+    # 1. Fetch Planning Data
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
-    # LOAD ANCHOR DATA: Including PO Date
+    # 2. Fetch Anchor Data
     anchor_res = conn.table("anchor_projects").select("job_no, client_name, po_no, po_date").execute()
+    # 3. Fetch Staff List
     try:
         staff_res = conn.table("master_staff").select("name").execute()
         staff_list = sorted([s['name'] for s in staff_res.data]) if staff_res.data else []
     except Exception as e:
         st.error(f"⚠️ Master Staff Error: {e}")
         staff_list = []
+    
+    # RETURNS THREE ITEMS
     return pd.DataFrame(plan_res.data or []), pd.DataFrame(anchor_res.data or []), staff_list
+
+# CRITICAL CALL LINE:
+df_plan, df_anchor, authorized_inspectors = get_quality_context()
 
 # --- 3. UI: TABBED NAVIGATION ---
 st.title("🔍 Quality Assurance & Inspection Portal")
