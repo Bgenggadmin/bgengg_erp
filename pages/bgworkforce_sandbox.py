@@ -10,8 +10,6 @@ LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
 
-# --- DEFINE FREELANCER HERE ---
-FREELANCER_NAME = "Freelancer" 
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -224,11 +222,7 @@ with tabs[0]:
                         mime="text/csv"
                     )
     st.divider()
-    if att_user == FREELANCER_NAME:
-        f_key = st.text_input("Freelancer Access Key", type="password")
-        if f_key != "abhi2026":
-            st.warning("Please enter valid key."); st.stop()
-            
+                
     today = str(date.today())
 
     st.markdown("### 🏗️ My Work Plan & Pending Tasks")
@@ -442,13 +436,10 @@ with tabs[4]:
             if t_att:
                 df_att = pd.DataFrame(t_att)
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent', 'task_description'])
-                if s_name == "All Staff":
-                    df_att = df_att[df_att['employee_name'] != FREELANCER_NAME]
-                    df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
-                else:
+                if s_name != "All Staff":
                     df_att = df_att[df_att['employee_name'] == s_name]
                     df_work = df_work[df_work['employee_name'] == s_name]
-
+                
                 st.markdown("#### ⌛ Late Comers List")
                 df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
                 late = df_att[df_att['p_in_t'] > LATE_THRESHOLD][['work_date', 'employee_name', 'p_in_t']]
