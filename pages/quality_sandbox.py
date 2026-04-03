@@ -5,13 +5,75 @@ from datetime import datetime
 import pytz
 from PIL import Image
 import io
+from fpdf import FPDF
+import base64
 
 # --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G Quality Portal", layout="wide", page_icon="🔍")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS ---
+# --- 2. SMART UTILITIES & HELPERS ---
+
+def create_birth_certificate(job_no, header_data, tech_data, photo_data):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header: B&G Engineering Branding
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(190, 10, "B&G ENGINEERING - PRODUCT BIRTH CERTIFICATE", ln=True, align='C')
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(190, 5, f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align='C')
+    pdf.ln(10)
+    
+    # Section 1: Product Identification
+    pdf.set_fill_color(240, 240, 240)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(190, 8, "SECTION 1: PRODUCT IDENTIFICATION", ln=True, fill=True)
+    pdf.set_font("Arial", '', 10)
+    
+    col_width = 95
+    pdf.cell(col_width, 7, f"Job Number: {job_no}")
+    pdf.cell(col_width, 7, f"Client: {header_data['client_name']}", ln=True)
+    pdf.cell(col_width, 7, f"PO Number: {header_data['po_no']}")
+    pdf.cell(col_width, 7, f"PO Date: {header_data['po_date']}", ln=True)
+    pdf.cell(col_width, 7, f"Drawing No: {header_data['drawing_no']}", ln=True)
+    pdf.ln(5)
+
+    # Section 2: Technical Compliance
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(190, 8, "SECTION 2: QUALITY CHECKLIST COMPLIANCE", ln=True, fill=True)
+    pdf.set_font("Arial", '', 9)
+    
+    # List of technical keys to include in PDF
+    tech_keys = [
+        "mat_cert_status", "fit_up_status", "visual_status", 
+        "pt_weld_status", "hydro_status", "final_status", 
+        "punching_status", "ncr_status"
+    ]
+    
+    for i, key in enumerate(tech_keys):
+        label = key.replace('_status','').replace('_',' ').title()
+        val = tech_data.get(key, "N/A")
+        pdf.cell(95, 8, f"{label}: {val}", border=1)
+        if i % 2 != 0: pdf.ln(8)
+    pdf.ln(10)
+
+    # Section 3: Manufacturing Stage Evidence
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(190, 8, "SECTION 3: MANUFACTURING STAGE EVIDENCE", ln=True, fill=True)
+    
+    if not photo_data.empty:
+        for idx, row in photo_data.iterrows():
+            pdf.set_font("Arial", 'B', 10)
+            pdf.cell(190, 7, f"Gate: {row['gate_name']} (Status: {row['quality_status']})", ln=True)
+            pdf.set_font("Arial", 'I', 8)
+            pdf.multi_cell(190, 5, f"Notes: {row['quality_notes']}")
+            pdf.ln(2)
+    
+    return pdf.output(dest='S').encode('latin-1')
+
+# --- 3. DATA LOADERS (Existing) ---
 @st.cache_data(ttl=2)
 def get_quality_context():
     # 1. Fetch Planning Data
