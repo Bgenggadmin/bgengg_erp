@@ -161,30 +161,51 @@ with tabs[0]:
                             }).execute()
                             st.success("Message Sent!"); st.rerun()
             
-            # Part B: The Unified Inbox (Replies + Incoming)
+            # PART B: The Unified Inbox
             with st.expander("📥 Unified Interaction Inbox", expanded=True):
-                inbox_res = conn.table("founder_interaction").select("*")\
-                    .or_("target_user.eq.Admin,not.reply_content.is.null")\
-                    .order("created_at", desc=True).limit(15).execute().data
-                
-                if inbox_res:
-                    for r in inbox_res:
-                        with st.container(border=True):
-                            if r['target_user'] == "Admin" and not r.get('reply_content'):
-                                st.warning(f"📩 **New Message from {r['sender_name']}**")
-                                st.write(r['content'])
-                                with st.popover("Reply"):
-                                    f_rep = st.text_input("Response", key=f"f_rep_{r['id']}")
-                                    if st.button("Send Response", key=f"f_btn_{r['id']}"):
-                                        conn.table("founder_interaction").update({
-                                            "reply_content": f_rep, "is_read": True, "replied_at": datetime.now(IST).isoformat()
-                                        }).eq("id", r['id']).execute(); st.rerun()
-                            else:
-                                st.caption(f"Conversation with: {r['target_user'] if r['sender_name']=='Founder' else r['sender_name']}")
-                                st.write(f"**Msg:** {r['content']}")
-                                st.info(f"💬 **Reply:** {r.get('reply_content', 'Pending')}")
-                else:
-                    st.info("No messages in the inbox.")
+                try:
+                    # Fetch last 50 interactions and filter in Python for stability
+                    all_interactions = conn.table("founder_interaction")\
+                        .select("*")\
+                        .order("created_at", desc=True)\
+                        .limit(50)\
+                        .execute().data
+                    
+                    if all_interactions:
+                        df_inbox = pd.DataFrame(all_interactions)
+                        
+                        # Filter: Messages for Admin OR messages that have a reply
+                        # This replaces the complex .or_() database call
+                        mask = (df_inbox['target_user'] == 'Admin') | (df_inbox['reply_content'].notnull())
+                        inbox_res = df_inbox[mask].to_dict('records')
+                        
+                        if inbox_res:
+                            for r in inbox_res:
+                                with st.container(border=True):
+                                    # Sub-case: New message from employee to admin
+                                    if r['target_user'] == "Admin" and (not r.get('reply_content') or r.get('reply_content') == ""):
+                                        st.warning(f"📩 **New Message from {r['sender_name']}**")
+                                        st.write(r['content'])
+                                        with st.popover("Reply"):
+                                            f_rep = st.text_input("Response", key=f"f_rep_{r['id']}")
+                                            if st.button("Send Response", key=f"f_btn_{r['id']}"):
+                                                conn.table("founder_interaction").update({
+                                                    "reply_content": f_rep, 
+                                                    "is_read": True, 
+                                                    "replied_at": datetime.now(IST).isoformat()
+                                                }).eq("id", r['id']).execute()
+                                                st.rerun()
+                                    # Sub-case: Conversation History
+                                    else:
+                                        st.caption(f"Conversation with: {r['target_user'] if r['sender_name']=='Founder' else r['sender_name']}")
+                                        st.write(f"**Msg:** {r['content']}")
+                                        st.info(f"💬 **Reply:** {r.get('reply_content', 'Pending')}")
+                        else:
+                            st.info("No active conversations found.")
+                    else:
+                        st.info("Inbox is empty.")
+                except Exception as e:
+                    st.error(f"Error loading inbox: {e}")
 
             # Part C: CSV Export
             with st.expander("📊 Export Interaction History"):
