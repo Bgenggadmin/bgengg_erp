@@ -65,7 +65,50 @@ tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Lea
 # --- TAB 0: ATTENDANCE & WORK LOGS ---
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
-    att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
+    
+    # 1. THE IDENTITY SELECTOR
+    # This identifies WHO is trying to access the desk
+    selected_user = st.selectbox("Identify Yourself", get_staff_list(), key="user_select_main")
+    
+    # 2. THE SECURITY GATE (Session State)
+    if "authenticated_user" not in st.session_state:
+        st.session_state["authenticated_user"] = None
+
+    # Check if the person selected is actually logged in
+    if st.session_state["authenticated_user"] != selected_user:
+        st.info(f"🔐 Please verify access for {selected_user}")
+        input_pw = st.text_input("Enter your Access Key", type="password", key=f"pw_gate_{selected_user}")
+        
+        if st.button("Unlock My Dashboard", use_container_width=True):
+            # Fetch secret key from the new 'employee_auth' table you created
+            auth_res = conn.table("employee_auth").select("access_key").eq("employee_name", selected_user).execute().data
+            
+            if auth_res and input_pw == auth_res[0]['access_key']:
+                st.session_state["authenticated_user"] = selected_user
+                
+                # Special: If Admin logs in, unlock Tab 4 (Admin Panel) automatically
+                if selected_user == "Admin":
+                    st.session_state["admin_authenticated"] = True
+                st.success("Access Granted!"); st.rerun()
+            else:
+                st.error("Invalid Access Key. Please check with B&G Admin.")
+        
+        # CRITICAL: This 'st.stop()' prevents anyone from seeing the Founder's Desk 
+        # until the password above is correct.
+        st.stop()
+
+    # 3. THE AUTHORIZED AREA
+    # Now we know for sure that 'att_user' is who they say they are.
+    att_user = st.session_state["authenticated_user"]
+    
+    # Logout option for privacy
+    if st.button("🔓 Logout / Switch User"):
+        st.session_state["authenticated_user"] = None
+        st.session_state["admin_authenticated"] = False
+        st.rerun()
+
+    st.divider()
+
     
     # --- 1. FOUNDER - EMPLOYEE INTERACTION WINDOW ---
     st.markdown("### 📢 Founder's Desk")
