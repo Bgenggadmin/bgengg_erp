@@ -16,6 +16,13 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
+    # HELPER: Remove emojis and non-latin characters to prevent crash
+    def clean_text(text):
+        if not text: return "N/A"
+        # Replaces common emojis with text or removes them
+        text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
+        return text.encode('ascii', 'ignore').decode('ascii')
+
     pdf = FPDF()
     pdf.add_page()
     
@@ -32,28 +39,28 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(190, 8, "SECTION 1: PRODUCT IDENTIFICATION", ln=True, fill=True)
     pdf.set_font("Arial", '', 10)
     
-    pdf.cell(95, 7, f"Job Number: {job_no}")
-    pdf.cell(95, 7, f"Client: {header_data['client_name']}", ln=True)
-    pdf.cell(95, 7, f"PO Number: {header_data['po_no']}")
-    pdf.cell(95, 7, f"PO Date: {header_data['po_date']}", ln=True)
+    pdf.cell(95, 7, f"Job Number: {clean_text(job_no)}")
+    pdf.cell(95, 7, f"Client: {clean_text(header_data['client_name'])}", ln=True)
+    pdf.cell(95, 7, f"PO Number: {clean_text(header_data['po_no'])}")
+    pdf.cell(95, 7, f"PO Date: {clean_text(header_data['po_date'])}", ln=True)
     pdf.ln(5)
 
-    # Section 2: Manufacturing Stage Evidence (Moved Up for Marketing)
+    # Section 2: Manufacturing Stage Evidence
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 8, "SECTION 2: MANUFACTURING STAGE EVIDENCE (VISUAL PROOF)", ln=True, fill=True)
+    pdf.cell(190, 8, "SECTION 2: MANUFACTURING STAGE EVIDENCE", ln=True, fill=True)
     pdf.ln(2)
     
     if not photo_data.empty:
-        # Filter only stages that have been inspected/passed
         completed_stages = photo_data.dropna(subset=['quality_status'])
         for idx, row in completed_stages.iterrows():
             pdf.set_font("Arial", 'B', 10)
-            pdf.cell(190, 7, f"Process Gate: {row['gate_name']}", ln=True)
+            pdf.cell(190, 7, f"Process Gate: {clean_text(row['gate_name'])}", ln=True)
             pdf.set_font("Arial", '', 9)
-            pdf.cell(95, 6, f"Status: {row['quality_status']}")
-            pdf.cell(95, 6, f"Verified By: {row.get('quality_by', 'B&G Quality')}", ln=True)
+            pdf.cell(95, 6, f"Status: {clean_text(row['quality_status'])}")
+            pdf.cell(95, 6, f"Verified By: {clean_text(row.get('quality_by'))}", ln=True)
             pdf.set_font("Arial", 'I', 9)
-            pdf.multi_cell(190, 5, f"Observations: {row['quality_notes']}")
+            # Use multi_cell for long technical observations
+            pdf.multi_cell(190, 5, f"Observations: {clean_text(row['quality_notes'])}")
             pdf.ln(4)
     else:
         pdf.cell(190, 10, "No process gate evidence logged yet.", ln=True)
@@ -68,11 +75,11 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
         for i, key in enumerate(tech_keys):
             if key in tech_data:
                 label = key.replace('_status','').replace('_',' ').title()
-                pdf.cell(95, 8, f"{label}: {tech_data[key]}", border=1)
+                pdf.cell(95, 8, f"{label}: {clean_text(tech_data[key])}", border=1)
                 if i % 2 != 0: pdf.ln(8)
 
+    # Change to latin-1 to avoid crash, clean_text handles the rest
     return pdf.output(dest='S').encode('latin-1')
-
 # --- 3. DATA LOADERS (Existing) ---
 @st.cache_data(ttl=2)
 def get_quality_context():
