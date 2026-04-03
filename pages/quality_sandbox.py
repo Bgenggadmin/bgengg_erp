@@ -21,14 +21,16 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     # HELPER: Remove emojis to prevent 'latin-1' crash
     def clean_text(text):
         if not text: return "N/A"
+        # Manually swap common emojis for text markers
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
+        # Ignore any other unicode characters that might cause a crash
         return text.encode('ascii', 'ignore').decode('ascii')
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # --- 1. BRANDED HEADER ---
+    # --- 1. BRANDED HEADER (Matching MSN Report Style) ---
     pdf.set_font("Arial", 'B', 16)
     pdf.set_text_color(0, 51, 102) # B&G Dark Blue
     pdf.cell(190, 10, "B&G ENGINEERING INDUSTRIES", ln=True, align='C')
@@ -39,7 +41,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.line(10, 27, 200, 27)
     pdf.ln(10)
 
-    # --- 2. BIRTH CERTIFICATE TITLE ---
+    # --- 2. TITLE ---
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Arial", 'B', 14)
     pdf.cell(190, 10, f"PRODUCT BIRTH CERTIFICATE: {job_no}", ln=True, align='L')
@@ -48,10 +50,9 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     # --- 3. PRODUCT IDENTIFICATION TABLE ---
     pdf.set_fill_color(245, 245, 245)
     pdf.set_font("Arial", 'B', 10)
-    # Header Row
     pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
     pdf.cell(95, 8, " PURCHASE ORDER DETAILS", border=1, fill=True, ln=True)
-    # Data Rows
+    
     pdf.set_font("Arial", '', 10)
     pdf.cell(95, 8, f" Name: {clean_text(header_data['client_name'])}", border=1)
     pdf.cell(95, 8, f" PO No: {clean_text(header_data['po_no'])}", border=1, ln=True)
@@ -59,7 +60,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
     pdf.ln(10)
 
-    # --- 4. MANUFACTURING RECORD (DATE-WISE WITH PHOTOS) ---
+    # --- 4. MANUFACTURING LOG & VISUAL EVIDENCE (CHRONOLOGICAL) ---
     pdf.set_font("Arial", 'B', 12)
     pdf.set_text_color(0, 51, 102)
     pdf.cell(190, 8, "MANUFACTURING LOG & VISUAL EVIDENCE", ln=True)
@@ -67,60 +68,50 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.ln(2)
 
     if not photo_data.empty:
-        # 1. Clean the data: Remove rows where quality_updated_at is missing to avoid NaT errors
-        photo_data = photo_data.dropna(subset=['quality_updated_at'])
-        
-        # 2. Sort by completion time
-        photo_data = photo_data.sort_values('quality_updated_at')
+        # Sort by completion time to ensure correct "Birth" sequence
+        photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
         
         for idx, row in photo_data.iterrows():
-            # SAFETY CHECK FOR DATE
-            raw_date = row.get('quality_updated_at')
-            if pd.notnull(raw_date):
-                date_str = pd.to_datetime(raw_date).strftime('%d-%m-%Y')
-            else:
-                date_str = "Date Pending"
-
-            # Entry Box Bricks
+            # Date-wise Heading
+            date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
             
-                      
+            # Inspector & Status
             pdf.set_font("Arial", '', 9)
             pdf.multi_cell(190, 6, f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}", border="LR")
             
-            # --- IMAGE HANDLING ---
+            # --- PHOTO EMBEDDING LOGIC ---
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                # Create a row for images
-                x_start = pdf.get_x()
-                y_start = pdf.get_y()
-                img_width = 45
+                y_before_img = pdf.get_y()
+                img_w = 44 # Calculated to fit 4 images per row
                 
-                for i, url in enumerate(urls[:4]): # Show up to 4 images per gate
+                for i, url in enumerate(urls[:4]): # Limit to first 4 photos for neatness
                     try:
-                        response = requests.get(url)
-                        if response.status_status == 200:
+                        resp = requests.get(url, timeout=5)
+                        if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-                                tmp.write(response.content)
+                                tmp.write(resp.content)
                                 tmp_path = tmp.name
-                            pdf.image(tmp_path, x=10 + (i * (img_width + 2)), y=y_start + 2, w=img_width)
-                    except:
-                        continue
+                            # Calculate X position based on image index
+                            x_pos = 12 + (i * (img_w + 2))
+                            pdf.image(tmp_path, x=x_pos, y=y_before_img + 2, w=img_w)
+                    except: continue
                 
-                pdf.set_y(y_start + 40) # Advance Y after images
+                pdf.set_y(y_before_img + 40) # Advance the cursor past the images
             
-            pdf.cell(190, 2, "", border="BLR", ln=True) # Bottom border
+            pdf.cell(190, 2, "", border="BLR", ln=True) # Bottom border for the gate block
             pdf.ln(5)
     else:
-        pdf.cell(190, 10, "No visual records found for this product.", ln=True)
+        pdf.cell(190, 10, "No visual records found.", ln=True)
 
     # --- 5. FOOTER ---
-    pdf.set_y(-25)
+    pdf.set_y(-20)
     pdf.set_font("Arial", 'I', 8)
     pdf.set_text_color(128, 128, 128)
-    pdf.cell(190, 10, f"This is a digitally generated Birth Certificate from B&G ERP. Page {pdf.page_no()}", align='C')
+    pdf.cell(190, 10, f"Digitally generated Birth Certificate - B&G ERP System. Page {pdf.page_no()}", align='C')
 
     return pdf.output(dest='S').encode('latin-1')
 # --- 3. DATA LOADERS (Existing) ---
