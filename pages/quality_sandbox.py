@@ -67,16 +67,26 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.ln(2)
 
     if not photo_data.empty:
-        # Sort by completion time to show chronological "growth"
+        # 1. Clean the data: Remove rows where quality_updated_at is missing to avoid NaT errors
+        photo_data = photo_data.dropna(subset=['quality_updated_at'])
+        
+        # 2. Sort by completion time
         photo_data = photo_data.sort_values('quality_updated_at')
         
         for idx, row in photo_data.iterrows():
-            # Entry Box
+            # SAFETY CHECK FOR DATE
+            raw_date = row.get('quality_updated_at')
+            if pd.notnull(raw_date):
+                date_str = pd.to_datetime(raw_date).strftime('%d-%m-%Y')
+            else:
+                date_str = "Date Pending"
+
+            # Entry Box Bricks
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
-            date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
             
+                      
             pdf.set_font("Arial", '', 9)
             pdf.multi_cell(190, 6, f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}", border="LR")
             
