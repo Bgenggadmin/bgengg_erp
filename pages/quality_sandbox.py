@@ -25,15 +25,26 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
         return text.encode('ascii', 'ignore').decode('ascii')
 
-    # 1. DEFINE CUSTOM PDF CLASS FOR BRANDING
+    # --- 1. PREPARE LOGO (Do this BEFORE defining the class) ---
+    tmp_logo_file = None
+    logo_path = None
+    try:
+        logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
+        if logo_data:
+            tmp_logo_file = NamedTemporaryFile(delete=False, suffix=".png")
+            tmp_logo_file.write(logo_data)
+            logo_path = tmp_logo_file.name
+            tmp_logo_file.close() # Close handle but keep file
+    except: pass
+
+    # --- 2. DEFINE CUSTOM PDF CLASS ---
     class BrandedPDF(FPDF):
         def header(self):
             # Blue Strip
             self.set_fill_color(0, 51, 102)
             self.rect(0, 0, 210, 25, 'F')
             
-            # Branding and Logo
-            # Note: logo_path must be accessible to this class
+            # Logo Placement (Uses the logo_path from outer scope)
             if logo_path and os.path.exists(logo_path):
                 self.image(logo_path, x=12, y=5, h=15)
             
@@ -45,11 +56,9 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             self.set_xy(70, 14)
             self.cell(130, 5, "PRODUCT QUALITY BIRTH CERTIFICATE", 0, 1, "L")
             
-            # Job ID reference on every page
             self.set_font("Arial", "B", 8)
             self.set_xy(160, 14)
             self.cell(40, 5, f"JOB: {job_no}", 0, 0, "R")
-            
             self.set_text_color(0, 0, 0)
             self.ln(20)
 
@@ -57,24 +66,14 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             self.set_y(-15)
             self.set_font("Arial", 'I', 8)
             self.set_text_color(128, 128, 128)
-            self.cell(0, 10, f"B&G ERP System - Digitally Generated Dossier - Page {self.page_no()}", 0, 0, 'C')
+            self.cell(0, 10, f"B&G ERP System - Page {self.page_no()}", 0, 0, 'C')
 
-    # 2. LOGO PREPARATION
-    logo_path = None
-    try:
-        logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-        if logo_data:
-            with NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
-                tmp_logo.write(logo_data)
-                logo_path = tmp_logo.name
-    except: pass
-
-    # 3. INITIALIZE PDF
+    # --- 3. INITIALIZE PDF ---
     pdf = BrandedPDF()
-    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_auto_page_break(auto=True, margin=25)
     pdf.add_page()
     
-    # --- PRODUCT IDENTIFICATION TABLE (Only on 1st Page) ---
+    # --- 4. PRODUCT IDENTIFICATION TABLE (1st Page) ---
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
@@ -87,28 +86,36 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
     pdf.ln(10)
 
-    # --- MANUFACTURING LOG (With Fixed Image Frame logic) ---
+    # --- 5. MANUFACTURING LOG ENTRIES ---
     if not photo_data.empty:
         photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
         
         for idx, row in photo_data.iterrows():
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             
-            # Start Gate Block
+            # Start Gate Block (Header)
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
             
+            # Text Details
             pdf.set_font("Arial", '', 9)
-            pdf.multi_cell(190, 6, f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}", border="LR")
+            details = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
+            pdf.multi_cell(190, 6, details, border="LR")
             
-            # Images
+            # Photos
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                y_start = pdf.get_y()
+                y_img_start = pdf.get_y()
                 img_w, img_h = 44, 55 
                 
-                # Draw frame
+                # Check for page break BEFORE drawing the image box
+                if y_img_start + img_h > 250:
+                    pdf.cell(190, 1, "", border="B", ln=True) # Close current box
+                    pdf.add_page()
+                    y_img_start = pdf.get_y()
+
+                # Draw the side-border frame for images
                 pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
 
                 for i, url in enumerate(urls[:4]):
@@ -117,17 +124,19 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
                         if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
-                                pdf.image(tmp.name, x=12 + (i * (img_w + 2)), y=y_start + 2, w=img_w, h=img_h)
+                                pdf.image(tmp.name, x=12 + (i * (img_w + 2)), y=y_img_start + 2, w=img_w, h=img_h)
                                 os.unlink(tmp.name)
                     except: continue
-                pdf.set_y(y_start + img_h + 4)
+                pdf.set_y(y_img_start + img_h + 4)
             
+            # Close the entire gate box
             pdf.cell(190, 1, "", border="BLR", ln=True)
             pdf.ln(5)
 
+    # Final Cleanup
     if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
+    
     return pdf.output(dest='S').encode('latin-1')
-
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
