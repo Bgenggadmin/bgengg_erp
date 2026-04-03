@@ -1,139 +1,153 @@
 import streamlit as st
+from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from fpdf import FPDF
 from datetime import datetime
 import pytz
-from st_supabase_connection import SupabaseConnection
-from streamlit_drawable_canvas import st_canvas
 from PIL import Image
 import io
 
-# --- 1. SETTINGS & SETUP ---
+# --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
-st.set_page_config(page_title="B&G Quality ERP", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="B&G Quality Portal", layout="wide", page_icon="🔍")
 conn = st.connection("supabase", type=SupabaseConnection)
 
-GATES = [
-    "1. Quality check list", "2. QAP", "3. As Built Drawing", 
-    "4. Material Flow Chart", "5. Material Test Reports", 
-    "6. Nozzle Flow Chart", "7. Dimensional Inspection Report", 
-    "8. Hydro test Report", "9. Calibration Report", 
-    "10. Final inspection Report", "11. Guarantee certificate", 
-    "12. Customer Feed back"
-]
+# --- 2. DATA LOADERS ---
+@st.cache_data(ttl=2)
+def get_quality_context():
+    # Only pull stages that are Active or Completed (Skip Pending)
+    plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
+    try:
+        staff_res = conn.table("master_staff").select("name").execute()
+        staff_list = sorted([s['name'] for s in staff_res.data]) if staff_res.data else []
+    except Exception as e:
+        st.error(f"⚠️ Master Staff Error: {e}")
+        staff_list = []
+    return pd.DataFrame(plan_res.data or []), staff_list
 
-# --- 2. UI LOGIC & DYNAMIC FORMS ---
-st.title("🛡️ B&G Quality Integration Hub")
+df_plan, authorized_inspectors = get_quality_context()
 
-try:
-    projs_data = conn.table("anchor_projects").select("*").execute().data
-    staff_data = conn.table("master_staff").select("name").execute().data
-    inspectors = [s['name'] for s in staff_data]
-    sel_job = st.sidebar.selectbox("Select Active Job", [p['job_no'] for p in projs_data])
-    job_row = next(p for p in projs_data if p['job_no'] == sel_job)
-except Exception as e:
-    st.error(f"Database Error: {e}"); st.stop()
+# --- 3. UI: QUALITY INSPECTION FORM ---
+st.title("🔍 Quality Assurance Portal")
 
-tab1, tab2, tab3 = st.tabs(["🏗️ Daily Log Entry", "📊 Readiness Dashboard", "📄 Report Generator"])
+if not df_plan.empty:
+    c1, c2 = st.columns(2)
+    unique_jobs = sorted(df_plan['job_no'].unique())
+    sel_job = c1.selectbox("🏗️ Select Job Number", ["-- Select --"] + unique_jobs)
 
-with tab1:
-    st.subheader(f"Record Shop Floor Data: {sel_job}")
-    
-    # 1. Gate Selection
-    gate = st.selectbox("Select Process Gate / Form", GATES)
-    st.divider()
-
-    # 2. Dynamic Form Logic based on PDF headers
-    with st.form("inspection_gate", clear_on_submit=True):
-        payload = {"job_no": sel_job, "gate_name": gate}
+    if sel_job != "-- Select --":
+        job_stages = df_plan[df_plan['job_no'] == sel_job]
+        sel_stage = c2.selectbox("🚪 Select Process/Gate", job_stages['gate_name'].tolist())
+        stage_record = job_stages[job_stages['gate_name'] == sel_stage].iloc[0]
         
-        if gate == "4. Material Flow Chart":
-            # Matching Headers: Description, Size, MOC, Test Report No, Heat No 
-            c1, c2, c3 = st.columns(3)
-            payload["description"] = c1.text_input("Component Description (e.g. Shell)")
-            payload["size"] = c1.text_input("Size (e.g. ID2750X8THK)")
-            payload["moc"] = c2.selectbox("MOC", ["SS304", "SS316L", "Carbon Steel"], index=0)
-            payload["mtr_no"] = c2.text_input("Test Report No")
-            payload["heat_no"] = c3.text_input("Heat Number")
-
-        elif gate == "6. Nozzle Flow Chart":
-            # Matching Headers: Nozzle No, Description, Qty, Size(NB), MOC, Projection [cite: 69, 576]
-            c1, c2, c3 = st.columns(3)
-            payload["nozzle_no"] = c1.text_input("Nozzle Mark (e.g. N1)")
-            payload["description"] = c1.text_input("Description (e.g. Drain)")
-            payload["qty"] = c2.number_input("Quantity", min_value=1, step=1)
-            payload["size_nb"] = c2.text_input("Size (NB)")
-            payload["projection"] = c3.text_input("Projection (mm)", value="150")
-            payload["moc"] = c3.text_input("MOC", value="SS304")
-
-        elif gate == "7. Dimensional Inspection Report":
-            # Matching Headers: Description, Specified, Measured, MOC 
-            c1, c2 = st.columns(2)
-            payload["description"] = c1.text_input("Inspection Parameter (e.g. Shell ID)")
-            payload["spec_dim"] = c1.text_input("Specified Dimension")
-            payload["meas_dim"] = c2.text_input("Measured Dimension")
-            payload["moc"] = c2.text_input("MOC", value="SS304")
-
-        elif gate == "8. Hydro test Report":
-            # Matching Headers: Test Pressure, Duration, Fluid, Temp 
-            c1, c2 = st.columns(2)
-            payload["test_pressure"] = c1.text_input("Test Pressure (e.g. 1.0 kg/cm2)")
-            payload["duration"] = c1.text_input("Duration (e.g. 1 Hr)")
-            payload["test_fluid"] = c2.selectbox("Test Fluid", ["WATER", "OIL", "AIR"])
-            payload["temperature"] = c2.text_input("Temperature", value="ATMP.")
-
-        elif gate == "9. Calibration Report":
-            # Matching Headers: Instrument, Sr No, Make, Range, Least Count 
-            c1, c2 = st.columns(2)
-            payload["instr_desc"] = c1.text_input("Instrument Description")
-            payload["sr_no"] = c1.text_input("Serial Number")
-            payload["make"] = c2.text_input("Make (e.g. Baumer)")
-            payload["range_val"] = c2.text_input("Range (e.g. 0-7 kg/cm2)")
-
-        else:
-            # General Entry for other forms
-            c1, c2 = st.columns(2)
-            payload["notes"] = c1.text_area("General Observations")
-            payload["remarks"] = c2.text_input("Remarks")
-
         st.divider()
-        c_sig1, c_sig2 = st.columns([2, 1])
-        with c_sig1:
-            st.write("🖋️ Inspector Digital Signature")
-            canvas = st_canvas(stroke_width=2, stroke_color="#000", height=120, width=400, key="sig_pad")
-        with c_sig2:
-            payload["inspector_name"] = st.selectbox("Select Inspector", inspectors)
-            payload["quality_status"] = st.segmented_control("Result", ["✅ Pass", "❌ Reject"], default="✅ Pass")
+        
+        with st.form("quality_form", clear_on_submit=True):
+            st.subheader(f"Direct Inspection: {sel_job} > {sel_stage}")
+            f_col1, f_col2 = st.columns(2)
+            
+            with f_col1:
+                q_status = st.segmented_control("Result", ["✅ Pass", "❌ Reject", "⚠️ Rework"], default="✅ Pass")
+                inspector = st.selectbox("Authorized Inspector", ["-- Select Name --"] + authorized_inspectors)
+                q_notes = st.text_area("Technical Observations")
 
-        if st.form_submit_button("🚀 Submit Section Record"):
-            # The payload now contains specific keys matching the PDF form selected
-            conn.table("quality_inspection_logs").insert(payload).execute()
-            st.success(f"Form '{gate}' successfully saved with specific field data.")
-            st.rerun()
+            with f_col2:
+                # Accept up to 4 files
+                q_photos = st.file_uploader("Upload Evidence (Max 4 photos, 60KB each)", 
+                                           type=['png', 'jpg', 'jpeg'], 
+                                           accept_multiple_files=True)
+                st.caption("Auto-resizing and strict 60KB compression enabled.")
 
-# --- TAB 2 & 3 (DASHBOARD & GENERATOR) remains similar, but now filters by specific keys ---
+            if st.form_submit_button("🚀 Submit Quality Report", use_container_width=True):
+                if inspector == "-- Select Name --":
+                    st.error("Please select an authorized inspector.")
+                elif len(q_photos) > 4:
+                    st.error("Maximum 4 photos allowed.")
+                else:
+                    try:
+                        all_urls = []
+                        
+                        # PROCESS EACH PHOTO
+                        for i, photo_file in enumerate(q_photos):
+                            img = Image.open(photo_file)
+                            img.thumbnail((400, 500)) # Passport size dimensions
+                            
+                            buffer = io.BytesIO()
+                            img.save(buffer, format="JPEG", quality=60, optimize=True)
+                            
+                            # Strict 60KB check
+                            if buffer.tell() > 60 * 1024:
+                                buffer = io.BytesIO()
+                                img.save(buffer, format="JPEG", quality=40, optimize=True)
+                            
+                            file_name = f"{str(sel_job).replace('/', '-')}_{sel_stage}_{i}_{datetime.now().strftime('%H%M%S')}.jpg"
+                            
+                            conn.client.storage.from_("quality-photos").upload(
+                                path=file_name, file=buffer.getvalue(),
+                                file_options={"content-type": "image/jpeg"}
+                            )
+                            url = conn.client.storage.from_("quality-photos").get_public_url(file_name)
+                            all_urls.append(url)
 
-# --- TAB 2: READINESS DASHBOARD ---
-with tab2:
-    logs = conn.table("quality_inspection_logs").select("*").eq("job_no", sel_job).execute().data
-    logged_gates = [l['gate_name'] for l in logs]
+                        # UPDATE DATABASE (Save as Array)
+                        conn.table("job_planning").update({
+                            "quality_status": q_status,
+                            "quality_notes": f"{datetime.now(IST).strftime('%d/%m %H:%M')}: {q_notes}",
+                            "quality_by": inspector,
+                            "quality_photo_url": all_urls,
+                            "quality_updated_at": datetime.now(IST).isoformat()
+                        }).eq("id", stage_record['id']).execute()
+                        
+                        st.success(f"Successfully recorded with {len(all_urls)} photos!")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Submission Error: {e}")
+
+# --- 4. SUMMARY VIEW & UPDATED GALLERY WITH DELETE ---
+st.divider()
+st.subheader("📋 Recent Quality Clearances")
+
+if not df_plan.empty:
+    # Filter only inspected rows
+    inspected_df = df_plan.dropna(subset=['quality_status']).sort_values(by='quality_updated_at', ascending=False)
     
-    st.subheader("12-Form Readiness Status")
-    cols = st.columns(2)
-    for i, g in enumerate(GATES):
-        col = cols[0] if i < 6 else cols[1]
-        if g in logged_gates:
-            col.success(f"✅ {g} - Data Logged")
-        else:
-            col.error(f"⬜ {g} - Missing")
+    if not inspected_df.empty:
+        st.dataframe(inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']], use_container_width=True, hide_index=True)
 
-# --- TAB 3: REPORT GENERATOR ---
-with tab3:
-    st.subheader("Final Pharma Documentation")
-    signatory = st.selectbox("Select Signatory for Certificate", inspectors)
-    if st.button("🚀 Generate Full Package", type="primary", use_container_width=True):
-        if logs:
-            pdf_bytes = generate_full_package(job_row, logs, signatory)
-            st.download_button("📥 Download Rich PDF Package", pdf_bytes, f"BG_{sel_job}_Full_Quality.pdf")
+        st.markdown("### 🖼️ Evidence Gallery & Management")
+        
+        # Filter rows that have photos (check if list is not empty)
+        photo_rows = inspected_df[inspected_df['quality_photo_url'].apply(lambda x: len(x) > 0 if isinstance(x, list) else False)]
+        
+        if not photo_rows.empty:
+            sel_row_idx = st.selectbox("Select Job to Manage Photos", photo_rows.index, 
+                                      format_func=lambda x: f"{photo_rows.loc[x, 'job_no']} - {photo_rows.loc[x, 'gate_name']}")
+            
+            current_urls = photo_rows.loc[sel_row_idx, 'quality_photo_url']
+            record_id = photo_rows.loc[sel_row_idx, 'id']
+            
+            cols = st.columns(4)
+            for i, url in enumerate(current_urls):
+                with cols[i % 4]:
+                    st.image(url, use_container_width=True)
+                    if st.button(f"🗑️ Remove {i+1}", key=f"del_{record_id}_{i}"):
+                        try:
+                            # 1. Identify filename from URL
+                            file_name = url.split("/")[-1]
+                            conn.client.storage.from_("quality-photos").remove([file_name])
+                            
+                            # 2. Update Database (Remove specific URL from array)
+                            updated_urls = [u for u in current_urls if u != url]
+                            conn.table("job_planning").update({
+                                "quality_photo_url": updated_urls
+                            }).eq("id", record_id).execute()
+                            
+                            st.toast(f"Photo removed!")
+                            st.cache_data.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Delete failed: {e}")
         else:
-            st.warning("No entries found. Please log data in Tab 1 first.")
+            st.info("No photos found for recent inspections.")
+else:
+    st.warning("No project planning data found.")
