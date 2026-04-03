@@ -21,56 +21,56 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     
     # Header: B&G Engineering Branding
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(190, 10, "B&G ENGINEERING - PRODUCT BIRTH CERTIFICATE", ln=True, align='C')
+    pdf.cell(190, 10, "B&G ENGINEERING - PRODUCT QUALITY DOSSIER", ln=True, align='C')
     pdf.set_font("Arial", '', 10)
-    pdf.cell(190, 5, f"Report Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align='C')
+    pdf.cell(190, 5, f"Visual Evidence Report | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align='C')
     pdf.ln(10)
     
     # Section 1: Product Identification
-    pdf.set_fill_color(240, 240, 240)
+    pdf.set_fill_color(230, 230, 230)
     pdf.set_font("Arial", 'B', 12)
     pdf.cell(190, 8, "SECTION 1: PRODUCT IDENTIFICATION", ln=True, fill=True)
     pdf.set_font("Arial", '', 10)
     
-    col_width = 95
-    pdf.cell(col_width, 7, f"Job Number: {job_no}")
-    pdf.cell(col_width, 7, f"Client: {header_data['client_name']}", ln=True)
-    pdf.cell(col_width, 7, f"PO Number: {header_data['po_no']}")
-    pdf.cell(col_width, 7, f"PO Date: {header_data['po_date']}", ln=True)
-    pdf.cell(col_width, 7, f"Drawing No: {header_data['drawing_no']}", ln=True)
+    pdf.cell(95, 7, f"Job Number: {job_no}")
+    pdf.cell(95, 7, f"Client: {header_data['client_name']}", ln=True)
+    pdf.cell(95, 7, f"PO Number: {header_data['po_no']}")
+    pdf.cell(95, 7, f"PO Date: {header_data['po_date']}", ln=True)
     pdf.ln(5)
 
-    # Section 2: Technical Compliance
+    # Section 2: Manufacturing Stage Evidence (Moved Up for Marketing)
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 8, "SECTION 2: QUALITY CHECKLIST COMPLIANCE", ln=True, fill=True)
-    pdf.set_font("Arial", '', 9)
-    
-    # List of technical keys to include in PDF
-    tech_keys = [
-        "mat_cert_status", "fit_up_status", "visual_status", 
-        "pt_weld_status", "hydro_status", "final_status", 
-        "punching_status", "ncr_status"
-    ]
-    
-    for i, key in enumerate(tech_keys):
-        label = key.replace('_status','').replace('_',' ').title()
-        val = tech_data.get(key, "N/A")
-        pdf.cell(95, 8, f"{label}: {val}", border=1)
-        if i % 2 != 0: pdf.ln(8)
-    pdf.ln(10)
-
-    # Section 3: Manufacturing Stage Evidence
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 8, "SECTION 3: MANUFACTURING STAGE EVIDENCE", ln=True, fill=True)
+    pdf.cell(190, 8, "SECTION 2: MANUFACTURING STAGE EVIDENCE (VISUAL PROOF)", ln=True, fill=True)
+    pdf.ln(2)
     
     if not photo_data.empty:
-        for idx, row in photo_data.iterrows():
+        # Filter only stages that have been inspected/passed
+        completed_stages = photo_data.dropna(subset=['quality_status'])
+        for idx, row in completed_stages.iterrows():
             pdf.set_font("Arial", 'B', 10)
-            pdf.cell(190, 7, f"Gate: {row['gate_name']} (Status: {row['quality_status']})", ln=True)
-            pdf.set_font("Arial", 'I', 8)
-            pdf.multi_cell(190, 5, f"Notes: {row['quality_notes']}")
-            pdf.ln(2)
-    
+            pdf.cell(190, 7, f"Process Gate: {row['gate_name']}", ln=True)
+            pdf.set_font("Arial", '', 9)
+            pdf.cell(95, 6, f"Status: {row['quality_status']}")
+            pdf.cell(95, 6, f"Verified By: {row.get('quality_by', 'B&G Quality')}", ln=True)
+            pdf.set_font("Arial", 'I', 9)
+            pdf.multi_cell(190, 5, f"Observations: {row['quality_notes']}")
+            pdf.ln(4)
+    else:
+        pdf.cell(190, 10, "No process gate evidence logged yet.", ln=True)
+
+    # Section 3: Technical Compliance (Only if data exists)
+    if tech_data:
+        pdf.ln(5)
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(190, 8, "SECTION 3: TECHNICAL COMPLIANCE SUMMARY", ln=True, fill=True)
+        pdf.set_font("Arial", '', 9)
+        tech_keys = ["mat_cert_status", "fit_up_status", "visual_status", "pt_weld_status", "hydro_status"]
+        for i, key in enumerate(tech_keys):
+            if key in tech_data:
+                label = key.replace('_status','').replace('_',' ').title()
+                pdf.cell(95, 8, f"{label}: {tech_data[key]}", border=1)
+                if i % 2 != 0: pdf.ln(8)
+
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 3. DATA LOADERS (Existing) ---
@@ -109,45 +109,42 @@ with main_tabs[0]:
         sel_job = c1.selectbox("🏗️ Select Job Number", ["-- Select --"] + unique_jobs, key="pg_job_sel")
 
         if sel_job != "-- Select --":
-            # --- MARKETING SECTION (ADDED) ---
+            # --- SIMPLIFIED MARKETING PRESENTATION (TAB 1) ---
             with st.container(border=True):
-                st.markdown("### 💎 Live Client Presentation")
-                st.caption("Generate a visual 'Birth Certificate' showing all completed process gate photos for this job.")
+                st.subheader("💎 Present to Client")
                 
-                # Prepare data for PDF
-                # 1. Fetch Header Info from Anchor
+                # 1. Prepare Header (Anchor Data)
                 h_match = df_anchor[df_anchor['job_no'] == sel_job]
-                if not h_match.empty:
-                    h_row = h_match.iloc[0]
-                    h_data = {
-                        "client_name": h_row.get('client_name', 'N/A'),
-                        "po_no": h_row.get('po_no', 'N/A'),
-                        "po_date": str(h_row.get('po_date', 'N/A')),
-                        "drawing_no": "Refer Technical Tab"
-                    }
-                else:
-                    h_data = {"client_name": "Unknown", "po_no": "N/A", "po_date": "N/A", "drawing_no": "N/A"}
+                h_data = {
+                    "client_name": h_match.iloc[0].get('client_name', 'N/A') if not h_match.empty else "N/A",
+                    "po_no": h_match.iloc[0].get('po_no', 'N/A') if not h_match.empty else "N/A",
+                    "po_date": str(h_match.iloc[0].get('po_date', 'N/A')) if not h_match.empty else "N/A",
+                    "drawing_no": "Verified on Shop Floor"
+                }
 
-                # 2. Fetch latest Tech Status
+                # 2. Fetch Visual Data (Photos/Gate Status)
+                p_data = df_plan[df_plan['job_no'] == sel_job]
+
+                # 3. Optional Tech Data (Check if exists, but don't require it)
                 tech_res = conn.table("quality_check_list").select("*").eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute().data
                 t_data = tech_res[0] if tech_res else {}
 
-                # 3. Fetch all gate photos
-                p_data = df_plan[df_plan['job_no'] == sel_job]
-
-                # 4. Generate Button
+                # 4. INSTANT DOWNLOAD BUTTON
                 try:
                     pdf_bytes = create_birth_certificate(sel_job, h_data, t_data, p_data)
                     st.download_button(
-                        label=f"📂 GENERATE LIVE BIRTH CERTIFICATE: {sel_job}",
+                        label=f"📂 DOWNLOAD PRODUCT BIRTH CERTIFICATE: {sel_job}",
                         data=pdf_bytes,
-                        file_name=f"BG_Quality_Dossier_{sel_job}.pdf",
+                        file_name=f"Birth_Cert_{sel_job}.pdf",
                         mime="application/pdf",
                         use_container_width=True,
-                        type="primary"
+                        type="primary",
+                        key="pg_marketing_pdf"
                     )
                 except Exception as e:
-                    st.info("Log technical data in Tab 2 to enable full PDF features.")
+                    st.error("Select a Job Number with logged data to generate.")
+
+            st.divider()
 
             st.divider()
             
