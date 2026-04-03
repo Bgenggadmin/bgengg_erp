@@ -14,9 +14,9 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
-    # Load planning data for photo-gate process
+    # Existing planning data
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
-    # Load anchor projects for the technical checklist
+    # LOAD ANCHOR DATA: Including PO Date
     anchor_res = conn.table("anchor_projects").select("job_no, client_name, po_no, po_date").execute()
     try:
         staff_res = conn.table("master_staff").select("name").execute()
@@ -25,8 +25,6 @@ def get_quality_context():
         st.error(f"⚠️ Master Staff Error: {e}")
         staff_list = []
     return pd.DataFrame(plan_res.data or []), pd.DataFrame(anchor_res.data or []), staff_list
-
-df_plan, df_anchor, authorized_inspectors = get_quality_context()
 
 # --- 3. UI: TABBED NAVIGATION ---
 st.title("🔍 Quality Assurance & Inspection Portal")
@@ -100,23 +98,33 @@ with main_tabs[0]:
 # =========================================================
 with main_tabs[1]:
     st.subheader("📋 Final Technical Inspection Report")
-    st.caption("Complete this form for daily documentation and PDF report generation.")
+    st.caption("Auto-fills data from Anchor Portal. Drawing No and technical statuses are recorded here.")
 
     if not df_anchor.empty:
         with st.container(border=True):
             tc1, tc2, tc3 = st.columns(3)
             q_job = tc1.selectbox("Identify Job No", ["-- Select Job --"] + df_anchor['job_no'].tolist(), key="tc_job")
             
-            # Auto-fill Logic
-            c_val, p_val, d_val = "", "", datetime.now()
+            # --- AUTO-FILL LOGIC FROM ANCHOR ---
+            c_val, p_val = "", ""
+            d_val = datetime.now() # Default fallback
+            
             if q_job != "-- Select Job --":
                 match = df_anchor[df_anchor['job_no'] == q_job].iloc[0]
-                c_val, p_val = match.get('client_name', ''), match.get('po_no', '')
-                try: d_val = pd.to_datetime(match.get('po_date'))
-                except: d_val = datetime.now()
+                c_val = match.get('client_name', '')
+                p_val = match.get('po_no', '')
+                # Process PO Date
+                raw_date = match.get('po_date')
+                if raw_date:
+                    try: d_val = pd.to_datetime(raw_date)
+                    except: d_val = datetime.now()
 
             q_client = tc2.text_input("Customer Name", value=c_val, key="tc_cli")
             q_po = tc3.text_input("PO Number", value=p_val, key="tc_po")
+            
+            tc4, tc5 = st.columns(2)
+            q_po_date = tc4.date_input("PO Date", value=d_val, key="tc_po_date")
+            q_drawing = tc5.text_input("Drawing No / Revision", placeholder="e.g. BG-ENG-001 Rev 02", key="tc_draw")
 
         if q_job != "-- Select Job --":
             with st.form("technical_checklist_form"):
@@ -146,14 +154,17 @@ with main_tabs[1]:
                         st.error("Please select an inspector.")
                     else:
                         conn.table("quality_check_list").insert({
-                            "job_no": q_job, "client_name": q_client, "po_no": q_po,
+                            "job_no": q_job, 
+                            "client_name": q_client, 
+                            "po_no": q_po,
+                            "po_date": str(q_po_date),
+                            "drawing_no": q_drawing, # Storing the new Drawing No
                             "mat_cert_status": v1, "fit_up_status": v2, "visual_status": v3,
                             "pt_weld_status": v4, "hydro_status": v5, "final_status": v6,
                             "punching_status": v7, "ncr_status": v8,
                             "inspected_by": q_inspector, "technical_notes": q_remarks
                         }).execute()
-                        st.success("Record Saved Successfully!"); st.rerun()
-
+                        st.success(f"Report for Job {q_job} Saved Successfully!"); st.rerun()
 # --- 4. SHARED GALLERY VIEW ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
