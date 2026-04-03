@@ -7,6 +7,8 @@ from PIL import Image
 import io
 from fpdf import FPDF
 import base64
+import requests
+from tempfile import NamedTemporaryFile
 
 # --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -16,69 +18,100 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
-    # HELPER: Remove emojis and non-latin characters to prevent crash
+    # HELPER: Remove emojis to prevent 'latin-1' crash
     def clean_text(text):
         if not text: return "N/A"
-        # Replaces common emojis with text or removes them
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
         return text.encode('ascii', 'ignore').decode('ascii')
 
     pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # Header: B&G Engineering Branding
+    # --- 1. BRANDED HEADER ---
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(190, 10, "B&G ENGINEERING - PRODUCT QUALITY DOSSIER", ln=True, align='C')
-    pdf.set_font("Arial", '', 10)
-    pdf.cell(190, 5, f"Visual Evidence Report | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=True, align='C')
+    pdf.set_text_color(0, 51, 102) # B&G Dark Blue
+    pdf.cell(190, 10, "B&G ENGINEERING INDUSTRIES", ln=True, align='C')
+    pdf.set_font("Arial", 'B', 10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(190, 5, "CHEMICAL PROCESS EQUIPMENT SPECIALISTS", ln=True, align='C')
+    pdf.set_draw_color(0, 51, 102)
+    pdf.line(10, 27, 200, 27)
     pdf.ln(10)
-    
-    # Section 1: Product Identification
-    pdf.set_fill_color(230, 230, 230)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 8, "SECTION 1: PRODUCT IDENTIFICATION", ln=True, fill=True)
-    pdf.set_font("Arial", '', 10)
-    
-    pdf.cell(95, 7, f"Job Number: {clean_text(job_no)}")
-    pdf.cell(95, 7, f"Client: {clean_text(header_data['client_name'])}", ln=True)
-    pdf.cell(95, 7, f"PO Number: {clean_text(header_data['po_no'])}")
-    pdf.cell(95, 7, f"PO Date: {clean_text(header_data['po_date'])}", ln=True)
-    pdf.ln(5)
 
-    # Section 2: Manufacturing Stage Evidence
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(190, 8, "SECTION 2: MANUFACTURING STAGE EVIDENCE", ln=True, fill=True)
+    # --- 2. BIRTH CERTIFICATE TITLE ---
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(190, 10, f"PRODUCT BIRTH CERTIFICATE: {job_no}", ln=True, align='L')
     pdf.ln(2)
-    
+
+    # --- 3. PRODUCT IDENTIFICATION TABLE ---
+    pdf.set_fill_color(245, 245, 245)
+    pdf.set_font("Arial", 'B', 10)
+    # Header Row
+    pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
+    pdf.cell(95, 8, " PURCHASE ORDER DETAILS", border=1, fill=True, ln=True)
+    # Data Rows
+    pdf.set_font("Arial", '', 10)
+    pdf.cell(95, 8, f" Name: {clean_text(header_data['client_name'])}", border=1)
+    pdf.cell(95, 8, f" PO No: {clean_text(header_data['po_no'])}", border=1, ln=True)
+    pdf.cell(95, 8, f" Drawing No: {clean_text(header_data.get('drawing_no', 'N/A'))}", border=1)
+    pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
+    pdf.ln(10)
+
+    # --- 4. MANUFACTURING RECORD (DATE-WISE WITH PHOTOS) ---
+    pdf.set_font("Arial", 'B', 12)
+    pdf.set_text_color(0, 51, 102)
+    pdf.cell(190, 8, "MANUFACTURING LOG & VISUAL EVIDENCE", ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(2)
+
     if not photo_data.empty:
-        completed_stages = photo_data.dropna(subset=['quality_status'])
-        for idx, row in completed_stages.iterrows():
+        # Sort by completion time to show chronological "growth"
+        photo_data = photo_data.sort_values('quality_updated_at')
+        
+        for idx, row in photo_data.iterrows():
+            # Entry Box
             pdf.set_font("Arial", 'B', 10)
-            pdf.cell(190, 7, f"Process Gate: {clean_text(row['gate_name'])}", ln=True)
+            pdf.set_fill_color(230, 240, 255)
+            date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
+            pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
+            
             pdf.set_font("Arial", '', 9)
-            pdf.cell(95, 6, f"Status: {clean_text(row['quality_status'])}")
-            pdf.cell(95, 6, f"Verified By: {clean_text(row.get('quality_by'))}", ln=True)
-            pdf.set_font("Arial", 'I', 9)
-            # Use multi_cell for long technical observations
-            pdf.multi_cell(190, 5, f"Observations: {clean_text(row['quality_notes'])}")
-            pdf.ln(4)
+            pdf.multi_cell(190, 6, f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}", border="LR")
+            
+            # --- IMAGE HANDLING ---
+            urls = row.get('quality_photo_url', [])
+            if isinstance(urls, list) and len(urls) > 0:
+                # Create a row for images
+                x_start = pdf.get_x()
+                y_start = pdf.get_y()
+                img_width = 45
+                
+                for i, url in enumerate(urls[:4]): # Show up to 4 images per gate
+                    try:
+                        response = requests.get(url)
+                        if response.status_status == 200:
+                            with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                                tmp.write(response.content)
+                                tmp_path = tmp.name
+                            pdf.image(tmp_path, x=10 + (i * (img_width + 2)), y=y_start + 2, w=img_width)
+                    except:
+                        continue
+                
+                pdf.set_y(y_start + 40) # Advance Y after images
+            
+            pdf.cell(190, 2, "", border="BLR", ln=True) # Bottom border
+            pdf.ln(5)
     else:
-        pdf.cell(190, 10, "No process gate evidence logged yet.", ln=True)
+        pdf.cell(190, 10, "No visual records found for this product.", ln=True)
 
-    # Section 3: Technical Compliance (Only if data exists)
-    if tech_data:
-        pdf.ln(5)
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(190, 8, "SECTION 3: TECHNICAL COMPLIANCE SUMMARY", ln=True, fill=True)
-        pdf.set_font("Arial", '', 9)
-        tech_keys = ["mat_cert_status", "fit_up_status", "visual_status", "pt_weld_status", "hydro_status"]
-        for i, key in enumerate(tech_keys):
-            if key in tech_data:
-                label = key.replace('_status','').replace('_',' ').title()
-                pdf.cell(95, 8, f"{label}: {clean_text(tech_data[key])}", border=1)
-                if i % 2 != 0: pdf.ln(8)
+    # --- 5. FOOTER ---
+    pdf.set_y(-25)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.set_text_color(128, 128, 128)
+    pdf.cell(190, 10, f"This is a digitally generated Birth Certificate from B&G ERP. Page {pdf.page_no()}", align='C')
 
-    # Change to latin-1 to avoid crash, clean_text handles the rest
     return pdf.output(dest='S').encode('latin-1')
 # --- 3. DATA LOADERS (Existing) ---
 @st.cache_data(ttl=2)
