@@ -10,8 +10,6 @@ LATE_THRESHOLD = time(9, 15)
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
 
-# --- DEFINE FREELANCER HERE ---
-FREELANCER_NAME = "Freelancer" 
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -67,13 +65,207 @@ tabs = st.tabs(["🕒 Attendance & Productivity", "📜 My Past Data", "📝 Lea
 # --- TAB 0: ATTENDANCE & WORK LOGS ---
 with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
-    att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     
-    if att_user == FREELANCER_NAME:
-        f_key = st.text_input("Freelancer Access Key", type="password")
-        if f_key != "abhi2026":
-            st.warning("Please enter valid key."); st.stop()
+    # 1. THE IDENTITY SELECTOR
+    # This identifies WHO is trying to access the desk
+    selected_user = st.selectbox("Identify Yourself", get_staff_list(), key="user_select_main")
+    
+    # 2. THE SECURITY GATE (Session State)
+    if "authenticated_user" not in st.session_state:
+        st.session_state["authenticated_user"] = None
+
+    # Check if the person selected is actually logged in
+    if st.session_state["authenticated_user"] != selected_user:
+        st.info(f"🔐 Please verify access for {selected_user}")
+        input_pw = st.text_input("Enter your Access Key", type="password", key=f"pw_gate_{selected_user}")
+        
+        if st.button("Unlock My Dashboard", use_container_width=True):
+            # Fetch secret key from the new 'employee_auth' table you created
+            auth_res = conn.table("employee_auth").select("access_key").eq("employee_name", selected_user).execute().data
             
+            if auth_res and input_pw == auth_res[0]['access_key']:
+                st.session_state["authenticated_user"] = selected_user
+                
+                # Special: If Admin logs in, unlock Tab 4 (Admin Panel) automatically
+                if selected_user == "Admin":
+                    st.session_state["admin_authenticated"] = True
+                st.success("Access Granted!"); st.rerun()
+            else:
+                st.error("Invalid Access Key. Please check with B&G Admin.")
+        
+        # CRITICAL: This 'st.stop()' prevents anyone from seeing the Founder's Desk 
+        # until the password above is correct.
+        st.stop()
+
+    # 3. THE AUTHORIZED AREA
+    # Now we know for sure that 'att_user' is who they say they are.
+    att_user = st.session_state["authenticated_user"]
+    
+    # Logout option for privacy
+    if st.button("🔓 Logout / Switch User"):
+        st.session_state["authenticated_user"] = None
+        st.session_state["admin_authenticated"] = False
+        st.rerun()
+
+    st.divider()
+
+    
+    # --- 1. FOUNDER - EMPLOYEE INTERACTION WINDOW ---
+    st.markdown("### 📢 Founder's Desk")
+    
+    try:
+        # Fetch latest interaction for the current user (Sent or Received)
+        msg_res = conn.table("founder_interaction").select("*")\
+            .or_(f"target_user.eq.All,target_user.eq.{att_user},sender_name.eq.{att_user}")\
+            .order("created_at", desc=True).limit(1).execute().data
+        
+        if msg_res:
+            m = msg_res[0]
+            with st.container(border=True):
+                # CASE A: Employee looking at a message they SENT to Founder
+                if m['sender_name'] == att_user:
+                    st.write(f"📤 **My Message to Founder:** {m['content']}")
+                    if m.get('reply_content'):
+                        st.info(f"🏁 **Founder's Response:** {m['reply_content']}")
+                    else:
+                        st.caption("⏳ Waiting for response...")
+                
+                # CASE B: User looking at a message RECEIVED from Founder
+                else:
+                    st.info(f"**From {m['sender_name']}:** {m['content']}")
+                    if m.get('reply_content'):
+                        st.success(f"💬 **Your Reply:** {m['reply_content']}")
+                    
+                    # Show reply box only if not yet read/replied
+                    if not m.get('is_read'):
+                        col_txt, col_btn = st.columns([3, 1])
+                        emp_reply = col_txt.text_input("Type reply/comments...", key=f"rep_in_{m['id']}")
+                        if col_btn.button("✔️ Reply & Acknowledge", key=f"ack_btn_{m['id']}", use_container_width=True):
+                            conn.table("founder_interaction").update({
+                                "is_read": True, 
+                                "reply_content": emp_reply if emp_reply else "Acknowledged",
+                                "replied_at": datetime.now(IST).isoformat()
+                            }).eq("id", m['id']).execute()
+                            st.rerun()
+
+        # Option for regular employees to start a new chat
+        if att_user != "Admin":
+            with st.expander("✉️ Send New Message to Founder"):
+                with st.form("emp_to_founder_form", clear_on_submit=True):
+                    emp_msg = st.text_area("What would you like to share/report?")
+                    if st.form_submit_button("🚀 Send to Founder"):
+                        if emp_msg:
+                            conn.table("founder_interaction").insert({
+                                "sender_name": att_user, "target_user": "Admin",
+                                "content": emp_msg, "is_read": False
+                            }).execute()
+                            st.success("Sent to Founder!"); st.rerun()
+            
+    except Exception as e:
+        st.info("Interaction system active.")
+
+    # --- 2. LOGIC FOR FOUNDER (ADMIN) TOOLS ---
+    if att_user == "Admin": 
+        # Check if Admin is already logged in for this session
+        if "admin_authenticated" not in st.session_state:
+            st.session_state["admin_authenticated"] = False
+
+        if not st.session_state["admin_authenticated"]:
+            # Password Gate
+            pw_input = st.text_input("🔑 Admin Access Key", type="password", key="admin_gate_pw")
+            if st.button("Unlock Founder Desk"):
+                if pw_input == "bg2026":
+                    st.session_state["admin_authenticated"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect Password")
+            st.stop() # Prevents Admin tools from loading below until PW is correct
+        
+        # Admin is Logged In
+        if st.session_state["admin_authenticated"]:
+            if st.button("🔒 Logout Admin"):
+                st.session_state["admin_authenticated"] = False
+                st.rerun()
+
+            # Part A: Post New Message
+            with st.expander("✉️ Post New Instruction/Announcement", expanded=False):
+                with st.form("founder_msg_form"):
+                    m_target = st.selectbox("Target Employee", ["All"] + get_staff_list())
+                    m_text = st.text_area("Instruction Content")
+                    if st.form_submit_button("🚀 Broadcast Message"):
+                        if m_text:
+                            conn.table("founder_interaction").insert({
+                                "sender_name": "Founder", 
+                                "content": m_text, 
+                                "target_user": m_target, 
+                                "is_read": False
+                            }).execute()
+                            st.success("Message Sent!"); st.rerun()
+            
+            # PART B: The Unified Inbox
+            with st.expander("📥 Unified Interaction Inbox", expanded=True):
+                try:
+                    # Fetch last 50 interactions and filter in Python for stability
+                    all_interactions = conn.table("founder_interaction")\
+                        .select("*")\
+                        .order("created_at", desc=True)\
+                        .limit(50)\
+                        .execute().data
+                    
+                    if all_interactions:
+                        df_inbox = pd.DataFrame(all_interactions)
+                        
+                        # Filter: Messages for Admin OR messages that have a reply
+                        # This replaces the complex .or_() database call
+                        mask = (df_inbox['target_user'] == 'Admin') | (df_inbox['reply_content'].notnull())
+                        inbox_res = df_inbox[mask].to_dict('records')
+                        
+                        if inbox_res:
+                            for r in inbox_res:
+                                with st.container(border=True):
+                                    # Sub-case: New message from employee to admin
+                                    if r['target_user'] == "Admin" and (not r.get('reply_content') or r.get('reply_content') == ""):
+                                        st.warning(f"📩 **New Message from {r['sender_name']}**")
+                                        st.write(r['content'])
+                                        with st.popover("Reply"):
+                                            f_rep = st.text_input("Response", key=f"f_rep_{r['id']}")
+                                            if st.button("Send Response", key=f"f_btn_{r['id']}"):
+                                                conn.table("founder_interaction").update({
+                                                    "reply_content": f_rep, 
+                                                    "is_read": True, 
+                                                    "replied_at": datetime.now(IST).isoformat()
+                                                }).eq("id", r['id']).execute()
+                                                st.rerun()
+                                    # Sub-case: Conversation History
+                                    else:
+                                        st.caption(f"Conversation with: {r['target_user'] if r['sender_name']=='Founder' else r['sender_name']}")
+                                        st.write(f"**Msg:** {r['content']}")
+                                        st.info(f"💬 **Reply:** {r.get('reply_content', 'Pending')}")
+                        else:
+                            st.info("No active conversations found.")
+                    else:
+                        st.info("Inbox is empty.")
+                except Exception as e:
+                    st.error(f"Error loading inbox: {e}")
+
+            # Part C: CSV Export
+            with st.expander("📊 Export Interaction History"):
+                raw_data = conn.table("founder_interaction").select("*").order("created_at", desc=True).execute().data
+                if raw_data:
+                    df_export = pd.DataFrame(raw_data)
+                    df_export['Interaction_Summary'] = df_export.apply(
+                        lambda x: f"TO: {x['target_user']} | INST: {x['content']} | REPLY: {x.get('reply_content', 'No Reply')}", 
+                        axis=1
+                    )
+                    final_csv_df = df_export[['created_at', 'target_user', 'content', 'reply_content', 'Interaction_Summary']]
+                    st.download_button(
+                        label="💾 Download Interaction CSV",
+                        data=final_csv_df.to_csv(index=False).encode('utf-8'),
+                        file_name=f"BG_Interactions_{date.today()}.csv",
+                        mime="text/csv"
+                    )
+    st.divider()
+                
     today = str(date.today())
 
     st.markdown("### 🏗️ My Work Plan & Pending Tasks")
@@ -278,7 +470,8 @@ with tabs[4]:
         elif export_mode == "Monthly": sr, er = date.today() - timedelta(days=30), date.today()
         else: sr, er = st.date_input("From date"), st.date_input("To date")
         
-        admin_tabs = st.tabs(["📈 Analytics & Efficiency", "📜 Staff Leave Position", "🕒 Detailed Logs", "📬 Leave Approvals"])
+        # --- ADDED "🔐 Access Keys" TO THE LIST BELOW ---
+        admin_tabs = st.tabs(["📈 Analytics", "📜 Leave Position", "🕒 Detailed Logs", "📬 Approvals", "🔐 Access Keys"])
         
         with admin_tabs[0]: # Analytics Logic
             st.subheader(f"🏢 Operational Data tracking ({sr} to {er})")
@@ -287,13 +480,10 @@ with tabs[4]:
             if t_att:
                 df_att = pd.DataFrame(t_att)
                 df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name','hours_spent', 'task_description'])
-                if s_name == "All Staff":
-                    df_att = df_att[df_att['employee_name'] != FREELANCER_NAME]
-                    df_work = df_work[df_work['employee_name'] != FREELANCER_NAME]
-                else:
+                if s_name != "All Staff":
                     df_att = df_att[df_att['employee_name'] == s_name]
                     df_work = df_work[df_work['employee_name'] == s_name]
-
+                
                 st.markdown("#### ⌛ Late Comers List")
                 df_att['p_in_t'] = pd.to_datetime(df_att['punch_in']).dt.tz_convert(IST).dt.time
                 late = df_att[df_att['p_in_t'] > LATE_THRESHOLD][['work_date', 'employee_name', 'p_in_t']]
@@ -329,29 +519,12 @@ with tabs[4]:
         with admin_tabs[2]: # Detailed Logs
             l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
             tbl = "attendance_logs" if l_type == "Attendance" else "work_logs" if l_type == "Work Logs" else "movement_logs" if l_type == "Movement" else "work_plans"
-            
-            # --- STABILIZED & CRASH-PROOF QUERY ---
-            try:
-                # We cast the date sr to a ISO string starting at midnight to ensure Supabase compares it correctly
-                start_timestamp = f"{sr}T00:00:00Z" 
-                
-                res_obj = conn.table(tbl).select("*").gte("created_at", start_timestamp).execute()
-                res = res_obj.data
-                
-                if res:
-                    df_v = pd.DataFrame(res)
-                    # Clean up data: ensure employee_name exists before filtering
-                    if 'employee_name' in df_v.columns:
-                        if s_name != "All Staff": 
-                            df_v = df_v[df_v['employee_name'] == s_name]
-                    
-                    st.dataframe(df_v, hide_index=True, use_container_width=True)
-                    st.download_button(f"📥 Export {l_type}", data=convert_df(df_v), file_name=f"{l_type}_export.csv")
-                else:
-                    st.info(f"No records found in {l_type} from {sr} onwards.")
-                    
-            except Exception as e:
-                st.error(f"⚠️ Table Error: Could not fetch data from '{tbl}'. This usually happens if a column name is missing. Details: {e}")
+            res = conn.table(tbl).select("*").gte("created_at", str(sr)).execute().data
+            if res:
+                df_v = pd.DataFrame(res)
+                if s_name != "All Staff": df_v = df_v[df_v['employee_name'] == s_name]
+                st.dataframe(df_v, hide_index=True, use_container_width=True)
+                st.download_button(f"📥 Export {l_type}", data=convert_df(df_v), file_name=f"admin_export.csv")
 
         with admin_tabs[3]: # Leave Approval logic
             pend = get_leave_requests()
@@ -371,3 +544,30 @@ with tabs[4]:
                                     conn.table("leave_requests").update({"status": "Rejected", "reject_reason": rn}).eq("id", row['id']).execute(); st.cache_data.clear(); st.rerun()
                 else:
                     st.success("No pending approval requests.")
+        with admin_tabs[4]: 
+            st.subheader("🔐 Employee Access Key Management")
+            
+            with st.form("admin_pw_update_form", clear_on_submit=True):
+                target_emp = st.selectbox("Select Employee", get_staff_list())
+                new_key = st.text_input("Set New Access Key", type="password")
+                
+                if st.form_submit_button("Update Access Key"):
+                    if new_key:
+                        try:
+                            # 1. We first check if the user exists in the auth table
+                            check = conn.table("employee_auth").select("id").eq("employee_name", target_emp).execute().data
+                            
+                            if check:
+                                # 2. If they exist, we UPDATE their specific row
+                                conn.table("employee_auth").update({"access_key": new_key}).eq("employee_name", target_emp).execute()
+                                st.success(f"✅ Password for {target_emp} has been updated!")
+                            else:
+                                # 3. If they are brand new, we INSERT them
+                                conn.table("employee_auth").insert({"employee_name": target_emp, "access_key": new_key}).execute()
+                                st.success(f"✅ New access record created for {target_emp}!")
+                                
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Database Error: {e}")
+                    else:
+                        st.warning("Please enter a key before submitting.")   
