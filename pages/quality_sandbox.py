@@ -109,9 +109,9 @@ with main_tabs[0]:
         sel_job = c1.selectbox("🏗️ Select Job Number", ["-- Select --"] + unique_jobs, key="pg_job_sel")
 
         if sel_job != "-- Select --":
-            # --- SIMPLIFIED MARKETING PRESENTATION (TAB 1) ---
+            # --- PROFESSIONAL MARKETING PRESENTATION (TAB 1) ---
             with st.container(border=True):
-                st.subheader("💎 Present to Client")
+                st.subheader("💎 Presentation Mode")
                 
                 # 1. Prepare Header (Anchor Data)
                 h_match = df_anchor[df_anchor['job_no'] == sel_job]
@@ -125,24 +125,33 @@ with main_tabs[0]:
                 # 2. Fetch Visual Data (Photos/Gate Status)
                 p_data = df_plan[df_plan['job_no'] == sel_job]
 
-                # 3. Optional Tech Data (Check if exists, but don't require it)
+                # 3. Fetch Tech Data (If exists, use it. If not, send empty dict)
+                # This prevents the "Log technical data" message from blocking you
                 tech_res = conn.table("quality_check_list").select("*").eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute().data
                 t_data = tech_res[0] if tech_res else {}
 
-                # 4. INSTANT DOWNLOAD BUTTON
+                # 4. INSTANT PDF GENERATION
                 try:
                     pdf_bytes = create_birth_certificate(sel_job, h_data, t_data, p_data)
+                    
                     st.download_button(
                         label=f"📂 DOWNLOAD PRODUCT BIRTH CERTIFICATE: {sel_job}",
                         data=pdf_bytes,
-                        file_name=f"Birth_Cert_{sel_job}.pdf",
+                        file_name=f"BG_Birth_Cert_{sel_job}.pdf",
                         mime="application/pdf",
                         use_container_width=True,
                         type="primary",
                         key="pg_marketing_pdf"
                     )
+                    
+                    # Optional: Subtle hint if tech data is missing
+                    if not t_data:
+                        st.caption("ℹ️ Presentation contains Manufacturing Photos. Technical checklist pending.")
+                        
                 except Exception as e:
-                    st.error("Select a Job Number with logged data to generate.")
+                    st.error(f"Could not generate PDF: {e}")
+
+            st.divider()
 
             st.divider()
 
