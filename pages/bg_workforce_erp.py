@@ -114,29 +114,25 @@ with tabs[0]:
     st.markdown("### 📢 Founder's Desk")
     
     try:
-        # Fetch latest interaction for the current user (Sent or Received)
+        # Fetch latest interaction: NOW LOOKING ONLY FOR DIRECT MESSAGES
         msg_res = conn.table("founder_interaction").select("*")\
-            .or_(f"target_user.eq.All,target_user.eq.{att_user},sender_name.eq.{att_user}")\
+            .or_(f"target_user.eq.{att_user},sender_name.eq.{att_user}")\
             .order("created_at", desc=True).limit(1).execute().data
         
         if msg_res:
             m = msg_res[0]
             with st.container(border=True):
-                # CASE A: Employee looking at a message they SENT to Founder
                 if m['sender_name'] == att_user:
                     st.write(f"📤 **My Message to Founder:** {m['content']}")
                     if m.get('reply_content'):
                         st.info(f"🏁 **Founder's Response:** {m['reply_content']}")
                     else:
                         st.caption("⏳ Waiting for response...")
-                
-                # CASE B: User looking at a message RECEIVED from Founder
                 else:
                     st.info(f"**From {m['sender_name']}:** {m['content']}")
                     if m.get('reply_content'):
                         st.success(f"💬 **Your Reply:** {m['reply_content']}")
                     
-                    # Show reply box only if not yet read/replied
                     if not m.get('is_read'):
                         col_txt, col_btn = st.columns([3, 1])
                         emp_reply = col_txt.text_input("Type reply/comments...", key=f"rep_in_{m['id']}")
@@ -148,7 +144,6 @@ with tabs[0]:
                             }).eq("id", m['id']).execute()
                             st.rerun()
 
-        # Option for regular employees to start a new chat
         if att_user != "Admin":
             with st.expander("✉️ Send New Message to Founder"):
                 with st.form("emp_to_founder_form", clear_on_submit=True):
@@ -166,12 +161,10 @@ with tabs[0]:
 
     # --- 2. LOGIC FOR FOUNDER (ADMIN) TOOLS ---
     if att_user == "Admin": 
-        # Check if Admin is already logged in for this session
         if "admin_authenticated" not in st.session_state:
             st.session_state["admin_authenticated"] = False
 
         if not st.session_state["admin_authenticated"]:
-            # Password Gate
             pw_input = st.text_input("🔑 Admin Access Key", type="password", key="admin_gate_pw")
             if st.button("Unlock Founder Desk"):
                 if pw_input == "bg2026":
@@ -179,28 +172,38 @@ with tabs[0]:
                     st.rerun()
                 else:
                     st.error("Incorrect Password")
-            st.stop() # Prevents Admin tools from loading below until PW is correct
+            st.stop()
         
-        # Admin is Logged In
         if st.session_state["admin_authenticated"]:
             if st.button("🔒 Logout Admin"):
                 st.session_state["admin_authenticated"] = False
                 st.rerun()
 
-            # Part A: Post New Message
             with st.expander("✉️ Post New Instruction/Announcement", expanded=False):
                 with st.form("founder_msg_form"):
                     m_target = st.selectbox("Target Employee", ["All"] + get_staff_list())
                     m_text = st.text_area("Instruction Content")
                     if st.form_submit_button("🚀 Broadcast Message"):
                         if m_text:
-                            conn.table("founder_interaction").insert({
-                                "sender_name": "Founder", 
-                                "content": m_text, 
-                                "target_user": m_target, 
-                                "is_read": False
-                            }).execute()
-                            st.success("Message Sent!"); st.rerun()
+                            try:
+                                if m_target == "All":
+                                    # INDIVIDUAL TRACKING LOGIC:
+                                    staff_list = get_staff_list()
+                                    targets = [s for s in staff_list if s != "Admin"]
+                                    payload = [
+                                        {"sender_name": "Founder", "content": m_text, "target_user": s, "is_read": False} 
+                                        for s in targets
+                                    ]
+                                    conn.table("founder_interaction").insert(payload).execute()
+                                    st.success(f"Broadcast sent individually to {len(targets)} staff.")
+                                else:
+                                    conn.table("founder_interaction").insert({
+                                        "sender_name": "Founder", "content": m_text, "target_user": m_target, "is_read": False
+                                    }).execute()
+                                    st.success(f"Message sent to {m_target}!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Post Error: {e}")
             
             # PART B: The Unified Inbox
             with st.expander("📥 Unified Interaction Inbox", expanded=True):
