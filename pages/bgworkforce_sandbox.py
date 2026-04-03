@@ -69,11 +69,11 @@ with tabs[0]:
     st.subheader("🕒 Daily Time Office & Productivity Tracker")
     att_user = st.selectbox("Identify Yourself", get_staff_list(), key="att_user")
     
-    # --- FOUNDER - EMPLOYEE INTERACTION WINDOW ---
+    # --- 1. FOUNDER - EMPLOYEE INTERACTION WINDOW ---
     st.markdown("### 📢 Founder's Desk")
     
     try:
-        # 1. Fetch latest interaction for the current user
+        # Fetch latest interaction for the current user (Sent or Received)
         msg_res = conn.table("founder_interaction").select("*")\
             .or_(f"target_user.eq.All,target_user.eq.{att_user},sender_name.eq.{att_user}")\
             .order("created_at", desc=True).limit(1).execute().data
@@ -81,7 +81,7 @@ with tabs[0]:
         if msg_res:
             m = msg_res[0]
             with st.container(border=True):
-                # UI: If the user SENT the message (Self-message tracker)
+                # CASE A: Employee looking at a message they SENT to Founder
                 if m['sender_name'] == att_user:
                     st.write(f"📤 **My Message to Founder:** {m['content']}")
                     if m.get('reply_content'):
@@ -89,83 +89,7 @@ with tabs[0]:
                     else:
                         st.caption("⏳ Waiting for response...")
                 
-                # UI: If the user RECEIVED the message
-                else:
-                    st.info(f"**From {m['sender_name']}:** {m['content']}")
-                    if m.get('reply_content'):
-                        st.success(f"💬 **Your Reply:** {m['reply_content']}")
-                    
-                    # Logic: Only show reply box if not read and not sender
-                    if not m.get('is_read'):
-                        col_txt, col_btn = st.columns([3, 1])
-                        emp_reply = col_txt.text_input("Type reply/comments...", key=f"rep_in_{m['id']}")
-                        if col_btn.button("✔️ Reply & Acknowledge", key=f"ack_btn_{m['id']}", use_container_width=True):
-                            conn.table("founder_interaction").update({
-                                "is_read": True, "reply_content": emp_reply if emp_reply else "Acknowledged",
-                                "replied_at": datetime.now(IST).isoformat()
-                            }).eq("id", m['id']).execute()
-                            st.rerun()
-
-        # --- OPTION FOR EMPLOYEE TO INITIATE A MESSAGE ---
-        if att_user != "Admin":
-            with st.expander("✉️ Send New Message to Founder"):
-                with st.form("emp_to_founder_form", clear_on_submit=True):
-                    emp_msg = st.text_area("What would you like to share/report?")
-                    if st.form_submit_button("🚀 Send to Founder"):
-                        if emp_msg:
-                            conn.table("founder_interaction").insert({
-                                "sender_name": att_user,
-                                "target_user": "Admin",
-                                "content": emp_msg,
-                                "is_read": False
-                            }).execute()
-                            st.success("Sent to Founder!"); st.rerun()
-            
-    except Exception as e:
-        st.info("Interaction system active.")
-
-    # 2. Logic for Founder (Admin) Tools
-    if att_user == "Admin": 
-        # --- (Keep your existing admin password gate logic here) ---
-        if st.session_state.get("admin_authenticated"):
-            # PART A: Post Window (As before)
-            # ...
-            
-            # PART B: The Inbox (Now shows both replies AND new messages)
-            with st.expander("📥 Unified Interaction Inbox"):
-                # Fetch messages intended for Admin OR messages where Admin has been replied to
-                inbox_res = conn.table("founder_interaction").select("*")\
-                    .or_("target_user.eq.Admin,not.reply_content.is.null")\
-                    .order("created_at", desc=True).limit(15).execute().data
-                
-                if inbox_res:
-                    for r in inbox_res:
-                        with st.container(border=True):
-                            if r['target_user'] == "Admin" and not r.get('reply_content'):
-                                st.warning(f"📩 **New Message from {r['sender_name']}**")
-                                st.write(r['content'])
-                                # Provide Founder a way to reply back to employee messages
-                                with st.popover("Reply"):# --- FOUNDER - EMPLOYEE INTERACTION WINDOW ---
-    st.markdown("### 📢 Founder's Desk")
-    
-    try:
-        # 1. Fetch latest interaction for the current user (Sent or Received)
-        msg_res = conn.table("founder_interaction").select("*")\
-            .or_(f"target_user.eq.All,target_user.eq.{att_user},sender_name.eq.{att_user}")\
-            .order("created_at", desc=True).limit(1).execute().data
-        
-        if msg_res:
-            m = msg_res[0]
-            with st.container(border=True):
-                # UI Case 1: Employee looking at a message they SENT to Founder
-                if m['sender_name'] == att_user:
-                    st.write(f"📤 **My Message to Founder:** {m['content']}")
-                    if m.get('reply_content'):
-                        st.info(f"🏁 **Founder's Response:** {m['reply_content']}")
-                    else:
-                        st.caption("⏳ Waiting for response...")
-                
-                # UI Case 2: User looking at a message RECEIVED from Founder
+                # CASE B: User looking at a message RECEIVED from Founder
                 else:
                     st.info(f"**From {m['sender_name']}:** {m['content']}")
                     if m.get('reply_content'):
@@ -183,7 +107,7 @@ with tabs[0]:
                             }).eq("id", m['id']).execute()
                             st.rerun()
 
-        # --- OPTION FOR EMPLOYEE TO INITIATE A MESSAGE ---
+        # Option for regular employees to start a new chat
         if att_user != "Admin":
             with st.expander("✉️ Send New Message to Founder"):
                 with st.form("emp_to_founder_form", clear_on_submit=True):
@@ -199,12 +123,30 @@ with tabs[0]:
     except Exception as e:
         st.info("Interaction system active.")
 
-    # 2. Logic for Founder (Admin) Tools
+    # --- 2. LOGIC FOR FOUNDER (ADMIN) TOOLS ---
     if att_user == "Admin": 
-        # --- (Admin password gate logic should be here) ---
-        if st.session_state.get("admin_authenticated"):
-            
-            # --- RESTORED PART A: FOUNDER POSTING WINDOW ---
+        # Check if Admin is already logged in for this session
+        if "admin_authenticated" not in st.session_state:
+            st.session_state["admin_authenticated"] = False
+
+        if not st.session_state["admin_authenticated"]:
+            # Password Gate
+            pw_input = st.text_input("🔑 Admin Access Key", type="password", key="admin_gate_pw")
+            if st.button("Unlock Founder Desk"):
+                if pw_input == "bg2026":
+                    st.session_state["admin_authenticated"] = True
+                    st.rerun()
+                else:
+                    st.error("Incorrect Password")
+            st.stop() # Prevents Admin tools from loading below until PW is correct
+        
+        # Admin is Logged In
+        if st.session_state["admin_authenticated"]:
+            if st.button("🔒 Logout Admin"):
+                st.session_state["admin_authenticated"] = False
+                st.rerun()
+
+            # Part A: Post New Message
             with st.expander("✉️ Post New Instruction/Announcement", expanded=False):
                 with st.form("founder_msg_form"):
                     m_target = st.selectbox("Target Employee", ["All"] + get_staff_list())
@@ -219,7 +161,7 @@ with tabs[0]:
                             }).execute()
                             st.success("Message Sent!"); st.rerun()
             
-            # PART B: The Unified Inbox
+            # Part B: The Unified Inbox (Replies + Incoming)
             with st.expander("📥 Unified Interaction Inbox", expanded=True):
                 inbox_res = conn.table("founder_interaction").select("*")\
                     .or_("target_user.eq.Admin,not.reply_content.is.null")\
@@ -228,7 +170,6 @@ with tabs[0]:
                 if inbox_res:
                     for r in inbox_res:
                         with st.container(border=True):
-                            # Sub-case: New message from employee to admin
                             if r['target_user'] == "Admin" and not r.get('reply_content'):
                                 st.warning(f"📩 **New Message from {r['sender_name']}**")
                                 st.write(r['content'])
@@ -238,20 +179,29 @@ with tabs[0]:
                                         conn.table("founder_interaction").update({
                                             "reply_content": f_rep, "is_read": True, "replied_at": datetime.now(IST).isoformat()
                                         }).eq("id", r['id']).execute(); st.rerun()
-                            # Sub-case: Founder instruction that was replied to
                             else:
                                 st.caption(f"Conversation with: {r['target_user'] if r['sender_name']=='Founder' else r['sender_name']}")
                                 st.write(f"**Msg:** {r['content']}")
                                 st.info(f"💬 **Reply:** {r.get('reply_content', 'Pending')}")
-                                    f_rep = st.text_input("Response", key=f"f_rep_{r['id']}")
-                                    if st.button("Send Response", key=f"f_btn_{r['id']}"):
-                                        conn.table("founder_interaction").update({
-                                            "reply_content": f_rep, "is_read": True, "replied_at": datetime.now(IST).isoformat()
-                                        }).eq("id", r['id']).execute(); st.rerun()
-                            else:
-                                st.caption(f"Conversation with {r['target_user'] if r['sender_name']=='Founder' else r['sender_name']}")
-                                st.write(f"**Msg:** {r['content']}")
-                                st.info(f"💬 **Reply:** {r.get('reply_content', 'Pending')}")
+                else:
+                    st.info("No messages in the inbox.")
+
+            # Part C: CSV Export
+            with st.expander("📊 Export Interaction History"):
+                raw_data = conn.table("founder_interaction").select("*").order("created_at", desc=True).execute().data
+                if raw_data:
+                    df_export = pd.DataFrame(raw_data)
+                    df_export['Interaction_Summary'] = df_export.apply(
+                        lambda x: f"TO: {x['target_user']} | INST: {x['content']} | REPLY: {x.get('reply_content', 'No Reply')}", 
+                        axis=1
+                    )
+                    final_csv_df = df_export[['created_at', 'target_user', 'content', 'reply_content', 'Interaction_Summary']]
+                    st.download_button(
+                        label="💾 Download Interaction CSV",
+                        data=final_csv_df.to_csv(index=False).encode('utf-8'),
+                        file_name=f"BG_Interactions_{date.today()}.csv",
+                        mime="text/csv"
+                    )
     st.divider()
     if att_user == FREELANCER_NAME:
         f_key = st.text_input("Freelancer Access Key", type="password")
