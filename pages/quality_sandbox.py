@@ -15,6 +15,47 @@ IST = pytz.timezone('Asia/Kolkata')
 st.set_page_config(page_title="B&G Quality Portal", layout="wide", page_icon="🔍")
 conn = st.connection("supabase", type=SupabaseConnection)
 
+with main_tabs[0]:
+    if not df_plan.empty:
+        # --- NEW: DATE RANGE FILTER UI ---
+        st.subheader("🗓️ Inspection Timeline Filter")
+        range_col1, range_col2 = st.columns([1, 2])
+        
+        filter_option = range_col1.selectbox(
+            "Select Range", 
+            ["All Records", "Last 7 Days", "This Month", "Custom Range"],
+            key="pg_date_filter"
+        )
+
+        # Logic to determine Start/End Dates
+        today = datetime.now(IST).date()
+        start_dt, end_dt = None, None
+
+        if filter_option == "Last 7 Days":
+            start_dt = today - pd.Timedelta(days=7)
+        elif filter_option == "This Month":
+            start_dt = today.replace(day=1)
+        elif filter_option == "Custom Range":
+            custom_range = range_col2.date_input("Pick Dates", [today - pd.Timedelta(days=30), today])
+            if len(custom_range) == 2:
+                start_dt, end_dt = custom_range
+
+        # Filter the DataFrame based on quality_updated_at
+        df_filtered = df_plan.copy()
+        df_filtered['quality_updated_at_dt'] = pd.to_datetime(df_filtered['quality_updated_at']).dt.date
+        
+        if start_dt:
+            df_filtered = df_filtered[df_filtered['quality_updated_at_dt'] >= start_dt]
+        if end_dt:
+            df_filtered = df_filtered[df_filtered['quality_updated_at_dt'] <= end_dt]
+
+        st.divider()
+        
+        # --- SELECT JOB FROM FILTERED LIST ---
+        c1, c2 = st.columns(2)
+        unique_jobs = sorted(df_filtered['job_no'].unique()) if not df_filtered.empty else []
+        sel_job = c1.selectbox("🏗️ Select Job Number", ["-- Select --"] + unique_jobs, key="pg_job_sel")
+
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
@@ -148,7 +189,10 @@ with main_tabs[0]:
                     "po_date": str(h_match.iloc[0].get('po_date', 'N/A')) if not h_match.empty else "N/A",
                     "drawing_no": "Verified on Shop Floor"
                 }
-                p_data = df_plan[df_plan['job_no'] == sel_job]
+                p_data = df_filtered[df_filtered['job_no'] == sel_job]
+
+                try:
+                    pdf_bytes = create_birth_certificate(sel_job, h_data, t_data, p_data)
                 tech_res = conn.table("quality_check_list").select("*").eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute().data
                 t_data = tech_res[0] if tech_res else {}
 
