@@ -244,11 +244,12 @@ with main_tabs[1]:
 with main_tabs[2]:
     st.subheader("📜 Quality Assurance Plan (QAP) Designer")
     
+    # Check if anchor data exists to prevent secondary errors
     if not df_anchor.empty:
         sel_job_qap = st.selectbox("Select Project for QAP", ["-- Select --"] + df_anchor['job_no'].tolist(), key="qap_job_ref")
         
         if sel_job_qap != "-- Select --":
-            # --- FIX: SAFETY CHECK FOR ILOC[0] ---
+            # Safety check: Ensure the selected job exists in the dataframe
             match = df_anchor[df_anchor['job_no'] == sel_job_qap]
             
             if not match.empty:
@@ -271,26 +272,30 @@ with main_tabs[2]:
                     st.write("### Inspection Grid")
                     st.caption("Add rows for each activity (Material, Fit-up, Welding, Testing)")
                     
+                    # Initial template for the grid
                     df_init = pd.DataFrame([{
                         "Component": "", "Activity": "", "Check_Type": "Visual", 
                         "Quantum": "100%", "Acceptance": "Approved Drawing", "B&G": "W", "Client": "R"
                     }])
                     
-                    # Updated width parameter to avoid warnings
+                    # Using key for state management and 'stretch' for layout
                     qap_grid = st.data_editor(
                         df_init, 
                         num_rows="dynamic", 
-                        use_container_width=True, # Ensure your Streamlit is updated to 1.35+
+                        use_container_width=True, 
                         key="qap_editor"
                     )
 
                     if st.form_submit_button("💾 Save & Generate QAP"):
-                        st.success(f"QAP for {sel_job_qap} saved to database.")
+                        # Verification logic
+                        if not qap_num or not equip_name:
+                            st.error("Please fill in QAP Document No and Equipment Name")
+                        else:
+                            st.success(f"QAP for {sel_job_qap} saved to database.")
             else:
-                st.error(f"Selected Job {sel_job_qap} not found in Anchor records.")
+                st.error("Project details not found for selected Job No.")
     else:
         st.warning("No project data available in Anchor Portal.")
-
 # --- SUMMARY VIEW (FIXED WARNINGS) ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
