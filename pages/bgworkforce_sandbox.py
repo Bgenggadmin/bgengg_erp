@@ -520,14 +520,48 @@ with tabs[4]:
                 st.info("No leave records found.")
 
         with admin_tabs[2]: # Detailed Logs
-            l_type = st.radio("Select Log", ["Work Logs", "Movement", "Attendance", "Plans"], horizontal=True)
-            tbl = "attendance_logs" if l_type == "Attendance" else "work_logs" if l_type == "Work Logs" else "movement_logs" if l_type == "Movement" else "work_plans"
-            res = conn.table(tbl).select("*").gte("created_at", str(sr)).execute().data
-            if res:
-                df_v = pd.DataFrame(res)
-                if s_name != "All Staff": df_v = df_v[df_v['employee_name'] == s_name]
-                st.dataframe(df_v, hide_index=True, use_container_width=True)
-                st.download_button(f"📥 Export {l_type}", data=convert_df(df_v), file_name=f"admin_export.csv")
+            st.markdown("#### 🕒 Raw Activity Logs")
+            l_type = st.radio("Select Log Category", ["Attendance", "Work Logs", "Movement", "Plans"], horizontal=True)
+            
+            # --- FIX: Map correct table and date column for each selection ---
+            table_config = {
+                "Attendance": ("attendance_logs", "work_date"),
+                "Work Logs": ("work_logs", "work_date"),
+                "Movement": ("movement_logs", "exit_time"),
+                "Plans": ("work_plans", "plan_date")
+            }
+            
+            tbl, date_col = table_config[l_type]
+            
+            try:
+                # Convert date objects to strings for Supabase filtering
+                start_str = str(sr)
+                end_str = str(er)
+
+                # Query using the dynamically selected table and its correct date column
+                res_query = conn.table(tbl).select("*").gte(date_col, start_str).lte(date_col, end_str).execute()
+                
+                if res_query.data:
+                    df_v = pd.DataFrame(res_query.data)
+                    
+                    # Apply staff filter if not "All Staff"
+                    if s_name != "All Staff": 
+                        df_v = df_v[df_v['employee_name'] == s_name]
+                    
+                    if not df_v.empty:
+                        st.dataframe(df_v, hide_index=True, use_container_width=True)
+                        st.download_button(
+                            label=f"📥 Export {l_type} to CSV", 
+                            data=convert_df(df_v), 
+                            file_name=f"Admin_{l_type}_{sr}_to_{er}.csv"
+                        )
+                    else:
+                        st.info(f"No {l_type} entries found for {s_name} in this range.")
+                else:
+                    st.info(f"No {l_type} data found between {sr} and {er}.")
+                    
+            except Exception as e:
+                st.error(f"PostgREST Error: Ensure table '{tbl}' has column '{date_col}'. Details: {e}")
 
         with admin_tabs[3]: # Leave Approval logic
             pend = get_leave_requests()
