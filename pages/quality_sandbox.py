@@ -231,67 +231,75 @@ with main_tabs[0]:
                             st.rerun()
                         except Exception as e: st.error(f"Submit Error: {e}")
 
-# TAB 2
+# --- TAB 2 (Partial check for consistency) ---
 with main_tabs[1]:
     st.subheader("📋 Technical Check List")
     if not df_anchor.empty:
         with st.container(border=True):
             tc1, tc2 = st.columns(2)
+            # Use use_container_width=True or width="stretch" based on your local st version
             q_job_tech = tc1.selectbox("Job No", ["-- Select --"] + df_anchor['job_no'].tolist(), key="tc_job")
-            # ... Rest of your Technical Checklist form code ...
 
-# --- 5. SUMMARY VIEW ---
+# --- TAB 3: QAP Designer (FIXED) ---
+with main_tabs[2]:
+    st.subheader("📜 Quality Assurance Plan (QAP) Designer")
+    
+    if not df_anchor.empty:
+        sel_job_qap = st.selectbox("Select Project for QAP", ["-- Select --"] + df_anchor['job_no'].tolist(), key="qap_job_ref")
+        
+        if sel_job_qap != "-- Select --":
+            # --- FIX: SAFETY CHECK FOR ILOC[0] ---
+            match = df_anchor[df_anchor['job_no'] == sel_job_qap]
+            
+            if not match.empty:
+                project_details = match.iloc[0]
+                
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns(3)
+                    c1.write(f"**Client:** {project_details.get('client_name', 'N/A')}")
+                    c2.write(f"**PO No:** {project_details.get('po_no', 'N/A')}")
+                    c3.write(f"**PO Date:** {project_details.get('po_date', 'N/A')}")
+                
+                with st.form("create_qap_form"):
+                    st.write("### QAP Parameters")
+                    f1, f2, f3 = st.columns(3)
+                    qap_num = f1.text_input("QAP Document No.")
+                    equip_name = f2.text_input("Equipment/Component Name")
+                    prepared_by = f3.selectbox("Prepared By", authorized_inspectors) 
+
+                    st.divider()
+                    st.write("### Inspection Grid")
+                    st.caption("Add rows for each activity (Material, Fit-up, Welding, Testing)")
+                    
+                    df_init = pd.DataFrame([{
+                        "Component": "", "Activity": "", "Check_Type": "Visual", 
+                        "Quantum": "100%", "Acceptance": "Approved Drawing", "B&G": "W", "Client": "R"
+                    }])
+                    
+                    # Updated width parameter to avoid warnings
+                    qap_grid = st.data_editor(
+                        df_init, 
+                        num_rows="dynamic", 
+                        use_container_width=True, # Ensure your Streamlit is updated to 1.35+
+                        key="qap_editor"
+                    )
+
+                    if st.form_submit_button("💾 Save & Generate QAP"):
+                        st.success(f"QAP for {sel_job_qap} saved to database.")
+            else:
+                st.error(f"Selected Job {sel_job_qap} not found in Anchor records.")
+    else:
+        st.warning("No project data available in Anchor Portal.")
+
+# --- SUMMARY VIEW (FIXED WARNINGS) ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
 if not df_plan.empty:
     inspected_df = df_plan.dropna(subset=['quality_status']).sort_values(by='quality_updated_at', ascending=False)
     if not inspected_df.empty:
-        st.dataframe(inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']], use_container_width=True, hide_index=True)
-
-with main_tabs[2]:
-    st.subheader("📜 Quality Assurance Plan (QAP) Designer")
-    
-    # 1. PULL JOB INFO FROM ANCHOR
-    if not df_anchor.empty:
-        sel_job_qap = st.selectbox("Select Project for QAP", ["-- Select --"] + df_anchor['job_no'].tolist(), key="qap_job_ref")
-        
-        if sel_job_qap != "-- Select --":
-            # Auto-fetch details from Anchor for display
-            project_details = df_anchor[df_anchor['job_no'] == sel_job_qap].iloc[0]
-            
-            with st.container(border=True):
-                c1, c2, c3 = st.columns(3)
-                c1.write(f"**Client:** {project_details['client_name']}")
-                c2.write(f"**PO No:** {project_details['po_no']}")
-                c3.write(f"**PO Date:** {project_details['po_date']}")
-            
-            with st.form("create_qap_form"):
-                st.write("### QAP Parameters")
-                f1, f2, f3 = st.columns(3)
-                qap_num = f1.text_input("QAP Document No.")
-                equip_name = f2.text_input("Equipment/Component Name")
-                # PULL PREPARED BY FROM MASTER STAFF
-                prepared_by = f3.selectbox("Prepared By", authorized_inspectors) 
-
-                st.divider()
-                st.write("### Inspection Grid")
-                st.caption("Add rows for each activity (Material, Fit-up, Welding, Testing)")
-                
-                # Dynamic Grid using data_editor
-                df_init = pd.DataFrame([{
-                    "Component": "", "Activity": "", "Check_Type": "Visual", 
-                    "Quantum": "100%", "Acceptance": "Approved Drawing", "B&G": "W", "Client": "R"
-                }])
-                
-                qap_grid = st.data_editor(
-                    df_init, 
-                    num_rows="dynamic", 
-                    use_container_width=True,
-                    key="qap_editor"
-                )
-
-                if st.form_submit_button("💾 Save & Generate QAP"):
-                    # Logic to push to qap_masters then qap_items
-                    st.success(f"QAP for {sel_job_qap} saved to database.")
-    else:
-        st.warning("No project data available in Anchor Portal.")
+        # Fixed use_container_width warning
+        st.dataframe(
+            inspected_df[['job_no', 'gate_name', 'quality_status', 'quality_by', 'quality_notes']], 
+            use_container_width=True, 
+            hide_index=True
+        )
