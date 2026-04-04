@@ -19,13 +19,12 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # --- 2. SMART UTILITIES & HELPERS ---
 
 def create_birth_certificate(job_no, header_data, tech_data, photo_data):
-    # character safety helper
     def clean_text(text):
         if not text: return "N/A"
         text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
         return text.encode('ascii', 'ignore').decode('ascii')
 
-    # 1. PREPARE LOGO (Persistent path for the class to access)
+    # 1. PREPARE LOGO
     logo_path = None
     try:
         logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
@@ -35,7 +34,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
                 logo_path = tmp_logo.name
     except: pass
 
-    # 2. DEFINE CUSTOM PDF CLASS
+    # 2. CUSTOM BRANDED PDF CLASS
     class BrandedPDF(FPDF):
         def header(self):
             self.set_fill_color(0, 51, 102)
@@ -53,7 +52,7 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             self.set_xy(160, 14)
             self.cell(40, 5, f"JOB: {job_no}", 0, 0, "R")
             self.set_text_color(0, 0, 0)
-            self.ln(20)
+            self.set_y(30) # Start content below header
 
         def footer(self):
             self.set_y(-15)
@@ -61,12 +60,11 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             self.set_text_color(128, 128, 128)
             self.cell(0, 10, f"B&G ERP System - Page {self.page_no()}", 0, 0, 'C')
 
-    # 3. INITIALIZE
     pdf = BrandedPDF()
     pdf.set_auto_page_break(auto=True, margin=25)
     pdf.add_page()
     
-    # 4. HEADER TABLE
+    # 4. HEADER TABLE (Marketing Layout)
     pdf.set_font("Arial", 'B', 10)
     pdf.set_fill_color(240, 240, 240)
     pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
@@ -78,17 +76,13 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
     pdf.ln(10)
 
-    # 5. MANUFACTURING LOG
+    # 5. MANUFACTURING LOG WITH GRID IMAGES
     if not photo_data.empty:
         photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
-        
         for idx, row in photo_data.iterrows():
-            # Check for page break before starting a new block
             if pdf.get_y() > 200: pdf.add_page()
-
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             
-            # Start Gate Block
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
@@ -97,65 +91,46 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             details = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
             pdf.multi_cell(190, 6, details, border="LR")
             
-            # Photo Logic
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
                 img_w, img_h = 44, 55 
-                # Safety Page Break for Images
                 if pdf.get_y() + img_h > 250:
-                    pdf.cell(190, 1, "", border="B", ln=True) # Close current box
+                    pdf.cell(190, 1, "", border="B", ln=True)
                     pdf.add_page()
 
                 y_img_start = pdf.get_y()
-                # Draw vertical lines for the image area
                 pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
 
                 for i, url in enumerate(urls[:4]):
                     try:
-                        # Attempt to get image
                         resp = requests.get(url, timeout=10)
                         if resp.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                                 tmp.write(resp.content)
-                                tmp_path = tmp.name
-                            # Calculate X position: margin(10) + offset(2) + index spacing
-                            x_pos = 12 + (i * (img_w + 2))
-                            pdf.image(tmp_path, x=x_pos, y=y_img_start + 2, w=img_w, h=img_h)
-                            os.unlink(tmp_path)
-                    except Exception as e:
-                        print(f"Image error: {e}")
-                        continue
-                
-                # Reset Y to bottom of images
+                                pdf.image(tmp.name, x=12 + (i * 46), y=y_img_start + 2, w=img_w, h=img_h)
+                                os.unlink(tmp.name)
+                    except: continue
                 pdf.set_y(y_img_start + img_h + 4)
             
-            # Close the box
             pdf.cell(190, 1, "", border="BLR", ln=True)
             pdf.ln(5)
 
-    # Cleanup Logo
     if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
-    
     return pdf.output(dest='S').encode('latin-1')
 
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
-    # Fetch Plan Data
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
-    
-    # Fetch Anchor Data with Cleaning
     anchor_res = conn.table("anchor_projects").select("job_no, client_name, po_no, po_date").execute()
     df_a_raw = pd.DataFrame(anchor_res.data or [])
     
     if not df_a_raw.empty:
-        # Strict cleaning: remove NaNs and empty strings immediately
         df_a_cleaned = df_a_raw[df_a_raw['job_no'].notna() & (df_a_raw['job_no'].astype(str) != "")]
         df_a_cleaned = df_a_cleaned.drop_duplicates(subset=['job_no'])
     else:
         df_a_cleaned = pd.DataFrame()
 
-    # Fetch Staff List
     try:
         staff_res = conn.table("master_staff").select("name").execute()
         staff_list = sorted([str(s['name']) for s in staff_res.data]) if staff_res.data else ["Internal QC"]
@@ -175,50 +150,47 @@ main_tabs = st.tabs(["🚪 Process Gate (Evidence)", "📋 Technical Checklist (
 with main_tabs[0]:
     if not df_plan.empty:
         st.subheader("🗓️ Inspection Timeline Filter")
-        # (Timeline filter code remains the same...)
-        
-        # Unique Jobs for dropdown (Cleaned)
-        unique_jobs = sorted(df_plan['job_no'].dropna().unique().tolist())
+        # (Timeline filter logic here)
+
+        unique_jobs = sorted(df_plan['job_no'].dropna().astype(str).unique().tolist())
         sel_job = st.selectbox("🏗️ Select Job Number", ["-- Select --"] + unique_jobs, key="pg_job_sel")
 
         if sel_job != "-- Select --":
-            # Match against cleaned Anchor records
             match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job)]
-            h_data = {
-                "client_name": match.iloc[0]['client_name'] if not match.empty else "N/A",
-                "po_no": match.iloc[0]['po_no'] if not match.empty else "N/A",
-                "po_date": str(match.iloc[0]['po_date']) if not match.empty else "N/A"
-            }
-            # (Birth certificate generation code...)
+            
+            if not match.empty:
+                h_data = {
+                    "client_name": match.iloc[0].get('client_name', 'N/A'),
+                    "po_no": match.iloc[0].get('po_no', 'N/A'),
+                    "po_date": str(match.iloc[0].get('po_date', 'N/A'))
+                }
+                
+                p_data = df_plan[df_plan['job_no'].astype(str) == str(sel_job)]
+                
+                try:
+                    pdf_bytes = create_birth_certificate(sel_job, h_data, {}, p_data)
+                    st.download_button(label=f"📂 DOWNLOAD BIRTH CERTIFICATE: {sel_job}", data=pdf_bytes, file_name=f"Birth_Cert_{sel_job}.pdf", mime="application/pdf", width='stretch', type="primary")
+                except Exception as e:
+                    st.error(f"PDF Error: {e}")
 
 # --- TAB 2: TECHNICAL CHECKLIST ---
 with main_tabs[1]:
     st.subheader("📋 Technical Check List")
     if not df_anchor.empty:
-        tc_jobs = sorted(df_anchor['job_no'].unique().tolist())
+        tc_jobs = sorted(df_anchor['job_no'].astype(str).unique().tolist())
         q_job_tech = st.selectbox("Job No", ["-- Select --"] + tc_jobs, key="tc_job")
 
-# --- TAB 3: QAP DESIGNER (FIXED) ---
+# --- TAB 3: QAP DESIGNER ---
 with main_tabs[2]:
     st.subheader("📜 Quality Assurance Plan (QAP) Designer")
-    
     if not df_anchor.empty:
-        # Create a clean, sorted list for the dropdown
         clean_job_list = sorted(df_anchor['job_no'].astype(str).unique().tolist())
-
-        sel_job_qap = st.selectbox(
-            "Select Project for QAP", 
-            ["-- Select --"] + clean_job_list, 
-            key="qap_job_ref"
-        )
+        sel_job_qap = st.selectbox("Select Project for QAP", ["-- Select --"] + clean_job_list, key="qap_job_ref")
         
         if sel_job_qap != "-- Select --":
-            # Compare strings to ensure a match
             match_qap = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_qap)]
-            
             if not match_qap.empty:
                 project_details = match_qap.iloc[0]
-                
                 with st.container(border=True):
                     c1, c2, c3 = st.columns(3)
                     c1.write(f"**Client:** {project_details.get('client_name', 'N/A')}")
@@ -230,31 +202,16 @@ with main_tabs[2]:
                     f1, f2, f3 = st.columns(3)
                     qap_num = f1.text_input("QAP Document No.")
                     equip_name = f2.text_input("Equipment/Component Name")
-                    # Using the staff list loaded at the top
                     prepared_by = f3.selectbox("Prepared By", authorized_inspectors) 
-
                     st.divider()
                     st.write("### Inspection Grid")
-                    df_init = pd.DataFrame([{
-                        "Component": "", "Activity": "", "Check_Type": "Visual", 
-                        "Quantum": "100%", "Acceptance": "Approved Drawing", "B&G": "W", "Client": "R"
-                    }])
-                    
-                    qap_grid = st.data_editor(df_init, num_rows="dynamic", use_container_width=True, key="qap_editor")
-
-                    if st.form_submit_button("💾 Save & Generate QAP"):
-                        if not qap_num or not equip_name:
-                            st.error("Fill mandatory fields.")
-                        else:
-                            st.success(f"QAP for {sel_job_qap} saved!")
-            else:
-                st.error("Project details not found.")
-    else:
-        st.warning("No projects found in Anchor.")
+                    df_init = pd.DataFrame([{"Component": "", "Activity": "", "Check_Type": "Visual", "Quantum": "100%", "Acceptance": "Approved Drawing", "B&G": "W", "Client": "R"}])
+                    st.data_editor(df_init, num_rows="dynamic", use_container_width=True, key="qap_editor")
+                    if st.form_submit_button("💾 Save QAP Template"):
+                        st.success("QAP Template Saved!")
 
 # --- 5. SUMMARY VIEW ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
 if not df_plan.empty:
-    # Use use_container_width=True for current Streamlit versions
     st.dataframe(df_plan[['job_no', 'gate_name', 'quality_status', 'quality_by']].dropna(subset=['quality_status']), use_container_width=True, hide_index=True)
