@@ -523,6 +523,7 @@ with tabs[4]:
             st.markdown("#### 🕒 Raw Activity Logs (IST Timezone)")
             l_type = st.radio("Select Log Category", ["Attendance", "Work Logs", "Movement", "Plans"], horizontal=True)
             
+            # Configuration mapping
             table_config = {
                 "Attendance": ("attendance_logs", "work_date"),
                 "Work Logs": ("work_logs", "work_date"),
@@ -533,39 +534,44 @@ with tabs[4]:
             tbl, date_col = table_config[l_type]
             
             try:
-                # 1. Fetch Data
+                # 1. Fetch Data from Supabase
                 res_query = conn.table(tbl).select("*").gte(date_col, str(sr)).lte(date_col, str(er)).execute()
                 
                 if res_query.data:
                     df_v = pd.DataFrame(res_query.data)
+                    
+                    # Apply Employee Filter
                     if s_name != "All Staff": 
                         df_v = df_v[df_v['employee_name'] == s_name]
 
                     if not df_v.empty:
-                        # --- TIME LOGIC FIX: Convert UTC to IST for Readability ---
+                        # --- TIME LOGIC: Convert UTC to IST for Readability ---
                         time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
                         for col in time_cols:
                             if col in df_v.columns:
-                                # Convert to datetime, localize to UTC, and switch to IST
+                                # Convert strings to datetime, localize to UTC, convert to IST
                                 df_v[col] = pd.to_datetime(df_v[col], errors='coerce').dt.tz_convert(IST).dt.strftime('%d-%m %I:%M %p')
                         
-                        # Sort for newest first
+                        # Sort by the first column (usually ID or Date) descending
                         df_v = df_v.sort_values(by=df_v.columns[0], ascending=False)
 
+                        # Display Table
                         st.dataframe(df_v, hide_index=True, use_container_width=True)
+                        
+                        # Download Button
                         st.download_button(
                             label=f"📥 Export {l_type} (IST)", 
                             data=convert_df(df_v), 
                             file_name=f"Admin_{l_type}_IST_{sr}_to_{er}.csv"
                         )
                     else:
-                        st.info("No records match current filters.")
+                        st.info("No records match the current filters.")
                 else:
                     st.info("No data found in database for this range.")
                     
             except Exception as e:
                 st.error(f"PostgREST Error: {e}")
-
+                
         with admin_tabs[3]: # Leave Approval logic
             pend = get_leave_requests()
             if not pend.empty:
