@@ -76,13 +76,16 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
     pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
     pdf.ln(10)
 
-    # 5. MANUFACTURING LOG WITH GRID IMAGES
+   # 5. MANUFACTURING LOG WITH PHOTO GRID FIX
     if not photo_data.empty:
         photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
+        
         for idx, row in photo_data.iterrows():
             if pdf.get_y() > 200: pdf.add_page()
+
             date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
             
+            # Start Gate Block
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(230, 240, 255)
             pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
@@ -91,32 +94,47 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
             details = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
             pdf.multi_cell(190, 6, details, border="LR")
             
+            # --- PHOTO GRID FIX START ---
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
                 img_w, img_h = 44, 55 
-                if pdf.get_y() + img_h > 250:
-                    pdf.cell(190, 1, "", border="B", ln=True)
+                
+                # Check for page space before drawing images
+                if pdf.get_y() + img_h > 260:
+                    pdf.cell(190, 1, "", border="B", ln=True) 
                     pdf.add_page()
 
                 y_img_start = pdf.get_y()
+                # Draw the side borders for the image area
                 pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
 
                 for i, url in enumerate(urls[:4]):
                     try:
                         resp = requests.get(url, timeout=10)
                         if resp.status_code == 200:
-                            with NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                            # Use unique suffix for each image to prevent OS conflicts
+                            with NamedTemporaryFile(delete=False, suffix=f"_{i}.jpg") as tmp:
                                 tmp.write(resp.content)
-                                pdf.image(tmp.name, x=12 + (i * 46), y=y_img_start + 2, w=img_w, h=img_h)
-                                os.unlink(tmp.name)
-                    except: continue
+                                current_tmp_path = tmp.name
+                            
+                            # Calculate X position: Margin (12) + (Index * (Width + Gap))
+                            x_pos = 12 + (i * (img_w + 2))
+                            pdf.image(current_tmp_path, x=x_pos, y=y_img_start + 2, w=img_w, h=img_h)
+                            
+                            # Immediate cleanup after placement
+                            if os.path.exists(current_tmp_path):
+                                os.unlink(current_tmp_path)
+                    except Exception as e:
+                        print(f"Skipping photo {i} due to: {e}")
+                        continue
+                
+                # Advance cursor past the image block
                 pdf.set_y(y_img_start + img_h + 4)
-            
+            # --- PHOTO GRID FIX END ---
+
+            # Close the entry box
             pdf.cell(190, 1, "", border="BLR", ln=True)
             pdf.ln(5)
-
-    if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
-    return pdf.output(dest='S').encode('latin-1')
 
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
