@@ -154,7 +154,7 @@ df_plan, df_anchor, authorized_inspectors = get_quality_context()
 
 # --- 4. UI ---
 st.title("🔍 Quality Assurance & Inspection Portal")
-main_tabs = st.tabs(["🚪 Process Gate (Evidence)", "📋 Technical Checklist (Reports)"])
+main_tabs = st.tabs(["🚪 Process Gate (Evidence)", "📋 Technical Checklist (Reports)", "📜 QA Plan (QAP)"])
 
 with main_tabs[0]:
     if not df_plan.empty:
