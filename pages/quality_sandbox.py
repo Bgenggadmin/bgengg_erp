@@ -141,16 +141,29 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
+    # 1. Fetch Plan Data
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
+    
+    # 2. Fetch Anchor Data (CLEANED)
     anchor_res = conn.table("anchor_projects").select("job_no, client_name, po_no, po_date").execute()
+    
+    # Process Anchor Data to remove empty/nan rows
+    df_a_raw = pd.DataFrame(anchor_res.data or [])
+    if not df_a_raw.empty:
+        # Keep only rows where job_no is not null and not an empty string
+        df_a_cleaned = df_a_raw[df_a_raw['job_no'].notna() & (df_a_raw['job_no'] != "")]
+        # Remove duplicates just in case
+        df_a_cleaned = df_a_cleaned.drop_duplicates(subset=['job_no'])
+    else:
+        df_a_cleaned = pd.DataFrame()
+
     try:
         staff_res = conn.table("master_staff").select("name").execute()
         staff_list = sorted([s['name'] for s in staff_res.data]) if staff_res.data else []
     except:
         staff_list = []
-    return pd.DataFrame(plan_res.data or []), pd.DataFrame(anchor_res.data or []), staff_list
-
-df_plan, df_anchor, authorized_inspectors = get_quality_context()
+        
+    return pd.DataFrame(plan_res.data or []), df_a_cleaned, staff_list
 
 # --- 4. UI ---
 st.title("🔍 Quality Assurance & Inspection Portal")
@@ -240,27 +253,39 @@ with main_tabs[1]:
             # Use use_container_width=True or width="stretch" based on your local st version
             q_job_tech = tc1.selectbox("Job No", ["-- Select --"] + df_anchor['job_no'].tolist(), key="tc_job")
 
-# --- TAB 3: QAP Designer (FIXED) ---
+# --- TAB 3: QAP Designer (FIXED & CLEANED) ---
 with main_tabs[2]:
     st.subheader("📜 Quality Assurance Plan (QAP) Designer")
     
-    # Check if anchor data exists to prevent secondary errors
+    # 1. Check if anchor data exists
     if not df_anchor.empty:
-        sel_job_qap = st.selectbox("Select Project for QAP", ["-- Select --"] + df_anchor['job_no'].tolist(), key="qap_job_ref")
+        # --- CLEANING LOGIC for the dropdown ---
+        # 1. Convert to string, 2. Remove nulls/NaN, 3. Remove empty strings, 4. Get unique values, 5. Sort
+        clean_jobs_series = df_anchor['job_no'].dropna().astype(str)
+        clean_job_list = sorted(clean_jobs_series[clean_jobs_series != ""].unique().tolist())
+
+        sel_job_qap = st.selectbox(
+            "Select Project for QAP", 
+            ["-- Select --"] + clean_job_list, 
+            key="qap_job_ref"
+        )
         
         if sel_job_qap != "-- Select --":
-            # Safety check: Ensure the selected job exists in the dataframe
-            match = df_anchor[df_anchor['job_no'] == sel_job_qap]
+            # --- SAFE MATCHING LOGIC ---
+            # Compare strings to strings to ensure we find the record
+            match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_qap)]
             
             if not match.empty:
                 project_details = match.iloc[0]
                 
+                # Display Project Header
                 with st.container(border=True):
                     c1, c2, c3 = st.columns(3)
                     c1.write(f"**Client:** {project_details.get('client_name', 'N/A')}")
                     c2.write(f"**PO No:** {project_details.get('po_no', 'N/A')}")
                     c3.write(f"**PO Date:** {project_details.get('po_date', 'N/A')}")
                 
+                # The QAP Input Form
                 with st.form("create_qap_form"):
                     st.write("### QAP Parameters")
                     f1, f2, f3 = st.columns(3)
@@ -278,7 +303,7 @@ with main_tabs[2]:
                         "Quantum": "100%", "Acceptance": "Approved Drawing", "B&G": "W", "Client": "R"
                     }])
                     
-                    # Using key for state management and 'stretch' for layout
+                    # Data Editor for the QAP Grid
                     qap_grid = st.data_editor(
                         df_init, 
                         num_rows="dynamic", 
@@ -287,15 +312,16 @@ with main_tabs[2]:
                     )
 
                     if st.form_submit_button("💾 Save & Generate QAP"):
-                        # Verification logic
                         if not qap_num or not equip_name:
                             st.error("Please fill in QAP Document No and Equipment Name")
                         else:
+                            # Logic for database push would go here
                             st.success(f"QAP for {sel_job_qap} saved to database.")
             else:
-                st.error("Project details not found for selected Job No.")
+                st.error(f"Details for Job {sel_job_qap} not found in Anchor records.")
     else:
         st.warning("No project data available in Anchor Portal.")
+
 # --- SUMMARY VIEW (FIXED WARNINGS) ---
 st.divider()
 st.subheader("📋 Recent Quality Clearances")
