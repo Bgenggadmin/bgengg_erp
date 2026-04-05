@@ -42,30 +42,22 @@ def get_purchase_items():
         res = conn.table("purchase_orders").select("*").execute()
         if res.data:
             df_p = pd.DataFrame(res.data)
-            df_p['job_no'] = df_p['job_no'].fillna('').astype(str).str.strip().str.upper()
-            if 'created_at' in df_p.columns:
-                df_p['created_at'] = pd.to_datetime(df_p['created_at'])
-            return df_p
-        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
-    except:
-        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
-
-@st.cache_data(ttl=2)
-def get_purchase_items():
-    try:
-        res = conn.table("purchase_orders").select("*").execute()
-        if res.data:
-            df_p = pd.DataFrame(res.data)
-            # --- FIX: Handle nulls/floats before stripping ---
+            
+            # --- FIX: Handle nulls and force string safely ---
             if 'job_no' in df_p.columns:
                 df_p['job_no'] = df_p['job_no'].fillna('').astype(str).str.strip().str.upper()
             
             if 'created_at' in df_p.columns:
                 df_p['created_at'] = pd.to_datetime(df_p['created_at'], errors='coerce')
+                
             return df_p
+            
+        # Return empty dataframe with correct columns if no data
         return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
+        
     except Exception as e:
-        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at']))
+        # If there is a database error, return empty frame so app doesn't crash
+        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
 
 # --- 4. SIDEBAR CONFIGURATION ---
 st.sidebar.title("🎯 Anchor Control")
