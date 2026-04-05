@@ -152,7 +152,13 @@ df_plan, df_anchor, authorized_inspectors = get_quality_context()
 
 # --- 4. UI ---
 st.title("🔍 Quality Assurance & Inspection Portal")
-main_tabs = st.tabs(["🚪 Process Gate (Evidence)", "📋 Technical Checklist (Reports)", "📜 QA Plan (QAP)", "📉 Material Flow Chart"])
+main_tabs = st.tabs([
+    "🚪 Process Gate (Evidence)", 
+    "📋 Technical Checklist (Reports)", 
+    "📜 QA Plan (QAP)", 
+    "📉 Material Flow Chart", 
+    "🔧 Nozzle Flow Chart" # Index 4
+])
 
 # --- TAB 1: PROCESS GATE ---
 with main_tabs[0]:
@@ -394,3 +400,78 @@ with main_tabs[3]:
                 st.error("Project details not found in Anchor records.")
     else:
         st.warning("No Master Data available in Anchor Portal.")
+
+# --- TAB 5: NOZZLE FLOW CHART (Component Specific Traceability) ---
+with main_tabs[4]:
+    st.subheader("🔧 Nozzle Flow Chart & Traceability")
+    
+    if not df_anchor.empty:
+        # 1. Selection using Master Job List
+        nfc_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_nfc = st.selectbox("Select Job for Nozzle Chart", ["-- Select --"] + nfc_jobs, key="nfc_job_sel")
+
+        if sel_job_nfc != "-- Select --":
+            nfc_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_nfc)]
+            
+            if not nfc_match.empty:
+                proj = nfc_match.iloc[0]
+                
+                # Visual Header using Anchor Master Data
+                with st.container(border=True):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Client:** {proj.get('client_name', 'N/A')}")
+                    c1.write(f"**PO Details:** {proj.get('po_no')} | {proj.get('po_date')}")
+                    
+                    equip_name = c2.text_input("Equipment Name", placeholder="e.g. Pressure Vessel")
+                    n_mark = c2.text_input("Nozzle Mark / ID", placeholder="e.g. N1 / N2")
+
+                st.divider()
+
+                # 2. NOZZLE GRID (Based on Image e4954d.jpg)
+                st.markdown(f"### 🛠️ Traceability Matrix for Nozzle: {n_mark}")
+                st.caption("Map individual nozzle sub-components to Material Specs and Heat Numbers")
+                
+                # Template based on standard nozzle assembly
+                nfc_template = [
+                    {"Component": "Nozzle Neck (Pipe/Shell)", "Size/Sch": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                    {"Component": "Nozzle Flange", "Size/Rating": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                    {"Component": "Reinforcement Pad", "Thk": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                    {"Component": "Internal Projection", "Size": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                ]
+
+                nfc_grid = st.data_editor(
+                    pd.DataFrame(nfc_template),
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="nfc_grid_editor",
+                    hide_index=True
+                )
+
+                # 3. VERIFICATION & SUBMIT
+                with st.form("nfc_submit_form", clear_on_submit=True):
+                    f1, f2 = st.columns(2)
+                    # Staff Master Dropdown
+                    nfc_verifier = f1.selectbox("Inspected By", authorized_inspectors, key="nfc_verifier_select")
+                    nfc_remarks = st.text_area("Orientation / Fit-up Remarks")
+
+                    if st.form_submit_button("🚀 Save Nozzle Flow Chart"):
+                        payload = {
+                            "job_no": sel_job_nfc,
+                            "equipment_name": equip_name,
+                            "nozzle_mark": n_mark,
+                            "traceability_data": nfc_grid.to_dict('records'),
+                            "verified_by": nfc_verifier,
+                            "remarks": nfc_remarks,
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        try:
+                            conn.table("nozzle_flow_charts").insert(payload).execute()
+                            st.success(f"✅ Nozzle Flow Chart for {n_mark} (Job {sel_job_nfc}) saved!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Database Error: {e}")
+            else:
+                st.error("Job details not found in Anchor records.")
+    else:
+        st.warning("Anchor Portal Master Data is empty.")
