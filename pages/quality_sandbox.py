@@ -704,3 +704,73 @@ with main_tabs[7]:
                 st.error("Project details missing in Anchor portal.")
     else:
         st.warning("No Master Data available.")
+
+# --- TAB 9: GUARANTEE CERTIFICATE ---
+with main_tabs[8]:
+    st.subheader("🛡️ Product Guarantee Certificate")
+    
+    if not df_anchor.empty:
+        # 1. Selection using Job Master
+        gc_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_gc = st.selectbox("Select Job Number", ["-- Select --"] + gc_jobs, key="gc_job_sel")
+
+        if sel_job_gc != "-- Select --":
+            gc_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_gc)]
+            
+            if not gc_match.empty:
+                proj = gc_match.iloc[0]
+                
+                # Visual Header aligned with image_e56f20.jpg
+                with st.container(border=True):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Customer:** {proj.get('client_name', 'N/A')}")
+                    c1.write(f"**Purchase Order:** {proj.get('po_no')}")
+                    
+                    # Additional Details for Certificate
+                    equip_name_gc = c2.text_input("Equipment Description", placeholder="e.g. Stainless Steel Reactor")
+                    serial_no_gc = c2.text_input("Serial / Tag Number", placeholder="e.g. BGE/2026/101")
+
+                st.divider()
+
+                # 2. GUARANTEE TERMS FORM
+                with st.form("guarantee_submit_form", clear_on_submit=True):
+                    st.markdown("### 📜 Certificate Details")
+                    
+                    g_period = st.text_input(
+                        "Guarantee Period", 
+                        value="12 months from date of commissioning or 18 months from date of supply, whichever is earlier."
+                    )
+                    
+                    f1, f2 = st.columns(2)
+                    inv_ref = f1.text_input("Invoice / Dispatch Ref No.")
+                    cert_date = f2.date_input("Date of Issue", value=datetime.now(IST).date())
+
+                    st.info("💡 This certificate guarantees that the materials and workmanship are free from defects as per B&G Standard Quality norms.")
+
+                    # Staff Master Dropdown
+                    certifier = f1.selectbox("Authorized Signatory", authorized_inspectors, key="gc_auth_sign")
+                    gc_remarks = st.text_area("Additional Terms / Remarks")
+
+                    if st.form_submit_button("🚀 Generate & Save Guarantee Certificate", use_container_width=True):
+                        payload = {
+                            "job_no": sel_job_gc,
+                            "equipment_name": equip_name_gc,
+                            "serial_no": serial_no_gc,
+                            "guarantee_period": g_period,
+                            "invoice_ref": inv_ref,
+                            "certified_by": certifier,
+                            "remarks": gc_remarks,
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        try:
+                            conn.table("guarantee_certificates").insert(payload).execute()
+                            st.success(f"✅ Guarantee Certificate for {sel_job_gc} recorded successfully!")
+                            st.balloons()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error saving to database: {e}")
+            else:
+                st.error("Project details missing in Anchor portal.")
+    else:
+        st.warning("No Master Data available.")
