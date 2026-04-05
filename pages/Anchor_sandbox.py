@@ -119,6 +119,7 @@ tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purcha
 # --- TAB 1: NEW ENTRY (Updated with Equipment Type) ---
 with tabs[0]:
     st.subheader("Register New Project Enquiry")
+    # Form must be correctly indented under the 'with' block
     with st.form("new_project_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         u_client = col1.text_input("Client Name")
@@ -126,20 +127,21 @@ with tabs[0]:
         
         c1, c2, c3 = st.columns(3)
         u_date = c1.date_input("Enquiry Date", value=datetime.now())
-        # ADDED EQUIPMENT TYPE SELECTOR HERE
+        # This dropdown must stay indented inside the form
         u_equip_type = c2.selectbox("Equipment Type", 
-                                    ["Storage Tank", "Reactor", "Condenser", "Filter", "RCVD", "Heat Exchanger", "Other"])
+                                    ["Storage Tank", "Reactor", "Condenser", "Filter", "RCVD", "Other"])
         u_contact = c3.text_input("Contact Person Name")
         
         u_phone = col1.text_input("Contact Phone")
         u_notes = st.text_area("Initial Remarks")
         
+        # The submit button is the boundary of the form indentation
         if st.form_submit_button("Log Enquiry"):
             if u_client and u_proj:
                 conn.table("anchor_projects").insert({
                     "client_name": u_client, 
                     "project_description": u_proj,
-                    "equipment_type": u_equip_type, # SAVE EQUIPMENT TYPE
+                    "equipment_type": u_equip_type, # New Column
                     "anchor_person": anchor_choice, 
                     "enquiry_date": str(u_date),
                     "contact_person": u_contact, 
@@ -148,7 +150,9 @@ with tabs[0]:
                     "status": "Enquiry", 
                     "drawing_status": "Pending"
                 }).execute()
-                st.cache_data.clear(); st.success("Enquiry Logged!"); st.rerun()
+                st.cache_data.clear()
+                st.success("Enquiry Logged!")
+                st.rerun()
 
 # --- TAB 2: PIPELINE (UPDATED) ---
 with tabs[1]:
