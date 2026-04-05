@@ -158,7 +158,8 @@ main_tabs = st.tabs([
     "📜 QA Plan (QAP)", 
     "📉 Material Flow Chart", 
     "🔧 Nozzle Flow Chart",
-    "📐 Dimensional Report" # Index 5
+    "📐 Dimensional Report",
+    "💧 Hydro Test Report" # Index 6
 ])
 
 # --- TAB 1: PROCESS GATE ---
@@ -556,3 +557,77 @@ with main_tabs[5]:
                 st.error("Project details missing in Anchor Portal.")
     else:
         st.warning("Master Data from Anchor portal not loaded.")
+
+# --- TAB 7: HYDRO TEST REPORT ---
+with main_tabs[6]:
+    st.subheader("💧 Hydrostatic / Pneumatic Test Report")
+    
+    if not df_anchor.empty:
+        # 1. Clean Dropdown from Master
+        hydro_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_hydro = st.selectbox("Select Job for Hydro Test", ["-- Select --"] + hydro_jobs, key="hydro_job_sel")
+
+        if sel_job_hydro != "-- Select --":
+            hydro_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_hydro)]
+            
+            if not hydro_match.empty:
+                proj = hydro_match.iloc[0]
+                
+                # Visual Header aligned with image_e4fb44.jpg
+                with st.container(border=True):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Customer:** {proj.get('client_name', 'N/A')}")
+                    c1.write(f"**PO Reference:** {proj.get('po_no')} | {proj.get('po_date')}")
+                    
+                    e_name_hydro = c2.text_input("Equipment Description", placeholder="e.g. 500L Receiver Tank")
+                    drg_ref_hydro = c2.text_input("Drawing Ref.", placeholder="BGE-HT-01")
+
+                st.divider()
+
+                # 2. TEST PARAMETERS FORM
+                with st.form("hydro_test_form", clear_on_submit=True):
+                    st.markdown("### ⏲️ Test Parameters & Observations")
+                    f1, f2, f3 = st.columns(3)
+                    
+                    t_pressure = f1.text_input("Test Pressure (Kg/cm²)", placeholder="e.g. 15.0")
+                    d_pressure = f2.text_input("Design Pressure (Kg/cm²)", placeholder="e.g. 10.0")
+                    h_time = f3.text_input("Holding Duration", placeholder="e.g. 45 Mins")
+                    
+                    medium = f1.selectbox("Testing Medium", ["Potable Water", "Hydraulic Oil", "Compressed Air", "Nitrogen"])
+                    g_nos = f2.text_input("Pressure Gauge ID(s)", placeholder="e.g. BG/QC/PG-01")
+                    temp = f3.text_input("Medium Temp (°C)", value="Ambient")
+
+                    st.markdown("### ✍️ Final Inspection & Witnessing")
+                    w1, w2 = st.columns(2)
+                    
+                    # Pulls from master_staff (authorized_inspectors)
+                    insp_hydro = w1.selectbox("Inspected By (B&G QC)", authorized_inspectors, key="hydro_insp")
+                    wit_hydro = w2.text_input("Witnessed By (Client/TPI)", placeholder="Third Party Name")
+                    
+                    h_remarks = st.text_area("Observations (Leakage, Pressure Drop, etc.)")
+
+                    if st.form_submit_button("🚀 Finalize & Save Hydro Report", use_container_width=True):
+                        payload = {
+                            "job_no": sel_job_hydro,
+                            "equipment_name": e_name_hydro,
+                            "test_pressure": t_pressure,
+                            "holding_time": h_time,
+                            "test_medium": medium,
+                            "gauge_nos": g_nos,
+                            "inspection_notes": h_remarks,
+                            "inspected_by": insp_hydro,
+                            "witness_name": wit_hydro,
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        try:
+                            conn.table("hydro_test_reports").insert(payload).execute()
+                            st.success(f"✅ Hydro Test Report for {sel_job_hydro} submitted successfully!")
+                            st.balloons()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to save to Supabase: {e}")
+            else:
+                st.error("Could not link to Anchor Master records.")
+    else:
+        st.warning("Project data not loaded from Anchor.")
