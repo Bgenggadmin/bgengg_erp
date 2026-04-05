@@ -131,26 +131,41 @@ def generate_master_data_book(job_no, project_info, df_plan):
 
     # --- 4. THE AUTOMATED STAPLER (MTCs) ---
     report_buffer = io.BytesIO()
-    pdf.output(report_buffer); report_buffer.seek(0)
+    pdf.output(report_buffer)
+    report_buffer.seek(0)
     
     merger = PdfWriter()
-    merger.append(report_buffer)
     
+    # FIX: Wrap the buffer in PdfReader so pypdf knows how to handle it
+    try:
+        reader = PdfReader(report_buffer)
+        merger.append(reader)
+    except Exception as e:
+        st.error(f"Error reading internal report: {e}")
+    
+    # Fetch MTCs from Bucket
     mtc_res = conn.table("project_certificates").select("file_url").eq("job_no", job_no).eq("cert_type", "Material Test Certificate (MTC)").execute()
-    for doc in mtc_res.data:
-        try:
-            r = requests.get(doc['file_url'], timeout=10)
-            if r.status_code == 200: merger.append(io.BytesIO(r.content))
-        except: continue
+    
+    if mtc_res.data:
+        for doc in mtc_res.data:
+            try:
+                r = requests.get(doc['file_url'], timeout=15)
+                if r.status_code == 200:
+                    # FIX: Wrap external downloads in PdfReader as well
+                    mtc_file = io.BytesIO(r.content)
+                    merger.append(PdfReader(mtc_file))
+            except Exception as mtc_err:
+                # If one MTC is corrupted, we skip it so the whole book doesn't fail
+                continue
 
-    # Final Cleanup
-    if logo_path: os.unlink(logo_path)
-    if stamp_path: os.unlink(stamp_path)
+    # Final Cleanup of temp files
+    if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
+    if stamp_path and os.path.exists(stamp_path): os.unlink(stamp_path)
     
     final_out = io.BytesIO()
-    merger.write(final_out); merger.close()
+    merger.write(final_out)
+    merger.close()
     return final_out.getvalue()
-
 
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
