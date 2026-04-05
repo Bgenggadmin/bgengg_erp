@@ -548,7 +548,7 @@ with main_tabs[4]:
     else:
         st.warning("Anchor Portal Master Data is empty.")
 
-# --- TAB 6: DIMENSIONAL INSPECTION REPORT (DYNAMIC VERSION) ---
+# --- TAB 6: DIMENSIONAL INSPECTION REPORT (STABILIZED & DYNAMIC) ---
 with main_tabs[5]:
     st.subheader("📐 Dimensional Inspection Report")
     
@@ -557,69 +557,52 @@ with main_tabs[5]:
         sel_job_dim = st.selectbox("Select Job for Dimensional Report", ["-- Select --"] + dim_jobs, key="dim_job_sel")
 
         if sel_job_dim != "-- Select --":
+            # FIX: Safe Matching to prevent AttributeError
             dim_match = df_anchor[df_anchor['job_no'] == sel_job_dim]
             
             if not dim_match.empty:
                 proj = dim_match.iloc[0]
-                e_type = proj.get('equipment_type', 'Storage Tank') # Get Type
+                e_type = proj.get('equipment_type', 'Storage Tank')
                 
                 with st.container(border=True):
                     c1, c2 = st.columns(2)
                     c1.write(f"**Customer:** {proj.get('client_name')}")
-                    c1.write(f"**Equipment Category:** :blue[{e_type}]") # Visual Indicator
-                    
-                    equip_dim = c2.text_input("Equipment Name", placeholder="e.g. 20KL Reactor")
-                    stage_dim = c2.selectbox("Inspection Stage", ["Final Inspection", "Internal Fit-up", "Shell/Jacket Prep"])
+                    c1.info(f"**Category:** {e_type}")
+                    equip_dim = c2.text_input("Equipment Name", placeholder="e.g. 50KL Storage Tank")
+                    stage_dim = c2.selectbox("Inspection Stage", ["Final Inspection", "Internal Fit-up", "Jacket Prep"])
 
                 st.divider()
 
-                # --- DYNAMIC TEMPLATE LOGIC ---
-                # Start with common dimensions used by everyone
+                # Template Logic
                 base_template = [
                     {"Sl": 1, "Description": "Overall Length / Height", "Design": "", "Actual": ""},
                     {"Sl": 2, "Description": "Inside Diameter (ID)", "Design": "", "Actual": ""},
                     {"Sl": 3, "Description": "Shell Thickness", "Design": "", "Actual": ""},
                 ]
 
-                # Append specific rows based on Equipment Type
                 if e_type == "Reactor":
                     base_template.extend([
-                        {"Sl": 4, "Description": "Jacket Inside Diameter", "Design": "", "Actual": ""},
-                        {"Sl": 5, "Description": "Agitator Shaft Runout", "Design": "", "Actual": ""},
-                        {"Sl": 6, "Description": "Limpet Coil Pitch", "Design": "", "Actual": ""}
+                        {"Sl": 4, "Description": "Jacket ID", "Design": "", "Actual": ""},
+                        {"Sl": 5, "Description": "Agitator Shaft Runout", "Design": "0.5mm", "Actual": ""},
                     ])
                 elif e_type == "Storage Tank":
                     base_template.extend([
-                        {"Sl": 4, "Description": "Dish End Depth", "Design": "", "Actual": ""},
-                        {"Sl": 5, "Description": "Curb Angle Level", "Design": "", "Actual": ""},
-                        {"Sl": 6, "Description": "Roof Slope / Crown", "Design": "", "Actual": ""}
-                    ])
-                else: # Generic/Other
-                    base_template.extend([
-                        {"Sl": 4, "Description": "Nozzle Orientation", "Design": "", "Actual": ""},
-                        {"Sl": 5, "Description": "Base Plate Hole Center", "Design": "", "Actual": ""}
+                        {"Sl": 4, "Description": "Curb Angle Level", "Design": "Level", "Actual": ""},
+                        {"Sl": 5, "Description": "Roof Slope", "Design": "1:100", "Actual": ""},
                     ])
 
                 st.markdown(f"### 📏 Measurement Log for {e_type}")
-                dim_grid = st.data_editor(
-                    pd.DataFrame(base_template),
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    key="dim_grid_editor_dynamic",
-                    hide_index=True
-                )
+                dim_grid = st.data_editor(pd.DataFrame(base_template), num_rows="dynamic", use_container_width=True, key="dim_editor", hide_index=True)
 
-                with st.form("dim_submit_form_dynamic", clear_on_submit=True):
+                with st.form("dim_submit_form"):
                     f1, f2 = st.columns(2)
-                    dim_inspector = f1.selectbox("Inspected By", authorized_inspectors, key="dim_insp_select")
-                    dim_remarks = st.text_area("Technical Deviations (Enter 'NA' if none)")
+                    dim_inspector = f1.selectbox("QC Inspector", authorized_inspectors, key="dim_insp_final")
+                    dim_remarks = st.text_area("Notes (Enter 'NA' if none)")
 
-                    if st.form_submit_button("🚀 Save Dimensional Report", use_container_width=True):
+                    if st.form_submit_button("🚀 Save & Generate PDF", use_container_width=True):
                         payload = {
                             "job_no": sel_job_dim,
                             "equipment_name": equip_dim,
-                            "equipment_type": e_type,
-                            "inspection_stage": stage_dim,
                             "dim_grid_data": dim_grid.to_dict('records'),
                             "inspected_by": dim_inspector,
                             "remarks": dim_remarks,
@@ -627,11 +610,16 @@ with main_tabs[5]:
                         }
                         
                         try:
+                            # 1. Save to Database
                             conn.table("dimensional_reports").insert(payload).execute()
-                            st.success(f"✅ {e_type} Report saved successfully!")
-                            st.rerun()
+                            
+                            # 2. Immediately Generate PDF
+                            pdf_bytes = generate_technical_pdf(sel_job_dim, f"DIMENSIONAL REPORT - {e_type}", proj, dim_grid.to_dict('records'), dim_remarks, dim_inspector)
+                            
+                            st.success("✅ Report saved to Supabase!")
+                            st.download_button(label="📥 Download Clean PDF Report", data=pdf_bytes, file_name=f"Report_{sel_job_dim}.pdf", mime="application/pdf", type="primary", use_container_width=True)
                         except Exception as e:
-                            st.error(f"Database Error: {e}")
+                            st.error(f"Error: {e}")
 
 # --- TAB 7: HYDRO TEST REPORT ---
 with main_tabs[6]:
