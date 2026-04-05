@@ -1039,40 +1039,47 @@ with main_tabs[11]:
 # --- TAB 13: MASTER CONFIG (DYNAMIC ENTRY) ---
 with main_tabs[12]:
     st.header("⚙️ Portal Configuration & Master Data")
-    st.info("Define the parameters, columns, and personnel for all quality reports here.")
-
+    
     config_mode = st.radio("What would you like to configure?", 
                           ["Inspection Parameters (Grid Rows)", "Staff & Inspectors"], horizontal=True)
 
     if config_mode == "Inspection Parameters (Grid Rows)":
-        # New selection logic to handle both Descriptions and MOCs
         report_cat = st.selectbox("Select List to Configure", 
                                 ["Dimensional Descriptions", "MOC List", "Technical Checklist"])
         
-        # Fetch existing config from Supabase
+        # 1. Fetch data
         conf_res = conn.table("quality_config").select("*").eq("category", report_cat).execute()
-        df_conf = pd.DataFrame(conf_res.data or [])
+        
+        # 2. Robust DataFrame Initialization
+        if conf_res.data:
+            df_conf = pd.DataFrame(conf_res.data)
+        else:
+            # This is the FIX: Create an empty structure so the editor knows the columns
+            df_conf = pd.DataFrame(columns=["parameter_name", "equipment_type", "default_design_value"])
 
         st.subheader(f"🛠️ Edit {report_cat}")
-        st.caption(f"The items below will appear as dropdown options in the {report_cat} column.")
         
-        # Configure the editor columns based on what we are editing
+        # 3. Column Configuration
         if report_cat == "MOC List":
             col_cfg = {
-                "parameter_name": st.column_config.TextColumn("Material Grade (MOC)", placeholder="e.g. SS 316L"),
-                "equipment_type": None, # Hide equipment type for MOC as it's usually general
-                "default_design_value": None # Hide design value for MOC
+                "parameter_name": st.column_config.TextColumn("Material Grade (MOC)", required=True),
+                "equipment_type": None, 
+                "default_design_value": None,
+                "category": None, "id": None, "created_at": None # Hide system columns
             }
         else:
             col_cfg = {
                 "equipment_type": st.column_config.SelectboxColumn(
                     "Equipment Category",
-                    options=["General", "Reactor", "Storage Tank", "Heat Exchanger", "Receiver"]
+                    options=["General", "Reactor", "Storage Tank", "Heat Exchanger", "Receiver"],
+                    required=True
                 ),
-                "parameter_name": "Description / Parameter Name",
-                "default_design_value": "Standard Reference (Optional)"
+                "parameter_name": st.column_config.TextColumn("Description / Parameter", required=True),
+                "default_design_value": st.column_config.TextColumn("Standard Ref (Optional)"),
+                "category": None, "id": None, "created_at": None
             }
 
+        # 4. The Editor
         edited_conf = st.data_editor(
             df_conf,
             num_rows="dynamic",
@@ -1084,21 +1091,28 @@ with main_tabs[12]:
 
         if st.button(f"💾 Sync {report_cat}", type="primary"):
             try:
+                # Convert editor state to list of dicts
                 final_data = edited_conf.to_dict('records')
-                # Clean data: ensure category is set and remove nulls
+                
+                # Clean and Prep data
+                cleaned_data = []
                 for row in final_data:
-                    row['category'] = report_cat
+                    # Only include rows that actually have a name
+                    if str(row.get('parameter_name')).strip() not in ["None", "nan", ""]:
+                        new_row = {
+                            "category": report_cat,
+                            "parameter_name": row.get('parameter_name'),
+                            "equipment_type": row.get('equipment_type', 'General'),
+                            "default_design_value": row.get('default_design_value', '')
+                        }
+                        cleaned_data.append(new_row)
                 
+                # Delete old and insert new
                 conn.table("quality_config").delete().eq("category", report_cat).execute()
-                if final_data:
-                    conn.table("quality_config").insert(final_data).execute()
+                if cleaned_data:
+                    conn.table("quality_config").insert(cleaned_data).execute()
                 
-                st.success(f"✅ {report_cat} updated successfully!")
+                st.success(f"✅ {report_cat} updated!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Error saving config: {e}")
-
-    elif config_mode == "Staff & Inspectors":
-        st.subheader("👨‍🔧 Master Staff List")
-        # Logic to edit 'master_staff' table can go here
-        st.write("Current Inspectors:", ", ".join(authorized_inspectors))
+                st.error(f"Error: {e}")
