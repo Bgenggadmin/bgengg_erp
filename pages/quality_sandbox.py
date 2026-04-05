@@ -1010,7 +1010,7 @@ with main_tabs[11]:
                 except Exception as e:
                     st.error(f"Error: {e}")
 
-# --- TAB 13: MASTER CONFIG (REFINED FOR PAPER FORMAT) ---
+# --- TAB 13: MASTER CONFIG (DYNAMIC ENTRY) ---
 with main_tabs[12]:
     st.header("⚙️ Portal Configuration & Master Data")
     
@@ -1018,40 +1018,41 @@ with main_tabs[12]:
                           ["Inspection Parameters (Grid Rows)", "Staff & Inspectors"], horizontal=True)
 
     if config_mode == "Inspection Parameters (Grid Rows)":
-        # We now explicitly target the two lists needed for your DIR paper format
+        # Keep your original selectbox options exactly
         report_cat = st.selectbox("Select List to Configure", 
                                 ["Dimensional Descriptions", "MOC List", "Technical Checklist"])
         
         # 1. Fetch existing data
         conf_res = conn.table("quality_config").select("*").eq("category", report_cat).execute()
         
-        # 2. Initialize DataFrame with required columns
+        # 2. Robust Initialization (Ensures the table isn't "disabled" when empty)
         if conf_res.data:
             df_conf = pd.DataFrame(conf_res.data)
         else:
+            # Matches your database schema so adding rows is enabled
             df_conf = pd.DataFrame(columns=["parameter_name", "equipment_type", "default_design_value"])
 
         st.subheader(f"🛠️ Edit {report_cat}")
-        st.caption("Add items here. These will appear as dropdown options in your DIR reports.")
         
-        # 3. Specific Column Config to suit the Paper Format requirements
+        # 3. Dynamic Column Configuration based on Category
         if report_cat == "MOC List":
             col_cfg = {
-                "parameter_name": st.column_config.TextColumn("Material Grade (MOC)", required=True, placeholder="e.g. SS 304"),
-                "equipment_type": None, # Not needed for MOC
-                "default_design_value": None, # Not needed for MOC
+                "parameter_name": st.column_config.TextColumn("Material Grade (MOC)", required=True),
+                "equipment_type": None, # Hide for MOC
+                "default_design_value": None, # Hide for MOC
                 "category": None, "id": None, "created_at": None
             }
         else:
+            # This configures both "Dimensional Descriptions" and "Technical Checklist"
             col_cfg = {
                 "equipment_type": st.column_config.SelectboxColumn(
                     "Applicability",
                     options=["General", "Reactor", "Storage Tank", "Heat Exchanger", "Receiver"],
                     default="General",
-                    help="Choose 'General' for parameters common to all equipment."
+                    required=True
                 ),
-                "parameter_name": st.column_config.TextColumn("Description / Item Name", required=True, placeholder="e.g. Shell"),
-                "default_design_value": st.column_config.TextColumn("Standard Ref (Optional)"),
+                "parameter_name": st.column_config.TextColumn("Description / Item Name", required=True),
+                "default_design_value": st.column_config.TextColumn("Standard Reference (Optional)"),
                 "category": None, "id": None, "created_at": None
             }
 
@@ -1065,13 +1066,14 @@ with main_tabs[12]:
             hide_index=True
         )
 
-        if st.button(f"💾 Save {report_cat} Configuration", type="primary"):
+        if st.button(f"💾 Sync {report_cat}", type="primary"):
             try:
+                # Convert editor state back to data
                 final_data = edited_conf.to_dict('records')
                 cleaned_data = []
                 
                 for row in final_data:
-                    # Clean the data: remove empty rows or system-generated 'None'
+                    # Robust cleaning: filter out empty rows
                     p_name = str(row.get('parameter_name', '')).strip()
                     if p_name and p_name not in ["None", "nan", ""]:
                         cleaned_data.append({
@@ -1081,15 +1083,15 @@ with main_tabs[12]:
                             "default_design_value": row.get('default_design_value', '')
                         })
                 
-                # Update Database: Clear and Re-insert
+                # 5. Atomic Update: Clear and Re-insert
                 conn.table("quality_config").delete().eq("category", report_cat).execute()
                 if cleaned_data:
                     conn.table("quality_config").insert(cleaned_data).execute()
                 
-                st.success(f"✅ {report_cat} synced successfully!")
+                st.success(f"✅ {report_cat} list updated successfully!")
                 st.rerun()
             except Exception as e:
-                st.error(f"Error updating config: {e}")
+                st.error(f"Sync Error: {e}")
 
     elif config_mode == "Staff & Inspectors":
         st.subheader("👨‍🔧 Master Staff List")
