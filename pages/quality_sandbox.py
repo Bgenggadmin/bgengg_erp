@@ -548,7 +548,7 @@ with main_tabs[4]:
     else:
         st.warning("Anchor Portal Master Data is empty.")
 
-# --- TAB 6: DIMENSIONAL INSPECTION REPORT (STABILIZED & DYNAMIC) ---
+# --- TAB 6: DIMENSIONAL INSPECTION REPORT (FIXED PDF LOGIC) ---
 with main_tabs[5]:
     st.subheader("📐 Dimensional Inspection Report")
     
@@ -557,7 +557,6 @@ with main_tabs[5]:
         sel_job_dim = st.selectbox("Select Job for Dimensional Report", ["-- Select --"] + dim_jobs, key="dim_job_sel")
 
         if sel_job_dim != "-- Select --":
-            # FIX: Safe Matching to prevent AttributeError
             dim_match = df_anchor[df_anchor['job_no'] == sel_job_dim]
             
             if not dim_match.empty:
@@ -573,7 +572,7 @@ with main_tabs[5]:
 
                 st.divider()
 
-                # Template Logic
+                # --- Template Logic ---
                 base_template = [
                     {"Sl": 1, "Description": "Overall Length / Height", "Design": "", "Actual": ""},
                     {"Sl": 2, "Description": "Inside Diameter (ID)", "Design": "", "Actual": ""},
@@ -594,12 +593,16 @@ with main_tabs[5]:
                 st.markdown(f"### 📏 Measurement Log for {e_type}")
                 dim_grid = st.data_editor(pd.DataFrame(base_template), num_rows="dynamic", use_container_width=True, key="dim_editor", hide_index=True)
 
+                # --- FORM START ---
                 with st.form("dim_submit_form"):
                     f1, f2 = st.columns(2)
                     dim_inspector = f1.selectbox("QC Inspector", authorized_inspectors, key="dim_insp_final")
                     dim_remarks = st.text_area("Notes (Enter 'NA' if none)")
 
-                    if st.form_submit_button("🚀 Save & Generate PDF", use_container_width=True):
+                    # Submit button is INSIDE the form
+                    submitted = st.form_submit_button("🚀 Save Technical Data", use_container_width=True)
+                    
+                    if submitted:
                         payload = {
                             "job_no": sel_job_dim,
                             "equipment_name": equip_dim,
@@ -608,18 +611,26 @@ with main_tabs[5]:
                             "remarks": dim_remarks,
                             "created_at": datetime.now(IST).isoformat()
                         }
-                        
                         try:
-                            # 1. Save to Database
                             conn.table("dimensional_reports").insert(payload).execute()
-                            
-                            # 2. Immediately Generate PDF
-                            pdf_bytes = generate_technical_pdf(sel_job_dim, f"DIMENSIONAL REPORT - {e_type}", proj, dim_grid.to_dict('records'), dim_remarks, dim_inspector)
-                            
-                            st.success("✅ Report saved to Supabase!")
-                            st.download_button(label="📥 Download Clean PDF Report", data=pdf_bytes, file_name=f"Report_{sel_job_dim}.pdf", mime="application/pdf", type="primary", use_container_width=True)
+                            # Store PDF bytes in session state so we can show the button OUTSIDE
+                            st.session_state["last_pdf"] = generate_technical_pdf(sel_job_dim, f"DIMENSIONAL REPORT - {e_type}", proj, dim_grid.to_dict('records'), dim_remarks, dim_inspector)
+                            st.session_state["pdf_ready"] = True
+                            st.success("✅ Data Saved to Supabase!")
                         except Exception as e:
                             st.error(f"Error: {e}")
+                # --- FORM END ---
+
+                # --- DOWNLOAD BUTTON (Must be OUTSIDE the form) ---
+                if st.session_state.get("pdf_ready"):
+                    st.download_button(
+                        label="📥 Download Clean PDF Report", 
+                        data=st.session_state["last_pdf"], 
+                        file_name=f"Report_{sel_job_dim}.pdf", 
+                        mime="application/pdf", 
+                        type="primary", 
+                        use_container_width=True
+                    )
 
 # --- TAB 7: HYDRO TEST REPORT ---
 with main_tabs[6]:
