@@ -42,7 +42,7 @@ def get_purchase_items():
         res = conn.table("purchase_orders").select("*").execute()
         if res.data:
             df_p = pd.DataFrame(res.data)
-            df_p['job_no'] = df_p['job_no'].astype(str).str.strip().str.upper()
+            df_p['job_no'] = df_p['job_no'].fillna('').astype(str).str.strip().str.upper()
             if 'created_at' in df_p.columns:
                 df_p['created_at'] = pd.to_datetime(df_p['created_at'])
             return df_p
@@ -50,9 +50,22 @@ def get_purchase_items():
     except:
         return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
 
-df = get_projects()
-df_pur = get_purchase_items()
-today_dt = pd.to_datetime(date.today())
+@st.cache_data(ttl=2)
+def get_purchase_items():
+    try:
+        res = conn.table("purchase_orders").select("*").execute()
+        if res.data:
+            df_p = pd.DataFrame(res.data)
+            # --- FIX: Handle nulls/floats before stripping ---
+            if 'job_no' in df_p.columns:
+                df_p['job_no'] = df_p['job_no'].fillna('').astype(str).str.strip().str.upper()
+            
+            if 'created_at' in df_p.columns:
+                df_p['created_at'] = pd.to_datetime(df_p['created_at'], errors='coerce')
+            return df_p
+        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
+    except Exception as e:
+        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at']))
 
 # --- 4. SIDEBAR CONFIGURATION ---
 st.sidebar.title("🎯 Anchor Control")
@@ -63,7 +76,10 @@ df_display = df[df['anchor_person'] == anchor_choice] if not df.empty else pd.Da
 # Sidebar: Critical Material Alerts
 st.sidebar.divider()
 if not df_display.empty and not df_pur.empty:
-    won_jobs = df_display[df_display['status'] == "Won"]['job_no'].unique()
+    # Safe conversion for won_jobs
+    won_jobs = df_display[df_display['status'] == "Won"]['job_no'].fillna('').astype(str).str.strip().str.upper().unique()
+    
+    # Filter pending items using the cleaned list
     pending_items = df_pur[(df_pur['job_no'].isin(won_jobs)) & (~df_pur['status'].isin(["Ordered", "Received"]))]
     
     if not pending_items.empty:
