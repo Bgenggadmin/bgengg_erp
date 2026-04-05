@@ -28,13 +28,17 @@ def check_password():
 if not check_password():
     st.stop()
 
-# --- 3. DATABASE CONNECTION ---
+# --- 3. DATABASE CONNECTION & DATA LOADING ---
 conn = st.connection("supabase", type=SupabaseConnection)
 
 @st.cache_data(ttl=0) 
 def get_projects():
-    res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
-    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    try:
+        res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
+        return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error loading projects: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=2)
 def get_purchase_items():
@@ -42,28 +46,30 @@ def get_purchase_items():
         res = conn.table("purchase_orders").select("*").execute()
         if res.data:
             df_p = pd.DataFrame(res.data)
-            
-            # --- FIX: Handle nulls and force string safely ---
+            # Safe string cleaning for Job Numbers
             if 'job_no' in df_p.columns:
                 df_p['job_no'] = df_p['job_no'].fillna('').astype(str).str.strip().str.upper()
-            
             if 'created_at' in df_p.columns:
                 df_p['created_at'] = pd.to_datetime(df_p['created_at'], errors='coerce')
-                
             return df_p
-            
-        # Return empty dataframe with correct columns if no data
-        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
-        
+        return pd.DataFrame()
     except Exception as e:
-        # If there is a database error, return empty frame so app doesn't crash
-        return pd.DataFrame(columns=['job_no', 'item_name', 'specs', 'status', 'purchase_reply', 'created_at'])
+        return pd.DataFrame()
+
+# Initialize Data Safely
+df = get_projects()
+df_pur = get_purchase_items()
+today_dt = pd.to_datetime(date.today()).tz_localize(None)
 
 # --- 4. SIDEBAR CONFIGURATION ---
 st.sidebar.title("🎯 Anchor Control")
 anchor_choice = st.sidebar.selectbox("Select Your Profile", ["Ammu", "Kishore"])
 
-df_display = df[df['anchor_person'] == anchor_choice] if not df.empty else pd.DataFrame()
+# Line 66: This will now work because df is guaranteed to exist
+if not df.empty and 'anchor_person' in df.columns:
+    df_display = df[df['anchor_person'] == anchor_choice]
+else:
+    df_display = pd.DataFrame()
 
 # Sidebar: Critical Material Alerts
 st.sidebar.divider()
