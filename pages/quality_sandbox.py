@@ -220,7 +220,8 @@ main_tabs = st.tabs([
     "🚪 Process Gate", "📋 Technical Checklist", "📜 QA Plan", 
     "📉 Material Flow", "🔧 Nozzle Flow", "📐 Dimensional", 
     "💧 Hydro Test", "🏁 Final Inspection", "🛡️ Guarantee", 
-    "⭐ Feedback", "📂 Document Vault", "📑 Master Data Book"
+    "⭐ Feedback", "📂 Document Vault", "📑 Master Data Book",
+    "⚙️ Master Config" # Index 12
 ])
 
 # --- TAB 1: PROCESS GATE (LIVE EVIDENCE VIEWER) ---
@@ -593,27 +594,28 @@ with main_tabs[5]:
 
                 st.divider()
 
-                # --- Template Logic ---
-                base_template = [
-                    {"Sl": 1, "Description": "Overall Length / Height", "Design": "", "Actual": ""},
-                    {"Sl": 2, "Description": "Inside Diameter (ID)", "Design": "", "Actual": ""},
-                    {"Sl": 3, "Description": "Shell Thickness", "Design": "", "Actual": ""},
-                ]
+               # --- NEW DYNAMIC TEMPLATE LOGIC ---
+                # 1. Try to fetch specific rows for this equipment type
+                conf_data = conn.table("quality_config").select("*").eq("category", "Dimensional").eq("equipment_type", e_type).execute()
+                
+                # 2. Fallback to 'General' if no specific rows found
+                if not conf_data.data:
+                    conf_data = conn.table("quality_config").select("*").eq("category", "Dimensional").eq("equipment_type", "General").execute()
 
-                if e_type == "Reactor":
-                    base_template.extend([
-                        {"Sl": 4, "Description": "Jacket ID", "Design": "", "Actual": ""},
-                        {"Sl": 5, "Description": "Agitator Shaft Runout", "Design": "0.5mm", "Actual": ""},
-                    ])
-                elif e_type == "Storage Tank":
-                    base_template.extend([
-                        {"Sl": 4, "Description": "Curb Angle Level", "Design": "Level", "Actual": ""},
-                        {"Sl": 5, "Description": "Roof Slope", "Design": "1:100", "Actual": ""},
-                    ])
-
-                st.markdown(f"### 📏 Measurement Log for {e_type}")
-                dim_grid = st.data_editor(pd.DataFrame(base_template), num_rows="dynamic", use_container_width=True, key="dim_editor", hide_index=True)
-
+                # 3. Build the grid template
+                if conf_data.data:
+                    base_template = [
+                        {
+                            "Sl": i + 1, 
+                            "Description": r.get('parameter_name'), 
+                            "Design": r.get('default_design_value'), 
+                            "Actual": ""
+                        } for i, r in enumerate(conf_data.data)
+                    ]
+                else:
+                    # Emergency fallback if database is empty
+                    base_template = [{"Sl": 1, "Description": "Please configure in Master Tab", "Design": "", "Actual": ""}]
+                
                 # --- FORM START ---
                 with st.form("dim_submit_form"):
                     f1, f2 = st.columns(2)
@@ -1043,3 +1045,61 @@ with main_tabs[11]:
                     )
                 except Exception as e:
                     st.error(f"Error: {e}")
+
+# --- TAB 13: MASTER CONFIG (DYNAMIC ENTRY) ---
+with main_tabs[12]:
+    st.header("⚙️ Portal Configuration & Master Data")
+    st.info("Define the parameters, columns, and personnel for all quality reports here.")
+
+    config_mode = st.radio("What would you like to configure?", 
+                          ["Inspection Parameters (Grid Rows)", "Staff & Inspectors"], horizontal=True)
+
+    if config_mode == "Inspection Parameters (Grid Rows)":
+        # Dropdown to choose which report to configure
+        report_cat = st.selectbox("Select Report Category", ["Dimensional", "Technical Checklist"])
+        
+        # Fetch existing config from Supabase
+        conf_res = conn.table("quality_config").select("*").eq("category", report_cat).execute()
+        df_conf = pd.DataFrame(conf_res.data or [])
+
+        st.subheader(f"🛠️ Edit {report_cat} Rows")
+        st.caption("Add rows here to change what appears in the data entry grids.")
+        
+        edited_conf = st.data_editor(
+            df_conf,
+            num_rows="dynamic",
+            use_container_width=True,
+            key=f"config_editor_{report_cat}",
+            column_config={
+                "equipment_type": st.column_config.SelectboxColumn(
+                    "Equipment Type",
+                    options=["General", "Reactor", "Storage Tank", "Heat Exchanger", "Receiver"],
+                    help="Which equipment category should show these rows?"
+                ),
+                "parameter_name": "Row Description (e.g. Shell ID)",
+                "default_design_value": "Design Standard (e.g. As per Drawing)"
+            },
+            hide_index=True
+        )
+
+        if st.button(f"💾 Save {report_cat} Configuration", type="primary"):
+            try:
+                # 1. Prepare data (add category back if user added new rows)
+                final_data = edited_conf.to_dict('records')
+                for row in final_data:
+                    row['category'] = report_cat
+                
+                # 2. Sync: Delete old for this category and insert new
+                conn.table("quality_config").delete().eq("category", report_cat).execute()
+                if final_data:
+                    conn.table("quality_config").insert(final_data).execute()
+                
+                st.success(f"Successfully updated {report_cat} parameters!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error saving config: {e}")
+
+    elif config_mode == "Staff & Inspectors":
+        st.subheader("👨‍🔧 Master Staff List")
+        # Logic to edit 'master_staff' table can go here
+        st.write("Current Inspectors:", ", ".join(authorized_inspectors))
