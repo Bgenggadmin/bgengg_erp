@@ -160,7 +160,8 @@ main_tabs = st.tabs([
     "🔧 Nozzle Flow Chart",
     "📐 Dimensional Report",
     "💧 Hydro Test Report",
-    "🏁 Final Inspection (FIR)" # Index 7
+    "🏁 Final Inspection (FIR)",
+    "🛡️ Guarantee Certificate" # Index 8
 ])
 
 # --- TAB 1: PROCESS GATE ---
