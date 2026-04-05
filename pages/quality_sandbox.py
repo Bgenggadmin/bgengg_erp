@@ -161,7 +161,8 @@ main_tabs = st.tabs([
     "📐 Dimensional Report",
     "💧 Hydro Test Report",
     "🏁 Final Inspection (FIR)",
-    "🛡️ Guarantee Certificate" # Index 8
+    "🛡️ Guarantee Certificate",
+    "⭐ Customer Feedback" # Index 9
 ])
 
 # --- TAB 1: PROCESS GATE ---
@@ -774,3 +775,79 @@ with main_tabs[8]:
                 st.error("Project details missing in Anchor portal.")
     else:
         st.warning("No Master Data available.")
+
+# --- TAB 10: CUSTOMER FEEDBACK FORM ---
+with main_tabs[9]:
+    st.subheader("⭐ Customer Satisfaction & Feedback")
+    
+    if not df_anchor.empty:
+        # 1. Selection using Job Master
+        fb_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_fb = st.selectbox("Select Job for Feedback", ["-- Select --"] + fb_jobs, key="fb_job_sel")
+
+        if sel_job_fb != "-- Select --":
+            fb_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_fb)]
+            
+            if not fb_match.empty:
+                proj = fb_match.iloc[0]
+                
+                # Header pre-filled from Master Data
+                with st.container(border=True):
+                    f_col1, f_col2 = st.columns(2)
+                    f_col1.write(f"**Customer:** {proj.get('client_name', 'N/A')}")
+                    f_col1.write(f"**Project Ref:** {sel_job_fb}")
+                    
+                    c_person = f_col2.text_input("Contact Person Name")
+                    c_desig = f_col2.text_input("Designation")
+
+                st.divider()
+
+                # 2. FEEDBACK QUESTIONNAIRE
+                with st.form("customer_feedback_form", clear_on_submit=True):
+                    st.markdown("##### Please rate our performance (5 = Excellent, 1 = Poor)")
+                    
+                    # Rating Scale Logic
+                    r_col1, r_col2 = st.columns(2)
+                    
+                    q_val = r_col1.slider("Quality of Product/Workmanship", 1, 5, 5)
+                    d_val = r_col1.slider("Adherence to Delivery Schedule", 1, 5, 5)
+                    r_val = r_col1.slider("Promptness of Response", 1, 5, 5)
+                    
+                    t_val = r_col2.slider("Technical Support & Competence", 1, 5, 5)
+                    doc_val = r_col2.slider("Quality of Documentation/MTCs", 1, 5, 5)
+                    recommend = r_col2.radio("Would you recommend B&G to others?", ["Yes", "No"], horizontal=True)
+
+                    st.divider()
+                    
+                    st.markdown("##### Additional Comments")
+                    user_suggestions = st.text_area("How can we improve our services further?")
+                    
+                    # Disclaimer
+                    st.caption("Your feedback is strictly used for ISO Quality Management and internal improvement.")
+
+                    if st.form_submit_button("🚀 Submit Feedback", use_container_width=True):
+                        payload = {
+                            "job_no": sel_job_fb,
+                            "customer_name": proj.get('client_name'),
+                            "contact_person": f"{c_person} ({c_desig})",
+                            "rating_quality": q_val,
+                            "rating_delivery": d_val,
+                            "rating_response": r_val,
+                            "rating_technical_support": t_val,
+                            "rating_documentation": doc_val,
+                            "suggestions": user_suggestions,
+                            "recommend_bg": recommend,
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        try:
+                            conn.table("customer_feedback").insert(payload).execute()
+                            st.success("✅ Thank you for your feedback! It has been recorded for review.")
+                            st.balloons()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error saving feedback: {e}")
+            else:
+                st.error("Customer details missing in project records.")
+    else:
+        st.warning("Project master data is not available.")
