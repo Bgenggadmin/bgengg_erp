@@ -106,26 +106,55 @@ def generate_master_data_book(job_no, project_info, df_plan):
                 pdf.cell(35, 7, str(row.get('Design')), 1); pdf.cell(35, 7, str(row.get('Actual')), 1, 1)
 
     # Photo Log
+    # --- 3. INTERNAL PAGES: MANUFACTURING EVIDENCE FIX ---
     job_photos = df_plan[df_plan['job_no'].astype(str) == str(job_no)].dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
+    
     if not job_photos.empty:
-        add_section_header("MANUFACTURING EVIDENCE")
+        add_section_header("MANUFACTURING EVIDENCE LOG")
         for _, row in job_photos.iterrows():
-            pdf.set_font("Arial", 'B', 10); pdf.set_fill_color(240, 240, 240)
-            pdf.cell(0, 8, f" Stage: {row['gate_name']} | Date: {pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')}", ln=True, fill=True)
-            pdf.set_font("Arial", '', 9); pdf.multi_cell(0, 6, f" Remarks: {row['quality_notes']}")
+            # Check if we have space for the Header + at least one row of text
+            if pdf.get_y() > 230:
+                add_section_header("MANUFACTURING EVIDENCE LOG (CONT.)")
+
+            pdf.set_font("Arial", 'B', 10)
+            pdf.set_fill_color(240, 240, 240)
+            stage_title = f" Stage: {row['gate_name']} | Date: {pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')}"
+            pdf.cell(0, 8, stage_title, ln=True, fill=True, border="T")
+            
+            pdf.set_font("Arial", '', 9)
+            pdf.multi_cell(0, 6, f" Inspector: {row['quality_by']} | Remarks: {row['quality_notes'] or 'N/A'}", border="B")
+            pdf.ln(2)
+
+            # --- IMAGE HANDLING FIX ---
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                y_pos = pdf.get_y() + 2
-                for i, url in enumerate(urls[:3]):
+                # If images will fall off the page, start a new page
+                if pdf.get_y() > 200: 
+                    add_section_header("MANUFACTURING EVIDENCE LOG (CONT.)")
+                
+                img_y = pdf.get_y()
+                img_width = 60
+                img_height = 45 # Fixed height for uniformity
+                
+                for i, url in enumerate(urls[:3]): # Show up to 3 photos per stage
                     try:
-                        r = requests.get(url, timeout=5)
+                        r = requests.get(url, timeout=10)
                         if r.status_code == 200:
                             with NamedTemporaryFile(delete=False, suffix=".jpg") as t:
                                 t.write(r.content)
-                                pdf.image(t.name, x=10 + (i*65), y=y_pos, w=60)
-                                os.unlink(t.name)
-                    except: pass
-                pdf.ln(45)
+                                temp_img_path = t.name
+                            
+                            # Calculate X position: 10, 75, 140
+                            img_x = 10 + (i * 65)
+                            pdf.image(temp_img_path, x=img_x, y=img_y, w=img_width, h=img_height)
+                            os.unlink(temp_img_path)
+                    except Exception as img_err:
+                        continue # Skip failed images instead of crashing the whole book
+                
+                # Move the cursor BELOW the images so the next stage doesn't overlap
+                pdf.set_y(img_y + img_height + 5)
+            
+            pdf.ln(5) # Space between stages
 
     # --- 4. THE STITCHER FIX (PdfReader Wrapper) ---
     report_buffer = io.BytesIO()
