@@ -1045,46 +1045,55 @@ with main_tabs[12]:
                           ["Inspection Parameters (Grid Rows)", "Staff & Inspectors"], horizontal=True)
 
     if config_mode == "Inspection Parameters (Grid Rows)":
-        # Dropdown to choose which report to configure
-        report_cat = st.selectbox("Select Report Category", ["Dimensional", "Technical Checklist"])
+        # New selection logic to handle both Descriptions and MOCs
+        report_cat = st.selectbox("Select List to Configure", 
+                                ["Dimensional Descriptions", "MOC List", "Technical Checklist"])
         
         # Fetch existing config from Supabase
         conf_res = conn.table("quality_config").select("*").eq("category", report_cat).execute()
         df_conf = pd.DataFrame(conf_res.data or [])
 
-        st.subheader(f"🛠️ Edit {report_cat} Rows")
-        st.caption("Add rows here to change what appears in the data entry grids.")
+        st.subheader(f"🛠️ Edit {report_cat}")
+        st.caption(f"The items below will appear as dropdown options in the {report_cat} column.")
         
+        # Configure the editor columns based on what we are editing
+        if report_cat == "MOC List":
+            col_cfg = {
+                "parameter_name": st.column_config.TextColumn("Material Grade (MOC)", placeholder="e.g. SS 316L"),
+                "equipment_type": None, # Hide equipment type for MOC as it's usually general
+                "default_design_value": None # Hide design value for MOC
+            }
+        else:
+            col_cfg = {
+                "equipment_type": st.column_config.SelectboxColumn(
+                    "Equipment Category",
+                    options=["General", "Reactor", "Storage Tank", "Heat Exchanger", "Receiver"]
+                ),
+                "parameter_name": "Description / Parameter Name",
+                "default_design_value": "Standard Reference (Optional)"
+            }
+
         edited_conf = st.data_editor(
             df_conf,
             num_rows="dynamic",
             use_container_width=True,
             key=f"config_editor_{report_cat}",
-            column_config={
-                "equipment_type": st.column_config.SelectboxColumn(
-                    "Equipment Type",
-                    options=["General", "Reactor", "Storage Tank", "Heat Exchanger", "Receiver"],
-                    help="Which equipment category should show these rows?"
-                ),
-                "parameter_name": "Row Description (e.g. Shell ID)",
-                "default_design_value": "Design Standard (e.g. As per Drawing)"
-            },
+            column_config=col_cfg,
             hide_index=True
         )
 
-        if st.button(f"💾 Save {report_cat} Configuration", type="primary"):
+        if st.button(f"💾 Sync {report_cat}", type="primary"):
             try:
-                # 1. Prepare data (add category back if user added new rows)
                 final_data = edited_conf.to_dict('records')
+                # Clean data: ensure category is set and remove nulls
                 for row in final_data:
                     row['category'] = report_cat
                 
-                # 2. Sync: Delete old for this category and insert new
                 conn.table("quality_config").delete().eq("category", report_cat).execute()
                 if final_data:
                     conn.table("quality_config").insert(final_data).execute()
                 
-                st.success(f"Successfully updated {report_cat} parameters!")
+                st.success(f"✅ {report_cat} updated successfully!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Error saving config: {e}")
