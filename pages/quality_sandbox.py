@@ -31,14 +31,15 @@ def generate_master_data_book(job_no, project_info, df_plan):
     logo_path, stamp_path = None, None
     try:
         l_data = conn.client.storage.from_("progress-photos").download("logo.png")
-        s_data = conn.client.storage.from_("progress-photos").download("round_stamp.png")
+        s_data = conn.client.storage.from_("progress-photos").download("round_stamp.png") # Pulling your new upload
         if l_data:
             with NamedTemporaryFile(delete=False, suffix=".png") as t:
                 t.write(l_data); logo_path = t.name
         if s_data:
             with NamedTemporaryFile(delete=False, suffix=".png") as t:
                 t.write(s_data); stamp_path = t.name
-    except: pass
+    except Exception as e: 
+        st.error(f"Asset Load Error: {e}")
 
     # --- 1. PREMIUM COVER PAGE ---
     pdf.add_page()
@@ -150,21 +151,6 @@ def generate_master_data_book(job_no, project_info, df_plan):
     merger.write(final_out); merger.close()
     return final_out.getvalue()
 
-# --- UPDATE TAB LIST IN UI ---
-main_tabs = st.tabs([
-    "🚪 Process Gate", 
-    "📋 Technical Checklist", 
-    "📜 QA Plan", 
-    "📉 Material Flow", 
-    "🔧 Nozzle Flow", 
-    "📐 Dimensional", 
-    "💧 Hydro Test", 
-    "🏁 Final Inspection", 
-    "🛡️ Guarantee", 
-    "⭐ Feedback", 
-    "📂 Document Vault", 
-    "📑 Master Data Book"
-]) 
 
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
@@ -196,45 +182,58 @@ df_plan, df_anchor, authorized_inspectors = get_quality_context()
 # --- 4. UI ---
 st.title("🔍 Quality Assurance & Inspection Portal")
 main_tabs = st.tabs([
-    "🚪 Process Gate (Evidence)", 
-    "📋 Technical Checklist (Reports)", 
-    "📜 QA Plan (QAP)", 
-    "📉 Material Flow Chart", 
-    "🔧 Nozzle Flow Chart",
-    "📐 Dimensional Report",
-    "💧 Hydro Test Report",
-    "🏁 Final Inspection (FIR)",
-    "🛡️ Guarantee Certificate",
-    "⭐ Customer Feedback",
-    "📂 MTC & Document Vault" # Index 10
+    "🚪 Process Gate", "📋 Technical Checklist", "📜 QA Plan", 
+    "📉 Material Flow", "🔧 Nozzle Flow", "📐 Dimensional", 
+    "💧 Hydro Test", "🏁 Final Inspection", "🛡️ Guarantee", 
+    "⭐ Feedback", "📂 Document Vault", "📑 Master Data Book"
 ])
 
-# --- TAB 1: PROCESS GATE ---
+# --- TAB 1: PROCESS GATE (LIVE EVIDENCE VIEWER) ---
 with main_tabs[0]:
+    st.subheader("🗓️ Real-Time Inspection Timeline")
+    
     if not df_plan.empty:
-        st.subheader("🗓️ Inspection Timeline Filter")
-        # (Timeline filter logic here)
-
+        # Clean list of jobs from the planning table
         unique_jobs = sorted(df_plan['job_no'].dropna().astype(str).unique().tolist())
-        sel_job = st.selectbox("🏗️ Select Job Number", ["-- Select --"] + unique_jobs, key="pg_job_sel")
+        sel_job = st.selectbox("🏗️ Select Job to View Evidence", ["-- Select --"] + unique_jobs, key="pg_job_sel")
 
         if sel_job != "-- Select --":
-            match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job)]
+            # Filter planning data for this specific job
+            p_data = df_plan[df_plan['job_no'].astype(str) == str(sel_job)].sort_values('quality_updated_at')
             
-            if not match.empty:
-                h_data = {
-                    "client_name": match.iloc[0].get('client_name', 'N/A'),
-                    "po_no": match.iloc[0].get('po_no', 'N/A'),
-                    "po_date": str(match.iloc[0].get('po_date', 'N/A'))
-                }
+            if not p_data.empty:
+                st.info(f"Showing manufacturing evidence for Job: **{sel_job}**. For the final stamped report, go to the **Master Data Book** tab.")
                 
-                p_data = df_plan[df_plan['job_no'].astype(str) == str(sel_job)]
-                
-                try:
-                    pdf_bytes = create_birth_certificate(sel_job, h_data, {}, p_data)
-                    st.download_button(label=f"📂 DOWNLOAD BIRTH CERTIFICATE: {sel_job}", data=pdf_bytes, file_name=f"Birth_Cert_{sel_job}.pdf", mime="application/pdf", width='stretch', type="primary")
-                except Exception as e:
-                    st.error(f"PDF Error: {e}")
+                for idx, row in p_data.iterrows():
+                    # Format date safely
+                    update_date = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y') if pd.notna(row['quality_updated_at']) else "Pending"
+                    
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 3])
+                        
+                        # Left Column: Status Badge
+                        status = str(row['quality_status']).upper()
+                        if "PASS" in status or "ACCEPT" in status:
+                            c1.success(f"✅ {row['gate_name']}")
+                        elif "REWORK" in status or "WAIT" in status:
+                            c1.warning(f"⚠️ {row['gate_name']}")
+                        else:
+                            c1.info(f"🔹 {row['gate_name']}")
+                        
+                        # Right Column: Inspector Details & Notes
+                        c2.write(f"**Date:** {update_date} | **Inspector:** {row['quality_by']}")
+                        c2.write(f"**Remarks:** {row['quality_notes'] or 'No remarks entered.'}")
+                        
+                        # Show Photos if they exist
+                        urls = row.get('quality_photo_url', [])
+                        if isinstance(urls, list) and len(urls) > 0:
+                            cols = st.columns(4)
+                            for i, url in enumerate(urls[:4]): # Show up to 4 preview photos
+                                cols[i].image(url, use_container_width=True, caption=f"Evidence {i+1}")
+            else:
+                st.warning("No quality records found for this Job Number yet.")
+    else:
+        st.error("No planning data available. Please check the Production Portal.")
 
 # --- TAB 2: TECHNICAL CHECKLIST ---
 with main_tabs[1]:
