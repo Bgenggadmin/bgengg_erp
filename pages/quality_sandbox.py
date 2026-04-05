@@ -10,6 +10,7 @@ import base64
 import requests
 from tempfile import NamedTemporaryFile
 import os 
+from pypdf import PdfWriter, PdfReader
 
 # --- 1. SETUP ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -18,167 +19,153 @@ conn = st.connection("supabase", type=SupabaseConnection)
 
 # --- 2. SMART UTILITIES & HELPERS ---
 
-def create_birth_certificate(job_no, header_data, tech_data, photo_data):
-    def clean_text(text):
-        if not text: return "N/A"
-        # Character safety for FPDF (Standard Latin-1)
-        text = str(text).replace("✅", "[PASS]").replace("❌", "[REJECT]").replace("⚠️", "[REWORK]")
-        return text.encode('ascii', 'ignore').decode('ascii')
-
-    # 1. PREPARE LOGO
-    logo_path = None
-    try:
-        logo_data = conn.client.storage.from_("progress-photos").download("logo.png")
-        if logo_data:
-            with NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
-                tmp_logo.write(logo_data)
-                logo_path = tmp_logo.name
-    except: 
-        pass
-
-    # 2. DEFINE CUSTOM PDF CLASS
-    class BrandedPDF(FPDF):
-        def header(self):
-            self.set_fill_color(0, 51, 102)
-            self.rect(0, 0, 210, 25, 'F')
-            if logo_path and os.path.exists(logo_path):
-                self.image(logo_path, x=12, y=5, h=15)
-            self.set_text_color(255, 255, 255)
-            self.set_font("Arial", 'B', 16)
-            self.set_xy(70, 5)
-            self.cell(130, 10, "B&G ENGINEERING INDUSTRIES", 0, 1, "L")
-            self.set_font("Arial", "I", 10)
-            self.set_xy(70, 14)
-            self.cell(130, 5, "PRODUCT QUALITY BIRTH CERTIFICATE", 0, 1, "L")
-            self.set_font("Arial", "B", 8)
-            self.set_xy(160, 14)
-            self.cell(40, 5, f"JOB: {job_no}", 0, 0, "R")
-            self.set_text_color(0, 0, 0)
-            self.set_y(30)
-
-        def footer(self):
-            self.set_y(-15)
-            self.set_font("Arial", 'I', 8)
-            self.set_text_color(128, 128, 128)
-            self.cell(0, 10, f"B&G ERP System - Page {self.page_no()}", 0, 0, 'C')
-
-    pdf = BrandedPDF()
-    pdf.set_auto_page_break(auto=True, margin=25)
-    pdf.add_page()
+def generate_master_data_book(job_no, project_info, df_plan):
+    """
+    The Ultimate B&G Data Book Engine:
+    Stitches Technical Reports, MTCs, and Photo Logs into one Stamped PDF.
+    """
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
-    # 4. HEADER TABLE
-    pdf.set_font("Arial", 'B', 10)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(95, 8, " CLIENT / CUSTOMER DETAILS", border=1, fill=True)
-    pdf.cell(95, 8, " PURCHASE ORDER DETAILS", border=1, fill=True, ln=True)
-    pdf.set_font("Arial", '', 10)
-    pdf.cell(95, 8, f" Name: {clean_text(header_data['client_name'])}", border=1)
-    pdf.cell(95, 8, f" PO No: {clean_text(header_data['po_no'])}", border=1, ln=True)
-    pdf.cell(95, 8, f" Job No: {job_no}", border=1)
-    pdf.cell(95, 8, f" PO Date: {clean_text(header_data['po_date'])}", border=1, ln=True)
-    pdf.ln(10)
+    # --- ASSET LOADING ---
+    logo_path, stamp_path = None, None
+    try:
+        l_data = conn.client.storage.from_("progress-photos").download("logo.png")
+        s_data = conn.client.storage.from_("progress-photos").download("round_stamp.png")
+        if l_data:
+            with NamedTemporaryFile(delete=False, suffix=".png") as t:
+                t.write(l_data); logo_path = t.name
+        if s_data:
+            with NamedTemporaryFile(delete=False, suffix=".png") as t:
+                t.write(s_data); stamp_path = t.name
+    except: pass
 
-    # 5. MANUFACTURING LOG WITH GRID
-    if not photo_data.empty:
-        photo_data = photo_data.dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
-        
-        for idx, row in photo_data.iterrows():
-            if pdf.get_y() > 200: pdf.add_page()
-            date_str = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
-            
-            pdf.set_font("Arial", 'B', 10)
-            pdf.set_fill_color(230, 240, 255)
-            pdf.cell(190, 8, f" [{date_str}] - {clean_text(row['gate_name'])}", border="TLR", ln=True, fill=True)
-            
+    # --- 1. PREMIUM COVER PAGE ---
+    pdf.add_page()
+    pdf.set_draw_color(0, 51, 102) # Corporate Blue
+    pdf.set_line_width(1.5)
+    pdf.rect(5, 5, 200, 287)
+    
+    if logo_path: pdf.image(logo_path, x=75, y=30, w=60)
+    
+    pdf.set_text_color(0, 51, 102)
+    pdf.set_font("Arial", 'B', 26)
+    pdf.set_y(100)
+    pdf.cell(0, 15, "QUALITY DATA BOOK", ln=True, align='C')
+    pdf.set_font("Arial", '', 14)
+    pdf.cell(0, 10, "COMPLETE PRODUCT BIRTH CERTIFICATE", ln=True, align='C')
+    
+    # Job Info Box
+    pdf.set_y(160)
+    pdf.set_fill_color(245, 245, 245)
+    pdf.set_font("Arial", 'B', 11)
+    details = [
+        f"  JOB NUMBER: {job_no}",
+        f"  CLIENT: {project_info.get('client_name')}",
+        f"  PO REF: {project_info.get('po_no')}",
+        f"  DATE: {datetime.now().strftime('%d-%m-%Y')}"
+    ]
+    for line in details:
+        pdf.cell(0, 10, line, ln=True, fill=True if "JOB" in line or "PO" in line else False)
+
+    if stamp_path:
+        pdf.image(stamp_path, x=150, y=235, w=38) # Official Stamp
+        pdf.set_xy(150, 275); pdf.set_font("Arial", 'B', 7)
+        pdf.cell(38, 5, "AUTHORIZED SIGNATORY", align='C')
+
+    # --- 2. DYNAMIC INDEX ---
+    pdf.add_page()
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 20, "TABLE OF CONTENTS", ln=True)
+    sections = ["1. Technical Checklist", "2. Dimensional Reports", "3. Hydro Test Data", "4. Material Certificates (MTC)", "5. Manufacturing Photo Log"]
+    pdf.set_font("Arial", '', 11)
+    for s in sections:
+        pdf.cell(0, 12, s, border="B", ln=True)
+
+    # --- 3. INTERNAL REPORT PAGES ---
+    def add_section_header(title):
+        pdf.add_page()
+        if logo_path: pdf.image(logo_path, x=10, y=8, h=10)
+        pdf.set_font("Arial", 'B', 10); pdf.set_xy(120, 10)
+        pdf.cell(80, 10, f"JOB: {job_no} | {title}", align='R', ln=True)
+        pdf.line(10, 22, 200, 22)
+        pdf.ln(10)
+
+    # Dimensional Data Fetch
+    dim_res = conn.table("dimensional_reports").select("*").eq("job_no", job_no).execute()
+    if dim_res.data:
+        add_section_header("DIMENSIONAL INSPECTION")
+        for report in dim_res.data:
+            grid = report.get('dim_grid_data', [])
+            pdf.set_font("Arial", 'B', 9)
+            pdf.cell(15, 8, "Sl", 1); pdf.cell(100, 8, "Description", 1); pdf.cell(35, 8, "Design", 1); pdf.cell(35, 8, "Actual", 1, 1)
             pdf.set_font("Arial", '', 9)
-            details = f" Inspector: {clean_text(row['quality_by'])} | Status: {clean_text(row['quality_status'])}\n Remarks: {clean_text(row['quality_notes'])}"
-            pdf.multi_cell(190, 6, details, border="LR")
-            
+            for row in grid:
+                if not str(row.get('Actual')): continue
+                pdf.cell(15, 7, str(row.get('Sl')), 1); pdf.cell(100, 7, str(row.get('Description')), 1)
+                pdf.cell(35, 7, str(row.get('Design')), 1); pdf.cell(35, 7, str(row.get('Actual')), 1, 1)
+
+    # Photo Evidence Log
+    job_photos = df_plan[df_plan['job_no'].astype(str) == str(job_no)].dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
+    if not job_photos.empty:
+        add_section_header("MANUFACTURING EVIDENCE")
+        for _, row in job_photos.iterrows():
+            pdf.set_font("Arial", 'B', 10); pdf.set_fill_color(240, 240, 240)
+            pdf.cell(0, 8, f" Stage: {row['gate_name']} | Date: {pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')}", ln=True, fill=True)
+            pdf.set_font("Arial", '', 9); pdf.multi_cell(0, 6, f" Remarks: {row['quality_notes']}")
             urls = row.get('quality_photo_url', [])
             if isinstance(urls, list) and len(urls) > 0:
-                img_w, img_h = 44, 55 
-                if pdf.get_y() + img_h > 260:
-                    pdf.cell(190, 1, "", border="B", ln=True)
-                    pdf.add_page()
-
-                y_img_start = pdf.get_y()
-                pdf.cell(190, img_h + 4, "", border="LR", ln=True) 
-
-                for i, url in enumerate(urls[:4]):
+                y_pos = pdf.get_y() + 2
+                for i, url in enumerate(urls[:3]):
                     try:
-                        resp = requests.get(url, timeout=10)
-                        if resp.status_code == 200:
-                            with NamedTemporaryFile(delete=False, suffix=f"_{i}.jpg") as tmp:
-                                tmp.write(resp.content)
-                                tmp_name = tmp.name
-                            pdf.image(tmp_name, x=12 + (i * 46), y=y_img_start + 2, w=img_w, h=img_h)
-                            os.unlink(tmp_name)
-                    except: 
-                        continue
-                pdf.set_y(y_img_start + img_h + 4)
-            
-            pdf.cell(190, 1, "", border="BLR", ln=True)
-            pdf.ln(5)
+                        r = requests.get(url, timeout=5)
+                        if r.status_code == 200:
+                            with NamedTemporaryFile(delete=False, suffix=".jpg") as t:
+                                t.write(r.content)
+                                pdf.image(t.name, x=10 + (i*65), y=y_pos, w=60)
+                                os.unlink(t.name)
+                    except: pass
+                pdf.set_y(y_pos + 45)
 
-    # --- CRITICAL FIX: ENSURE THIS RETURN IS AT THE BASE LEVEL OF THE FUNCTION ---
-    if logo_path and os.path.exists(logo_path): 
-        try: os.unlink(logo_path)
-        except: pass
-        
-    return pdf.output(dest='S').encode('latin-1')
-
-def generate_technical_pdf(job_no, report_title, master_data, grid_data, remarks, inspector):
-    pdf = FPDF()
-    pdf.add_page()
+    # --- 4. THE AUTOMATED STAPLER (MTCs) ---
+    report_buffer = io.BytesIO()
+    pdf.output(report_buffer); report_buffer.seek(0)
     
-    # Header Branding
-    pdf.set_fill_color(0, 51, 102)
-    pdf.rect(0, 0, 210, 30, 'F')
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "B&G ENGINEERING INDUSTRIES", ln=True, align='C')
-    pdf.set_font("Arial", "I", 10)
-    pdf.cell(0, 10, report_title, ln=True, align='C')
-    pdf.ln(10)
+    merger = PdfWriter()
+    merger.append(report_buffer)
     
-    # Project Info
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Arial", 'B', 10)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.cell(95, 8, f" Client: {master_data.get('client_name', 'N/A')}", border=1, fill=True)
-    pdf.cell(95, 8, f" Job No: {job_no}", border=1, fill=True, ln=True)
-    pdf.cell(95, 8, f" PO No: {master_data.get('po_no', 'N/A')}", border=1)
-    pdf.cell(95, 8, f" Date: {datetime.now().strftime('%d-%m-%Y')}", border=1, ln=True)
-    pdf.ln(5)
+    mtc_res = conn.table("project_certificates").select("file_url").eq("job_no", job_no).eq("cert_type", "Material Test Certificate (MTC)").execute()
+    for doc in mtc_res.data:
+        try:
+            r = requests.get(doc['file_url'], timeout=10)
+            if r.status_code == 200: merger.append(io.BytesIO(r.content))
+        except: continue
 
-    # Data Table Headers
-    pdf.set_fill_color(230, 240, 255)
-    pdf.cell(15, 8, "Sl", 1, 0, 'C', fill=True)
-    pdf.cell(85, 8, "Description", 1, 0, 'C', fill=True)
-    pdf.cell(45, 8, "Design", 1, 0, 'C', fill=True)
-    pdf.cell(45, 8, "Actual", 1, 1, 'C', fill=True)
+    # Final Cleanup
+    if logo_path: os.unlink(logo_path)
+    if stamp_path: os.unlink(stamp_path)
     
-    pdf.set_font("Arial", '', 9)
-    sl = 1
-    for row in grid_data:
-        # THE "NA" LOGIC: Skip row if Actual is blank or NA
-        act = str(row.get('Actual', '')).strip().upper()
-        if not act or act in ["NA", "N/A", "NONE", "-", "NAN"]:
-            continue
-            
-        pdf.cell(15, 8, str(sl), 1, 0, 'C')
-        pdf.cell(85, 8, str(row.get('Description', 'N/A')), 1, 0, 'L')
-        pdf.cell(45, 8, str(row.get('Design', 'N/A')), 1, 0, 'C')
-        pdf.cell(45, 8, str(act), 1, 1, 'C')
-        sl += 1
+    final_out = io.BytesIO()
+    merger.write(final_out); merger.close()
+    return final_out.getvalue()
 
-    pdf.ln(10)
-    pdf.multi_cell(0, 6, f"Remarks: {remarks}")
-    pdf.ln(10)
-    pdf.set_font("Arial", 'B', 10)
-    pdf.cell(95, 10, f"QC Inspector: {inspector}", 0, 0, 'L')
-    pdf.cell(95, 10, "Authorized Signatory", 0, 1, 'R')
-    return pdf.output(dest='S').encode('latin-1', 'ignore')
+# --- UPDATE TAB LIST IN UI ---
+main_tabs = st.tabs([
+    "🚪 Process Gate", 
+    "📋 Technical Checklist", 
+    "📜 QA Plan", 
+    "📉 Material Flow", 
+    "🔧 Nozzle Flow", 
+    "📐 Dimensional", 
+    "💧 Hydro Test", 
+    "🏁 Final Inspection", 
+    "🛡️ Guarantee", 
+    "⭐ Feedback", 
+    "📂 Document Vault", 
+    "📑 Master Data Book"
+]) 
+
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
@@ -996,3 +983,29 @@ with main_tabs[10]:
                     st.info("Vault is currently empty.")
     else:
         st.warning("No Master Data available.")
+
+# --- ADD TAB 12 LOGIC AT THE END OF THE FILE ---
+with main_tabs[11]:
+    st.header("📑 Premium Data Book Generator")
+    st.info("This tool automatically generates the B&G Product Birth Certificate.")
+    
+    job_list = sorted(df_anchor['job_no'].dropna().unique().tolist())
+    target = st.selectbox("Select Job Number", ["-- Select --"] + job_list, key="final_stitch_sel")
+    
+    if target != "-- Select --":
+        proj_info = df_anchor[df_anchor['job_no'] == target].iloc[0]
+        
+        if st.button("🚀 COMPILE MASTER DATA BOOK", type="primary", use_container_width=True):
+            with st.spinner("⚡ Fetching assets, stitching photos, and stapling MTCs..."):
+                try:
+                    final_pdf = generate_master_data_book(target, proj_info, df_plan)
+                    st.success("✅ Master Quality Document Compiled Successfully!")
+                    st.download_button(
+                        label="📥 Download Merged Data Book (PDF)",
+                        data=final_pdf,
+                        file_name=f"BGE_DataBook_{target}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"Error: {e}")
