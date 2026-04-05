@@ -183,10 +183,100 @@ with main_tabs[0]:
 
 # --- TAB 2: TECHNICAL CHECKLIST ---
 with main_tabs[1]:
-    st.subheader("📋 Technical Check List")
+    st.subheader("📋 Quality Check List (Official Record)")
+    
     if not df_anchor.empty:
-        tc_jobs = sorted(df_anchor['job_no'].astype(str).unique().tolist())
-        q_job_tech = st.selectbox("Job No", ["-- Select --"] + tc_jobs, key="tc_job")
+        # 1. Clean Dropdown for Job Selection
+        clean_tc_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        q_job_tech = st.selectbox("Select Job for Technical Report", ["-- Select --"] + clean_tc_jobs, key="tc_job_sel_final")
+
+        if q_job_tech != "-- Select --":
+            # 2. Fetch Project Context from Anchor
+            tc_match = df_anchor[df_anchor['job_no'].astype(str) == str(q_job_tech)]
+            
+            if not tc_match.empty:
+                proj = tc_match.iloc[0]
+                
+                # --- START THE FORM ---
+                with st.form("quality_check_list_standard", clear_on_submit=True):
+                    st.markdown("### 🏗️ Project Identification")
+                    h1, h2, h3 = st.columns(3)
+                    # Values pulled from Anchor table
+                    c_name = h1.text_input("Client Name", value=proj.get('client_name', 'N/A'))
+                    p_no = h2.text_input("PO Number", value=proj.get('po_no', 'N/A'))
+                    p_date = h3.text_input("PO Date", value=str(proj.get('po_date', 'N/A')))
+                    
+                    st.divider()
+                    
+                    st.markdown("### 📏 Equipment Specifications")
+                    t1, t2, t3 = st.columns(3)
+                    item_n = t1.text_input("Item Name / Description")
+                    drg_n = t2.text_input("Drawing Number")
+                    qap_n = t3.text_input("QAP Reference No.")
+                    
+                    e_id = t1.text_input("Equipment ID No.")
+                    qty_val = t2.text_input("Quantity")
+                    ins_date = t3.date_input("Inspection Date", value=datetime.now(IST).date())
+
+                    st.divider()
+                    
+                    st.markdown("### 🔍 Inspection Stages & Status")
+                    st.caption("Record the verification status for each gate (e.g., 'Accepted', 'W')")
+                    
+                    s1, s2, s3, s4 = st.columns(4)
+                    mat_s = s1.text_input("Material Certification")
+                    fit_s = s2.text_input("Fit-up Exam")
+                    vis_s = s3.text_input("Visual Exam")
+                    pt_s = s4.text_input("PT (Welds)")
+                    
+                    hyd_s = s1.text_input("Hydro / Vacuum Test")
+                    fin_s = s2.text_input("Final Inspection")
+                    pun_s = s3.text_input("Punching Status")
+                    ncr_s = s4.text_input("NCR Status (if any)")
+
+                    st.divider()
+                    
+                    st.markdown("### ✍️ Final Authorization")
+                    notes = st.text_area("Technical Notes / Deviations")
+                    f1, f2 = st.columns(2)
+                    # Pulls from master_staff list
+                    insp_by = f1.selectbox("Quality Inspector", authorized_inspectors, key="qc_insp_select_tab2")
+                    
+                    if st.form_submit_button("🚀 Save Technical Report", use_container_width=True):
+                        # Construct Payload matching your quality_check_list table
+                        payload = {
+                            "job_no": q_job_tech,
+                            "client_name": c_name,
+                            "po_no": p_no,
+                            "po_date": p_date,
+                            "item_name": item_n,
+                            "drawing_no": drg_n,
+                            "qap_no": qap_n,
+                            "equipment_id_no": e_id,
+                            "qty": qty_val,
+                            "mat_cert_status": mat_s,
+                            "fit_up_status": fit_s,
+                            "visual_status": vis_s,
+                            "pt_weld_status": pt_s,
+                            "hydro_status": hyd_s,
+                            "final_status": fin_s,
+                            "punching_status": pun_s,
+                            "ncr_status": ncr_s,
+                            "technical_notes": notes,
+                            "inspected_by": insp_by,
+                            "inspection_date": str(ins_date)
+                        }
+                        
+                        try:
+                            conn.table("quality_check_list").insert(payload).execute()
+                            st.success(f"✅ Technical Report for {q_job_tech} saved successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Supabase Error: {e}")
+            else:
+                st.error("Project details missing in Anchor records.")
+    else:
+        st.warning("No projects found in Anchor Portal.")
 
 # --- TAB 3: QAP DESIGNER ---
 with main_tabs[2]:
