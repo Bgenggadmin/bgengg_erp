@@ -595,15 +595,39 @@ with main_tabs[5]:
             options_desc = [r['parameter_name'] for r in desc_query.data] if desc_query.data else ["Shell", "Dish End"]
             options_moc = [r['parameter_name'] for r in moc_query.data] if moc_query.data else ["SS304", "SS316L"]
 
-            # --- DYNAMIC GRID WITH SL NO FIX ---
+           # --- DYNAMIC GRID WITH AUTO-LOAD LOGIC ---
             st.markdown("### 📋 Measurement Log")
             
-            # Use session state to initialize data so Sl.No can be handled
-            if f"dim_data_{sel_job_dim}" not in st.session_state:
-                st.session_state[f"dim_data_{sel_job_dim}"] = pd.DataFrame([
-                    {"Sl.No": 1, "Description": options_desc[0], "Specified Dimension": "", "Measured Dimension": "", "MOC": options_moc[0]}
-                ])
-            
+            # Check if we need to load data for the selected job
+            if f"loaded_job_{sel_job_dim}" not in st.session_state:
+                try:
+                    # Fetch most recent DIR for this job from Supabase
+                    existing_dir = conn.table("dimensional_reports") \
+                        .select("*") \
+                        .eq("job_no", sel_job_dim) \
+                        .order("created_at", desc=True) \
+                        .limit(1) \
+                        .execute()
+                    
+                    if existing_dir.data:
+                        # Load existing data into session state
+                        report = existing_dir.data[0]
+                        st.session_state[f"dim_data_{sel_job_dim}"] = pd.DataFrame(report.get('dim_grid_data', []))
+                        # Also restore the Drawing No if available
+                        st.info(f"✅ Loaded previously saved data from {report['created_at'][:10]}")
+                    else:
+                        # No data found, start fresh
+                        st.session_state[f"dim_data_{sel_job_dim}"] = pd.DataFrame([
+                            {"Sl.No": 1, "Description": options_desc[0], "Specified Dimension": "", "Measured Dimension": "", "MOC": options_moc[0]}
+                        ])
+                    
+                    # Mark this job as "checked" so it doesn't reload on every click
+                    st.session_state[f"loaded_job_{sel_job_dim}"] = True
+                    
+                except Exception as fetch_err:
+                    st.error(f"Error retrieving data: {fetch_err}")
+
+            # Display the Editor
             dim_grid = st.data_editor(
                 st.session_state[f"dim_data_{sel_job_dim}"],
                 num_rows="dynamic",
@@ -611,7 +635,7 @@ with main_tabs[5]:
                 hide_index=True,
                 key=f"editor_{sel_job_dim}",
                 column_config={
-                    "Sl.No": st.column_config.NumberColumn("Sl", disabled=True, help="Auto-numbered on Save"), 
+                    "Sl.No": st.column_config.NumberColumn("Sl", disabled=True), 
                     "Description": st.column_config.SelectboxColumn("Description", options=options_desc, required=True),
                     "Specified Dimension": st.column_config.TextColumn("Specified Dimension (Manual)"),
                     "Measured Dimension": st.column_config.TextColumn("Measured Dimension (Manual)"),
