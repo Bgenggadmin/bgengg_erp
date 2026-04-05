@@ -162,7 +162,8 @@ main_tabs = st.tabs([
     "💧 Hydro Test Report",
     "🏁 Final Inspection (FIR)",
     "🛡️ Guarantee Certificate",
-    "⭐ Customer Feedback" # Index 9
+    "⭐ Customer Feedback",
+    "📂 MTC & Document Vault" # Index 10
 ])
 
 # --- TAB 1: PROCESS GATE ---
@@ -851,3 +852,77 @@ with main_tabs[9]:
                 st.error("Customer details missing in project records.")
     else:
         st.warning("Project master data is not available.")
+
+# --- TAB 11: MTC & DOCUMENT VAULT ---
+with main_tabs[10]:
+    st.subheader("📂 MTC & Document Upload Vault")
+    
+    if not df_anchor.empty:
+        # 1. Master Selection
+        vault_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_vault = st.selectbox("Select Project to Manage Documents", ["-- Select --"] + vault_jobs, key="vault_job_sel")
+
+        if sel_job_vault != "-- Select --":
+            match_vault = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_vault)]
+            if not match_vault.empty:
+                proj = match_vault.iloc[0]
+                st.info(f"📂 Managing Vault for: **{proj.get('client_name')}**")
+
+                # 2. UPLOAD SECTION
+                with st.form("vault_upload_form", clear_on_submit=True):
+                    up1, up2 = st.columns(2)
+                    c_type = up1.selectbox("Document Type", ["Material Test Certificate (MTC)", "Guarantee Certificate", "NDT Report", "Drawing", "Invoice"])
+                    up_files = up2.file_uploader("Upload Scanned PDF or Image", accept_multiple_files=True, type=['pdf', 'jpg', 'jpeg', 'png'])
+                    u_notes = st.text_input("Brief Document Label (e.g. Shell Plate MTC)")
+                    
+                    if st.form_submit_button("🚀 Upload to Project Vault"):
+                        if up_files:
+                            for uploaded_file in up_files:
+                                try:
+                                    # File path logic
+                                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                                    file_path = f"{sel_job_vault}/{c_type.split()[0]}_{timestamp}_{uploaded_file.name}"
+                                    
+                                    # 1. Upload to Supabase Storage
+                                    content = uploaded_file.getvalue()
+                                    conn.client.storage.from_("project-certificates").upload(file_path, content)
+                                    
+                                    # 2. Get Public URL
+                                    file_url = conn.client.storage.from_("project-certificates").get_public_url(file_path)
+                                    
+                                    # 3. Record in Database
+                                    payload = {
+                                        "job_no": sel_job_vault,
+                                        "cert_type": c_type,
+                                        "file_name": uploaded_file.name,
+                                        "file_url": file_url,
+                                        "uploaded_by": "QC Staff", # Can link to master_staff if needed
+                                        "created_at": datetime.now(IST).isoformat()
+                                    }
+                                    conn.table("project_certificates").insert(payload).execute()
+                                    st.success(f"Successfully uploaded: {uploaded_file.name}")
+                                except Exception as e:
+                                    st.error(f"Error uploading {uploaded_file.name}: {e}")
+                        else:
+                            st.warning("Please select files first.")
+
+                st.divider()
+
+                # 3. VIEW SECTION (Fetch existing docs)
+                st.markdown("### 📑 Existing Project Documents")
+                try:
+                    docs_res = conn.table("project_certificates").select("*").eq("job_no", sel_job_vault).execute()
+                    if docs_res.data:
+                        df_docs = pd.DataFrame(docs_res.data)
+                        for _, doc in df_docs.iterrows():
+                            with st.container(border=True):
+                                d1, d2, d3 = st.columns([2, 2, 1])
+                                d1.write(f"**Type:** {doc['cert_type']}")
+                                d2.write(f"**Name:** {doc['file_name']}")
+                                d3.link_button("👁️ View Doc", doc['file_url'])
+                    else:
+                        st.info("No documents uploaded for this project yet.")
+                except:
+                    st.info("Vault is currently empty.")
+    else:
+        st.warning("No Master Data available.")
