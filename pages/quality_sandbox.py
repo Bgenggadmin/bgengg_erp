@@ -159,7 +159,8 @@ main_tabs = st.tabs([
     "📉 Material Flow Chart", 
     "🔧 Nozzle Flow Chart",
     "📐 Dimensional Report",
-    "💧 Hydro Test Report" # Index 6
+    "💧 Hydro Test Report",
+    "🏁 Final Inspection (FIR)" # Index 7
 ])
 
 # --- TAB 1: PROCESS GATE ---
@@ -631,3 +632,74 @@ with main_tabs[6]:
                 st.error("Could not link to Anchor Master records.")
     else:
         st.warning("Project data not loaded from Anchor.")
+
+# --- TAB 8: FINAL INSPECTION REPORT (FIR) ---
+with main_tabs[7]:
+    st.subheader("🏁 Final Inspection Report & Release Note")
+    
+    if not df_anchor.empty:
+        # 1. Selection using Job Master
+        fir_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_fir = st.selectbox("Select Job for FIR", ["-- Select --"] + fir_jobs, key="fir_job_sel")
+
+        if sel_job_fir != "-- Select --":
+            fir_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_fir)]
+            
+            if not fir_match.empty:
+                proj = fir_match.iloc[0]
+                
+                # Visual Header aligned with image_e50dcb.jpg
+                with st.container(border=True):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Customer:** {proj.get('client_name', 'N/A')}")
+                    c1.write(f"**PO Ref:** {proj.get('po_no')} | Date: {proj.get('po_date')}")
+                    
+                    fir_item = c2.text_input("Item Name", placeholder="e.g. Storage Tank")
+                    fir_tag = c2.text_input("Equipment Tag No.", placeholder="e.g. V-101")
+
+                st.divider()
+
+                # 2. QUANTITY & STATUS FORM
+                with st.form("fir_submit_form", clear_on_submit=True):
+                    st.markdown("### 📊 Quantity & Clearance Summary")
+                    q1, q2, q3 = st.columns(3)
+                    ord_qty = q1.text_input("Ordered Qty")
+                    off_qty = q2.text_input("Offered for Insp.")
+                    acc_qty = q3.text_input("Accepted Qty")
+                    
+                    st.markdown("### 🔍 Final Verdict")
+                    v1, v2 = st.columns(2)
+                    fir_status = v1.segmented_control("Inspection Result", ["✅ Accepted", "❌ Rejected", "⚠️ Rework Required"], default="✅ Accepted")
+                    
+                    # Staff Master Dropdown
+                    fir_inspector = v2.selectbox("QC Inspector", authorized_inspectors, key="fir_qc_insp")
+                    fir_witness = v2.text_input("Witnessed By (Client/TPI Name)")
+                    
+                    fir_remarks = st.text_area("Final Observations / Release Notes")
+
+                    if st.form_submit_button("🚀 Finalize & Save FIR", use_container_width=True):
+                        payload = {
+                            "job_no": sel_job_fir,
+                            "equipment_name": fir_item,
+                            "tag_no": fir_tag,
+                            "ordered_qty": ord_qty,
+                            "offered_qty": off_qty,
+                            "accepted_qty": acc_qty,
+                            "inspection_status": fir_status,
+                            "inspected_by": fir_inspector,
+                            "witnessed_by": fir_witness,
+                            "remarks": fir_remarks,
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        try:
+                            conn.table("final_inspection_reports").insert(payload).execute()
+                            st.success(f"✅ Final Inspection for {sel_job_fir} saved successfully!")
+                            st.balloons()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to save record: {e}")
+            else:
+                st.error("Project details missing in Anchor portal.")
+    else:
+        st.warning("No Master Data available.")
