@@ -31,19 +31,18 @@ def generate_master_data_book(job_no, project_info, df_plan):
     logo_path, stamp_path = None, None
     try:
         l_data = conn.client.storage.from_("progress-photos").download("logo.png")
-        s_data = conn.client.storage.from_("progress-photos").download("round_stamp.png") # Pulling your new upload
+        s_data = conn.client.storage.from_("progress-photos").download("round_stamp.png")
         if l_data:
             with NamedTemporaryFile(delete=False, suffix=".png") as t:
                 t.write(l_data); logo_path = t.name
         if s_data:
             with NamedTemporaryFile(delete=False, suffix=".png") as t:
                 t.write(s_data); stamp_path = t.name
-    except Exception as e: 
-        st.error(f"Asset Load Error: {e}")
+    except: pass
 
     # --- 1. PREMIUM COVER PAGE ---
     pdf.add_page()
-    pdf.set_draw_color(0, 51, 102) # Corporate Blue
+    pdf.set_draw_color(0, 51, 102) 
     pdf.set_line_width(1.5)
     pdf.rect(5, 5, 200, 287)
     
@@ -56,7 +55,6 @@ def generate_master_data_book(job_no, project_info, df_plan):
     pdf.set_font("Arial", '', 14)
     pdf.cell(0, 10, "COMPLETE PRODUCT BIRTH CERTIFICATE", ln=True, align='C')
     
-    # Job Info Box
     pdf.set_y(160)
     pdf.set_fill_color(245, 245, 245)
     pdf.set_font("Arial", 'B', 11)
@@ -70,7 +68,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
         pdf.cell(0, 10, line, ln=True, fill=True if "JOB" in line or "PO" in line else False)
 
     if stamp_path:
-        pdf.image(stamp_path, x=150, y=235, w=38) # Official Stamp
+        pdf.image(stamp_path, x=150, y=235, w=38) 
         pdf.set_xy(150, 275); pdf.set_font("Arial", 'B', 7)
         pdf.cell(38, 5, "AUTHORIZED SIGNATORY", align='C')
 
@@ -84,7 +82,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
     for s in sections:
         pdf.cell(0, 12, s, border="B", ln=True)
 
-    # --- 3. INTERNAL REPORT PAGES ---
+    # --- 3. INTERNAL PAGES GENERATION ---
     def add_section_header(title):
         pdf.add_page()
         if logo_path: pdf.image(logo_path, x=10, y=8, h=10)
@@ -93,7 +91,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
         pdf.line(10, 22, 200, 22)
         pdf.ln(10)
 
-    # Dimensional Data Fetch
+    # Dimensional Data
     dim_res = conn.table("dimensional_reports").select("*").eq("job_no", job_no).execute()
     if dim_res.data:
         add_section_header("DIMENSIONAL INSPECTION")
@@ -107,7 +105,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
                 pdf.cell(15, 7, str(row.get('Sl')), 1); pdf.cell(100, 7, str(row.get('Description')), 1)
                 pdf.cell(35, 7, str(row.get('Design')), 1); pdf.cell(35, 7, str(row.get('Actual')), 1, 1)
 
-    # Photo Evidence Log
+    # Photo Log
     job_photos = df_plan[df_plan['job_no'].astype(str) == str(job_no)].dropna(subset=['quality_updated_at']).sort_values('quality_updated_at')
     if not job_photos.empty:
         add_section_header("MANUFACTURING EVIDENCE")
@@ -127,45 +125,38 @@ def generate_master_data_book(job_no, project_info, df_plan):
                                 pdf.image(t.name, x=10 + (i*65), y=y_pos, w=60)
                                 os.unlink(t.name)
                     except: pass
-                pdf.set_y(y_pos + 45)
+                pdf.ln(45)
 
-    # --- 4. THE AUTOMATED STAPLER (MTCs) ---
+    # --- 4. THE STITCHER FIX (PdfReader Wrapper) ---
     report_buffer = io.BytesIO()
-    pdf.output(report_buffer)
+    pdf_content = pdf.output(dest='S').encode('latin-1', 'ignore')
+    report_buffer.write(pdf_content)
     report_buffer.seek(0)
     
     merger = PdfWriter()
+    # FIX: Wrap the buffer in PdfReader
+    merger.append(PdfReader(report_buffer))
     
-    # FIX: Wrap the buffer in PdfReader so pypdf knows how to handle it
-    try:
-        reader = PdfReader(report_buffer)
-        merger.append(reader)
-    except Exception as e:
-        st.error(f"Error reading internal report: {e}")
-    
-    # Fetch MTCs from Bucket
+    # Staple MTCs
     mtc_res = conn.table("project_certificates").select("file_url").eq("job_no", job_no).eq("cert_type", "Material Test Certificate (MTC)").execute()
-    
-    if mtc_res.data:
-        for doc in mtc_res.data:
-            try:
-                r = requests.get(doc['file_url'], timeout=15)
-                if r.status_code == 200:
-                    # FIX: Wrap external downloads in PdfReader as well
-                    mtc_file = io.BytesIO(r.content)
-                    merger.append(PdfReader(mtc_file))
-            except Exception as mtc_err:
-                # If one MTC is corrupted, we skip it so the whole book doesn't fail
-                continue
+    for doc in mtc_res.data:
+        try:
+            r = requests.get(doc['file_url'], timeout=15)
+            if r.status_code == 200:
+                # FIX: Wrap the downloaded content in PdfReader
+                mtc_stream = io.BytesIO(r.content)
+                merger.append(PdfReader(mtc_stream))
+        except: continue
 
-    # Final Cleanup of temp files
-    if logo_path and os.path.exists(logo_path): os.unlink(logo_path)
-    if stamp_path and os.path.exists(stamp_path): os.unlink(stamp_path)
+    # Cleanup
+    if logo_path: os.unlink(logo_path)
+    if stamp_path: os.unlink(stamp_path)
     
     final_out = io.BytesIO()
     merger.write(final_out)
+    final_data = final_out.getvalue()
     merger.close()
-    return final_out.getvalue()
+    return final_data
 
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
