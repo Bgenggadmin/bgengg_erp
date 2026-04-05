@@ -92,18 +92,54 @@ def generate_master_data_book(job_no, project_info, df_plan):
         pdf.ln(10)
 
     # Dimensional Data
-    dim_res = conn.table("dimensional_reports").select("*").eq("job_no", job_no).execute()
+   # --- 3. INTERNAL REPORT PAGES: DIMENSIONAL INSPECTION FIX ---
+    dim_res = conn.table("dimensional_reports").select("*").eq("job_no", job_no).order("created_at", desc=True).limit(1).execute()
+    
     if dim_res.data:
-        add_section_header("DIMENSIONAL INSPECTION")
-        for report in dim_res.data:
-            grid = report.get('dim_grid_data', [])
-            pdf.set_font("Arial", 'B', 9)
-            pdf.cell(15, 8, "Sl", 1); pdf.cell(100, 8, "Description", 1); pdf.cell(35, 8, "Design", 1); pdf.cell(35, 8, "Actual", 1, 1)
-            pdf.set_font("Arial", '', 9)
-            for row in grid:
-                if not str(row.get('Actual')): continue
-                pdf.cell(15, 7, str(row.get('Sl')), 1); pdf.cell(100, 7, str(row.get('Description')), 1)
-                pdf.cell(35, 7, str(row.get('Design')), 1); pdf.cell(35, 7, str(row.get('Actual')), 1, 1)
+        add_section_header("DIMENSIONAL INSPECTION REPORT")
+        report = dim_res.data[0]
+        
+        # Header Info from Report
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(40, 7, f"Drawing No: {report.get('drawing_no', 'N/A')}", ln=True)
+        pdf.cell(40, 7, f"Inspection Date: {report.get('inspection_date', 'N/A')}", ln=True)
+        pdf.ln(2)
+
+        # Table Styling
+        pdf.set_line_width(0.2) # Thinner gridlines for professional look
+        pdf.set_draw_color(0, 51, 102) # Corporate Blue lines
+        
+        # Grid Headers matching your paper format 
+        pdf.set_fill_color(230, 240, 250)
+        pdf.set_font("Arial", 'B', 8)
+        pdf.cell(10, 8, "Sl", 1, 0, 'C', True)
+        pdf.cell(50, 8, "Description", 1, 0, 'C', True)
+        pdf.cell(55, 8, "Specified Dimension", 1, 0, 'C', True)
+        pdf.cell(55, 8, "Measured Dimension", 1, 0, 'C', True)
+        pdf.cell(20, 8, "MOC", 1, 1, 'C', True)
+
+        # Table Rows
+        pdf.set_font("Arial", '', 8)
+        grid_data = report.get('dim_grid_data', [])
+        
+        for row in grid_data:
+            # Safely get data using the NEW column names 
+            sl = str(row.get('Sl.No', ''))
+            desc = str(row.get('Description', ''))
+            spec = str(row.get('Specified Dimension', ''))
+            meas = str(row.get('Measured Dimension', ''))
+            moc = str(row.get('MOC', ''))
+
+            # Check for page break before drawing row
+            if pdf.get_y() > 270:
+                add_section_header("DIMENSIONAL INSPECTION (CONT.)")
+                pdf.set_font("Arial", '', 8)
+
+            pdf.cell(10, 7, sl, 1, 0, 'C')
+            pdf.cell(50, 7, desc, 1)
+            pdf.cell(55, 7, spec, 1)
+            pdf.cell(55, 7, meas, 1)
+            pdf.cell(20, 7, moc, 1, 1, 'C')
 
     # Photo Log
     # --- 3. INTERNAL PAGES: MANUFACTURING EVIDENCE FIX ---
