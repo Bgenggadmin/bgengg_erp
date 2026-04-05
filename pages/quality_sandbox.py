@@ -126,6 +126,59 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
         except: pass
         
     return pdf.output(dest='S').encode('latin-1')
+
+def generate_technical_pdf(job_no, report_title, master_data, grid_data, remarks, inspector):
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # Header Branding
+    pdf.set_fill_color(0, 51, 102)
+    pdf.rect(0, 0, 210, 30, 'F')
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, "B&G ENGINEERING INDUSTRIES", ln=True, align='C')
+    pdf.set_font("Arial", "I", 10)
+    pdf.cell(0, 10, report_title, ln=True, align='C')
+    pdf.ln(10)
+    
+    # Project Info
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.set_fill_color(240, 240, 240)
+    pdf.cell(95, 8, f" Client: {master_data.get('client_name', 'N/A')}", border=1, fill=True)
+    pdf.cell(95, 8, f" Job No: {job_no}", border=1, fill=True, ln=True)
+    pdf.cell(95, 8, f" PO No: {master_data.get('po_no', 'N/A')}", border=1)
+    pdf.cell(95, 8, f" Date: {datetime.now().strftime('%d-%m-%Y')}", border=1, ln=True)
+    pdf.ln(5)
+
+    # Data Table Headers
+    pdf.set_fill_color(230, 240, 255)
+    pdf.cell(15, 8, "Sl", 1, 0, 'C', fill=True)
+    pdf.cell(85, 8, "Description", 1, 0, 'C', fill=True)
+    pdf.cell(45, 8, "Design", 1, 0, 'C', fill=True)
+    pdf.cell(45, 8, "Actual", 1, 1, 'C', fill=True)
+    
+    pdf.set_font("Arial", '', 9)
+    sl = 1
+    for row in grid_data:
+        # THE "NA" LOGIC: Skip row if Actual is blank or NA
+        act = str(row.get('Actual', '')).strip().upper()
+        if not act or act in ["NA", "N/A", "NONE", "-", "NAN"]:
+            continue
+            
+        pdf.cell(15, 8, str(sl), 1, 0, 'C')
+        pdf.cell(85, 8, str(row.get('Description', 'N/A')), 1, 0, 'L')
+        pdf.cell(45, 8, str(row.get('Design', 'N/A')), 1, 0, 'C')
+        pdf.cell(45, 8, str(act), 1, 1, 'C')
+        sl += 1
+
+    pdf.ln(10)
+    pdf.multi_cell(0, 6, f"Remarks: {remarks}")
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(95, 10, f"QC Inspector: {inspector}", 0, 0, 'L')
+    pdf.cell(95, 10, "Authorized Signatory", 0, 1, 'R')
+    return pdf.output(dest='S').encode('latin-1', 'ignore')
 # --- 3. DATA LOADERS ---
 @st.cache_data(ttl=2)
 def get_quality_context():
