@@ -157,7 +157,8 @@ main_tabs = st.tabs([
     "📋 Technical Checklist (Reports)", 
     "📜 QA Plan (QAP)", 
     "📉 Material Flow Chart", 
-    "🔧 Nozzle Flow Chart" # Index 4
+    "🔧 Nozzle Flow Chart",
+    "📐 Dimensional Report" # Index 5
 ])
 
 # --- TAB 1: PROCESS GATE ---
@@ -475,3 +476,83 @@ with main_tabs[4]:
                 st.error("Job details not found in Anchor records.")
     else:
         st.warning("Anchor Portal Master Data is empty.")
+
+# --- TAB 6: DIMENSIONAL INSPECTION REPORT ---
+with main_tabs[5]:
+    st.subheader("📐 Dimensional Inspection Report")
+    
+    if not df_anchor.empty:
+        # 1. Clean Dropdown from Master
+        dim_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_dim = st.selectbox("Select Job for Dimensional Report", ["-- Select --"] + dim_jobs, key="dim_job_sel")
+
+        if sel_job_dim != "-- Select --":
+            dim_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_dim)]
+            
+            if not dim_match.empty:
+                proj = dim_match.iloc[0]
+                
+                # Visual Header aligned with image_e4a0cc.jpg
+                with st.container(border=True):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Customer:** {proj.get('client_name', 'N/A')}")
+                    c1.write(f"**PO No:** {proj.get('po_no')} | {proj.get('po_date')}")
+                    
+                    equip_dim = c2.text_input("Equipment Name", placeholder="e.g. 20KL Storage Tank")
+                    drg_dim = c2.text_input("Drawing Number", placeholder="e.g. BGE/2026/001")
+                    stage_dim = c2.selectbox("Inspection Stage", ["Final Inspection", "Internal/Shell Fit-up", "Hydro-Test Prep"])
+
+                st.divider()
+
+                # 2. DIMENSIONAL GRID (As per paper form e4a0cc.jpg)
+                st.markdown("### 📏 Measurement Log")
+                st.caption("Enter Design vs Actual values for all critical dimensions")
+                
+                # Template based on standard Dimensional Report rows
+                dim_template = [
+                    {"Sl": 1, "Description": "Overall Length / Height", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                    {"Sl": 2, "Description": "Inside Diameter (ID)", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                    {"Sl": 3, "Description": "Shell Thickness", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                    {"Sl": 4, "Description": "Dish End Depth", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                    {"Sl": 5, "Description": "Nozzle Orientation (Deg)", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                    {"Sl": 6, "Description": "Nozzle Projection", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                    {"Sl": 7, "Description": "Bolt Circle Diameter (BCD)", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                ]
+
+                dim_grid = st.data_editor(
+                    pd.DataFrame(dim_template),
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="dim_grid_editor",
+                    hide_index=True
+                )
+
+                # 3. FINAL VERIFICATION (Staff Master)
+                with st.form("dim_submit_form", clear_on_submit=True):
+                    f1, f2 = st.columns(2)
+                    dim_inspector = f1.selectbox("Inspected By", authorized_inspectors, key="dim_insp_select")
+                    dim_remarks = st.text_area("Observations / Technical Deviations")
+
+                    if st.form_submit_button("🚀 Save Dimensional Report", use_container_width=True):
+                        # Calculate payload
+                        payload = {
+                            "job_no": sel_job_dim,
+                            "equipment_name": equip_dim,
+                            "drawing_no": drg_dim,
+                            "inspection_stage": stage_dim,
+                            "dim_grid_data": dim_grid.to_dict('records'),
+                            "inspected_by": dim_inspector,
+                            "remarks": dim_remarks,
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        try:
+                            conn.table("dimensional_reports").insert(payload).execute()
+                            st.success(f"✅ Dimensional Report for {sel_job_dim} saved successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Database Error: {e}")
+            else:
+                st.error("Project details missing in Anchor Portal.")
+    else:
+        st.warning("Master Data from Anchor portal not loaded.")
