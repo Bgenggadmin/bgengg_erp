@@ -130,11 +130,14 @@ def create_birth_certificate(job_no, header_data, tech_data, photo_data):
 @st.cache_data(ttl=2)
 def get_quality_context():
     plan_res = conn.table("job_planning").select("*").neq("current_status", "Pending").execute()
-    anchor_res = conn.table("anchor_projects").select("job_no, client_name, po_no, po_date").execute()
+    # ADDED 'equipment_type' HERE
+    anchor_res = conn.table("anchor_projects").select("job_no, client_name, po_no, po_date, equipment_type").execute()
     df_a_raw = pd.DataFrame(anchor_res.data or [])
     
     if not df_a_raw.empty:
         df_a_cleaned = df_a_raw[df_a_raw['job_no'].notna() & (df_a_raw['job_no'].astype(str) != "")]
+        # Safe String Cleaning
+        df_a_cleaned['job_no'] = df_a_cleaned['job_no'].fillna('').astype(str).str.strip().str.upper()
         df_a_cleaned = df_a_cleaned.drop_duplicates(subset=['job_no'])
     else:
         df_a_cleaned = pd.DataFrame()
@@ -492,68 +495,77 @@ with main_tabs[4]:
     else:
         st.warning("Anchor Portal Master Data is empty.")
 
-# --- TAB 6: DIMENSIONAL INSPECTION REPORT ---
+# --- TAB 6: DIMENSIONAL INSPECTION REPORT (DYNAMIC VERSION) ---
 with main_tabs[5]:
     st.subheader("📐 Dimensional Inspection Report")
     
     if not df_anchor.empty:
-        # 1. Clean Dropdown from Master
-        dim_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        dim_jobs = sorted(df_anchor['job_no'].dropna().unique().tolist())
         sel_job_dim = st.selectbox("Select Job for Dimensional Report", ["-- Select --"] + dim_jobs, key="dim_job_sel")
 
         if sel_job_dim != "-- Select --":
-            dim_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_dim)]
+            dim_match = df_anchor[df_anchor['job_no'] == sel_job_dim]
             
             if not dim_match.empty:
                 proj = dim_match.iloc[0]
+                e_type = proj.get('equipment_type', 'Storage Tank') # Get Type
                 
-                # Visual Header aligned with image_e4a0cc.jpg
                 with st.container(border=True):
                     c1, c2 = st.columns(2)
-                    c1.write(f"**Customer:** {proj.get('client_name', 'N/A')}")
-                    c1.write(f"**PO No:** {proj.get('po_no')} | {proj.get('po_date')}")
+                    c1.write(f"**Customer:** {proj.get('client_name')}")
+                    c1.write(f"**Equipment Category:** :blue[{e_type}]") # Visual Indicator
                     
-                    equip_dim = c2.text_input("Equipment Name", placeholder="e.g. 20KL Storage Tank")
-                    drg_dim = c2.text_input("Drawing Number", placeholder="e.g. BGE/2026/001")
-                    stage_dim = c2.selectbox("Inspection Stage", ["Final Inspection", "Internal/Shell Fit-up", "Hydro-Test Prep"])
+                    equip_dim = c2.text_input("Equipment Name", placeholder="e.g. 20KL Reactor")
+                    stage_dim = c2.selectbox("Inspection Stage", ["Final Inspection", "Internal Fit-up", "Shell/Jacket Prep"])
 
                 st.divider()
 
-                # 2. DIMENSIONAL GRID (As per paper form e4a0cc.jpg)
-                st.markdown("### 📏 Measurement Log")
-                st.caption("Enter Design vs Actual values for all critical dimensions")
-                
-                # Template based on standard Dimensional Report rows
-                dim_template = [
-                    {"Sl": 1, "Description": "Overall Length / Height", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
-                    {"Sl": 2, "Description": "Inside Diameter (ID)", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
-                    {"Sl": 3, "Description": "Shell Thickness", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
-                    {"Sl": 4, "Description": "Dish End Depth", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
-                    {"Sl": 5, "Description": "Nozzle Orientation (Deg)", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
-                    {"Sl": 6, "Description": "Nozzle Projection", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
-                    {"Sl": 7, "Description": "Bolt Circle Diameter (BCD)", "Design (mm)": "", "Actual (mm)": "", "Deviation": ""},
+                # --- DYNAMIC TEMPLATE LOGIC ---
+                # Start with common dimensions used by everyone
+                base_template = [
+                    {"Sl": 1, "Description": "Overall Length / Height", "Design": "", "Actual": ""},
+                    {"Sl": 2, "Description": "Inside Diameter (ID)", "Design": "", "Actual": ""},
+                    {"Sl": 3, "Description": "Shell Thickness", "Design": "", "Actual": ""},
                 ]
 
+                # Append specific rows based on Equipment Type
+                if e_type == "Reactor":
+                    base_template.extend([
+                        {"Sl": 4, "Description": "Jacket Inside Diameter", "Design": "", "Actual": ""},
+                        {"Sl": 5, "Description": "Agitator Shaft Runout", "Design": "", "Actual": ""},
+                        {"Sl": 6, "Description": "Limpet Coil Pitch", "Design": "", "Actual": ""}
+                    ])
+                elif e_type == "Storage Tank":
+                    base_template.extend([
+                        {"Sl": 4, "Description": "Dish End Depth", "Design": "", "Actual": ""},
+                        {"Sl": 5, "Description": "Curb Angle Level", "Design": "", "Actual": ""},
+                        {"Sl": 6, "Description": "Roof Slope / Crown", "Design": "", "Actual": ""}
+                    ])
+                else: # Generic/Other
+                    base_template.extend([
+                        {"Sl": 4, "Description": "Nozzle Orientation", "Design": "", "Actual": ""},
+                        {"Sl": 5, "Description": "Base Plate Hole Center", "Design": "", "Actual": ""}
+                    ])
+
+                st.markdown(f"### 📏 Measurement Log for {e_type}")
                 dim_grid = st.data_editor(
-                    pd.DataFrame(dim_template),
+                    pd.DataFrame(base_template),
                     num_rows="dynamic",
                     use_container_width=True,
-                    key="dim_grid_editor",
+                    key="dim_grid_editor_dynamic",
                     hide_index=True
                 )
 
-                # 3. FINAL VERIFICATION (Staff Master)
-                with st.form("dim_submit_form", clear_on_submit=True):
+                with st.form("dim_submit_form_dynamic", clear_on_submit=True):
                     f1, f2 = st.columns(2)
                     dim_inspector = f1.selectbox("Inspected By", authorized_inspectors, key="dim_insp_select")
-                    dim_remarks = st.text_area("Observations / Technical Deviations")
+                    dim_remarks = st.text_area("Technical Deviations (Enter 'NA' if none)")
 
                     if st.form_submit_button("🚀 Save Dimensional Report", use_container_width=True):
-                        # Calculate payload
                         payload = {
                             "job_no": sel_job_dim,
                             "equipment_name": equip_dim,
-                            "drawing_no": drg_dim,
+                            "equipment_type": e_type,
                             "inspection_stage": stage_dim,
                             "dim_grid_data": dim_grid.to_dict('records'),
                             "inspected_by": dim_inspector,
@@ -563,14 +575,10 @@ with main_tabs[5]:
                         
                         try:
                             conn.table("dimensional_reports").insert(payload).execute()
-                            st.success(f"✅ Dimensional Report for {sel_job_dim} saved successfully!")
+                            st.success(f"✅ {e_type} Report saved successfully!")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Database Error: {e}")
-            else:
-                st.error("Project details missing in Anchor Portal.")
-    else:
-        st.warning("Master Data from Anchor portal not loaded.")
 
 # --- TAB 7: HYDRO TEST REPORT ---
 with main_tabs[6]:
