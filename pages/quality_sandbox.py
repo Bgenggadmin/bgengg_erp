@@ -570,90 +570,80 @@ with main_tabs[4]:
     else:
         st.warning("Anchor Portal Master Data is empty.")
 
-# --- TAB 6: DIMENSIONAL INSPECTION REPORT (FIXED PDF LOGIC) ---
+# --- TAB 6: DIMENSIONAL INSPECTION (PAPER REPORT FORMAT) ---
 with main_tabs[5]:
     st.subheader("📐 Dimensional Inspection Report")
     
     if not df_anchor.empty:
         dim_jobs = sorted(df_anchor['job_no'].dropna().unique().tolist())
-        sel_job_dim = st.selectbox("Select Job for Dimensional Report", ["-- Select --"] + dim_jobs, key="dim_job_sel")
+        sel_job_dim = st.selectbox("Select Job Number", ["-- Select --"] + dim_jobs, key="dim_job_sel")
 
         if sel_job_dim != "-- Select --":
-            dim_match = df_anchor[df_anchor['job_no'] == sel_job_dim]
+            proj = df_anchor[df_anchor['job_no'] == sel_job_dim].iloc[0]
             
-            if not dim_match.empty:
-                proj = dim_match.iloc[0]
-                e_type = proj.get('equipment_type', 'Storage Tank')
+            # --- HEADER SECTION ---
+            with st.container(border=True):
+                h1, h2, h3 = st.columns(3)
+                h1.write(f"**Customer:** {proj.get('client_name')}")
+                # Manual Entry Fields as requested
+                drg_no = h2.text_input("Drawing Number", placeholder="Enter Drawing Ref")
+                ins_date = h3.date_input("Inspection Date", value=datetime.now(IST).date())
+            
+            st.divider()
+
+            # --- FETCH DROPDOWN LISTS FROM CONFIG ---
+            desc_list = conn.table("quality_config").select("parameter_name").eq("category", "Dimensional Descriptions").execute()
+            moc_list = conn.table("quality_config").select("parameter_name").eq("category", "MOC List").execute()
+            
+            options_desc = [r['parameter_name'] for r in desc_list.data] if desc_list.data else ["Shell ID", "Overall Length"]
+            options_moc = [r['parameter_name'] for r in moc_list.data] if moc_list.data else ["SS304", "SS316L", "IS2062"]
+
+            # --- THE DYNAMIC GRID ---
+            st.markdown("### 📏 Measurement Grid")
+            st.caption("Sl.No is automatic. Select Description and MOC from dropdowns.")
+            
+            # Initial Empty Row
+            init_df = pd.DataFrame([
+                {"Sl.No": 1, "Description": options_desc[0], "Specified Dimensions": "", "Measured Dimensions": "", "MOC": options_moc[0]}
+            ])
+
+            dim_grid = st.data_editor(
+                init_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="dim_entry_grid",
+                hide_index=True,
+                column_config={
+                    "Sl.No": st.column_config.NumberColumn("Sl", disabled=True),
+                    "Description": st.column_config.SelectboxColumn("Description", options=options_desc, required=True),
+                    "Specified Dimensions": st.column_config.TextColumn("Specified Dimensions (Manual)"),
+                    "Measured Dimensions": st.column_config.TextColumn("Measured Dimensions (Manual)"),
+                    "MOC": st.column_config.SelectboxColumn("MOC", options=options_moc, required=True)
+                }
+            )
+
+            # --- SUBMISSION ---
+            with st.form("dim_report_form"):
+                f1, f2 = st.columns(2)
+                inspector = f1.selectbox("QC Inspector", authorized_inspectors)
+                remarks = st.text_area("General Remarks")
                 
-                with st.container(border=True):
-                    c1, c2 = st.columns(2)
-                    c1.write(f"**Customer:** {proj.get('client_name')}")
-                    c1.info(f"**Category:** {e_type}")
-                    equip_dim = c2.text_input("Equipment Name", placeholder="e.g. 50KL Storage Tank")
-                    stage_dim = c2.selectbox("Inspection Stage", ["Final Inspection", "Internal Fit-up", "Jacket Prep"])
-
-                st.divider()
-
-               # --- NEW DYNAMIC TEMPLATE LOGIC ---
-                # 1. Try to fetch specific rows for this equipment type
-                conf_data = conn.table("quality_config").select("*").eq("category", "Dimensional").eq("equipment_type", e_type).execute()
-                
-                # 2. Fallback to 'General' if no specific rows found
-                if not conf_data.data:
-                    conf_data = conn.table("quality_config").select("*").eq("category", "Dimensional").eq("equipment_type", "General").execute()
-
-                # 3. Build the grid template
-                if conf_data.data:
-                    base_template = [
-                        {
-                            "Sl": i + 1, 
-                            "Description": r.get('parameter_name'), 
-                            "Design": r.get('default_design_value'), 
-                            "Actual": ""
-                        } for i, r in enumerate(conf_data.data)
-                    ]
-                else:
-                    # Emergency fallback if database is empty
-                    base_template = [{"Sl": 1, "Description": "Please configure in Master Tab", "Design": "", "Actual": ""}]
-                
-                # --- FORM START ---
-                with st.form("dim_submit_form"):
-                    f1, f2 = st.columns(2)
-                    dim_inspector = f1.selectbox("QC Inspector", authorized_inspectors, key="dim_insp_final")
-                    dim_remarks = st.text_area("Notes (Enter 'NA' if none)")
-
-                    # Submit button is INSIDE the form
-                    submitted = st.form_submit_button("🚀 Save Technical Data", use_container_width=True)
-                    
-                    if submitted:
-                        payload = {
-                            "job_no": sel_job_dim,
-                            "equipment_name": equip_dim,
-                            "dim_grid_data": dim_grid.to_dict('records'),
-                            "inspected_by": dim_inspector,
-                            "remarks": dim_remarks,
-                            "created_at": datetime.now(IST).isoformat()
-                        }
-                        try:
-                            conn.table("dimensional_reports").insert(payload).execute()
-                            # Store PDF bytes in session state so we can show the button OUTSIDE
-                            st.session_state["last_pdf"] = generate_technical_pdf(sel_job_dim, f"DIMENSIONAL REPORT - {e_type}", proj, dim_grid.to_dict('records'), dim_remarks, dim_inspector)
-                            st.session_state["pdf_ready"] = True
-                            st.success("✅ Data Saved to Supabase!")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-                # --- FORM END ---
-
-                # --- DOWNLOAD BUTTON (Must be OUTSIDE the form) ---
-                if st.session_state.get("pdf_ready"):
-                    st.download_button(
-                        label="📥 Download Clean PDF Report", 
-                        data=st.session_state["last_pdf"], 
-                        file_name=f"Report_{sel_job_dim}.pdf", 
-                        mime="application/pdf", 
-                        type="primary", 
-                        use_container_width=True
-                    )
+                if st.form_submit_button("🚀 Finalize Dimensional Report", use_container_width=True):
+                    payload = {
+                        "job_no": sel_job_dim,
+                        "drawing_no": drg_no,
+                        "inspection_date": str(ins_date),
+                        "grid_data": dim_grid.to_dict('records'),
+                        "inspected_by": inspector,
+                        "remarks": remarks,
+                        "created_at": datetime.now(IST).isoformat()
+                    }
+                    try:
+                        conn.table("dimensional_reports").insert(payload).execute()
+                        st.success("✅ Dimensional Report Saved!")
+                        st.balloons()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
 # --- TAB 7: HYDRO TEST REPORT ---
 with main_tabs[6]:
