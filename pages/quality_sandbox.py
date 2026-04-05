@@ -580,7 +580,7 @@ with main_tabs[5]:
         if sel_job_dim != "-- Select --":
             proj = df_anchor[df_anchor['job_no'] == sel_job_dim].iloc[0]
             
-            # --- HEADER FIELDS (AS PER PAPER) ---
+            # --- HEADER FIELDS (AS PER PAPER) - PRESERVED ---
             with st.container(border=True):
                 c1, c2, c3 = st.columns(3)
                 c1.write(f"**Customer:** {proj.get('client_name')}")
@@ -588,25 +588,30 @@ with main_tabs[5]:
                 drg_no = c2.text_input("Drawing No.", value=str(proj.get('drawing_no', '')))
                 report_date = c3.date_input("Date", value=datetime.now(IST).date())
 
-            # --- FETCH DROPDOWNS FROM MASTER CONFIG ---
+            # --- FETCH DROPDOWNS FROM MASTER CONFIG - PRESERVED ---
             desc_query = conn.table("quality_config").select("parameter_name").eq("category", "Dimensional Descriptions").execute()
             moc_query = conn.table("quality_config").select("parameter_name").eq("category", "MOC List").execute()
             
             options_desc = [r['parameter_name'] for r in desc_query.data] if desc_query.data else ["Shell", "Dish End"]
             options_moc = [r['parameter_name'] for r in moc_query.data] if moc_query.data else ["SS304", "SS316L"]
 
-            # --- DYNAMIC GRID ---
+            # --- DYNAMIC GRID WITH SL NO FIX ---
             st.markdown("### 📋 Measurement Log")
-            # Auto-increment Sl.No logic: using index + 1 in a list
-            init_data = [{"Sl.No": 1, "Description": options_desc[0], "Specified Dimension": "", "Measured Dimension": "", "MOC": options_moc[0]}]
+            
+            # Use session state to initialize data so Sl.No can be handled
+            if f"dim_data_{sel_job_dim}" not in st.session_state:
+                st.session_state[f"dim_data_{sel_job_dim}"] = pd.DataFrame([
+                    {"Sl.No": 1, "Description": options_desc[0], "Specified Dimension": "", "Measured Dimension": "", "MOC": options_moc[0]}
+                ])
             
             dim_grid = st.data_editor(
-                pd.DataFrame(init_data),
+                st.session_state[f"dim_data_{sel_job_dim}"],
                 num_rows="dynamic",
                 use_container_width=True,
                 hide_index=True,
+                key=f"editor_{sel_job_dim}",
                 column_config={
-                    "Sl.No": st.column_config.NumberColumn("Sl", disabled=True), # Auto/Disabled
+                    "Sl.No": st.column_config.NumberColumn("Sl", disabled=True, help="Auto-numbered on Save"), 
                     "Description": st.column_config.SelectboxColumn("Description", options=options_desc, required=True),
                     "Specified Dimension": st.column_config.TextColumn("Specified Dimension (Manual)"),
                     "Measured Dimension": st.column_config.TextColumn("Measured Dimension (Manual)"),
@@ -614,10 +619,35 @@ with main_tabs[5]:
                 }
             )
 
-            # --- SAVE & PDF ---
+            # --- SAVE LOGIC WITH AUTO-INCREMENT FIX ---
             if st.button("🚀 Save DIR Report", type="primary", use_container_width=True):
-                # Save logic here...
-                st.success("DIR Saved successfully!")
+                # 1. Extract data from editor
+                raw_rows = dim_grid.to_dict('records')
+                
+                # 2. Re-calculate Sl.No correctly before saving
+                final_rows = []
+                for i, row in enumerate(raw_rows):
+                    row["Sl.No"] = i + 1
+                    final_rows.append(row)
+                
+                # 3. Prepare payload matching your table structure
+                payload = {
+                    "job_no": sel_job_dim,
+                    "drawing_no": drg_no,
+                    "inspection_date": str(report_date),
+                    "dim_grid_data": final_rows, # Saving the corrected numbered rows
+                    "created_at": datetime.now(IST).isoformat()
+                }
+
+                try:
+                    conn.table("dimensional_reports").insert(payload).execute()
+                    st.success(f"✅ DIR Saved successfully with {len(final_rows)} items!")
+                    
+                    # Update session state so the UI shows the correct Sl.Nos immediately
+                    st.session_state[f"dim_data_{sel_job_dim}"] = pd.DataFrame(final_rows)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error saving to database: {e}")
 
 # --- TAB 7: HYDRO TEST REPORT ---
 with main_tabs[6]:
