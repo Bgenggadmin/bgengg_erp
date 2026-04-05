@@ -214,7 +214,17 @@ with tabs[1]:
                     u_val = f1.number_input("Est. Value (₹)", value=float(row.get('estimated_value') or 0), key=f"val_{row['id']}")
                     u_act_val = f2.number_input("Actual PO Value (₹)", value=float(row.get('actual_value') or 0), key=f"act_val_{row['id']}")
                     u_qref = f3.text_input("Quote Ref.", value=row.get('quote_ref') or "", key=f"qref_{row['id']}")
-                    u_qdate = f4.date_input("Quote Date", value=pd.to_datetime(row['quote_date']).date() if row['quote_date'] else datetime.now(), key=f"qdt_{row['id']}")
+                    # 1. Convert to a pandas datetime object safely
+                    raw_quote_date = pd.to_datetime(row.get('quote_date'))
+
+                    # 2. Check if it is a valid date (not null/NaT)
+                    if pd.notnull(raw_quote_date):
+                        initial_q_date = raw_quote_date.date()
+                    else:
+                        initial_q_date = date.today() # Fallback to today if empty
+
+                    # 3. Use the safe variable in the widget
+                    u_qdate = f4.date_input("Quote Date", value=initial_q_date, key=f"qdt_{row['id']}")
                     
                     if row['status'] == "Won" and u_act_val > 0:
                         variance = u_act_val - u_val
