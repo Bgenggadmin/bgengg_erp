@@ -206,17 +206,27 @@ with main_tabs[1]:
             # 2. Fetch Project Context from Anchor
             tc_match = df_anchor[df_anchor['job_no'].astype(str) == str(q_job_tech)]
             
+            # Inside your Quality Portal Tab 2
             if not tc_match.empty:
                 proj = tc_match.iloc[0]
-                
-                # --- START THE FORM ---
-                with st.form("quality_check_list_standard", clear_on_submit=True):
-                    st.markdown("### 🏗️ Project Identification")
-                    h1, h2, h3 = st.columns(3)
-                    # Values pulled from Anchor table
-                    c_name = h1.text_input("Client Name", value=proj.get('client_name', 'N/A'))
-                    p_no = h2.text_input("PO Number", value=proj.get('po_no', 'N/A'))
-                    p_date = h3.text_input("PO Date", value=str(proj.get('po_date', 'N/A')))
+                e_type = proj.get('equipment_type', 'Storage Tank') # Get the type
+    
+                with st.form("quality_check_list_standard"):
+                    # standard fields...
+        
+                    # DYNAMIC SECTION: Only show if it's a Reactor
+                    if e_type == "Reactor":
+                        st.markdown("### ⚛️ Reactor Specifics")
+                        r1, r2 = st.columns(2)
+                        agitator_stat = r1.text_input("Agitator Run Test", value="NA")
+                        jacket_hydro = r2.text_input("Jacket Hydro Test", value="NA")
+        
+                    # DYNAMIC SECTION: Only show if it's a Storage Tank
+                    if e_type == "Storage Tank":
+                        st.markdown("### 🛢️ Tank Specifics")
+                        t1, t2 = st.columns(2)
+                        roof_fitup = t1.text_input("Roof Structure Fit-up", value="NA")
+                        curb_angle = t2.text_input("Curb Angle Inspection", value="NA")
                     
                     st.divider()
                     
