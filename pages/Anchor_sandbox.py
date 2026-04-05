@@ -296,25 +296,51 @@ with tabs[2]:
                 conn.table("anchor_projects").update({"drawing_ref": d_ref, "drawing_status": d_stat}).eq("id", row['id']).execute()
                 st.cache_data.clear(); st.rerun()
 
-# --- TAB 4: PURCHASE STATUS ---
+# --- TAB 4: PURCHASE STATUS (STABILIZED) ---
 with tabs[3]:
     st.subheader("📦 Item-wise Purchase Feedback")
     if not df_display.empty:
         for index, row in df_display.iterrows():
-            if row['job_no']:
-                job_items = df_pur[df_pur['job_no'] == row['job_no'].strip().upper()] if not df_pur.empty else pd.DataFrame()
+            # FIX 1: Safe extraction of Job No to prevent 'float' AttributeErrors
+            raw_job_no = row.get('job_no')
+            clean_job_no = str(raw_job_no).strip().upper() if pd.notnull(raw_job_no) and str(raw_job_no).strip() != "" else None
+            
+            if clean_job_no:
+                # Filter items matching this job
+                job_items = df_pur[df_pur['job_no'] == clean_job_no] if not df_pur.empty else pd.DataFrame()
+                
                 if not job_items.empty:
                     with st.container(border=True):
-                        st.markdown(f"#### Job: {row['job_no']} | {row['client_name']}")
+                        st.markdown(f"#### Job: {clean_job_no} | {row['client_name']}")
+                        
                         for _, item in job_items.iterrows():
-                            created_at = pd.to_datetime(item.get('created_at')).tz_localize(None) if 'created_at' in item else today_dt
-                            order_age = (today_dt - created_at).days
+                            # FIX 2: Safe Date Parsing for order age
+                            raw_created_at = item.get('created_at')
+                            if pd.notnull(raw_created_at):
+                                # Convert to pandas datetime and ensure it is timezone-naive to match today_dt
+                                created_at_dt = pd.to_datetime(raw_created_at).tz_localize(None)
+                            else:
+                                created_at_dt = today_dt
+                            
+                            order_age = (today_dt - created_at_dt).days
+                            
+                            # UI Layout
                             c1, c2, c3, c4 = st.columns([2, 1, 3, 1])
-                            c1.write(f"{'🛑' if order_age > 2 and item['status'] == 'Triggered' else '🔹'} {item['item_name']}")
-                            c2.write(item['specs'])
-                            c3.info(item['purchase_reply'] or "⌛ No reply yet")
-                            if item['status'] == "Received": c4.success("Received")
-                            else: c4.warning(item['status'])
+                            
+                            # Red alert if triggered more than 2 days ago but not ordered/received
+                            is_delayed = order_age > 2 and item['status'] == 'Triggered'
+                            c1.write(f"{'🛑' if is_delayed else '🔹'} {item['item_name']}")
+                            
+                            c2.write(item.get('specs', 'N/A'))
+                            c3.info(item.get('purchase_reply') or "⌛ No reply yet")
+                            
+                            # Status Badge
+                            if item['status'] == "Received": 
+                                c4.success("Received")
+                            elif item['status'] == "Ordered":
+                                c4.info("Ordered")
+                            else: 
+                                c4.warning(item['status'])
 
 # --- TAB 5: ANALYTICS ---
 with tabs[4]:
