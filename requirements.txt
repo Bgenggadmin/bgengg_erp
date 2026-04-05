@@ -6,5 +6,6 @@ pytz
 fpdf
 pillow
 requests
+pypdf
 streamlit-drawable-canvas
 xlsxwriter
