@@ -152,7 +152,7 @@ df_plan, df_anchor, authorized_inspectors = get_quality_context()
 
 # --- 4. UI ---
 st.title("🔍 Quality Assurance & Inspection Portal")
-main_tabs = st.tabs(["🚪 Process Gate (Evidence)", "📋 Technical Checklist (Reports)", "📜 QA Plan (QAP)"])
+main_tabs = st.tabs(["🚪 Process Gate (Evidence)", "📋 Technical Checklist (Reports)", "📜 QA Plan (QAP)", "📉 Material Flow Chart"])
 
 # --- TAB 1: PROCESS GATE ---
 with main_tabs[0]:
@@ -313,3 +313,84 @@ st.divider()
 st.subheader("📋 Recent Quality Clearances")
 if not df_plan.empty:
     st.dataframe(df_plan[['job_no', 'gate_name', 'quality_status', 'quality_by']].dropna(subset=['quality_status']), use_container_width=True, hide_index=True)
+
+# --- TAB 3: MATERIAL FLOW CHART (Traceability Record) ---
+with main_tabs[3]:
+    st.subheader("📉 Material Flow Chart & Traceability Record")
+    
+    if not df_anchor.empty:
+        # 1. CLEAN DROPDOWN (Using your Master logic)
+        clean_mfc_jobs = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+        sel_job_mfc = st.selectbox("Select Job for Flow Chart", ["-- Select --"] + clean_mfc_jobs, key="mfc_job_sel")
+
+        if sel_job_mfc != "-- Select --":
+            # 2. AUTO-FETCH FROM ANCHOR MASTER
+            mfc_match = df_anchor[df_anchor['job_no'].astype(str) == str(sel_job_mfc)]
+            
+            if not mfc_match.empty:
+                proj = mfc_match.iloc[0]
+                
+                # Visual Header matching the paper form layout
+                with st.container(border=True):
+                    c1, c2 = st.columns(2)
+                    c1.write(f"**Customer:** {proj.get('client_name', 'N/A')}")
+                    c1.write(f"**PO No & Date:** {proj.get('po_no')} | {proj.get('po_date')}")
+                    
+                    # Manual inputs for specific equipment details
+                    item_desc = c2.text_input("Item Name / Description", placeholder="e.g. 30KL SS Tank")
+                    total_qty = c2.text_input("Total Quantity", placeholder="e.g. 1 No.")
+
+                st.divider()
+
+                # 3. TRACEABILITY GRID (st.data_editor for friendly UI)
+                st.markdown("### 🔍 Material Identification Matrix")
+                st.caption("Sl. No | Item Description | Size | Matl. Specn. | Heat No. / Plate No. | MTC No.")
+                
+                # Template matching the columns in your paper form
+                mfc_template = [
+                    {"Sl": 1, "Description": "Shell Plate", "Size": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                    {"Sl": 2, "Description": "Dish End 1", "Size": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                    {"Sl": 3, "Description": "Dish End 2", "Size": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                    {"Sl": 4, "Description": "Nozzle Pipe", "Size": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                    {"Sl": 5, "Description": "Flange", "Size": "", "Matl_Spec": "", "Heat_Plate_No": "", "MTC_No": ""},
+                ]
+
+                # The dynamic grid editor
+                trace_grid = st.data_editor(
+                    pd.DataFrame(mfc_template),
+                    num_rows="dynamic", # Allows inspector to add more rows for nozzles/plates
+                    use_container_width=True,
+                    key="mfc_grid_editor",
+                    hide_index=True
+                )
+
+                # 4. SUBMISSION FORM
+                with st.form("mfc_submit_form", clear_on_submit=True):
+                    st.markdown("#### ✍️ Verification")
+                    f1, f2 = st.columns(2)
+                    # Pulls from authorized_inspectors Master
+                    verifier = f1.selectbox("Verified By (QC Inspector)", authorized_inspectors, key="mfc_verifier")
+                    mfc_remarks = st.text_area("Observations / Traceability Notes")
+
+                    if st.form_submit_button("🚀 Save Traceability Record", use_container_width=True):
+                        # Construct Payload
+                        payload = {
+                            "job_no": sel_job_mfc,
+                            "item_name": item_desc,
+                            "qty": total_qty,
+                            "traceability_data": trace_grid.to_dict('records'), # Stored as JSONB
+                            "verified_by": verifier,
+                            "remarks": mfc_remarks,
+                            "created_at": datetime.now(IST).isoformat()
+                        }
+                        
+                        try:
+                            conn.table("material_flow_charts").insert(payload).execute()
+                            st.success(f"✅ Material Flow Chart for {sel_job_mfc} recorded!")
+                            st.balloons()
+                        except Exception as e:
+                            st.error(f"Failed to save: {e}")
+            else:
+                st.error("Project details not found in Anchor records.")
+    else:
+        st.warning("No Master Data available in Anchor Portal.")
