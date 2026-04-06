@@ -157,63 +157,67 @@ with tabs[0]:
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     log_data = emp_summ_res[0] if emp_summ_res else {}
     
-    # 1. Snooze Logic
+# --- 6. MANDATORY SNOOZE LOGS (FIXED) ---
     due_slot = is_log_due(att_user)
-    if due_slot:
+    # Check if snooze is active
+    is_snoozed = "snooze_until" in st.session_state and get_now_ist() < st.session_state["snooze_until"]
+    
+    if due_slot and not is_snoozed:
         st.warning(f"🔔 MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
         with st.form("mandatory_form"):
             m_job = st.selectbox("Job No", get_job_codes())
             m_task = st.text_area("Last hour update?")
             cf1, cf2 = st.columns(2)
-            if cf1.form_submit_button("✅ Post"):
-                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{m_job}] {m_task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
-            if cf2.form_submit_button("🕒 Snooze (10m)"):
-                st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
+            if cf1.form_submit_button("✅ Post Log"):
+                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{m_job}] {m_task}", "hours_spent": 1.0, "work_date": today}).execute()
+                # Clear snooze once log is posted
+                st.session_state.pop('snooze_until', None)
+                st.rerun()
+            if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
+                st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10)
+                st.rerun()
         st.stop()
 
-    # --- 7. COMMITMENT BANNER (STRICT PERSISTENCE FIX) ---
+    # --- 7. COMMITMENT BANNER (FIXED PERSISTENCE) ---
     if log_data and not log_data.get('punch_out'):
-        # 1. Initialize a PERMANENT variable if it doesn't exist
+        # Check if confirmed in this session OR already in DB
         if "promise_confirmed" not in st.session_state:
-            # Check if database already has it, otherwise False
             st.session_state["promise_confirmed"] = log_data.get('system_promise', False)
 
-        # 2. Logic to hide/show
         if not st.session_state["promise_confirmed"]:
             with st.container(border=True):
-                st.markdown(
-                    """<div style="background-color:#f8f9fb; padding:10px; border-left: 5px solid #007bff;">
-                    <p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">
-                    "I am dedicated to B&G’s systems. Following the system today is my path to precision."
-                    </p></div>""", unsafe_allow_html=True
-                )
-                
-                # Use a temporary checkbox and update the PERMANENT variable immediately
+                st.markdown('<div style="background-color:#f8f9fb; padding:10px; border-left: 5px solid #007bff;">'
+                            '<b>"I am dedicated to B&G’s systems. Following the system today is my path to precision."</b></div>', unsafe_allow_html=True)
                 if st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="temp_promise_check"):
                     st.session_state["promise_confirmed"] = True
-                    st.rerun() # Force a rerun to hide the banner immediately
+                    st.rerun()
         else:
-            # Show a small confirmation instead of the big banner
-            st.success("🙏 System Commitment Acknowledged for today's shift.")
+            st.success("🙏 System Commitment Acknowledged.")
 
+    # --- 8. SHIFT CONTROLS (FIXED DATABASE SAVING) ---
     ca, cb, cc = st.columns([1.8, 1.5, 2.5])
     with ca:
-        st.markdown("### 🏢 Shift")
+        st.markdown("### 🏢 Shift Control")
         if not emp_summ_res:
             if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
                 conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today, "punch_in": get_now_ist().isoformat()}).execute(); st.rerun()
         else:
             if not log_data.get('punch_out'):
-                # 3. Productivity Rating
                 st.markdown("**Productivity Rating**")
-                work_sat = st.feedback("stars", key="prod_stars")
+                # Ensure the rating is captured
+                work_sat = st.feedback("stars", key="prod_stars") 
+                
                 if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+                    # CRITICAL FIX: We must include the variables in the payload below
                     conn.table("attendance_logs").update({
                         "punch_out": get_now_ist().isoformat(), 
-                        "work_satisfaction": work_sat,
-                        "system_promise": st.session_state.get("sys_promise", False)
-                    }).eq("id", log_data['id']).execute(); st.cache_data.clear(); st.rerun()
-            else: st.success("Shift Completed")
+                        "work_satisfaction": work_sat, # SAVING RATING
+                        "system_promise": st.session_state.get("promise_confirmed", False) # SAVING PROMISE
+                    }).eq("id", log_data['id']).execute()
+                    st.cache_data.clear()
+                    st.rerun()
+            else:
+                st.success("Shift Completed")
     # (Movement and Work Log logic preserved)
     with cb:
         st.markdown("### 🚶 Move")
