@@ -311,13 +311,7 @@ with tabs[0]:
         end_t = pd.to_datetime(raw_out).tz_convert(IST) if pd.notnull(raw_out) else get_now_ist()
         
         # --- NEW STATEMENT OF COMMITMENT BANNER ---
-if not log_data.get('punch_out'):
-    # Create a container to handle the UI swap
-    commitment_placeholder = st.empty()
-
-    # If the checkbox is NOT checked, show the banner
-    if not st.session_state.get("sys_promise"):
-        with commitment_placeholder.container():
+        if not log_data.get('punch_out'):
             st.markdown(
                 """
                 <div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:15px;">
@@ -328,12 +322,8 @@ if not log_data.get('punch_out'):
                 """, 
                 unsafe_allow_html=True
             )
-            # Checkbox with key
-            st.checkbox("🛡️ I acknowledge and commit to the above statement for today's shift.", key="sys_promise")
-    
-    # If the checkbox IS checked, show the Thank You message
-    else:
-        st.success("🙏 Thank you for your commitment to B&G systems! Have a productive shift.")
+            # Checkbox placed right under the statement banner
+            sys_promise = st.checkbox("🛡️ I acknowledge and commit to the above statement for today's shift.", key="sys_promise")
         
         # --- METRICS ROW (c1, c2, c3) ---
         c1, c2, c3 = st.columns(3)
