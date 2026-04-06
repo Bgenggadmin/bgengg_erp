@@ -90,6 +90,7 @@ with tabs[0]:
         st.stop()
 
     att_user = st.session_state["authenticated_user"]
+    today = str(date.today())
     
     # Logout option
     if st.button("🔓 Logout / Switch User"):
@@ -99,53 +100,55 @@ with tabs[0]:
 
     st.divider()
 
-    # --- 3. DATA FETCHING (CRITICAL: Move this UP to define log_data before use) ---
-    today = str(date.today())
+    # --- 3. DATA FETCHING (Ensures log_data is defined for the whole tab) ---
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
-    log_data = emp_summ_res[0] if emp_summ_res else {} # Defines log_data safely
+    log_data = emp_summ_res[0] if emp_summ_res else {}
 
-    # --- 4. FOUNDER'S DESK (FIXED: Scrollable height to save space) ---
+    # --- 4. FOUNDER'S DESK (Fixed: Space-saving Scrollbox for Admin) ---
     st.markdown("### 📢 Founder's Desk")
     
-    # Scrollable container for Admin Inbox
     if att_user == "Admin":
-        if not st.session_state.get("admin_authenticated"):
-            pw_input = st.text_input("🔑 Admin Access Key", type="password", key="admin_gate_pw")
-            if st.button("Unlock Founder Desk"):
-                if pw_input == "bg2026":
-                    st.session_state["admin_authenticated"] = True
-                    st.rerun()
-            st.stop()
-
+        # Admin Tools
         with st.expander("✉️ Post New Instruction/Announcement", expanded=False):
             with st.form("founder_msg_form"):
                 m_target = st.selectbox("Target Employee", ["All"] + get_staff_list())
                 m_text = st.text_area("Instruction Content")
                 if st.form_submit_button("🚀 Broadcast Message"):
-                    # ... [Insert your existing broadcast insertion logic here] ...
-                    st.success("Broadcast sent.")
+                    if m_text:
+                        try:
+                            if m_target == "All":
+                                targets = [s for s in get_staff_list() if s != "Admin"]
+                                payload = [{"sender_name": "Founder", "content": m_text, "target_user": s, "is_read": False} for s in targets]
+                                conn.table("founder_interaction").insert(payload).execute()
+                            else:
+                                conn.table("founder_interaction").insert({"sender_name": "Founder", "content": m_text, "target_user": m_target, "is_read": False}).execute()
+                            st.success("Broadcast sent!")
+                        except Exception as e: st.error(f"Error: {e}")
 
-        st.markdown("**📥 Unified Inbox (Scroll to view)**")
-        # CSS for fixed height scrollbox
-        st.markdown(
-            """
-            <div style="height:300px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff;">
-            """, unsafe_allow_html=True
-        )
+        # Unified Inbox with History Filter
+        show_history = st.toggle("View Older Communications", value=False)
+        st.markdown(f"**📥 {'History' if show_history else 'Today'}'s Inbox**")
+        
+        # Scrollable CSS Container
+        st.markdown('<div style="height:250px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff;">', unsafe_allow_html=True)
         try:
-            inbox_data = conn.table("founder_interaction").select("*").order("created_at", desc=True).limit(30).execute().data
-            for r in inbox_data:
-                st.caption(f"From: {r['sender_name']} to {r['target_user']} | {r['created_at'][:16]}")
-                st.write(f"💬 {r['content']}")
-                if r.get('reply_content'):
-                    st.info(f"Ref: {r['reply_content']}")
-                st.divider()
-        except:
-            st.write("No active messages.")
-        st.markdown("</div>", unsafe_allow_html=True)
+            query = conn.table("founder_interaction").select("*").order("created_at", desc=True)
+            if not show_history:
+                query = query.gte("created_at", f"{today}T00:00:00")
+            
+            inbox_data = query.limit(50).execute().data
+            if inbox_data:
+                for r in inbox_data:
+                    st.caption(f"**{r['sender_name']}** to **{r['target_user']}** | {r['created_at'][:16]}")
+                    st.write(r['content'])
+                    if r.get('reply_content'): st.info(f"Reply: {r['reply_content']}")
+                    st.divider()
+            else: st.write("No messages for today.")
+        except: st.write("Error loading messages.")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     else:
-        # Employee View
+        # Employee View: Only show most recent interaction
         try:
             msg_res = conn.table("founder_interaction").select("*")\
                 .or_(f"target_user.eq.{att_user},sender_name.eq.{att_user}")\
@@ -153,46 +156,104 @@ with tabs[0]:
             if msg_res:
                 m = msg_res[0]
                 with st.container(border=True):
-                    st.info(f"**From Founder:** {m['content']}")
-                    if not m.get('is_read'):
-                        col_txt, col_btn = st.columns([3, 1])
-                        emp_reply = col_txt.text_input("Reply/Acknowledge", key=f"rep_{m['id']}")
-                        if col_btn.button("✔️ Send", key=f"btn_{m['id']}"):
-                            conn.table("founder_interaction").update({"is_read": True, "reply_content": emp_reply or "Acknowledged"}).eq("id", m['id']).execute()
-                            st.rerun()
+                    if m['sender_name'] == att_user:
+                        st.write(f"📤 **My Message:** {m['content']}")
+                        if m.get('reply_content'): st.info(f"🏁 **Founder Response:** {m['reply_content']}")
+                    else:
+                        st.info(f"**From Founder:** {m['content']}")
+                        if not m.get('is_read'):
+                            col_txt, col_btn = st.columns([3, 1])
+                            emp_reply = col_txt.text_input("Type reply...", key=f"rep_{m['id']}")
+                            if col_btn.button("✔️ Reply", key=f"ack_{m['id']}"):
+                                conn.table("founder_interaction").update({"is_read": True, "reply_content": emp_reply or "Acknowledged"}).eq("id", m['id']).execute()
+                                st.rerun()
         except: pass
 
     st.divider()
 
-    # --- 5. WORK PLAN & PENDING TASKS ---
-    st.markdown("### 🏗️ My Work Plan")
-    # ... [Keep your existing plan_col1, plan_col2 logic here] ...
+    # --- 5. MY WORK PLAN (Fixed: Showing Pending & Today) ---
+    st.markdown("### 🏗️ My Work Plan & Pending Tasks")
+    p_col1, p_col2 = st.columns([1.5, 2.5])
+    
+    with p_col1:
+        with st.form("quick_plan_form", clear_on_submit=True):
+            p_job = st.selectbox("Job No", get_job_codes())
+            p_task = st.text_input("Task/Work")
+            p_hrs = st.number_input("Hrs", 0.5, 12.0, 1.0, 0.5)
+            if st.form_submit_button("📌 Add to Plan"):
+                if p_task:
+                    conn.table("work_plans").insert({"employee_name": att_user, "job_no": p_job, "planned_task": p_task, "planned_hours": p_hrs, "plan_date": today, "status": "Pending"}).execute()
+                    st.rerun()
+
+    with p_col2:
+        # Fetch logic: Today's tasks OR anything marked as Pending
+        my_plans = conn.table("work_plans").select("*")\
+            .eq("employee_name", att_user)\
+            .or_(f"plan_date.eq.{today},status.eq.Pending")\
+            .order("plan_date").execute().data
+        
+        if my_plans:
+            for p in my_plans:
+                t_col, b_col = st.columns([4, 1.2])
+                if p['status'] == 'Pending':
+                    t_col.info(f"📍 **[{p['job_no']}]** {p['planned_task']} ({p['planned_hours']}h)")
+                    if b_col.button("✅ Done", key=f"done_{p['id']}"):
+                        conn.table("work_plans").update({"status": "Completed"}).eq("id", p['id']).execute(); st.rerun()
+                else:
+                    t_col.success(f"✔️ ~~**[{p['job_no']}]** {p['planned_task']}~~")
+        else:
+            st.caption("No active tasks in plan.")
 
     st.divider()
 
-    # --- 6. PRODUCTIVITY & COMMITMENT BANNER (FIXED: Disappears on click) ---
+    # --- 6. COMMITMENT BANNER (Disappears on click) ---
     if log_data and not log_data.get('punch_out'):
-        commitment_placeholder = st.empty()
-        
-        # Check if they have already promised in this session
         if not st.session_state.get("sys_promise"):
-            with commitment_placeholder.container():
-                st.markdown(
-                    """
-                    <div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:15px;">
-                        <p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">
-                            "I am dedicated to B&G’s systems. Following the system today is my path to precision."
-                        </p>
-                    </div>
-                    """, unsafe_allow_html=True
-                )
-                st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="sys_promise")
+            st.markdown('<div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:15px;">'
+                        '<p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">'
+                        '"I am dedicated to B&G’s systems. Following the system today is my path to precision."'
+                        '</p></div>', unsafe_allow_html=True)
+            st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="sys_promise")
         else:
             st.success("🙏 Thank you for your commitment! Have a productive shift.")
 
-    # --- 7. SHIFT CONTROLS (Punch In/Out) ---
+    # --- 7. SHIFT CONTROLS ---
     ca, cb, cc = st.columns([1.8, 1.5, 2.5])
-    # ... [Keep your existing ca, cb, cc Logic for Movement and Work Logs here] ...
+    
+    with ca:
+        st.markdown("### 🏢 Shift Control")
+        if not emp_summ_res:
+            if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
+                conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today, "punch_in": get_now_ist().isoformat()}).execute(); st.rerun()
+        else:
+            if not log_data.get('punch_out'):
+                work_sat = st.feedback("stars", key="prod_stars")
+                if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+                    conn.table("attendance_logs").update({
+                        "punch_out": get_now_ist().isoformat(),
+                        "work_satisfaction": work_sat
+                    }).eq("id", log_data['id']).execute(); st.cache_data.clear(); st.rerun()
+            else: st.success("Shift Completed")
+
+    with cb:
+        st.markdown("### 🚶 Movement")
+        active_move = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
+        if not active_move:
+            with st.form("move_form"):
+                dest = st.text_input("Destination")
+                if st.form_submit_button("📤 OUT") and dest:
+                    conn.table("movement_logs").insert({"employee_name": att_user, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
+        else:
+            if st.button("📥 IN", use_container_width=True, type="primary"):
+                conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", active_move[0]['id']).execute(); st.rerun()
+
+    with cc:
+        st.markdown("### 📝 Work log")
+        with st.form("manual_log"):
+            job_c = st.selectbox("Job", get_job_codes())
+            task = st.text_area("Update")
+            if st.form_submit_button("Post Log") and task:
+                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 # --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
