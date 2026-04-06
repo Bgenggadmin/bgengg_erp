@@ -6,7 +6,7 @@ import pytz
 
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
-LATE_THRESHOLD = time(8, 35) # Adjusted to B&G Standard
+LATE_THRESHOLD = time(8, 35) 
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
 
@@ -46,8 +46,7 @@ def get_job_codes():
     except: return ["GENERAL"]
 
 def is_log_due(employee_name):
-    if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
-        return None
+    # REMOVED snooze check from here to handle it only in the main UI logic
     now_t = get_now_ist().strftime("%H:%M")
     past_slots = [s for s in LOG_SLOTS if s <= now_t]
     if not past_slots: return None
@@ -84,6 +83,7 @@ with tabs[0]:
     att_user = st.session_state["authenticated_user"]
     today = str(date.today())
     
+    # Logout option
     if st.button("🔓 Logout / Switch User"):
         st.session_state["authenticated_user"] = None
         st.session_state["admin_authenticated"] = False
@@ -109,7 +109,7 @@ with tabs[0]:
                         st.success("Sent!"); st.rerun()
 
         st.markdown(f"**📥 Today's Messages ({today})**")
-        st.markdown('<div style="height:250px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff;">', unsafe_allow_html=True)
+        st.markdown('<div style="height:200px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff;">', unsafe_allow_html=True)
         today_msgs = conn.table("founder_interaction").select("*").gte("created_at", f"{today}T00:00:00").order("created_at", desc=True).execute().data
         if today_msgs:
             for r in today_msgs:
@@ -160,18 +160,17 @@ with tabs[0]:
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     log_data = emp_summ_res[0] if emp_summ_res else {}
 
-   # --- 6. MANDATORY SNOOZE LOGS (FIXED FOR ALL TABS) ---
+    # --- 6. MANDATORY SNOOZE LOGS (FIXED: Localized logic to prevent blank screens) ---
     due_slot = is_log_due(att_user)
     now_ist = get_now_ist()
     is_snoozed = "snooze_until" in st.session_state and now_ist < st.session_state["snooze_until"]
     
-    # Create a placeholder for the main content of Tab 0
-    tab0_main_content = st.empty()
+    show_main_controls = True # Flag to control visibility inside Tab 0
 
     if due_slot and not is_snoozed:
         st.warning(f"🔔 MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
         with st.form("mandatory_form"):
-            m_job = st.selectbox("Job No", get_job_codes())
+            m_job = st.selectbox("Job No", get_job_codes(), key="man_job")
             m_task = st.text_area("Last hour update?")
             cf1, cf2 = st.columns(2)
             if cf1.form_submit_button("✅ Post Log"):
@@ -181,70 +180,62 @@ with tabs[0]:
             if cf2.form_submit_button("🕒 Snooze (10m)"):
                 st.session_state['snooze_until'] = now_ist + timedelta(minutes=10)
                 st.rerun()
-        
-        # REMOVED st.stop() FROM HERE. 
-        # Instead, we just don't execute the rest of Tab 0's content.
-        show_tab0_controls = False
-    else:
-        show_tab0_controls = True
+        show_main_controls = False # Hide the rest of Tab 0
+    
+    if show_main_controls:
+        # --- 7. COMMITMENT BANNER ---
+        if log_data and not log_data.get('punch_out'):
+            if "promise_confirmed" not in st.session_state:
+                st.session_state["promise_confirmed"] = log_data.get('system_promise', False)
 
-    # --- 7 & 8. RENDER CONTROLS ONLY IF NOT BLOCKED BY LOG ---
-    if show_tab0_controls:
-        with tab0_main_content.container():
-            # --- COMMITMENT BANNER ---
-            if log_data and not log_data.get('punch_out'):
-                if "promise_confirmed" not in st.session_state:
-                    st.session_state["promise_confirmed"] = log_data.get('system_promise', False)
+            if not st.session_state["promise_confirmed"]:
+                with st.container(border=True):
+                    st.markdown('<div style="background-color:#f8f9fb; padding:10px; border-left: 5px solid #007bff;">'
+                                '<b>"I am dedicated to B&G’s systems. Following the system today is my path to precision."</b></div>', unsafe_allow_html=True)
+                    if st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="temp_promise_check"):
+                        st.session_state["promise_confirmed"] = True
+                        st.rerun()
+            else:
+                st.success("🙏 System Commitment Acknowledged.")
 
-                if not st.session_state["promise_confirmed"]:
-                    with st.container(border=True):
-                        st.markdown('<div style="background-color:#f8f9fb; padding:10px; border-left: 5px solid #007bff;">'
-                                    '<b>"I am dedicated to B&G’s systems. Following the system today is my path to precision."</b></div>', unsafe_allow_html=True)
-                        if st.checkbox("🛡️ I acknowledge and commit...", key="temp_promise_check"):
-                            st.session_state["promise_confirmed"] = True
-                            st.rerun()
-                else:
-                    st.success("🙏 System Commitment Acknowledged.")
+        # --- 8. SHIFT CONTROLS (PUNCH LOGIC) ---
+        ca, cb, cc = st.columns([1.8, 1.5, 2.5])
+        with ca:
+            st.markdown("### 🏢 Shift")
+            if not emp_summ_res:
+                if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
+                    conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today, "punch_in": get_now_ist().isoformat()}).execute(); st.rerun()
+            else:
+                if not log_data.get('punch_out'):
+                    st.markdown("**Productivity Rating**")
+                    work_sat = st.feedback("stars", key="prod_stars") 
+                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+                        conn.table("attendance_logs").update({
+                            "punch_out": get_now_ist().isoformat(), 
+                            "work_satisfaction": work_sat,
+                            "system_promise": st.session_state.get("promise_confirmed", False)
+                        }).eq("id", log_data['id']).execute()
+                        st.cache_data.clear(); st.rerun()
+                else: st.success("Shift Completed")
 
-            # --- SHIFT CONTROLS (ca, cb, cc) ---
-            ca, cb, cc = st.columns([1.8, 1.5, 2.5])
-            with ca:
-                st.markdown("### 🏢 Shift")
-                if not emp_summ_res:
-                    if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
-                        conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today, "punch_in": get_now_ist().isoformat()}).execute(); st.rerun()
-                else:
-                    if not log_data.get('punch_out'):
-                        st.markdown("**Productivity Rating**")
-                        work_sat = st.feedback("stars", key="prod_stars") 
-                        if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
-                            conn.table("attendance_logs").update({
-                                "punch_out": get_now_ist().isoformat(), 
-                                "work_satisfaction": work_sat,
-                                "system_promise": st.session_state.get("promise_confirmed", False)
-                            }).eq("id", log_data['id']).execute()
-                            st.cache_data.clear(); st.rerun()
-                    else: st.success("Shift Completed")
-
-                       
-            with cb:
-                st.markdown("### 🚶 Move")
-                move_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
-                if not move_res:
-                    with st.form("m_form"):
-                        d = st.text_input("Destination")
-                        if st.form_submit_button("📤 OUT") and d:
-                            conn.table("movement_logs").insert({"employee_name": att_user, "destination": d.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
-                else:
-                    if st.button("📥 IN", type="primary"):
-                        conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", move_res[0]['id']).execute(); st.rerun()
-            with cc:
-                st.markdown("### 📝 Log")
-                with st.form("w_form"):
-                    j = st.selectbox("Job", get_job_codes())
-                    t = st.text_area("Task Update")
-                    if st.form_submit_button("Post Work Log"):
-                        conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{j}] {t}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
+        with cb:
+            st.markdown("### 🚶 Move")
+            move_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
+            if not move_res:
+                with st.form("m_form"):
+                    d = st.text_input("Destination")
+                    if st.form_submit_button("📤 OUT") and d:
+                        conn.table("movement_logs").insert({"employee_name": att_user, "destination": d.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
+            else:
+                if st.button("📥 IN", type="primary"):
+                    conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", move_res[0]['id']).execute(); st.rerun()
+        with cc:
+            st.markdown("### 📝 Log")
+            with st.form("w_form"):
+                j = st.selectbox("Job", get_job_codes(), key="job_sel_log")
+                t = st.text_area("Task Update")
+                if st.form_submit_button("Post Work Log"):
+                    conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{j}] {t}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
 # --- TAB 5: HR ADMIN PANEL (WITH ANALYTICS & GRADING) ---
 with tabs[4]:
