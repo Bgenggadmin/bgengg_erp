@@ -158,25 +158,48 @@ with tabs[0]:
     log_data = emp_summ_res[0] if emp_summ_res else {}
     
 # --- 6. MANDATORY SNOOZE LOGS (FIXED) ---
-    due_slot = is_log_due(att_user)
-    # Check if snooze is active
-    is_snoozed = "snooze_until" in st.session_state and get_now_ist() < st.session_state["snooze_until"]
-    
-    if due_slot and not is_snoozed:
-        st.warning(f"🔔 MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
-        with st.form("mandatory_form"):
-            m_job = st.selectbox("Job No", get_job_codes())
-            m_task = st.text_area("Last hour update?")
-            cf1, cf2 = st.columns(2)
-            if cf1.form_submit_button("✅ Post Log"):
-                conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{m_job}] {m_task}", "hours_spent": 1.0, "work_date": today}).execute()
-                # Clear snooze once log is posted
-                st.session_state.pop('snooze_until', None)
+due_slot = is_log_due(att_user)
+
+# Check if snooze is currently active in session state
+now_ist = get_now_ist()
+snooze_time = st.session_state.get('snooze_until')
+is_snoozed = False
+
+if snooze_time:
+    # Ensure snooze_time is compared correctly as a datetime object
+    if now_ist < snooze_time:
+        is_snoozed = True
+    else:
+        # Snooze expired, clean it up
+        st.session_state.pop('snooze_until', None)
+
+# Only show the form if a log is due AND we are NOT snoozed
+if due_slot and not is_snoozed:
+    st.warning(f"🔔 MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
+    with st.form("mandatory_form"):
+        m_job = st.selectbox("Job No", get_job_codes())
+        m_task = st.text_area("What did you do in the last hour?")
+        cf1, cf2 = st.columns(2)
+        
+        if cf1.form_submit_button("✅ Post Log"):
+            if m_task:
+                conn.table("work_logs").insert({
+                    "employee_name": att_user, 
+                    "task_description": f"[{m_job}] {m_task}", 
+                    "hours_spent": 1.0, 
+                    "work_date": today
+                }).execute()
+                st.session_state.pop('snooze_until', None) # Clear any existing snooze
                 st.rerun()
-            if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
-                st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10)
-                st.rerun()
-        st.stop()
+            else:
+                st.error("Please enter task details.")
+                
+        if cf2.form_submit_button("🕒 Snooze (10 Mins)"):
+            # Set the time precisely 10 minutes from now
+            st.session_state['snooze_until'] = now_ist + timedelta(minutes=10)
+            st.rerun()
+            
+    st.stop() # Blocks the rest of the page until log or snooze
 
     # --- 7. COMMITMENT BANNER (FIXED PERSISTENCE) ---
     if log_data and not log_data.get('punch_out'):
