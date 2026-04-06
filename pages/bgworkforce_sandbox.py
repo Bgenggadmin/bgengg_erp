@@ -69,7 +69,7 @@ with tabs[0]:
     # 1. THE IDENTITY SELECTOR
     selected_user = st.selectbox("Identify Yourself", get_staff_list(), key="user_select_main")
     
-    # 2. THE SECURITY GATE
+    # 2. THE SECURITY GATE (Session State)
     if "authenticated_user" not in st.session_state:
         st.session_state["authenticated_user"] = None
 
@@ -83,13 +83,15 @@ with tabs[0]:
                 st.session_state["authenticated_user"] = selected_user
                 if selected_user == "Admin":
                     st.session_state["admin_authenticated"] = True
-                st.success("Access Granted!"); st.rerun()
+                st.success("Access Granted!")
+                st.rerun()
             else:
                 st.error("Invalid Access Key.")
         st.stop()
 
     att_user = st.session_state["authenticated_user"]
     
+    # Logout option
     if st.button("🔓 Logout / Switch User"):
         st.session_state["authenticated_user"] = None
         st.session_state["admin_authenticated"] = False
@@ -97,10 +99,15 @@ with tabs[0]:
 
     st.divider()
 
-    # --- 1. FOUNDER - EMPLOYEE INTERACTION WINDOW ---
+    # --- 3. DATA FETCHING (CRITICAL: Move this UP to define log_data before use) ---
+    today = str(date.today())
+    emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
+    log_data = emp_summ_res[0] if emp_summ_res else {} # Defines log_data safely
+
+    # --- 4. FOUNDER'S DESK (FIXED: Scrollable height to save space) ---
     st.markdown("### 📢 Founder's Desk")
     
-    # FIX: For Admin, we put the inbox in a scrollable area to save space
+    # Scrollable container for Admin Inbox
     if att_user == "Admin":
         if not st.session_state.get("admin_authenticated"):
             pw_input = st.text_input("🔑 Admin Access Key", type="password", key="admin_gate_pw")
@@ -110,36 +117,35 @@ with tabs[0]:
                     st.rerun()
             st.stop()
 
-        # Admin Message Posting
         with st.expander("✉️ Post New Instruction/Announcement", expanded=False):
             with st.form("founder_msg_form"):
                 m_target = st.selectbox("Target Employee", ["All"] + get_staff_list())
                 m_text = st.text_area("Instruction Content")
-                if st.form_submit_button("🚀 Broadcast"):
-                    if m_text:
-                        # ... (existing broadcast logic) ...
-                        st.success("Sent!"); st.rerun()
+                if st.form_submit_button("🚀 Broadcast Message"):
+                    # ... [Insert your existing broadcast insertion logic here] ...
+                    st.success("Broadcast sent.")
 
-        # FIX: SCROLLABLE INBOX FOR ADMIN
-        st.markdown("**📥 Unified Interaction Inbox** (Scroll to view)")
-        # Using a container with fixed height via CSS
-        st.markdown('<div style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; border-radius: 5px; margin-bottom: 20px;">', unsafe_allow_html=True)
+        st.markdown("**📥 Unified Inbox (Scroll to view)**")
+        # CSS for fixed height scrollbox
+        st.markdown(
+            """
+            <div style="height:300px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff;">
+            """, unsafe_allow_html=True
+        )
         try:
-            all_interactions = conn.table("founder_interaction").select("*").order("created_at", desc=True).limit(30).execute().data
-            if all_interactions:
-                for r in all_interactions:
-                    with st.container():
-                        st.caption(f"From: {r['sender_name']} to {r['target_user']} | {r['created_at'][:16]}")
-                        st.write(f"💬 {r['content']}")
-                        if r.get('reply_content'):
-                            st.info(f"Ref: {r['reply_content']}")
-                        st.divider()
-            else: st.write("No messages.")
-        except: st.write("Inbox error.")
-        st.markdown('</div>', unsafe_allow_html=True)
-
+            inbox_data = conn.table("founder_interaction").select("*").order("created_at", desc=True).limit(30).execute().data
+            for r in inbox_data:
+                st.caption(f"From: {r['sender_name']} to {r['target_user']} | {r['created_at'][:16]}")
+                st.write(f"💬 {r['content']}")
+                if r.get('reply_content'):
+                    st.info(f"Ref: {r['reply_content']}")
+                st.divider()
+        except:
+            st.write("No active messages.")
+        st.markdown("</div>", unsafe_allow_html=True)
+    
     else:
-        # User View (Employee View)
+        # Employee View
         try:
             msg_res = conn.table("founder_interaction").select("*")\
                 .or_(f"target_user.eq.{att_user},sender_name.eq.{att_user}")\
@@ -147,66 +153,46 @@ with tabs[0]:
             if msg_res:
                 m = msg_res[0]
                 with st.container(border=True):
-                    if m['sender_name'] == att_user:
-                        st.write(f"📤 **My Message:** {m['content']}")
-                        if m.get('reply_content'): st.info(f"🏁 **Response:** {m['reply_content']}")
-                    else:
-                        st.info(f"**From Founder:** {m['content']}")
-                        if not m.get('is_read'):
-                            col_txt, col_btn = st.columns([3, 1])
-                            emp_reply = col_txt.text_input("Reply...", key=f"rep_{m['id']}")
-                            if col_btn.button("✔️ Send", key=f"ack_{m['id']}"):
-                                conn.table("founder_interaction").update({"is_read": True, "reply_content": emp_reply or "Acknowledged"}).eq("id", m['id']).execute()
-                                st.rerun()
+                    st.info(f"**From Founder:** {m['content']}")
+                    if not m.get('is_read'):
+                        col_txt, col_btn = st.columns([3, 1])
+                        emp_reply = col_txt.text_input("Reply/Acknowledge", key=f"rep_{m['id']}")
+                        if col_btn.button("✔️ Send", key=f"btn_{m['id']}"):
+                            conn.table("founder_interaction").update({"is_read": True, "reply_content": emp_reply or "Acknowledged"}).eq("id", m['id']).execute()
+                            st.rerun()
         except: pass
 
     st.divider()
-                
-    today = str(date.today())
 
-    # --- 2. WORK PLAN ---
+    # --- 5. WORK PLAN & PENDING TASKS ---
     st.markdown("### 🏗️ My Work Plan")
-    # ... (existing Work Plan columns logic) ...
+    # ... [Keep your existing plan_col1, plan_col2 logic here] ...
 
     st.divider()
-    
-    # 3. FETCH ATTENDANCE DATA EARLY TO PREVENT NameError
-    emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
-    work_summ_res = conn.table("work_logs").select("*").eq("employee_name", att_user).eq("work_date", today).order("created_at").execute().data
-    
-    if emp_summ_res:
-        log_data = emp_summ_res[0]
-        start_t = pd.to_datetime(log_data.get('punch_in')).tz_convert(IST) if log_data.get('punch_in') else None
+
+    # --- 6. PRODUCTIVITY & COMMITMENT BANNER (FIXED: Disappears on click) ---
+    if log_data and not log_data.get('punch_out'):
+        commitment_placeholder = st.empty()
         
-        # --- FIX: DISAPPEARING COMMITMENT BANNER ---
-        if not log_data.get('punch_out'):
-            commitment_placeholder = st.empty()
-            
-            # Use session state to track if they just clicked it
-            if not st.session_state.get("sys_promise"):
-                with commitment_placeholder.container():
-                    st.markdown("""
-                        <div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:10px;">
-                            <p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">
-                                "I am dedicated to B&G’s systems. Following the system today is my path to precision."
-                            </p>
-                        </div>
-                    """, unsafe_allow_html=True)
-                    st.checkbox("🛡️ I acknowledge and commit to the above statement for today.", key="sys_promise")
-            else:
-                # Banner disappears, replaced by this message
-                st.success("🙏 Thank you for your commitment! Have a productive shift.")
+        # Check if they have already promised in this session
+        if not st.session_state.get("sys_promise"):
+            with commitment_placeholder.container():
+                st.markdown(
+                    """
+                    <div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:15px;">
+                        <p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">
+                            "I am dedicated to B&G’s systems. Following the system today is my path to precision."
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True
+                )
+                st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="sys_promise")
+        else:
+            st.success("🙏 Thank you for your commitment! Have a productive shift.")
 
-        # --- METRICS ROW ---
-        if start_t and st.session_state.get("sys_promise"):
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Punch In", start_t.strftime('%I:%M %p'))
-            # ... (rest of metrics) ...
-
-    # --- 4. SHIFT CONTROLS ---
-    st.divider()
+    # --- 7. SHIFT CONTROLS (Punch In/Out) ---
     ca, cb, cc = st.columns([1.8, 1.5, 2.5])
-    # ... (existing Punch In/Out, Movement, and Work log logic) ...
+    # ... [Keep your existing ca, cb, cc Logic for Movement and Work Logs here] ...
 # --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
