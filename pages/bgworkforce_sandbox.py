@@ -171,14 +171,24 @@ with tabs[0]:
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
-    # 2. Commitment Banner
+    # --- 7. COMMITMENT BANNER (Fixed: Stays hidden after checking) ---
     if log_data and not log_data.get('punch_out'):
-        if not st.session_state.get("sys_promise"):
-            st.markdown('<div style="background-color:#f8f9fb; padding:15px; border-left: 5px solid #007bff;">'
-                        '<b>"I am dedicated to B&G’s systems. Following the system today is my path to precision."</b></div>', unsafe_allow_html=True)
+        # We check if the user has ALREADY checked it in this session
+        # or if it was already saved in the database for today
+        already_promised = st.session_state.get("sys_promise", False) or log_data.get('system_promise', False)
+
+        if not already_promised:
+            st.markdown(
+                """<div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:15px;">
+                <p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">
+                "I am dedicated to B&G’s systems. Following the system today is my path to precision."
+                </p></div>""", unsafe_allow_html=True
+            )
+            # When this is clicked, st.session_state["sys_promise"] becomes True
             st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="sys_promise")
         else:
-            st.success("🙏 Thank you for your commitment!")
+            # If they already checked it, show this small success message instead of the big banner
+            st.success("🙏 Thank you for your commitment to B&G!")
 
     ca, cb, cc = st.columns([1.8, 1.5, 2.5])
     with ca:
