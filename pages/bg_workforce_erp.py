@@ -520,49 +520,58 @@ with tabs[4]:
                 st.info("No leave records found.")
 
         with admin_tabs[2]: # Detailed Logs
-            st.markdown("#### 🕒 Raw Activity Logs")
-            l_type = st.radio("Select Log Category", ["Attendance", "Work Logs", "Movement", "Plans"], horizontal=True)
+             st.markdown("#### 🕒 Raw Activity Logs (IST Timezone)")
+             l_type = st.radio("Select Log Category", ["Attendance", "Work Logs", "Movement", "Plans"], horizontal=True)
             
-            # --- FIX: Map correct table and date column for each selection ---
-            table_config = {
-                "Attendance": ("attendance_logs", "work_date"),
-                "Work Logs": ("work_logs", "work_date"),
-                "Movement": ("movement_logs", "exit_time"),
-                "Plans": ("work_plans", "plan_date")
-            }
+             # Configuration mapping
+             table_config = {
+                 "Attendance": ("attendance_logs", "work_date"),
+                 "Work Logs": ("work_logs", "work_date"),
+                 "Movement": ("movement_logs", "exit_time"),
+                 "Plans": ("work_plans", "plan_date")
+             }
             
-            tbl, date_col = table_config[l_type]
+             tbl, date_col = table_config[l_type]
             
-            try:
-                # Convert date objects to strings for Supabase filtering
-                start_str = str(sr)
-                end_str = str(er)
-
-                # Query using the dynamically selected table and its correct date column
-                res_query = conn.table(tbl).select("*").gte(date_col, start_str).lte(date_col, end_str).execute()
+             try:
+                 # 1. Fetch Data from Supabase
+                 res_query = conn.table(tbl).select("*").gte(date_col, str(sr)).lte(date_col, str(er)).execute()
                 
-                if res_query.data:
-                    df_v = pd.DataFrame(res_query.data)
+                 if res_query.data:
+                     df_v = pd.DataFrame(res_query.data)
                     
-                    # Apply staff filter if not "All Staff"
-                    if s_name != "All Staff": 
-                        df_v = df_v[df_v['employee_name'] == s_name]
-                    
-                    if not df_v.empty:
-                        st.dataframe(df_v, hide_index=True, use_container_width=True)
-                        st.download_button(
-                            label=f"📥 Export {l_type} to CSV", 
-                            data=convert_df(df_v), 
-                            file_name=f"Admin_{l_type}_{sr}_to_{er}.csv"
-                        )
-                    else:
-                        st.info(f"No {l_type} entries found for {s_name} in this range.")
-                else:
-                    st.info(f"No {l_type} data found between {sr} and {er}.")
-                    
-            except Exception as e:
-                st.error(f"PostgREST Error: Ensure table '{tbl}' has column '{date_col}'. Details: {e}")
+                     # Apply Employee Filter
+                     if s_name != "All Staff": 
+                         df_v = df_v[df_v['employee_name'] == s_name]
 
+                     if not df_v.empty:
+                         # --- TIME LOGIC: Convert UTC to IST for Readability ---
+                         time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
+                         for col in time_cols:
+                             if col in df_v.columns:
+                                 # Convert strings to datetime, localize to UTC, convert to IST
+                                 df_v[col] = pd.to_datetime(df_v[col], errors='coerce').dt.tz_convert(IST).dt.strftime('%d-%m %I:%M %p')
+                        
+                         # Sort by the first column (usually ID or Date) descending
+                         df_v = df_v.sort_values(by=df_v.columns[0], ascending=False)
+
+                         # Display Table
+                         st.dataframe(df_v, hide_index=True, use_container_width=True)
+                        
+                         # Download Button
+                         st.download_button(
+                             label=f"📥 Export {l_type} (IST)", 
+                             data=convert_df(df_v), 
+                             file_name=f"Admin_{l_type}_IST_{sr}_to_{er}.csv"
+                         )
+                     else:
+                         st.info("No records match the current filters.")
+                 else:
+                     st.info("No data found in database for this range.")
+                    
+             except Exception as e:
+                 st.error(f"PostgREST Error: {e}")
+                
         with admin_tabs[3]: # Leave Approval logic
             pend = get_leave_requests()
             if not pend.empty:
