@@ -171,24 +171,30 @@ with tabs[0]:
                 st.session_state['snooze_until'] = get_now_ist() + timedelta(minutes=10); st.rerun()
         st.stop()
 
-    # --- 7. COMMITMENT BANNER (Fixed: Stays hidden after checking) ---
+    # --- 7. COMMITMENT BANNER (STRICT PERSISTENCE FIX) ---
     if log_data and not log_data.get('punch_out'):
-        # We check if the user has ALREADY checked it in this session
-        # or if it was already saved in the database for today
-        already_promised = st.session_state.get("sys_promise", False) or log_data.get('system_promise', False)
+        # 1. Initialize a PERMANENT variable if it doesn't exist
+        if "promise_confirmed" not in st.session_state:
+            # Check if database already has it, otherwise False
+            st.session_state["promise_confirmed"] = log_data.get('system_promise', False)
 
-        if not already_promised:
-            st.markdown(
-                """<div style="background-color:#f8f9fb; padding:15px; border-radius:10px; border-left: 5px solid #007bff; margin-bottom:15px;">
-                <p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">
-                "I am dedicated to B&G’s systems. Following the system today is my path to precision."
-                </p></div>""", unsafe_allow_html=True
-            )
-            # When this is clicked, st.session_state["sys_promise"] becomes True
-            st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="sys_promise")
+        # 2. Logic to hide/show
+        if not st.session_state["promise_confirmed"]:
+            with st.container(border=True):
+                st.markdown(
+                    """<div style="background-color:#f8f9fb; padding:10px; border-left: 5px solid #007bff;">
+                    <p style="font-size:18px; font-weight:bold; color:#1f1f1f; margin:0;">
+                    "I am dedicated to B&G’s systems. Following the system today is my path to precision."
+                    </p></div>""", unsafe_allow_html=True
+                )
+                
+                # Use a temporary checkbox and update the PERMANENT variable immediately
+                if st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="temp_promise_check"):
+                    st.session_state["promise_confirmed"] = True
+                    st.rerun() # Force a rerun to hide the banner immediately
         else:
-            # If they already checked it, show this small success message instead of the big banner
-            st.success("🙏 Thank you for your commitment to B&G!")
+            # Show a small confirmation instead of the big banner
+            st.success("🙏 System Commitment Acknowledged for today's shift.")
 
     ca, cb, cc = st.columns([1.8, 1.5, 2.5])
     with ca:
