@@ -43,13 +43,17 @@ main_tabs = st.tabs(["🛒 Purchase Console", "📝 New Indent", "📦 Stores GR
 with main_tabs[0]:
     st.subheader("📋 Pending Material Requests")
     
-    # Fetch data: Everything triggered but not yet Received/Rejected
     res = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
     df_p = pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
     if not df_p.empty:
-        # Sort so newest/Urgent are prominent
-        df_p = df_p.sort_values(by=['is_urgent', 'created_at'], ascending=[False, False])
+        # Sort so newest/Urgent are prominent - using .get() for safety
+        sort_cols = []
+        if 'is_urgent' in df_p.columns: sort_cols.append('is_urgent')
+        if 'created_at' in df_p.columns: sort_cols.append('created_at')
+        
+        if sort_cols:
+            df_p = df_p.sort_values(by=sort_cols, ascending=[False for _ in sort_cols])
         
         for _, row in df_p.iterrows():
             urgent_tag = "🚨 [URGENT]" if row.get('is_urgent') else ""
@@ -58,13 +62,13 @@ with main_tabs[0]:
             
             with st.container(border=True):
                 h1, h2, h3 = st.columns([2, 2, 1])
-                h1.write(f"**Indent #{indent_id}** | Job: {row['job_no']}")
+                h1.write(f"**Indent #{indent_id}** | Job: {row.get('job_no', 'N/A')}")
                 h1.caption(f"Raised by: **{raised_by}** | Group: {row.get('material_group', 'General')}")
                 
-                h2.write(f"{urgent_tag} **{row['item_name']}**")
-                h2.caption(f"Qty: {row['quantity']} {row.get('units', 'Nos')} | Notes: {row.get('special_notes', '-')}")
+                h2.write(f"{urgent_tag} **{row.get('item_name', 'Unnamed Item')}**")
+                h2.caption(f"Qty: {row.get('quantity', 0)} {row.get('units', 'Nos')} | Notes: {row.get('special_notes', '-')}")
                 
-                h3.write(f"Status: `{row['status']}`")
+                h3.write(f"Status: `{row.get('status', 'Triggered')}`")
                 
                 with st.expander("🛠️ Action: Process PO / Reject"):
                     c1, c2, c3 = st.columns(3)
@@ -89,26 +93,21 @@ with main_tabs[0]:
     else:
         st.info("No active material requests found.")
 
-# --- TAB 2: INDENT APPLICATION (The Hub) ---
+# --- TAB 2: INDENT APPLICATION ---
 with main_tabs[1]:
     st.subheader("📝 Create New Material Indent")
-    
-    # Selection of Staff Name from Master List
     raised_by_name = st.selectbox("Identify Yourself (Indent Raised By)", get_staff_list())
     
-    # Session State for Multi-Item Indent
     if "indent_cart" not in st.session_state:
         st.session_state.indent_cart = []
 
-    # --- PART A: ADD ITEM TO CART ---
     with st.expander("➕ Add Item to this Indent", expanded=True):
         with st.form("indent_item_form", clear_on_submit=True):
             col1, col2 = st.columns(2)
             selected_jobs = col1.multiselect("Select Job Nos", get_jobs())
             mat_group = col2.selectbox("Material Group", get_material_groups())
-            
             i_desc = st.text_input("Item Name / Description")
-            i_specs = st.text_area("Specifications (Size/Grade/Brand)")
+            i_specs = st.text_area("Specifications")
             
             c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
             i_qty = c1.number_input("Quantity", min_value=0.1)
@@ -130,13 +129,10 @@ with main_tabs[1]:
                         "triggered_by": raised_by_name,
                         "status": "Triggered"
                     })
-                    st.toast("Item Added to List!")
-                else:
-                    st.error("Please provide Job No and Item Name.")
+                    st.toast("Item Added!")
+                else: st.error("Provide Job No and Item Name.")
 
-    # --- PART B: REVIEW AND FINAL SUBMIT ---
     if st.session_state.indent_cart:
-        st.write("---")
         st.write("### Review Draft Indent")
         cart_df = pd.DataFrame(st.session_state.indent_cart)
         st.dataframe(cart_df[['job_no', 'item_name', 'quantity', 'units', 'is_urgent']], use_container_width=True, hide_index=True)
@@ -148,20 +144,15 @@ with main_tabs[1]:
             
         if btn_c2.button("🚀 FINAL SUBMIT INDENT", type="primary", use_container_width=True):
             try:
-                # 1. Create a Header entry to get a unique Indent No
                 header = conn.table("indent_headers").insert({"raised_by": raised_by_name}).execute()
                 new_indent_id = header.data[0]['indent_no']
                 
-                # 2. Push all cart items to the database with the linked Indent No
                 for item in st.session_state.indent_cart:
                     item['indent_no'] = new_indent_id
                     conn.table("purchase_orders").insert(item).execute()
                 
-                st.success(f"Indent #{new_indent_id} submitted successfully!")
-                st.session_state.indent_cart = []
-                st.rerun()
-            except Exception as e:
-                st.error(f"Submit Error: {e}")
+                st.success(f"Indent #{new_indent_id} submitted!"); st.session_state.indent_cart = []; st.rerun()
+            except Exception as e: st.error(f"Submit Error: {e}")
 
 # --- TAB 3: STORES GRN ---
 with main_tabs[2]:
@@ -172,42 +163,27 @@ with main_tabs[2]:
         for row in res_s.data:
             with st.container(border=True):
                 s1, s2, s3 = st.columns([2, 2, 1])
-                s1.write(f"**PO No:** {row.get('po_no')} | **Indent:** {row.get('indent_no')}")
-                s1.caption(f"Job: {row['job_no']}")
-                
-                s2.write(f"**Item:** {row['item_name']}")
-                s2.caption(f"Qty: {row['quantity']} {row.get('units')}")
-                
+                s1.write(f"**PO:** {row.get('po_no', 'N/A')} | **Indent:** {row.get('indent_no')}")
+                s2.write(f"**Item:** {row.get('item_name')}")
                 if s3.popover("📥 Log Receipt"):
                     r_date = st.date_input("Received Date", value=date.today(), key=f"rdt_{row['id']}")
-                    r_note = st.text_area("Stores Remarks (Shortage/Damage?)", key=f"snote_{row['id']}")
+                    r_note = st.text_area("Remarks", key=f"snote_{row['id']}")
                     if st.button("Confirm Arrival", key=f"sbtn_{row['id']}", type="primary"):
-                        conn.table("purchase_orders").update({
-                            "status": "Received",
-                            "received_date": str(r_date),
-                            "stores_remarks": r_note
-                        }).eq("id", row['id']).execute()
-                        st.success("Item Marked as Received!"); st.rerun()
-    else:
-        st.info("No items currently marked as 'Ordered' (Waiting for Purchase PO).")
+                        conn.table("purchase_orders").update({"status": "Received", "received_date": str(r_date), "stores_remarks": r_note}).eq("id", row['id']).execute()
+                        st.success("Received!"); st.rerun()
+    else: st.info("No items pending receipt.")
 
 # --- TAB 4: MASTER SETUP ---
 with main_tabs[3]:
-    st.subheader("⚙️ Materials Master Configuration")
-    
+    st.subheader("⚙️ Materials Master")
     m_col1, m_col2 = st.columns(2)
-    
     with m_col1:
-        st.markdown("**Add Material Group**")
         with st.form("master_group_form", clear_on_submit=True):
-            new_g = st.text_input("New Group Name (e.g., Raw Steel)")
-            if st.form_submit_button("➕ Save Group"):
+            new_g = st.text_input("New Group Name")
+            if st.form_submit_button("➕ Save"):
                 if new_g:
                     conn.table("material_master").insert({"material_group": new_g.upper()}).execute()
-                    st.success("Group Added!"); st.rerun()
-
+                    st.success("Added!"); st.rerun()
     with m_col2:
-        st.markdown("**Current Groups**")
         groups = conn.table("material_master").select("*").execute().data
-        if groups:
-            st.dataframe(pd.DataFrame(groups)[['material_group']], hide_index=True, use_container_width=True)
+        if groups: st.dataframe(pd.DataFrame(groups)[['material_group']], hide_index=True, use_container_width=True)
