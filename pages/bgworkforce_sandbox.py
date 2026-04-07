@@ -6,7 +6,7 @@ import pytz
 
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
-LATE_THRESHOLD = time(8, 35) 
+LATE_THRESHOLD = time(8, 35) # B&G Standard
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
 
@@ -46,7 +46,6 @@ def get_job_codes():
     except: return ["GENERAL"]
 
 def is_log_due(employee_name):
-    # REMOVED snooze check from here to handle it only in the main UI logic
     now_t = get_now_ist().strftime("%H:%M")
     past_slots = [s for s in LOG_SLOTS if s <= now_t]
     if not past_slots: return None
@@ -83,7 +82,6 @@ with tabs[0]:
     att_user = st.session_state["authenticated_user"]
     today = str(date.today())
     
-    # Logout option
     if st.button("🔓 Logout / Switch User"):
         st.session_state["authenticated_user"] = None
         st.session_state["admin_authenticated"] = False
@@ -109,7 +107,7 @@ with tabs[0]:
                         st.success("Sent!"); st.rerun()
 
         st.markdown(f"**📥 Today's Messages ({today})**")
-        st.markdown('<div style="height:200px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff;">', unsafe_allow_html=True)
+        st.markdown('<div style="height:250px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff;">', unsafe_allow_html=True)
         today_msgs = conn.table("founder_interaction").select("*").gte("created_at", f"{today}T00:00:00").order("created_at", desc=True).execute().data
         if today_msgs:
             for r in today_msgs:
@@ -156,21 +154,21 @@ with tabs[0]:
 
     st.divider()
 
-    # --- DATA FETCHING FOR ATTENDANCE ---
+    # --- CORE DATA FETCH ---
     emp_summ_res = conn.table("attendance_logs").select("*").eq("employee_name", att_user).eq("work_date", today).execute().data
     log_data = emp_summ_res[0] if emp_summ_res else {}
 
-    # --- 6. MANDATORY SNOOZE LOGS (FIXED: Localized logic to prevent blank screens) ---
+    # --- SNOOZE LOGIC (Local Flag to prevent Blank Tabs) ---
     due_slot = is_log_due(att_user)
     now_ist = get_now_ist()
     is_snoozed = "snooze_until" in st.session_state and now_ist < st.session_state["snooze_until"]
     
-    show_main_controls = True # Flag to control visibility inside Tab 0
+    show_tab0_content = True
 
     if due_slot and not is_snoozed:
         st.warning(f"🔔 MANDATORY UPDATE: Past {get_ampm_label(due_slot)}")
         with st.form("mandatory_form"):
-            m_job = st.selectbox("Job No", get_job_codes(), key="man_job")
+            m_job = st.selectbox("Job No", get_job_codes(), key="m_j_s")
             m_task = st.text_area("Last hour update?")
             cf1, cf2 = st.columns(2)
             if cf1.form_submit_button("✅ Post Log"):
@@ -180,10 +178,10 @@ with tabs[0]:
             if cf2.form_submit_button("🕒 Snooze (10m)"):
                 st.session_state['snooze_until'] = now_ist + timedelta(minutes=10)
                 st.rerun()
-        show_main_controls = False # Hide the rest of Tab 0
+        show_tab0_content = False
     
-    if show_main_controls:
-        # --- 7. COMMITMENT BANNER ---
+    if show_tab0_content:
+        # --- COMMITMENT BANNER ---
         if log_data and not log_data.get('punch_out'):
             if "promise_confirmed" not in st.session_state:
                 st.session_state["promise_confirmed"] = log_data.get('system_promise', False)
@@ -192,13 +190,12 @@ with tabs[0]:
                 with st.container(border=True):
                     st.markdown('<div style="background-color:#f8f9fb; padding:10px; border-left: 5px solid #007bff;">'
                                 '<b>"I am dedicated to B&G’s systems. Following the system today is my path to precision."</b></div>', unsafe_allow_html=True)
-                    if st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="temp_promise_check"):
+                    if st.checkbox("🛡️ I acknowledge and commit...", key="temp_promise_check"):
                         st.session_state["promise_confirmed"] = True
                         st.rerun()
-            else:
-                st.success("🙏 System Commitment Acknowledged.")
+            else: st.success("🙏 System Commitment Acknowledged.")
 
-        # --- 8. SHIFT CONTROLS (PUNCH LOGIC) ---
+        # --- SHIFT CONTROLS ---
         ca, cb, cc = st.columns([1.8, 1.5, 2.5])
         with ca:
             st.markdown("### 🏢 Shift")
@@ -208,16 +205,15 @@ with tabs[0]:
             else:
                 if not log_data.get('punch_out'):
                     st.markdown("**Productivity Rating**")
-                    work_sat = st.feedback("stars", key="prod_stars") 
+                    work_sat = st.feedback("stars", key="prod_stars_fb") 
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
                         conn.table("attendance_logs").update({
                             "punch_out": get_now_ist().isoformat(), 
                             "work_satisfaction": work_sat,
                             "system_promise": st.session_state.get("promise_confirmed", False)
-                        }).eq("id", log_data['id']).execute()
-                        st.cache_data.clear(); st.rerun()
+                        }).eq("id", log_data['id']).execute(); st.cache_data.clear(); st.rerun()
                 else: st.success("Shift Completed")
-
+        
         with cb:
             st.markdown("### 🚶 Move")
             move_res = conn.table("movement_logs").select("*").eq("employee_name", att_user).is_("return_time", "null").execute().data
@@ -229,33 +225,80 @@ with tabs[0]:
             else:
                 if st.button("📥 IN", type="primary"):
                     conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", move_res[0]['id']).execute(); st.rerun()
+        
         with cc:
             st.markdown("### 📝 Log")
             with st.form("w_form"):
-                j = st.selectbox("Job", get_job_codes(), key="job_sel_log")
+                j = st.selectbox("Job", get_job_codes(), key="log_j")
                 t = st.text_area("Task Update")
                 if st.form_submit_button("Post Work Log"):
                     conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{j}] {t}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
 
-# --- TAB 5: HR ADMIN PANEL (WITH ANALYTICS & GRADING) ---
-with tabs[4]:
-    admin_pass = st.text_input("Admin Password", type="password", key="hr_admin_pw")
-    if admin_pass == "bgadmin":
-        admin_tabs = st.tabs(["📈 Analytics & Grading", "📊 Performance Audit", "📬 Approvals", "🔐 Access Keys"])
-        
-        with admin_tabs[0]:
-            st.subheader("📊 Employee Performance Dashboard")
-            c1, c2, c3 = st.columns([2, 2, 1])
-            target_emp = c1.selectbox("Select Employee", get_staff_list(), key="hr_target")
-            report_period = c2.selectbox("Period", ["Last 7 Days", "This Month", "Year to Date", "Custom"], key="hr_period")
-            
-            if report_period == "Custom":
-                sr, er = st.date_input("Start"), st.date_input("End")
-            else:
-                er = date.today()
-                sr = er - timedelta(days=7) if report_period == "Last 7 Days" else er.replace(day=1) if report_period == "This Month" else er.replace(month=1, day=1)
+# --- TAB 1: STAFF DATA HISTORY ---
+with tabs[1]:
+    st.subheader(f"📊 Personal History: {att_user}")
+    h_col1, h_col2 = st.columns([1, 2])
+    with h_col1:
+        hist_type = st.radio("Select View", ["My Work Logs", "My Attendance History", "My Work Plans"], horizontal=True)
+        hist_range = st.date_input("Select Date Range", [date.today() - timedelta(days=7), date.today()])
+    if len(hist_range) == 2:
+        start_d, end_d = hist_range
+        table_name, date_col = ("work_logs", "work_date") if hist_type == "My Work Logs" else ("attendance_logs", "work_date") if hist_type == "My Attendance History" else ("work_plans", "plan_date")
+        hist_res = conn.table(table_name).select("*").eq("employee_name", att_user).gte(date_col, str(start_d)).lte(date_col, str(end_d)).order(date_col, desc=True).execute().data
+        if hist_res:
+            df_hist = pd.DataFrame(hist_res)
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+            st.download_button(f"📥 Download {hist_type}", data=convert_df(df_hist), file_name=f"history.csv")
 
-            if st.button("📈 Generate Detailed Report", type="primary"):
+# --- TAB 2: LEAVE APPLICATION ---
+with tabs[2]:
+    st.subheader("New Leave Application")
+    with st.form("leave_form"):
+        l_emp = st.selectbox("Confirm Your Name", get_staff_list(), index=get_staff_list().index(att_user) if att_user in get_staff_list() else 0)
+        sd, ed = st.date_input("Start date"), st.date_input("End date")
+        reason_l = st.text_area("Reason")
+        if st.form_submit_button("Submit"):
+            conn.table("leave_requests").insert({"employee_name": l_emp, "leave_type": "Casual Leave", "start_date": str(sd), "end_date": str(ed), "reason": reason_l, "status": "Pending"}).execute()
+            st.success("Submitted"); st.rerun()
+
+    st.divider()
+    st.subheader("📜 Recent Requests")
+    df_l_all = get_leave_requests()
+    if not df_l_all.empty:
+        my_req = df_l_all[df_l_all['employee_name'] == l_emp].head(10)
+        for _, r in my_req.iterrows():
+            with st.container(border=True):
+                st.write(f"📅 **{r['start_date']} to {r['end_date']}** | Status: {r['status']}")
+                if r['status'] == 'Pending':
+                    if st.button("Withdraw", key=f"wd_{r['id']}"):
+                        conn.table("leave_requests").delete().eq("id", r['id']).execute(); st.rerun()
+
+# --- TAB 3: BALANCE ---
+with tabs[3]:
+    st.subheader("📊 Your Leave Balance")
+    u_sel = st.selectbox("Check Balance for:", get_staff_list(), key="bal_u")
+    df_l = get_leave_requests()
+    if not df_l.empty:
+        app_df = df_l[(df_l['employee_name'] == u_sel) & (df_l['status'] == 'Approved')]
+        used = ((pd.to_datetime(app_df['end_date']) - pd.to_datetime(app_df['start_date'])).dt.days + 1).sum() if not app_df.empty else 0
+        st.metric("Casual Leave Balance", f"{int(12 - used)} Left", f"Used: {int(used)}")
+
+# --- TAB 4: HR ADMIN PANEL (Analytics & Keys) ---
+with tabs[4]:
+    admin_pass = st.text_input("Admin Password", type="password", key="hr_final_pw")
+    if admin_pass == "bgadmin":
+        hr_tabs = st.tabs(["📈 Analytics & Grading", "📊 Raw Logs", "📬 Approvals", "🔐 Access Keys"])
+        
+        with hr_tabs[0]:
+            st.subheader("Employee Performance Dashboard")
+            c1, c2 = st.columns(2)
+            target_emp = c1.selectbox("Select Staff", get_staff_list(), key="hr_sel")
+            report_period = c2.selectbox("Period", ["Last 7 Days", "This Month", "Year to Date"])
+            
+            er = date.today()
+            sr = er - timedelta(days=7) if report_period == "Last 7 Days" else er.replace(day=1) if report_period == "This Month" else er.replace(month=1, day=1)
+            
+            if st.button("Generate Performance Report"):
                 att_res = conn.table("attendance_logs").select("*").eq("employee_name", target_emp).gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
                 plan_res = conn.table("work_plans").select("*").eq("employee_name", target_emp).gte("plan_date", str(sr)).lte("plan_date", str(er)).execute().data
                 
@@ -271,32 +314,35 @@ with tabs[4]:
                     efficiency = (comp_tasks / total_tasks * 100) if total_tasks > 0 else 0
                     avg_rating = df_att['work_satisfaction'].mean() if 'work_satisfaction' in df_att.columns else 0
 
-                    # Grading Logic
-                    if efficiency >= 90 and late_days == 0 and avg_rating >= 4.5:
-                        grade, color, note = "A+", "#28a745", "Outstanding Performer"
-                    elif efficiency >= 80 and late_days <= 2:
-                        grade, color, note = "A", "#17a2b8", "Strong Contributor"
-                    elif efficiency >= 60:
-                        grade, color, note = "B", "#ffc107", "Meeting Expectations"
-                    else:
-                        grade, color, note = "C", "#dc3545", "Review Required"
+                    if efficiency >= 90 and late_days == 0: grade, color = "A+", "#28a745"
+                    elif efficiency >= 75: grade, color = "B", "#ffc107"
+                    else: grade, color = "C", "#dc3545"
 
-                    st.markdown(f'<div style="background-color:{color}; padding:20px; border-radius:15px; text-align:center; color:white;">'
-                                f'<h1 style="margin:0;">{grade}</h1><p>{note}</p></div>', unsafe_allow_html=True)
-                    
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Punctuality", f"{total_days - late_days}/{total_days}", f"{late_days} Late", delta_color="inverse")
-                    m2.metric("Efficiency", f"{efficiency:.0f}%", f"{comp_tasks} Tasks")
-                    m3.metric("Avg Rating", f"{avg_rating:.1f} ⭐")
-                    m4.metric("Promise Rate", f"{(df_att['system_promise'].sum() / total_days * 100):.0f}%" if total_days > 0 else "0%")
+                    st.markdown(f'<div style="background-color:{color}; padding:20px; border-radius:15px; text-align:center; color:white;"><h1>{grade}</h1></div>', unsafe_allow_html=True)
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Punctuality", f"{total_days-late_days}/{total_days} Days")
+                    m2.metric("Efficiency", f"{efficiency:.0f}%")
+                    m3.metric("Avg Stars", f"{avg_rating:.1f} ⭐")
 
-        with admin_tabs[1]:
-             # Export Interation History Logic (Move from Tab 0 to here)
-             st.subheader("💾 System Audit Export")
-             raw_int = conn.table("founder_interaction").select("*").order("created_at", desc=True).execute().data
-             if raw_int:
-                 st.download_button("📥 Download All Communications CSV", data=convert_df(pd.DataFrame(raw_int)), file_name="BG_Interaction_Audit.csv")
+        with hr_tabs[1]:
+            st.subheader("💾 System Audit Export")
+            raw_int = conn.table("founder_interaction").select("*").execute().data
+            if raw_int: st.download_button("📥 Export Communication CSV", data=convert_df(pd.DataFrame(raw_int)), file_name="audit.csv")
 
-        with admin_tabs[3]:
-             # (Existing Access Key logic preserved)
-             pass
+        with hr_tabs[2]: # Leave Approvals
+            pend = get_leave_requests()
+            if not pend.empty:
+                to_app = pend[pend['status'] == 'Pending']
+                for _, r in to_app.iterrows():
+                    with st.container(border=True):
+                        st.write(f"**{r['employee_name']}**: {r['start_date']} to {r['end_date']}")
+                        if st.button("Approve", key=f"appr_{r['id']}"):
+                            conn.table("leave_requests").update({"status": "Approved"}).eq("id", r['id']).execute(); st.rerun()
+
+        with hr_tabs[3]: # Access Key Management
+            st.subheader("Set Access Keys")
+            with st.form("key_update"):
+                t_e = st.selectbox("Staff", get_staff_list())
+                n_k = st.text_input("New Key", type="password")
+                if st.form_submit_button("Update"):
+                    conn.table("employee_auth").upsert({"employee_name": t_e, "access_key": n_k}).execute(); st.success("Updated")
