@@ -245,17 +245,37 @@ with tabs[0]:
                     if log_data.get('work_satisfaction'): st.write(f"Rating: {'⭐' * int(log_data['work_satisfaction'])}")
 
         with cb:
-            st.markdown("### 🚶 Move")
-            if not move_summ_res:
-                with st.form("move_form"):
+            st.markdown("### 🚶 Movement")
+            
+            # Logic: Look for movements where return_time is NULL AND it happened TODAY
+            # This prevents old forgotten 'Out' logs from breaking today's dashboard
+            active_move = [m for m in move_summ_res if m['exit_time'][:10] == today]
+            
+            if not active_move:
+                # If no active movement, show the "OUT" form
+                with st.form("move_form", clear_on_submit=True):
                     reason = st.selectbox("Category", ["Meeting", "Material", "Inspection", "Lunch", "Personal"])
                     dest = st.text_input("Destination")
-                    if st.form_submit_button("📤 TIME OUT") and dest:
-                        conn.table("movement_logs").insert({"employee_name": att_user, "reason": reason, "destination": dest.upper(), "exit_time": get_now_ist().isoformat()}).execute(); st.rerun()
+                    if st.form_submit_button("📤 TIME OUT", use_container_width=True):
+                        if dest:
+                            conn.table("movement_logs").insert({
+                                "employee_name": att_user, 
+                                "reason": reason, 
+                                "destination": dest.upper(), 
+                                "exit_time": get_now_ist().isoformat()
+                            }).execute()
+                            st.rerun()
+                        else:
+                            st.error("Enter Destination")
             else:
+                # If currently "OUT", show where they are and the "IN" button
+                current = active_move[0]
+                st.info(f"📍 **Currently at:** {current['destination']}")
                 if st.button("📥 LOG TIME IN", type="primary", use_container_width=True):
-                    conn.table("movement_logs").update({"return_time": get_now_ist().isoformat()}).eq("id", move_summ_res[0]['id']).execute(); st.rerun()
-
+                    conn.table("movement_logs").update({
+                        "return_time": get_now_ist().isoformat()
+                    }).eq("id", current['id']).execute()
+                    st.rerun()
         with cc:
             st.markdown("### 📝 Log")
             with st.form("manual_work_log"):
