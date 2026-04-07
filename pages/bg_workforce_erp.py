@@ -127,7 +127,9 @@ with tabs[0]:
             today_msgs = conn.table("founder_interaction").select("*").gte("created_at", f"{today}T00:00:00").order("created_at", desc=True).execute().data
             if today_msgs:
                 for r in today_msgs:
-                    st.caption(f"**{r['sender_name']}** to **{r['target_user']}** | {r['created_at'][11:16]}")
+                    # Convert the database UTC time to IST for the display
+                    msg_ist = pd.to_datetime(r['created_at']).tz_convert(IST).strftime("%I:%M %p")
+                    st.caption(f"**{r['sender_name']}** to **{r['target_user']}** | {msg_ist}")
                     st.write(r['content'])
                     if r.get('reply_content'): st.info(f"Reply: {r['reply_content']}")
                     st.divider()
@@ -365,11 +367,13 @@ with tabs[1]:
         if hist_res:
             df_hist = pd.DataFrame(hist_res)
             
-            # --- IMPROVEMENT: Format Timestamps for readability ---
+            # FIX: Convert to IST before formatting for display
             time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
             for col in time_cols:
                 if col in df_hist.columns:
-                    df_hist[col] = pd.to_datetime(df_hist[col]).dt.strftime('%d-%m %I:%M %p')
+                    df_hist[col] = pd.to_datetime(df_hist[col], errors='coerce') \
+                                     .dt.tz_convert(IST) \
+                                     .dt.strftime('%d-%m %I:%M %p')
             
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             
@@ -598,14 +602,25 @@ with tabs[4]:
             l_type = st.radio("Category", ["Attendance", "Work Logs", "Movement", "Plans"], horizontal=True, key="log_cat_adm")
             tbl_map = {"Attendance": "attendance_logs", "Work Logs": "work_logs", "Movement": "movement_logs", "Plans": "work_plans"}
             date_col_map = {"Attendance": "work_date", "Work Logs": "work_date", "Movement": "exit_time", "Plans": "plan_date"}
-            
+    
             res = conn.table(tbl_map[l_type]).select("*").gte(date_col_map[l_type], str(sr)).lte(date_col_map[l_type], str(er)).execute().data
             if res:
                 df_v = pd.DataFrame(res)
-                if s_name != "All Staff": df_v = df_v[df_v['employee_name'] == s_name]
-                st.dataframe(df_v, hide_index=True, use_container_width=True)
-                st.download_button("📥 Export CSV", data=convert_df(df_v), file_name=f"Admin_{l_type}.csv")
+                if s_name != "All Staff": 
+                    df_v = df_v[df_v['employee_name'] == s_name]
+        
+                # --- FIX STARTS HERE: Force IST Conversion before display/export ---
+                time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
+                for col in time_cols:
+                    if col in df_v.columns:
+                        # Convert UTC string to IST and format as readable string
+                        df_v[col] = pd.to_datetime(df_v[col], errors='coerce').dt.tz_convert(IST).dt.strftime('%d-%m %I:%M %p')
+        
+                df_v = df_v.fillna("None") # Clean up empty values
+                # --- FIX ENDS HERE ---
 
+                st.dataframe(df_v, hide_index=True, use_container_width=True)
+                st.download_button("📥 Export CSV", data=convert_df(df_v), file_name=f"Admin_{l_type}_IST.csv")
         # --- SUB-TAB 3: APPROVALS ---
         with admin_tabs[3]:
             pend = get_leave_requests()
