@@ -1,12 +1,12 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 import pytz
 
 # --- 1. SETUP & THEME ---
 IST = pytz.timezone('Asia/Kolkata')
-st.set_page_config(page_title="Material Management | B&G", layout="wide", page_icon="🏗️")
+st.set_page_config(page_title="Purchase Integration | B&G", layout="wide", page_icon="🛒")
 
 # --- PASSWORD PROTECTION ---
 def check_password():
@@ -19,171 +19,164 @@ def check_password():
 
 if not check_password(): st.stop()
 
+st.markdown("""
+    <style>
+    .section-header { background-color: #f8f9fa; padding: 10px; border-radius: 8px; border-left: 5px solid #007bff; margin-bottom: 15px; font-weight: bold; }
+    .tag-anchor { background-color: #e7f3ff; color: #007bff; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 11px; }
+    .tag-prod { background-color: #f0fff4; color: #28a745; padding: 4px 10px; border-radius: 5px; font-weight: bold; font-size: 11px; }
+    .aging-red { color: white; background-color: #dc3545; padding: 3px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; animation: blinker 1.5s linear infinite; }
+    .aging-orange { color: #856404; background-color: #fff3cd; padding: 3px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; }
+    @keyframes blinker { 50% { opacity: 0.5; } }
+    </style>
+    """, unsafe_allow_html=True)
+
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# --- 2. DATA LOADERS ---
-def get_jobs():
-    res = conn.table("anchor_projects").select("job_no").execute()
-    return sorted([str(r['job_no']) for r in res.data if r.get('job_no')]) if res.data else []
-
-def get_material_groups():
-    res = conn.table("material_master").select("material_group").execute()
-    return sorted([str(r['material_group']) for r in res.data]) if res.data else ["GENERAL"]
-
-def get_staff_list():
+# --- 2. DATA LOADERS & AGING LOGIC ---
+def calculate_aging(created_at_str):
+    """Returns days elapsed and a formatted HTML tag."""
     try:
-        res = conn.table("master_staff").select("name").execute()
-        return sorted([r['name'] for r in res.data]) if res.data else ["Admin", "General Staff"]
-    except: return ["Admin", "General Staff"]
-
-# --- 3. NAVIGATION ---
-main_tabs = st.tabs(["🛒 Purchase Console", "📝 New Indent", "📦 Stores GRN", "⚙️ Master Setup"])
-
-# --- TAB 1: PURCHASE CONSOLE ---
-with main_tabs[0]:
-    st.subheader("📋 Pending Material Requests")
-    
-    res = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
-    df_p = pd.DataFrame(res.data) if res.data else pd.DataFrame()
-
-    if not df_p.empty:
-        # Sort so newest/Urgent are prominent - using .get() for safety
-        sort_cols = []
-        if 'is_urgent' in df_p.columns: sort_cols.append('is_urgent')
-        if 'created_at' in df_p.columns: sort_cols.append('created_at')
+        if not created_at_str: return 0, ""
+        created_at = pd.to_datetime(created_at_str).replace(tzinfo=timezone.utc).astimezone(IST)
+        now = datetime.now(IST)
         
-        if sort_cols:
-            df_p = df_p.sort_values(by=sort_cols, ascending=[False for _ in sort_cols])
+        # Calculate DAYS instead of hours
+        diff = now - created_at
+        days = diff.total_seconds() / 86400  # 86400 seconds in a day
         
-        for _, row in df_p.iterrows():
-            urgent_tag = "🚨 [URGENT]" if row.get('is_urgent') else ""
-            indent_id = row.get('indent_no', 'Direct')
-            raised_by = row.get('triggered_by', 'Unknown')
+        if days >= 2:
+            return days, f'<span class="aging-red">🛑 CRITICAL: {int(days)} DAYS</span>'
+        elif days >= 1:
+            return days, f'<span class="aging-orange">⚠️ DELAYED: {int(days)} DAY</span>'
+        else:
+            # Show hours if it's less than a day
+            hrs = int(diff.total_seconds() / 3600)
+            return days, f'<span style="color:gray; font-size:11px;">⏱️ {hrs}h ago</span>'
+    except:
+        return 0, ""
+
+@st.cache_data(ttl=2)
+def get_full_purchase_data():
+    try:
+        proj_res = conn.table("anchor_projects").select("*").execute()
+        items_res = conn.table("purchase_orders").select("*").execute()
+        df_all_proj = pd.DataFrame(proj_res.data or [])
+        df_items = pd.DataFrame(items_res.data or [])
+        
+        if not df_all_proj.empty:
+            # Identify jobs with any status that isn't 'Received'
+            active_item_jobs = df_items[df_items['status'] != "Received"]['job_no'].astype(str).str.upper().unique() if not df_items.empty else []
             
-            with st.container(border=True):
-                h1, h2, h3 = st.columns([2, 2, 1])
-                h1.write(f"**Indent #{indent_id}** | Job: {row.get('job_no', 'N/A')}")
-                h1.caption(f"Raised by: **{raised_by}** | Group: {row.get('material_group', 'General')}")
+            # Show if: Status is Won OR has active purchase items OR manually triggered
+            mask = (df_all_proj['status'] == "Won") | \
+                   (df_all_proj['job_no'].astype(str).str.upper().isin(active_item_jobs)) | \
+                   (df_all_proj.get('purchase_trigger') == True)
+            
+            df_p = df_all_proj[mask]
+            return df_p, df_items
+        return pd.DataFrame(), df_items
+    except Exception as e:
+        st.error(f"Sync Error: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+# LOAD DATA
+df_p, df_items = get_full_purchase_data()
+
+# --- 3. HEADER & SEARCH ---
+st.title("🛒 Purchase Integration Console")
+
+search_col, spacer = st.columns([1, 2])
+search_query = search_col.text_input("🔍 Search Job No or Client", placeholder="Ex: BGE-101...").strip().upper()
+
+# --- 4. PRODUCTIVITY SUMMARY ---
+if not df_items.empty:
+    pending_items = df_items[df_items['status'] != "Received"].copy()
+    if not pending_items.empty:
+        aging_results = pending_items['created_at'].apply(calculate_aging)
+        pending_items['days_old'] = [res[0] for res in aging_results]
+        
+        # Alerts based on Days
+        critical_count = len(pending_items[pending_items['days_old'] >= 2])
+        warning_count = len(pending_items[(pending_items['days_old'] >= 1) & (pending_items['days_old'] < 2)])
+        
+        if critical_count > 0:
+            st.error(f"🚨 **Productivity Alert:** {critical_count} items are Critical (>2 Days).")
+        elif warning_count > 0:
+            st.warning(f"⚠️ **Attention:** {warning_count} items are becoming delayed (>1 Day).")
+
+# --- 5. ACTION CENTER ---
+if not df_p.empty:
+    # Apply Search Filter (FIXED)
+    if search_query:
+        df_p = df_p[
+            (df_p['job_no'].astype(str).str.upper().str.contains(search_query, na=False)) | 
+            (df_p['client_name'].astype(str).str.upper().str.contains(search_query, na=False))
+        ]
+
+    for _, p_row in df_p.iterrows():
+        job_no = str(p_row.get('job_no', 'N/A')).strip().upper()
+        p_db_id = p_row['id']
+        
+        job_items = df_items[df_items['job_no'].astype(str).str.upper() == job_no] if not df_items.empty else pd.DataFrame()
+        active_items = job_items[job_items['status'] != "Received"].copy()
+        
+        # Only show the expander if there are active items to handle
+        if active_items.empty: continue 
+
+        # TAGGING LOGIC: PRODUCTION VS ANCHOR
+        active_items['is_prod'] = active_items.apply(lambda x: 
+            any(word in str(x['item_name']).upper() for word in ["SHOP", "URGENT"]) or 
+            any(word in str(x['specs']).upper() for word in ["SHOP", "URGENT"]), axis=1)
+        
+        prod_count = active_items['is_prod'].sum()
+        anchor_count = len(active_items) - prod_count
+        job_has_critical = any(calculate_aging(r.get('created_at'))[0] > 48 for _, r in active_items.iterrows())
+
+        header_label = f"{'🔴' if job_has_critical else '📋'} JOB: {job_no} | {p_row.get('client_name', 'Client')} | ⚓ {anchor_count} | 🏗️ {prod_count}"
+        
+        with st.expander(header_label, expanded=job_has_critical or search_query != ""):
+            st.markdown('<div class="section-header">🚩 Logistics Summary</div>', unsafe_allow_html=True)
+            ac1, ac2, ac3 = st.columns([1, 2, 1])
+            ac1.write(f"**Anchor:** {p_row.get('anchor_person', 'N/A')}")
+            ac2.info(f"**Critical Materials:** {p_row.get('critical_materials', 'N/A')}")
+            
+            # Job Progress Select
+            stat_opts = ["Pending Review", "Sourcing", "Ordered", "In-Transit", "Received"]
+            curr_p_stat = p_row.get('purchase_status', "Pending Review")
+            def_idx = stat_opts.index(curr_p_stat) if curr_p_stat in stat_opts else 0
+            new_p_stat = ac3.selectbox("Job Level Status", stat_opts, index=def_idx, key=f"h_stat_{p_db_id}")
+            if ac3.button("Update Job Status", key=f"h_btn_{p_db_id}", type="primary", use_container_width=True):
+                conn.table("anchor_projects").update({"purchase_status": new_p_stat}).eq("id", p_db_id).execute()
+                st.rerun()
+
+            st.markdown('<div class="section-header">📦 Material Request Breakdown</div>', unsafe_allow_html=True)
+            for i, i_row in active_items.sort_values('id').iterrows():
+                _, aging_tag = calculate_aging(i_row.get('created_at'))
                 
-                h2.write(f"{urgent_tag} **{row.get('item_name', 'Unnamed Item')}**")
-                h2.caption(f"Qty: {row.get('quantity', 0)} {row.get('units', 'Nos')} | Notes: {row.get('special_notes', '-')}")
-                
-                h3.write(f"Status: `{row.get('status', 'Triggered')}`")
-                
-                with st.expander("🛠️ Action: Process PO / Reject"):
-                    c1, c2, c3 = st.columns(3)
-                    po_no = c1.text_input("PO Number", key=f"po_{row['id']}")
-                    po_dt = c2.date_input("PO Date", key=f"podt_{row['id']}")
-                    exp_dt = c3.date_input("Expected Delivery", key=f"exp_{row['id']}")
-                    p_note = st.text_input("Purchase Note / Remarks", key=f"rem_{row['id']}")
+                with st.container(border=True):
+                    ic1, ic2, ic3, ic4 = st.columns([1.5, 2.5, 1, 0.8])
+                    with ic1:
+                        if i_row['is_prod']:
+                            st.markdown('<span class="tag-prod">🏗️ PRODUCTION TRIGGER</span>', unsafe_allow_html=True)
+                        else:
+                            st.markdown('<span class="tag-anchor">⚓ ANCHOR REQUEST</span>', unsafe_allow_html=True)
+                        st.markdown(aging_tag, unsafe_allow_html=True)
+                        st.write(f"**{i_row.get('item_name')}**")
                     
-                    b1, b2 = st.columns(2)
-                    if b1.button("✅ Issue PO", key=f"ok_{row['id']}", use_container_width=True, type="primary"):
+                    i_reply = ic2.text_area("Purchase Note", value=i_row.get('purchase_reply', ""), key=f"rep_{i_row['id']}", height=85, placeholder="Enter lead time, vendor info...", label_visibility="collapsed")
+                    
+                    status_list = ["Triggered", "Sourcing", "Ordered", "Received"]
+                    curr_item_stat = i_row.get('status', "Triggered")
+                    stat_idx = status_list.index(curr_item_stat) if curr_item_stat in status_list else 0
+                    i_stat = ic3.selectbox("Status", status_list, index=stat_idx, key=f"st_{i_row['id']}", label_visibility="collapsed")
+                    
+                    if ic4.button("Update Item", key=f"btn_{i_row['id']}", use_container_width=True):
                         conn.table("purchase_orders").update({
-                            "status": "Ordered", "po_no": po_no, "po_date": str(po_dt), 
-                            "expected_delivery": str(exp_dt), "purchase_reply": p_note
-                        }).eq("id", row['id']).execute()
-                        st.success(f"PO {po_no} Issued!"); st.rerun()
-                        
-                    if b2.button("❌ Reject Item", key=f"rej_{row['id']}", use_container_width=True):
-                        conn.table("purchase_orders").update({
-                            "status": "Rejected", "reject_note": p_note
-                        }).eq("id", row['id']).execute()
-                        st.warning("Item Rejected."); st.rerun()
-    else:
-        st.info("No active material requests found.")
-
-# --- TAB 2: INDENT APPLICATION ---
-with main_tabs[1]:
-    st.subheader("📝 Create New Material Indent")
-    raised_by_name = st.selectbox("Identify Yourself (Indent Raised By)", get_staff_list())
-    
-    if "indent_cart" not in st.session_state:
-        st.session_state.indent_cart = []
-
-    with st.expander("➕ Add Item to this Indent", expanded=True):
-        with st.form("indent_item_form", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            selected_jobs = col1.multiselect("Select Job Nos", get_jobs())
-            mat_group = col2.selectbox("Material Group", get_material_groups())
-            i_desc = st.text_input("Item Name / Description")
-            i_specs = st.text_area("Specifications")
-            
-            c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-            i_qty = c1.number_input("Quantity", min_value=0.1)
-            i_unit = c2.selectbox("Units", ["Nos", "Kgs", "Mts", "Sft", "Sets"])
-            i_urgent = c3.toggle("🚨 URGENT?")
-            i_notes = c4.text_input("Item Remarks")
-            
-            if st.form_submit_button("Add Item to List"):
-                if selected_jobs and i_desc:
-                    st.session_state.indent_cart.append({
-                        "job_no": ", ".join(selected_jobs),
-                        "material_group": mat_group,
-                        "item_name": i_desc.upper(),
-                        "specs": i_specs,
-                        "quantity": i_qty,
-                        "units": i_unit,
-                        "is_urgent": i_urgent,
-                        "special_notes": i_notes,
-                        "triggered_by": raised_by_name,
-                        "status": "Triggered"
-                    })
-                    st.toast("Item Added!")
-                else: st.error("Provide Job No and Item Name.")
-
-    if st.session_state.indent_cart:
-        st.write("### Review Draft Indent")
-        cart_df = pd.DataFrame(st.session_state.indent_cart)
-        st.dataframe(cart_df[['job_no', 'item_name', 'quantity', 'units', 'is_urgent']], use_container_width=True, hide_index=True)
-        
-        btn_c1, btn_c2 = st.columns(2)
-        if btn_c1.button("🗑️ Clear All Items", use_container_width=True):
-            st.session_state.indent_cart = []
-            st.rerun()
-            
-        if btn_c2.button("🚀 FINAL SUBMIT INDENT", type="primary", use_container_width=True):
-            try:
-                header = conn.table("indent_headers").insert({"raised_by": raised_by_name}).execute()
-                new_indent_id = header.data[0]['indent_no']
-                
-                for item in st.session_state.indent_cart:
-                    item['indent_no'] = new_indent_id
-                    conn.table("purchase_orders").insert(item).execute()
-                
-                st.success(f"Indent #{new_indent_id} submitted!"); st.session_state.indent_cart = []; st.rerun()
-            except Exception as e: st.error(f"Submit Error: {e}")
-
-# --- TAB 3: STORES GRN ---
-with main_tabs[2]:
-    st.subheader("📦 Stores Receipt Management")
-    res_s = conn.table("purchase_orders").select("*").eq("status", "Ordered").execute()
-    
-    if res_s.data:
-        for row in res_s.data:
-            with st.container(border=True):
-                s1, s2, s3 = st.columns([2, 2, 1])
-                s1.write(f"**PO:** {row.get('po_no', 'N/A')} | **Indent:** {row.get('indent_no')}")
-                s2.write(f"**Item:** {row.get('item_name')}")
-                if s3.popover("📥 Log Receipt"):
-                    r_date = st.date_input("Received Date", value=date.today(), key=f"rdt_{row['id']}")
-                    r_note = st.text_area("Remarks", key=f"snote_{row['id']}")
-                    if st.button("Confirm Arrival", key=f"sbtn_{row['id']}", type="primary"):
-                        conn.table("purchase_orders").update({"status": "Received", "received_date": str(r_date), "stores_remarks": r_note}).eq("id", row['id']).execute()
-                        st.success("Received!"); st.rerun()
-    else: st.info("No items pending receipt.")
-
-# --- TAB 4: MASTER SETUP ---
-with main_tabs[3]:
-    st.subheader("⚙️ Materials Master")
-    m_col1, m_col2 = st.columns(2)
-    with m_col1:
-        with st.form("master_group_form", clear_on_submit=True):
-            new_g = st.text_input("New Group Name")
-            if st.form_submit_button("➕ Save"):
-                if new_g:
-                    conn.table("material_master").insert({"material_group": new_g.upper()}).execute()
-                    st.success("Added!"); st.rerun()
-    with m_col2:
-        groups = conn.table("material_master").select("*").execute().data
-        if groups: st.dataframe(pd.DataFrame(groups)[['material_group']], hide_index=True, use_container_width=True)
+                            "purchase_reply": i_reply, 
+                            "status": i_stat, 
+                            "updated_at": datetime.now(IST).isoformat()
+                        }).eq("id", i_row['id']).execute()
+                        st.cache_data.clear()
+                        st.rerun()
+else:
+    st.info("No active material requests found.")
