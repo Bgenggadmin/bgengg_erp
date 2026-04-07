@@ -250,19 +250,33 @@ with tabs[0]:
                     if log_data.get('work_satisfaction'): 
                         st.write(f"Rating: {'⭐' * int(log_data['work_satisfaction'])}")
 
+        # --- MOVEMENT COLUMN (cb) ---
         with cb:
             st.markdown("### 🚶 Movement")
             
-            # Use the pre-fetched move_summ_res to find active moves today
-            # Logic: Has exit_time today AND return_time is still null
-            active_move = [m for m in move_summ_res if m['exit_time'][:10] == today]
+            # 1. Fetch active moves ONLY for today to prevent old logs from blocking the UI
+            now_str = get_now_ist().strftime("%Y-%m-%d")
+            active_move_res = conn.table("movement_logs").select("*")\
+                .eq("employee_name", att_user)\
+                .is_("return_time", "null")\
+                .execute().data
             
+            # Filter in Python to ensure it's a 'Today' movement
+            active_move = [m for m in active_move_res if m['exit_time'][:10] == now_str]
+
             if not active_move:
-                # User is currently 'IN' - Show the 'OUT' form
-                with st.form("move_form", clear_on_submit=True):
-                    reason = st.selectbox("Category", ["Meeting", "Material", "Inspection", "Lunch", "Personal"], key="move_cat")
-                    dest = st.text_input("Destination", placeholder="e.g. Client Site")
-                    if st.form_submit_button("📤 TIME OUT", use_container_width=True):
+                # Use a unique key for the form and widgets to ensure they render
+                with st.form("move_out_form", clear_on_submit=True):
+                    reason = st.selectbox(
+                        "Category", 
+                        ["Meeting", "Work Review", "Material", "Inspection", "Vendor Visit", "Lunch", "Personal"],
+                        key="selectbox_move_reason" # Unique Key
+                    )
+                    dest = st.text_input("Destination", key="input_move_dest") # Unique Key
+                    
+                    submit_out = st.form_submit_button("📤 TIME OUT", use_container_width=True)
+                    
+                    if submit_out:
                         if dest:
                             conn.table("movement_logs").insert({
                                 "employee_name": att_user, 
@@ -274,23 +288,33 @@ with tabs[0]:
                         else:
                             st.error("Enter Destination")
             else:
-                # User is currently 'OUT' - Show the 'IN' button
+                # Show status if currently out
                 current = active_move[0]
-                st.warning(f"📍 **OUT at:** {current['destination']}")
-                st.caption(f"Reason: {current['reason']}")
-                if st.button("📥 LOG TIME IN", type="primary", use_container_width=True, key="btn_move_in"):
+                st.warning(f"📍 Currently at {current['destination']}")
+                if st.button("📥 LOG TIME IN", use_container_width=True, type="primary", key="btn_move_in"):
                     conn.table("movement_logs").update({
                         "return_time": get_now_ist().isoformat()
                     }).eq("id", current['id']).execute()
                     st.rerun()
 
+        # --- WORK LOG COLUMN (cc) ---
         with cc:
-            st.markdown("### 📝 Log")
-            with st.form("manual_work_log", clear_on_submit=True):
-                slot_t = st.selectbox("Slot", LOG_SLOTS, format_func=get_ampm_label, key="log_slot_sel")
-                job_c = st.selectbox("Job", get_job_codes(), key="man_log_j")
-                task = st.text_area("Update", placeholder="What did you work on?")
-                if st.form_submit_button("Post Work Log", use_container_width=True):
+            st.markdown("### 📝 Work log")
+            with st.form("manual_work_log_form", clear_on_submit=True):
+                slot_t = st.selectbox(
+                    "Slot", 
+                    LOG_SLOTS, 
+                    format_func=get_ampm_label, 
+                    key="selectbox_work_slot" # Unique Key
+                )
+                job_c = st.selectbox(
+                    "Job", 
+                    get_job_codes(), 
+                    key="selectbox_work_job" # Unique Key
+                )
+                task = st.text_area("Update", key="input_work_details") # Unique Key
+                
+                if st.form_submit_button("Post Log", use_container_width=True):
                     if task:
                         conn.table("work_logs").insert({
                             "employee_name": att_user, 
@@ -300,7 +324,7 @@ with tabs[0]:
                         }).execute()
                         st.rerun()
                     else:
-                        st.error("Log cannot be empty")
+                        st.error("Please enter details")
 # --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
