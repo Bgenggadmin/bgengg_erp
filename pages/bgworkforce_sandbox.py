@@ -6,7 +6,7 @@ import pytz
 
 # --- 1. SETUP & CONSTANTS ---
 IST = pytz.timezone('Asia/Kolkata')
-LATE_THRESHOLD = time(8, 35) # B&G Standard
+LATE_THRESHOLD = time(9, 01) # B&G Standard
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
 
