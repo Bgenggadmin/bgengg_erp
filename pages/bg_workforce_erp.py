@@ -224,11 +224,15 @@ with tabs[0]:
 
         # --- 8. SHIFT CONTROLS (Punch Out Database fix) ---
         ca, cb, cc = st.columns([1.8, 1.5, 2.5])
+        # --- SHIFT CONTROLS ROW ---
+        ca, cb, cc = st.columns([1.8, 1.5, 2.5])
+        
         with ca:
             st.markdown("### 🏢 Shift")
             if not emp_summ_res:
                 if st.button("🚀 PUNCH IN", use_container_width=True, type="primary"):
-                    conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today, "punch_in": get_now_ist().isoformat()}).execute(); st.rerun()
+                    conn.table("attendance_logs").insert({"employee_name": att_user, "work_date": today, "punch_in": get_now_ist().isoformat()}).execute()
+                    st.rerun()
             else:
                 if not log_data.get('punch_out'):
                     st.markdown("**Productivity Rating**")
@@ -239,23 +243,25 @@ with tabs[0]:
                             "work_satisfaction": work_sat,
                             "system_promise": st.session_state.get("promise_confirmed", False)
                         }).eq("id", log_data['id']).execute()
-                        st.cache_data.clear(); st.rerun()
+                        st.cache_data.clear()
+                        st.rerun()
                 else:
                     st.success("Shift Completed")
-                    if log_data.get('work_satisfaction'): st.write(f"Rating: {'⭐' * int(log_data['work_satisfaction'])}")
+                    if log_data.get('work_satisfaction'): 
+                        st.write(f"Rating: {'⭐' * int(log_data['work_satisfaction'])}")
 
         with cb:
             st.markdown("### 🚶 Movement")
             
-            # Logic: Look for movements where return_time is NULL AND it happened TODAY
-            # This prevents old forgotten 'Out' logs from breaking today's dashboard
+            # Use the pre-fetched move_summ_res to find active moves today
+            # Logic: Has exit_time today AND return_time is still null
             active_move = [m for m in move_summ_res if m['exit_time'][:10] == today]
             
             if not active_move:
-                # If no active movement, show the "OUT" form
+                # User is currently 'IN' - Show the 'OUT' form
                 with st.form("move_form", clear_on_submit=True):
-                    reason = st.selectbox("Category", ["Meeting", "Material", "Inspection", "Lunch", "Personal"])
-                    dest = st.text_input("Destination")
+                    reason = st.selectbox("Category", ["Meeting", "Material", "Inspection", "Lunch", "Personal"], key="move_cat")
+                    dest = st.text_input("Destination", placeholder="e.g. Client Site")
                     if st.form_submit_button("📤 TIME OUT", use_container_width=True):
                         if dest:
                             conn.table("movement_logs").insert({
@@ -268,22 +274,33 @@ with tabs[0]:
                         else:
                             st.error("Enter Destination")
             else:
-                # If currently "OUT", show where they are and the "IN" button
+                # User is currently 'OUT' - Show the 'IN' button
                 current = active_move[0]
-                st.info(f"📍 **Currently at:** {current['destination']}")
-                if st.button("📥 LOG TIME IN", type="primary", use_container_width=True):
+                st.warning(f"📍 **OUT at:** {current['destination']}")
+                st.caption(f"Reason: {current['reason']}")
+                if st.button("📥 LOG TIME IN", type="primary", use_container_width=True, key="btn_move_in"):
                     conn.table("movement_logs").update({
                         "return_time": get_now_ist().isoformat()
                     }).eq("id", current['id']).execute()
                     st.rerun()
+
         with cc:
             st.markdown("### 📝 Log")
-            with st.form("manual_work_log"):
-                slot_t = st.selectbox("Slot", LOG_SLOTS, format_func=get_ampm_label)
+            with st.form("manual_work_log", clear_on_submit=True):
+                slot_t = st.selectbox("Slot", LOG_SLOTS, format_func=get_ampm_label, key="log_slot_sel")
                 job_c = st.selectbox("Job", get_job_codes(), key="man_log_j")
-                task = st.text_area("Update")
-                if st.form_submit_button("Post Work Log") and task:
-                    conn.table("work_logs").insert({"employee_name": att_user, "task_description": f"[{job_c}] @{slot_t}: {task}", "hours_spent": 1.0, "work_date": today}).execute(); st.rerun()
+                task = st.text_area("Update", placeholder="What did you work on?")
+                if st.form_submit_button("Post Work Log", use_container_width=True):
+                    if task:
+                        conn.table("work_logs").insert({
+                            "employee_name": att_user, 
+                            "task_description": f"[{job_c}] @{slot_t}: {task}", 
+                            "hours_spent": 1.0, 
+                            "work_date": today
+                        }).execute()
+                        st.rerun()
+                    else:
+                        st.error("Log cannot be empty")
 # --- TAB 1: STAFF DATA HISTORY ---
 with tabs[1]:
     st.subheader(f"📊 Personal History: {att_user}")
