@@ -174,7 +174,7 @@ with tabs[2]:
                 conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
                 st.cache_data.clear(); st.success("✅ Logged & Trip Closed!"); st.rerun()
 
-# --- TAB 4 & 5 ---
+
 with tabs[3]:
     st.subheader("📊 Fleet Performance")
     if not df.empty:
@@ -185,7 +185,10 @@ with tabs[4]:
     st.subheader("📥 Export Reports")
     target = st.radio("Select Data", ["Full Trip Logs", "All Booking Requests"], horizontal=True)
     table_name = "logistics_logs" if target == "Full Trip Logs" else "logistics_requests"
+    
+    # THIS LINE BELOW IS THE PROBLEM:
     export_df = pd.DataFrame(conn.table(table_name).select("*").order("created_at" if "created_at" in table_name else "timestamp", desc=True).execute().data)
+    
     if not export_df.empty:
         st.dataframe(export_df, use_container_width=True)
         st.download_button("💾 Download CSV", export_df.to_csv(index=False).encode('utf-8'), f"bg_{table_name}.csv")
