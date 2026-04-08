@@ -103,68 +103,76 @@ with main_tabs[0]:
                         conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
                         st.rerun()
 
-# --- TAB 2: PURCHASE CONSOLE (Enhanced Excel-Friendly Export) ---
+# --- TAB 2: PURCHASE CONSOLE (Pro-Branded Export Hub) ---
 with main_tabs[1]:
-    st.subheader("🛒 Purchase processing")
+    st.subheader("🛒 Purchase Processing")
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
     
     if res_p.data:
+        # Sort: Urgent items first, then by date
         df_p = pd.DataFrame(res_p.data).sort_values(by=['is_urgent', 'created_at'], ascending=[False, False])
+        
         for _, p_row in df_p.iterrows():
             with st.container(border=True):
                 h1, h2 = st.columns([3, 1.2])
                 urgent_tag = "🚨 [URGENT]" if p_row.get('is_urgent') else ""
                 
                 with h1:
-                    st.markdown(f"**{urgent_tag} Indent #{p_row.get('indent_no')}** | Job: {p_row['job_no']}")
+                    st.markdown(f"**{urgent_tag} Indent #{p_row.get('indent_no', 'N/A')}** | Job: {p_row['job_no']}")
                     st.markdown(f"**Item:** {p_row['item_name']} | Qty: {p_row['quantity']} {p_row.get('units', 'Nos')}")
                     st.caption(f"Specs: {p_row.get('specs', 'None')}")
                 
                 with h2:
-                    # WhatsApp Button remains the same
+                    # --- 1. WHATSAPP BUTTON ---
                     msg = f"B&G Enquiry:\nJob: {p_row['job_no']}\nItem: {p_row['item_name']}\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}"
                     wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
-                    st.markdown(f"""<a href="{wa_url}" target="_blank" style="text-decoration: none;">
-                        <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">📲 WhatsApp</div>
-                        </a>""", unsafe_allow_html=True)
+                    st.markdown(f"""
+                        <a href="{wa_url}" target="_blank" style="text-decoration: none;">
+                            <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">
+                                📲 WhatsApp
+                            </div>
+                        </a>
+                    """, unsafe_allow_html=True)
                     
-                    # --- IMPROVED EXCEL-FRIENDLY EXPORT ---
-                    # Structuring as a Formal Letter/Table
-                    excel_form = [
-                        ["COMPANY:", "B&G ENGINEERING"],
-                        ["LOCATION:", "Paletipadu, Andhra Pradesh"],
-                        ["DOCUMENT:", "OFFICIAL MATERIAL ENQUIRY"],
-                        ["DATE:", date.today().strftime('%d-%m-%Y')],
-                        [""], # Spacer
-                        ["REFERENCE DETAILS", ""],
-                        ["------------------", "------------------"],
-                        ["Indent Number:", p_row.get('indent_no')],
-                        ["Job Code:", p_row['job_no']],
-                        ["Urgency Level:", "URGENT / CRITICAL" if p_row.get('is_urgent') else "Normal"],
-                        [""], # Spacer
-                        ["TECHNICAL SPECIFICATIONS", ""],
-                        ["------------------", "------------------"],
-                        ["Item Description:", p_row['item_name']],
-                        ["Technical Specs:", p_row.get('specs')],
-                        ["Required Quantity:", f"{p_row['quantity']} {p_row.get('units')}"],
-                        ["Engineer Notes:", p_row.get('special_notes', '-')],
-                        [""], # Spacer
-                        ["CLOSING REMARKS", ""],
-                        ["------------------", "------------------"],
-                        ["Note:", "Please submit your commercial quote with lead time."],
-                        ["Authorized By:", "B&G Procurement Hub"]
-                    ]
-                    
-                    # Convert to DataFrame
-                    df_excel = pd.DataFrame(excel_form)
-                    csv_excel = df_excel.to_csv(index=False, header=False).encode('utf-8')
+                    # --- 2. PRO EXCEL FORMATTED EXPORT ---
+                    # This HTML block forces Excel to use specific widths and styles
+                    html_form = f"""
+                    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
+                    <head><meta charset="utf-8"></head>
+                    <body>
+                        <table>
+                            <tr><td colspan="2" style="font-size: 18pt; font-weight: bold; color: #003366; font-family: Arial;">B&G ENGINEERING</td></tr>
+                            <tr><td colspan="2" style="color: #666666; font-family: Arial;">Paletipadu, Andhra Pradesh | Material Procurement Hub</td></tr>
+                            <tr><td>&nbsp;</td></tr>
+                            <tr><td style="font-weight: bold; width: 160pt; font-family: Arial; border-bottom: 1px solid #007bff;">DOCUMENT:</td><td style="font-weight: bold; color: #007bff; font-family: Arial; border-bottom: 1px solid #007bff;">OFFICIAL MATERIAL ENQUIRY</td></tr>
+                            <tr><td style="font-family: Arial;">DATE:</td><td style="font-family: Arial;">{date.today().strftime('%d-%m-%Y')}</td></tr>
+                            <tr><td>&nbsp;</td></tr>
+                            <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; font-family: Arial; border: 1px solid #ccc;">REFERENCE DETAILS</td></tr>
+                            <tr><td style="font-family: Arial;">Indent Number:</td><td style="font-family: Arial;">{p_row.get('indent_no', 'N/A')}</td></tr>
+                            <tr><td style="font-family: Arial;">Job Code:</td><td style="font-family: Arial; font-weight: bold;">{p_row['job_no']}</td></tr>
+                            <tr><td style="font-family: Arial;">Urgency Level:</td><td style="font-family: Arial; color: {"#ff0000" if p_row.get('is_urgent') else "#000"};">{"URGENT / CRITICAL" if p_row.get('is_urgent') else "Normal"}</td></tr>
+                            <tr><td>&nbsp;</td></tr>
+                            <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; font-family: Arial; border: 1px solid #ccc;">TECHNICAL SPECIFICATIONS</td></tr>
+                            <tr><td style="font-family: Arial;">Item Description:</td><td style="font-family: Arial; font-weight: bold;">{p_row['item_name']}</td></tr>
+                            <tr><td style="font-family: Arial;">Technical Specs:</td><td style="font-family: Arial;">{p_row.get('specs', '-')}</td></tr>
+                            <tr><td style="font-family: Arial;">Required Quantity:</td><td style="font-family: Arial; font-weight: bold;">{p_row['quantity']} {p_row.get('units', 'Nos')}</td></tr>
+                            <tr><td style="font-family: Arial;">Special Notes:</td><td style="font-family: Arial; font-style: italic;">{p_row.get('special_notes', '-')}</td></tr>
+                            <tr><td>&nbsp;</td></tr>
+                            <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; font-family: Arial; border: 1px solid #ccc;">CLOSING REMARKS</td></tr>
+                            <tr><td colspan="2" style="font-family: Arial;">Please submit your commercial quote with earliest possible lead time.</td></tr>
+                            <tr><td>&nbsp;</td></tr>
+                            <tr><td style="font-weight: bold; font-family: Arial;">Authorized By:</td><td style="font-family: Arial;">B&G Procurement Hub</td></tr>
+                        </table>
+                    </body>
+                    </html>
+                    """
                     
                     st.download_button(
-                        label="📄 Export Enquiry Form",
-                        data=csv_excel,
-                        file_name=f"BG_Enquiry_{p_row['job_no']}.csv",
-                        mime='text/csv',
-                        key=f"dl_excel_{p_row['id']}",
+                        label="📄 Export Pro Enquiry",
+                        data=html_form,
+                        file_name=f"BG_Enquiry_{p_row['job_no']}.xls",
+                        mime='application/vnd.ms-excel',
+                        key=f"dl_pro_{p_row['id']}",
                         use_container_width=True
                     )
 
@@ -172,11 +180,17 @@ with main_tabs[1]:
                     c1, c2 = st.columns(2)
                     p_no = c1.text_input("PO No", key=f"po_{p_row['id']}")
                     p_rem = c2.text_input("Vendor / Remarks", key=f"rem_{p_row['id']}")
+                    
                     if st.button("✅ Confirm Order", key=f"ok_{p_row['id']}", type="primary", use_container_width=True):
                         conn.table("purchase_orders").update({
-                            "status": "Ordered", "po_no": p_no, "purchase_reply": p_rem
+                            "status": "Ordered", 
+                            "po_no": p_no, 
+                            "purchase_reply": p_rem
                         }).eq("id", p_row['id']).execute()
+                        st.success(f"Order {p_no} Recorded!")
                         st.rerun()
+    else: 
+        st.info("No pending purchase requests found.")
 
 # --- TAB 3: STORES GRN ---
 with main_tabs[2]:
