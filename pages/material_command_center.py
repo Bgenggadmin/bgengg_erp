@@ -259,7 +259,7 @@ with main_tabs[1]:
                     <body>
                         <table>
                             <tr><td colspan="2" style="font-size: 18pt; font-weight: bold; color: #003366; font-family: Arial;">B&G ENGINEERING</td></tr>
-                            <tr><td colspan="2" style="color: #666666; font-family: Arial;">Paletipadu, Andhra Pradesh | Material Procurement Hub</td></tr>
+                            <tr><td colspan="2" style="color: #666666; font-family: Arial;">Pashamylaram, Hyderabad | Material Procurement Hub</td></tr>
                             <tr><td>&nbsp;</td></tr>
                             <tr><td style="font-weight: bold; width: 160pt; font-family: Arial; border-bottom: 1px solid #007bff;">DOCUMENT:</td><td style="font-weight: bold; color: #007bff; font-family: Arial; border-bottom: 1px solid #007bff;">OFFICIAL MATERIAL ENQUIRY</td></tr>
                             <tr><td style="font-family: Arial;">DATE:</td><td style="font-family: Arial;">{date.today().strftime('%d-%m-%Y')}</td></tr>
