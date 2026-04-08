@@ -103,7 +103,7 @@ with main_tabs[0]:
                         conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
                         st.rerun()
 
-# --- TAB 2: PURCHASE CONSOLE (With Branded Header Export) ---
+# --- TAB 2: PURCHASE CONSOLE (Enhanced Excel-Friendly Export) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase processing")
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
@@ -121,48 +121,50 @@ with main_tabs[1]:
                     st.caption(f"Specs: {p_row.get('specs', 'None')}")
                 
                 with h2:
-                    # 1. WhatsApp Button
+                    # WhatsApp Button remains the same
                     msg = f"B&G Enquiry:\nJob: {p_row['job_no']}\nItem: {p_row['item_name']}\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}"
                     wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
-                    st.markdown(f"""
-                        <a href="{wa_url}" target="_blank" style="text-decoration: none;">
-                            <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">
-                                📲 WhatsApp
-                            </div>
-                        </a>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"""<a href="{wa_url}" target="_blank" style="text-decoration: none;">
+                        <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">📲 WhatsApp</div>
+                        </a>""", unsafe_allow_html=True)
                     
-                    # 2. Branded CSV Export Logic
-                    # We create a list of lists to format the CSV like a document
-                    branded_content = [
-                        ["B&G ENGINEERING"],
-                        ["Office/Works: Paletipadu, Andhra Pradesh"],
-                        ["Contact: B&G Procurement Department"],
-                        [""], # Empty row for spacing
-                        ["OFFICIAL MATERIAL ENQUIRY"],
-                        ["Date", date.today().strftime('%d-%m-%Y')],
-                        ["Job Code", p_row['job_no']],
-                        ["Indent No", p_row.get('indent_no')],
-                        [""], # Empty row
-                        ["ITEM DETAILS"],
-                        ["Item Name", p_row['item_name']],
-                        ["Specifications", p_row.get('specs')],
-                        ["Required Qty", f"{p_row['quantity']} {p_row.get('units')}"],
-                        ["Special Notes", p_row.get('special_notes', '-')],
-                        [""],
-                        ["Please provide your best quote and earliest lead time."]
+                    # --- IMPROVED EXCEL-FRIENDLY EXPORT ---
+                    # Structuring as a Formal Letter/Table
+                    excel_form = [
+                        ["COMPANY:", "B&G ENGINEERING"],
+                        ["LOCATION:", "Paletipadu, Andhra Pradesh"],
+                        ["DOCUMENT:", "OFFICIAL MATERIAL ENQUIRY"],
+                        ["DATE:", date.today().strftime('%d-%m-%Y')],
+                        [""], # Spacer
+                        ["REFERENCE DETAILS", ""],
+                        ["------------------", "------------------"],
+                        ["Indent Number:", p_row.get('indent_no')],
+                        ["Job Code:", p_row['job_no']],
+                        ["Urgency Level:", "URGENT / CRITICAL" if p_row.get('is_urgent') else "Normal"],
+                        [""], # Spacer
+                        ["TECHNICAL SPECIFICATIONS", ""],
+                        ["------------------", "------------------"],
+                        ["Item Description:", p_row['item_name']],
+                        ["Technical Specs:", p_row.get('specs')],
+                        ["Required Quantity:", f"{p_row['quantity']} {p_row.get('units')}"],
+                        ["Engineer Notes:", p_row.get('special_notes', '-')],
+                        [""], # Spacer
+                        ["CLOSING REMARKS", ""],
+                        ["------------------", "------------------"],
+                        ["Note:", "Please submit your commercial quote with lead time."],
+                        ["Authorized By:", "B&G Procurement Hub"]
                     ]
                     
                     # Convert to DataFrame
-                    df_branded = pd.DataFrame(branded_content)
-                    csv_branded = df_branded.to_csv(index=False, header=False).encode('utf-8')
+                    df_excel = pd.DataFrame(excel_form)
+                    csv_excel = df_excel.to_csv(index=False, header=False).encode('utf-8')
                     
                     st.download_button(
                         label="📄 Export Enquiry Form",
-                        data=csv_branded,
-                        file_name=f"BG_Enquiry_{p_row['job_no']}_{p_row['item_name']}.csv",
+                        data=csv_excel,
+                        file_name=f"BG_Enquiry_{p_row['job_no']}.csv",
                         mime='text/csv',
-                        key=f"dl_branded_{p_row['id']}",
+                        key=f"dl_excel_{p_row['id']}",
                         use_container_width=True
                     )
 
@@ -172,13 +174,9 @@ with main_tabs[1]:
                     p_rem = c2.text_input("Vendor / Remarks", key=f"rem_{p_row['id']}")
                     if st.button("✅ Confirm Order", key=f"ok_{p_row['id']}", type="primary", use_container_width=True):
                         conn.table("purchase_orders").update({
-                            "status": "Ordered", 
-                            "po_no": p_no, 
-                            "purchase_reply": p_rem
+                            "status": "Ordered", "po_no": p_no, "purchase_reply": p_rem
                         }).eq("id", p_row['id']).execute()
                         st.rerun()
-    else: 
-        st.info("No pending purchase items.")
 
 # --- TAB 3: STORES GRN ---
 with main_tabs[2]:
