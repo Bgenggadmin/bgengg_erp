@@ -103,7 +103,7 @@ with main_tabs[0]:
                         conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
                         st.rerun()
 
-# --- TAB 2: PURCHASE CONSOLE (With WhatsApp & Professional Export) ---
+# --- TAB 2: PURCHASE CONSOLE (With Branded Header Export) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase processing")
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
@@ -121,7 +121,7 @@ with main_tabs[1]:
                     st.caption(f"Specs: {p_row.get('specs', 'None')}")
                 
                 with h2:
-                    # 1. WhatsApp Button (Fast Communication)
+                    # 1. WhatsApp Button
                     msg = f"B&G Enquiry:\nJob: {p_row['job_no']}\nItem: {p_row['item_name']}\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}"
                     wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
                     st.markdown(f"""
@@ -132,34 +132,44 @@ with main_tabs[1]:
                         </a>
                     """, unsafe_allow_html=True)
                     
-                    # 2. Professional Export for Email Attachment
-                    # Creating a professional Enquiry DataFrame
-                    enquiry_data = {
-                        "ENQUIRY FROM": ["B&G ENGINEERING"],
-                        "JOB CODE": [p_row['job_no']],
-                        "INDENT NO": [p_row.get('indent_no')],
-                        "ITEM NAME": [p_row['item_name']],
-                        "SPECIFICATIONS": [p_row.get('specs')],
-                        "REQUIRED QTY": [f"{p_row['quantity']} {p_row.get('units')}"],
-                        "DATE": [date.today().strftime('%d-%m-%Y')]
-                    }
-                    df_enquiry = pd.DataFrame(enquiry_data)
-                    csv_enquiry = df_enquiry.to_csv(index=False).encode('utf-8')
+                    # 2. Branded CSV Export Logic
+                    # We create a list of lists to format the CSV like a document
+                    branded_content = [
+                        ["B&G ENGINEERING"],
+                        ["Office/Works: Paletipadu, Andhra Pradesh"],
+                        ["Contact: B&G Procurement Department"],
+                        [""], # Empty row for spacing
+                        ["OFFICIAL MATERIAL ENQUIRY"],
+                        ["Date", date.today().strftime('%d-%m-%Y')],
+                        ["Job Code", p_row['job_no']],
+                        ["Indent No", p_row.get('indent_no')],
+                        [""], # Empty row
+                        ["ITEM DETAILS"],
+                        ["Item Name", p_row['item_name']],
+                        ["Specifications", p_row.get('specs')],
+                        ["Required Qty", f"{p_row['quantity']} {p_row.get('units')}"],
+                        ["Special Notes", p_row.get('special_notes', '-')],
+                        [""],
+                        ["Please provide your best quote and earliest lead time."]
+                    ]
+                    
+                    # Convert to DataFrame
+                    df_branded = pd.DataFrame(branded_content)
+                    csv_branded = df_branded.to_csv(index=False, header=False).encode('utf-8')
                     
                     st.download_button(
                         label="📄 Export Enquiry Form",
-                        data=csv_enquiry,
+                        data=csv_branded,
                         file_name=f"BG_Enquiry_{p_row['job_no']}_{p_row['item_name']}.csv",
                         mime='text/csv',
-                        key=f"dl_enq_{p_row['id']}",
+                        key=f"dl_branded_{p_row['id']}",
                         use_container_width=True
                     )
 
                 with st.expander("🛠️ Finalize Purchase Order"):
-                    # ... [Keep your existing PO No and Remarks inputs here] ...
                     c1, c2 = st.columns(2)
                     p_no = c1.text_input("PO No", key=f"po_{p_row['id']}")
-                    p_rem = st.text_input("Vendor / Remarks", key=f"rem_{p_row['id']}")
+                    p_rem = c2.text_input("Vendor / Remarks", key=f"rem_{p_row['id']}")
                     if st.button("✅ Confirm Order", key=f"ok_{p_row['id']}", type="primary", use_container_width=True):
                         conn.table("purchase_orders").update({
                             "status": "Ordered", 
