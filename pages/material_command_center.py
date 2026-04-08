@@ -219,10 +219,21 @@ with main_tabs[2]:
     
     # 1. Store Search & Filter
     s_search_col, s_stat_col = st.columns([2, 1])
-    po_search = s_search_col.text_input("🔍 Search by PO Number or Item", placeholder="e.g. PO-2024-001")
+    po_search = s_search_col.text_input("🔍 Search by PO Number or Item", placeholder="e.g. PO-2024-001", key="stores_search_bar")
     
-    # Fetch only items that are 'Ordered' (In-Transit)
-    res_s = conn.table("purchase_orders").select("*").eq("status", "Ordered").execute()
+    # FETCH LOGIC: 
+    # 1. Status must be 'Ordered'
+    # 2. Indent No must NOT be NULL (This filters out old manual/test triggers)
+    try:
+        res_s = conn.table("purchase_orders")\
+            .select("*")\
+            .eq("status", "Ordered")\
+            .not_.is_("indent_no", "null")\
+            .order("created_at", desc=True)\
+            .execute()
+    except Exception as e:
+        st.error(f"Sync Error: {e}")
+        res_s.data = []
     
     if res_s.data:
         df_s = pd.DataFrame(res_s.data)
@@ -231,66 +242,72 @@ with main_tabs[2]:
         if po_search:
             df_s = df_s[
                 df_s['po_no'].str.contains(po_search, case=False, na=False) | 
-                df_h['item_name'].str.contains(po_search, case=False, na=False)
+                df_s['item_name'].str.contains(po_search, case=False, na=False)
             ]
 
         # 2. Receipt Queue
-        st.markdown(f"**Items Pending Arrival ({len(df_s)})**")
-        
-        for _, s_row in df_s.iterrows():
-            with st.container(border=True):
-                # Layout for the "Cargo Card"
-                c_info, c_status, c_action = st.columns([3, 1, 1])
+        if not df_s.empty:
+            st.markdown(f"**Items Pending Arrival ({len(df_s)})**")
+            
+            for _, s_row in df_s.iterrows():
+                row_id = s_row['id']
                 
-                with c_info:
-                    st.markdown(f"#### PO: {s_row.get('po_no', 'N/A')}")
-                    st.markdown(f"**{s_row['item_name']}** | Job: `{s_row['job_no']}`")
-                    st.caption(f"Supplier Note: {s_row.get('purchase_reply', 'Standard Order')}")
-                
-                with c_status:
-                    # Visual Indicator of Progress
-                    st.write("🚚 **In-Transit**")
-                    st.progress(66) # 2/3 stages complete (Indent -> PO -> [Stores])
-                    st.caption(f"Qty: {s_row['quantity']} {s_row.get('units')}")
+                with st.container(border=True):
+                    c_info, c_status, c_action = st.columns([3, 1, 1])
+                    
+                    with c_info:
+                        st.markdown(f"#### PO: {s_row.get('po_no', 'N/A')}")
+                        st.markdown(f"**{s_row['item_name']}** | Job: `{s_row['job_no']}`")
+                        st.caption(f"Indent Ref: #{s_row.get('indent_no')} | Triggered By: {s_row.get('triggered_by', 'System')}")
+                    
+                    with c_status:
+                        st.write("🚚 **In-Transit**")
+                        st.progress(66) 
+                        st.caption(f"Qty: {s_row['quantity']} {s_row.get('units')}")
 
-                with c_action:
-                    # Professional Popover for the Receipt Form
-                    if st.popover("📥 Log Receipt", use_container_width=True):
-                        st.markdown("### GRN Entry Form")
-                        with st.form(key=f"grn_form_{s_row['id']}", clear_on_submit=True):
-                            g1, g2 = st.columns(2)
-                            rec_date = g1.date_input("Arrival Date", value=date.today())
-                            veh_no = g2.text_input("Vehicle / DC Number", placeholder="e.g. AP 31 XX 1234")
-                            
-                            condition = st.select_slider(
-                                "Material Condition",
-                                options=["Damaged", "Partial", "Good", "Excellent"],
-                                value="Good"
-                            )
-                            
-                            store_remarks = st.text_area("Storekeeper Remarks", placeholder="Any shortage or remarks...")
-                            
-                            if st.form_submit_button("✅ Finalize GRN & Update Stock", use_container_width=True):
-                                update_payload = {
-                                    "status": "Received",
-                                    "received_date": str(rec_date),
-                                    "stores_remarks": f"Veh: {veh_no} | Cond: {condition} | {store_remarks}"
-                                }
-                                try:
-                                    conn.table("purchase_orders").update(update_payload).eq("id", s_row['id']).execute()
-                                    st.success(f"GRN Created for {s_row['item_name']}!")
+                    with c_action:
+                        # Popover for GRN Entry
+                        if st.popover("📥 Log Receipt", use_container_width=True, key=f"pop_{row_id}"):
+                            st.markdown("### GRN Entry Form")
+                            with st.form(key=f"grn_form_{row_id}", clear_on_submit=True):
+                                g1, g2 = st.columns(2)
+                                rec_date = g1.date_input("Arrival Date", value=date.today())
+                                veh_no = g2.text_input("Vehicle / DC Number", placeholder="e.g. AP 31 XX 1234")
+                                
+                                condition = st.select_slider(
+                                    "Material Condition",
+                                    options=["Damaged", "Partial", "Good", "Excellent"],
+                                    value="Good",
+                                    key=f"cond_{row_id}"
+                                )
+                                
+                                store_remarks = st.text_area("Storekeeper Remarks", placeholder="Shortage/Damage details...", key=f"rem_{row_id}")
+                                
+                                if st.form_submit_button("✅ Finalize GRN", use_container_width=True):
+                                    update_payload = {
+                                        "status": "Received",
+                                        "received_date": str(rec_date),
+                                        "stores_remarks": f"Veh: {veh_no} | Cond: {condition} | {store_remarks}"
+                                    }
+                                    conn.table("purchase_orders").update(update_payload).eq("id", row_id).execute()
+                                    st.success(f"GRN Created!")
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(f"Error updating stores: {e}")
+        else:
+            st.warning("No matches found for your search.")
     else:
-        st.info("🚚 No pending arrivals. All issued POs have been received.")
+        st.info("🚚 All current Command Center orders have been received.")
 
-    # 3. Quick View: Recently Received (Optional Audit Trail)
-    with st.expander("🕒 View Recently Received Materials (Last 5)"):
-        recent_res = conn.table("purchase_orders").select("*").eq("status", "Received").order("received_date", desc=True).limit(5).execute()
+    # 3. History View
+    st.divider()
+    with st.expander("🕒 View Recently Received (Command Center Only)"):
+        recent_res = conn.table("purchase_orders")\
+            .select("*")\
+            .eq("status", "Received")\
+            .not_.is_("indent_no", "null")\
+            .order("received_date", desc=True)\
+            .limit(10).execute()
         if recent_res.data:
-            st.table(pd.DataFrame(recent_res.data)[['received_date', 'po_no', 'item_name', 'quantity']])
-
+            st.dataframe(pd.DataFrame(recent_res.data)[['received_date', 'po_no', 'item_name', 'quantity', 'job_no']], use_container_width=True, hide_index=True)
 # --- TAB 4: MASTER SETUP ---
 with main_tabs[3]:
     st.subheader("⚙️ Configuration")
