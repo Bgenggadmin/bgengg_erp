@@ -140,9 +140,17 @@ with tabs[1]:
             # Extracting just the time/date from created_at
             try:
                 raw_ts = r.get('created_at', '')
-                clean_ts = pd.to_datetime(raw_ts).strftime('%d %b, %H:%M') if raw_ts else "N/A"
+                if raw_ts:
+                    # 1. Convert string to datetime
+                    # 2. Tell Python it's UTC (Localize)
+                    # 3. Shift it to Indian Time (Convert)
+                    dt_obj = pd.to_datetime(raw_ts).tz_localize('UTC').tz_convert('Asia/Kolkata')
+                    clean_ts = dt_obj.strftime('%d %b, %I:%M %p') # e.g., 08 Apr, 04:30 PM
+                else:
+                    clean_ts = "N/A"
             except:
                 clean_ts = "N/A"
+            
             c3.write(f"🕒 {clean_ts}")
             
             # Show "Close Trip" button ONLY if it is still Assigned
