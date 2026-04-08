@@ -100,68 +100,121 @@ with tabs[0]:
 
     st.divider()
 
-    # --- 3. FOUNDER'S DESK (Preserving ALL Interaction Logic) ---
-    st.markdown("### 📢 Founder's Desk")
-    
-    if att_user == "Admin":
-        with st.expander("✉️ Post New Instruction/Announcement", expanded=False):
-            with st.form("founder_msg_form", clear_on_submit=True):
-                m_target = st.selectbox("Target Employee", ["All"] + get_staff_list())
-                m_text = st.text_area("Instruction Content")
-                if st.form_submit_button("🚀 Broadcast Message"):
-                    if m_text:
-                        try:
-                            if m_target == "All":
-                                targets = [s for s in get_staff_list() if s != "Admin"]
-                                payload = [{"sender_name": "Founder", "content": m_text, "target_user": s, "is_read": False} for s in targets]
-                                conn.table("founder_interaction").insert(payload).execute()
-                            else:
-                                conn.table("founder_interaction").insert({"sender_name": "Founder", "content": m_text, "target_user": m_target, "is_read": False}).execute()
-                            st.success("Sent!"); st.rerun()
-                        except Exception as e: st.error(f"Post Error: {e}")
+   # --- 3. FOUNDER'S DESK (Admin & Employee Logic Fixed) ---
+st.markdown("### 📢 Founder's Desk")
 
-        # TABBED VIEW FOR ADMIN (Fixed Scrolling)
-        t_active, t_history = st.tabs(["💬 Today's Interactions", "📜 Search History"])
-        with t_active:
-            st.markdown('<div style="height:250px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff; margin-bottom:10px;">', unsafe_allow_html=True)
-            today_msgs = conn.table("founder_interaction").select("*").gte("created_at", f"{today}T00:00:00").order("created_at", desc=True).execute().data
-            if today_msgs:
-                for r in today_msgs:
-                    # Convert the database UTC time to IST for the display
+if att_user == "Admin":
+    # ADMIN VIEW: Logic for broadcasting instructions
+    with st.expander("✉️ Post New Instruction/Announcement", expanded=False):
+        with st.form("founder_msg_form", clear_on_submit=True):
+            m_target = st.selectbox("Target Employee", ["All"] + get_staff_list())
+            m_text = st.text_area("Instruction Content")
+            if st.form_submit_button("🚀 Broadcast Message"):
+                if m_text:
+                    try:
+                        if m_target == "All":
+                            targets = [s for s in get_staff_list() if s != "Admin"]
+                            payload = [{"sender_name": "Founder", "content": m_text, "target_user": s, "is_read": False} for s in targets]
+                            conn.table("founder_interaction").insert(payload).execute()
+                        else:
+                            conn.table("founder_interaction").insert({"sender_name": "Founder", "content": m_text, "target_user": m_target, "is_read": False}).execute()
+                        st.success("Sent!"); st.rerun()
+                    except Exception as e: st.error(f"Post Error: {e}")
+
+    # ADMIN VIEW: Activity Monitoring
+    t_active, t_history = st.tabs(["💬 Today's Interactions", "📜 Search History"])
+    with t_active:
+        # High-performance scrollable container for interactions
+        st.markdown('<div style="height:300px; overflow-y:auto; border:1px solid #e6e9ef; border-radius:10px; padding:15px; background-color:#ffffff; margin-bottom:10px;">', unsafe_allow_html=True)
+        today_msgs = conn.table("founder_interaction").select("*").gte("created_at", f"{today}T00:00:00").order("created_at", desc=True).execute().data
+        if today_msgs:
+            for r in today_msgs:
+                with st.container():
                     msg_ist = pd.to_datetime(r['created_at']).tz_convert(IST).strftime("%I:%M %p")
                     st.caption(f"**{r['sender_name']}** to **{r['target_user']}** | {msg_ist}")
                     st.write(r['content'])
-                    if r.get('reply_content'): st.info(f"Reply: {r['reply_content']}")
+                    if r.get('reply_content'): 
+                        st.info(f"✅ Staff Reply: {r['reply_content']}")
+                    elif r['sender_name'] != "Founder":
+                        # If an employee sends a message to Admin, Admin can reply here
+                        with st.expander("✍️ Reply to Staff"):
+                            with st.form(key=f"admin_rep_{r['id']}"):
+                                a_rep = st.text_input("Response")
+                                if st.form_submit_button("Send"):
+                                    conn.table("founder_interaction").update({"reply_content": a_rep, "is_read": True}).eq("id", r['id']).execute()
+                                    st.rerun()
                     st.divider()
-            else: st.write("No interactions yet today.")
-            st.markdown('</div>', unsafe_allow_html=True)
-        with t_history:
-            search_staff = st.selectbox("Filter History by Staff Name", ["-- Select --"] + get_staff_list())
-            if search_staff != "-- Select --":
-                h_data = conn.table("founder_interaction").select("*").or_(f"target_user.eq.{search_staff},sender_name.eq.{search_staff}").order("created_at", desc=True).limit(20).execute().data
-                if h_data:
-                    for h in h_data:
-                        with st.expander(f"📅 {h['created_at'][:10]} | {h['sender_name']}"):
-                            st.write(h['content'])
-                            st.caption(f"Reply: {h.get('reply_content', 'Pending')}")
-    else:
-        # EMPLOYEE VIEW: Interactive Reply Logic
-        msg_res = conn.table("founder_interaction").select("*").or_(f"target_user.eq.{att_user},sender_name.eq.{att_user}").order("created_at", desc=True).limit(1).execute().data
-        if msg_res:
-            m = msg_res[0]
-            with st.container(border=True):
-                if m['sender_name'] == att_user:
-                    st.write(f"📤 **My Message:** {m['content']}")
-                    if m.get('reply_content'): st.info(f"🏁 **Founder:** {m['reply_content']}")
-                else:
-                    st.info(f"**From Founder:** {m['content']}")
-                    if not m.get('is_read'):
-                        c_rep, c_btn = st.columns([3, 1])
-                        rep = c_rep.text_input("Acknowledge/Reply", key=f"rep_{m['id']}")
-                        if c_btn.button("✔️ Send", key=f"btn_{m['id']}"):
-                            conn.table("founder_interaction").update({"is_read": True, "reply_content": rep or "Acknowledged", "replied_at": datetime.now(IST).isoformat()}).eq("id", m['id']).execute(); st.rerun()
+        else: st.write("No interactions yet today.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+    with t_history:
+        search_staff = st.selectbox("Filter History by Staff Name", ["-- Select --"] + get_staff_list())
+        if search_staff != "-- Select --":
+            h_data = conn.table("founder_interaction").select("*").or_(f"target_user.eq.{search_staff},sender_name.eq.{search_staff}").order("created_at", desc=True).limit(20).execute().data
+            if h_data:
+                for h in h_data:
+                    with st.expander(f"📅 {h['created_at'][:10]} | {h['sender_name']}"):
+                        st.write(h['content'])
+                        st.caption(f"Reply: {h.get('reply_content', 'Pending')}")
 
-    st.divider()
+else:
+    # EMPLOYEE VIEW: Logic for receiving and acknowledging instructions
+    st.markdown(f"#### 📥 Message Feed for {att_user}")
+    
+    # FETCH TODAY'S INTERACTIONS (Removed limit=1 so they see the whole thread)
+    emp_msgs = conn.table("founder_interaction").select("*")\
+        .or_(f"target_user.eq.{att_user},sender_name.eq.{att_user}")\
+        .gte("created_at", f"{today}T00:00:00")\
+        .order("created_at", desc=True).execute().data
+        
+    if emp_msgs:
+        for m in emp_msgs:
+            with st.container(border=True):
+                # Convert UTC to IST for staff
+                msg_time = pd.to_datetime(m['created_at']).tz_convert(IST).strftime("%I:%M %p")
+                
+                if m['sender_name'] == "Founder":
+                    st.info(f"🚩 **Instruction:** {m['content']}")
+                    st.caption(f"Received at {msg_time}")
+                    
+                    # Show reply form ONLY if they haven't replied yet
+                    if not m.get('reply_content'):
+                        with st.form(key=f"rep_form_{m['id']}", clear_on_submit=True):
+                            r_text = st.text_input("Acknowledge / Update", placeholder="Status update...")
+                            if st.form_submit_button("✔️ Submit"):
+                                conn.table("founder_interaction").update({
+                                    "is_read": True, 
+                                    "reply_content": r_text or "Acknowledged",
+                                    "replied_at": datetime.now(IST).isoformat()
+                                }).eq("id", m['id']).execute()
+                                st.success("Reply recorded.")
+                                st.rerun()
+                    else:
+                        st.success(f"✔️ **My Reply:** {m['reply_content']}")
+                else:
+                    # Message sent by Employee TO Founder
+                    st.write(f"📤 **My Update:** {m['content']}")
+                    if m.get('reply_content'):
+                        st.info(f"🏁 **Founder feedback:** {m['reply_content']}")
+    else:
+        st.info("No instructions received from Founder today.")
+
+    # ALLOW PROACTIVE UPDATES: Employee sends message to Admin
+    with st.expander("✉️ Send Update/Query to Founder"):
+        with st.form("new_emp_msg", clear_on_submit=True):
+            new_msg = st.text_area("Write your update here...")
+            if st.form_submit_button("🚀 Send to Founder"):
+                if new_msg:
+                    conn.table("founder_interaction").insert({
+                        "sender_name": att_user, 
+                        "content": new_msg, 
+                        "target_user": "Admin", 
+                        "is_read": False
+                    }).execute()
+                    st.success("Sent to Founder Desk.")
+                    st.rerun()
+
+st.divider()
 
     # --- 4. MY WORK PLAN (Pending Tasks Carry-over) ---
     st.markdown("### 🏗️ My Work Plan & Pending Tasks")
