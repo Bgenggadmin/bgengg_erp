@@ -103,7 +103,7 @@ with main_tabs[0]:
                         conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
                         st.rerun()
 
-# --- TAB 2: PURCHASE CONSOLE (With Fixed Button Buttons) ---
+# --- TAB 2: PURCHASE CONSOLE (With WhatsApp & Professional Export) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase processing")
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
@@ -120,34 +120,46 @@ with main_tabs[1]:
                     st.markdown(f"**Item:** {p_row['item_name']} | Qty: {p_row['quantity']} {p_row.get('units', 'Nos')}")
                     st.caption(f"Specs: {p_row.get('specs', 'None')}")
                 
-                # --- FIXED COMMUNICATION BUTTONS ---
-                msg = f"B&G Enquiry: {p_row['item_name']} - Qty: {p_row['quantity']} for Job: {p_row['job_no']}. Specs: {p_row.get('specs')}"
-                wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
-                mail_url = f"mailto:?subject=Material Enquiry: {p_row['item_name']}&body={urllib.parse.quote(msg)}"
-                
                 with h2:
-                    # WhatsApp Button
+                    # 1. WhatsApp Button (Fast Communication)
+                    msg = f"B&G Enquiry:\nJob: {p_row['job_no']}\nItem: {p_row['item_name']}\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}"
+                    wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
                     st.markdown(f"""
                         <a href="{wa_url}" target="_blank" style="text-decoration: none;">
-                            <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 5px;">
+                            <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">
                                 📲 WhatsApp
                             </div>
                         </a>
                     """, unsafe_allow_html=True)
                     
-                    # Email Button
-                    st.markdown(f"""
-                        <a href="{mail_url}" style="text-decoration: none;">
-                            <div style="background-color: #007bff; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold;">
-                                📧 Email Enquiry
-                            </div>
-                        </a>
-                    """, unsafe_allow_html=True)
+                    # 2. Professional Export for Email Attachment
+                    # Creating a professional Enquiry DataFrame
+                    enquiry_data = {
+                        "ENQUIRY FROM": ["B&G ENGINEERING"],
+                        "JOB CODE": [p_row['job_no']],
+                        "INDENT NO": [p_row.get('indent_no')],
+                        "ITEM NAME": [p_row['item_name']],
+                        "SPECIFICATIONS": [p_row.get('specs')],
+                        "REQUIRED QTY": [f"{p_row['quantity']} {p_row.get('units')}"],
+                        "DATE": [date.today().strftime('%d-%m-%Y')]
+                    }
+                    df_enquiry = pd.DataFrame(enquiry_data)
+                    csv_enquiry = df_enquiry.to_csv(index=False).encode('utf-8')
+                    
+                    st.download_button(
+                        label="📄 Export Enquiry Form",
+                        data=csv_enquiry,
+                        file_name=f"BG_Enquiry_{p_row['job_no']}_{p_row['item_name']}.csv",
+                        mime='text/csv',
+                        key=f"dl_enq_{p_row['id']}",
+                        use_container_width=True
+                    )
 
-                with st.expander("🛠️ Finalize Order"):
+                with st.expander("🛠️ Finalize Purchase Order"):
+                    # ... [Keep your existing PO No and Remarks inputs here] ...
                     c1, c2 = st.columns(2)
                     p_no = c1.text_input("PO No", key=f"po_{p_row['id']}")
-                    p_rem = st.text_input("Vendor Remarks", key=f"rem_{p_row['id']}")
+                    p_rem = st.text_input("Vendor / Remarks", key=f"rem_{p_row['id']}")
                     if st.button("✅ Confirm Order", key=f"ok_{p_row['id']}", type="primary", use_container_width=True):
                         conn.table("purchase_orders").update({
                             "status": "Ordered", 
