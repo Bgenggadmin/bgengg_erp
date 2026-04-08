@@ -198,16 +198,18 @@ with main_tabs[0]:
                 # Logic 3: Read-only for Ordered/Received
                 if status in ["Ordered", "Received"]:
                     col2.write("✅ Active")
-# --- TAB 2: PURCHASE CONSOLE (With WhatsApp, Email & Pro Export) ---
+# --- TAB 2: PURCHASE CONSOLE (With WhatsApp, Email, Pro Export & Reject) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase Processing")
+    
+    # We pull everything that isn't Received or Rejected for the main list
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
     
     if res_p.data:
-        # Sort: Urgent items first, then by date
         df_p = pd.DataFrame(res_p.data).sort_values(by=['is_urgent', 'created_at'], ascending=[False, False])
         
         for _, p_row in df_p.iterrows():
+            row_id = p_row['id']
             with st.container(border=True):
                 h1, h2 = st.columns([3, 1.2])
                 urgent_tag = "🚨 [URGENT]" if p_row.get('is_urgent') else ""
@@ -221,93 +223,62 @@ with main_tabs[1]:
                     # --- 1. WHATSAPP BUTTON ---
                     msg = f"B&G Enquiry:\nJob: {p_row['job_no']}\nItem: {p_row['item_name']}\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}"
                     wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
-                    st.markdown(f"""
-                        <a href="{wa_url}" target="_blank" style="text-decoration: none;">
-                            <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">
-                                📲 WhatsApp
-                            </div>
-                        </a>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"""<a href="{wa_url}" target="_blank" style="text-decoration: none;">
+                        <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">📲 WhatsApp</div>
+                        </a>""", unsafe_allow_html=True)
 
-                    # --- 2. EMAIL ENQUIRY (Outlook Integration) ---
+                    # --- 2. EMAIL ENQUIRY ---
                     mail_subject = urllib.parse.quote(f"Material Enquiry: {p_row['item_name']} | Job: {p_row['job_no']}")
-                    mail_body = urllib.parse.quote(
-                        f"Dear Sir/Madam,\n\n"
-                        f"Please find our official enquiry for the following material:\n\n"
-                        f"Item: {p_row['item_name']}\n"
-                        f"Job Code: {p_row['job_no']}\n"
-                        f"Quantity: {p_row['quantity']} {p_row.get('units')}\n"
-                        f"Specifications: {p_row.get('specs')}\n\n"
-                        f"Please provide your best quote and earliest lead time.\n\n"
-                        f"Regards,\n"
-                        f"B&G Engineering - Procurement"
-                    )
+                    mail_body = urllib.parse.quote(f"Dear Sir/Madam,\n\nPlease find our enquiry for {p_row['item_name']} (Job: {p_row['job_no']}).\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}\n\nRegards,\nB&G Engineering")
                     mail_url = f"mailto:?subject={mail_subject}&body={mail_body}"
+                    st.markdown(f"""<a href="{mail_url}" style="text-decoration: none;">
+                        <div style="background-color: #007bff; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">📧 Email Enquiry</div>
+                        </a>""", unsafe_allow_html=True)
                     
-                    st.markdown(f"""
-                        <a href="{mail_url}" style="text-decoration: none;">
-                            <div style="background-color: #007bff; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">
-                                📧 Email Enquiry
-                            </div>
-                        </a>
-                    """, unsafe_allow_html=True)
-                    
-                    # --- 3. PRO EXCEL FORMATTED EXPORT ---
+                    # --- 3. PRO EXCEL EXPORT (Using your provided logic) ---
                     html_form = f"""
-                    <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
-                    <head><meta charset="utf-8"></head>
-                    <body>
-                        <table>
-                            <tr><td colspan="2" style="font-size: 18pt; font-weight: bold; color: #003366; font-family: Arial;">B&G ENGINEERING</td></tr>
-                            <tr><td colspan="2" style="color: #666666; font-family: Arial;">Pashamylaram, Hyderabad | Material Procurement Hub</td></tr>
-                            <tr><td>&nbsp;</td></tr>
-                            <tr><td style="font-weight: bold; width: 160pt; font-family: Arial; border-bottom: 1px solid #007bff;">DOCUMENT:</td><td style="font-weight: bold; color: #007bff; font-family: Arial; border-bottom: 1px solid #007bff;">OFFICIAL MATERIAL ENQUIRY</td></tr>
-                            <tr><td style="font-family: Arial;">DATE:</td><td style="font-family: Arial;">{date.today().strftime('%d-%m-%Y')}</td></tr>
-                            <tr><td>&nbsp;</td></tr>
-                            <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; font-family: Arial; border: 1px solid #ccc;">REFERENCE DETAILS</td></tr>
-                            <tr><td style="font-family: Arial;">Indent Number:</td><td style="font-family: Arial;">{p_row.get('indent_no', 'N/A')}</td></tr>
-                            <tr><td style="font-family: Arial;">Job Code:</td><td style="font-family: Arial; font-weight: bold;">{p_row['job_no']}</td></tr>
-                            <tr><td style="font-family: Arial;">Urgency Level:</td><td style="font-family: Arial; color: {"#ff0000" if p_row.get('is_urgent') else "#000"};">{"URGENT / CRITICAL" if p_row.get('is_urgent') else "Normal"}</td></tr>
-                            <tr><td>&nbsp;</td></tr>
-                            <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; font-family: Arial; border: 1px solid #ccc;">TECHNICAL SPECIFICATIONS</td></tr>
-                            <tr><td style="font-family: Arial;">Item Description:</td><td style="font-family: Arial; font-weight: bold;">{p_row['item_name']}</td></tr>
-                            <tr><td style="font-family: Arial;">Technical Specs:</td><td style="font-family: Arial;">{p_row.get('specs', '-')}</td></tr>
-                            <tr><td style="font-family: Arial;">Required Quantity:</td><td style="font-family: Arial; font-weight: bold;">{p_row['quantity']} {p_row.get('units', 'Nos')}</td></tr>
-                            <tr><td style="font-family: Arial;">Special Notes:</td><td style="font-family: Arial; font-style: italic;">{p_row.get('special_notes', '-')}</td></tr>
-                            <tr><td>&nbsp;</td></tr>
-                            <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; font-family: Arial; border: 1px solid #ccc;">CLOSING REMARKS</td></tr>
-                            <tr><td colspan="2" style="font-family: Arial;">Please submit your commercial quote with earliest possible lead time.</td></tr>
-                            <tr><td>&nbsp;</td></tr>
-                            <tr><td style="font-weight: bold; font-family: Arial;">Authorized By:</td><td style="font-family: Arial;">B&G Procurement Hub</td></tr>
-                        </table>
-                    </body>
-                    </html>
+                    <html><body><table>
+                    <tr><td colspan="2" style="font-size: 18pt; font-weight: bold; color: #003366;">B&G ENGINEERING</td></tr>
+                    <tr><td colspan="2" style="color: #666666;">Pashamylaram, Hyderabad | Material Procurement Hub</td></tr>
+                    <tr><td>&nbsp;</td></tr>
+                    <tr><td style="font-weight: bold; width: 160pt; border-bottom: 1px solid #007bff;">DOCUMENT:</td><td style="font-weight: bold; color: #007bff; border-bottom: 1px solid #007bff;">OFFICIAL MATERIAL ENQUIRY</td></tr>
+                    <tr><td>DATE:</td><td>{date.today().strftime('%d-%m-%Y')}</td></tr>
+                    <tr><td>&nbsp;</td></tr>
+                    <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; border: 1px solid #ccc;">TECHNICAL SPECIFICATIONS</td></tr>
+                    <tr><td>Item:</td><td><b>{p_row['item_name']}</b></td></tr>
+                    <tr><td>Specs:</td><td>{p_row.get('specs', '-')}</td></tr>
+                    <tr><td>Qty:</td><td><b>{p_row['quantity']} {p_row.get('units')}</b></td></tr>
+                    </table></body></html>
                     """
-                    
-                    st.download_button(
-                        label="📄 Export Pro Enquiry",
-                        data=html_form,
-                        file_name=f"BG_Enquiry_{p_row['job_no']}.xls",
-                        mime='application/vnd.ms-excel',
-                        key=f"dl_pro_{p_row['id']}",
-                        use_container_width=True
-                    )
+                    st.download_button(label="📄 Export Pro Enquiry", data=html_form, file_name=f"BG_{p_row['job_no']}.xls", mime='application/vnd.ms-excel', key=f"dl_{row_id}", use_container_width=True)
 
-                with st.expander("🛠️ Finalize Purchase Order"):
-                    c1, c2 = st.columns(2)
-                    p_no = c1.text_input("PO No", key=f"po_{p_row['id']}")
-                    p_rem = c2.text_input("Vendor / Remarks", key=f"rem_{p_row['id']}")
-                    
-                    if st.button("✅ Confirm Order", key=f"ok_{p_row['id']}", type="primary", use_container_width=True):
-                        conn.table("purchase_orders").update({
-                            "status": "Ordered", 
-                            "po_no": p_no, 
-                            "purchase_reply": p_rem
-                        }).eq("id", p_row['id']).execute()
-                        st.success(f"Order {p_no} Recorded!")
+                # --- ACTION AREA: FINALIZE OR REJECT ---
+                c1, c2 = st.columns(2)
+                
+                with c1.expander("✅ Finalize Purchase Order"):
+                    p_no = st.text_input("PO No", key=f"po_{row_id}")
+                    p_rem = st.text_input("Vendor / Remarks", key=f"rem_{row_id}")
+                    if st.button("Confirm Order", key=f"ok_{row_id}", type="primary", use_container_width=True):
+                        conn.table("purchase_orders").update({"status": "Ordered", "po_no": p_no, "purchase_reply": p_rem}).eq("id", row_id).execute()
                         st.rerun()
+                
+                with c2.expander("🚫 Reject Indent"):
+                    rejection_reason = st.text_area("Reason for Rejection", key=f"rej_res_{row_id}", placeholder="e.g., Specs unavailable, Wrong Job Code...")
+                    if st.button("Confirm Rejection", key=f"rej_btn_{row_id}", type="secondary", use_container_width=True):
+                        if rejection_reason:
+                            conn.table("purchase_orders").update({"status": "Rejected", "reject_note": rejection_reason}).eq("id", row_id).execute()
+                            st.error(f"Item Rejected and sent back to Engineer.")
+                            st.rerun()
+                        else:
+                            st.warning("Please provide a reason for rejection.")
     else: 
         st.info("No pending purchase requests found.")
+
+    # --- REJECTED HISTORY (OPTIONAL VIEW) ---
+    with st.expander("📁 View Recently Rejected Indents"):
+        rej_res = conn.table("purchase_orders").select("*").eq("status", "Rejected").limit(10).execute()
+        if rej_res.data:
+            st.dataframe(pd.DataFrame(rej_res.data)[['created_at', 'job_no', 'item_name', 'reject_note']], use_container_width=True, hide_index=True)
 # --- TAB 3: STORES GRN (The Logistics Desk) ---
 with main_tabs[2]:
     st.subheader("📦 Goods Receipt Note (GRN) Desk")
