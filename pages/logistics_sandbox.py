@@ -89,7 +89,10 @@ with tabs[0]:
     st.subheader("📋 Complete Booking History")
     status_data = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute().data
     if status_data:
-        st.dataframe(pd.DataFrame(status_data)[['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
+        df_history = pd.DataFrame(status_data)
+        # ADD THIS LINE: Convert UTC to IST for display
+        df_history['req_date'] = pd.to_datetime(df_history['created_at']).dt.tz_convert('Asia/Kolkata').dt.strftime('%d %b, %I:%M %p')
+        st.dataframe(df_history[['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
 
 # --- TAB 2: BRAHMIAH'S DESK (MODIFIED WITH TIMESTAMP) ---
 with tabs[1]:
@@ -255,7 +258,12 @@ with tabs[4]:
         
         if res_exp.data:
             export_df = pd.DataFrame(res_exp.data)
-            
+            time_col = s_col # either 'timestamp' or 'created_at'
+            if time_col in export_df.columns:
+                export_df[time_col] = pd.to_datetime(export_df[time_col]).dt.tz_convert('Asia/Kolkata').dt.strftime('%Y-%m-%d %H:%M:%S')
+    
+            st.write(f"📊 Previewing {len(export_df)} records from {t_name} (IST):")
+            st.dataframe(export_df, use_container_width=True, hide_index=True)
             # Show a professional preview
             st.write(f"📊 Previewing {len(export_df)} records from {t_name}:")
             st.dataframe(export_df, use_container_width=True, hide_index=True)
