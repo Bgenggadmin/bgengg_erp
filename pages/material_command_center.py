@@ -198,11 +198,15 @@ with main_tabs[0]:
                 # Logic 3: Read-only for Ordered/Received
                 if status in ["Ordered", "Received"]:
                     col2.write("✅ Active")
-# --- TAB 2: PURCHASE CONSOLE (With WhatsApp, Email, Pro Export & Reject) ---
+# --- TAB 2: PURCHASE CONSOLE (With WhatsApp, Email, Pro Export & Vendor Linking) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase Processing")
     
-    # We pull everything that isn't Received or Rejected for the main list
+    # 1. Load Vendors for selection
+    res_v = conn.table("master_vendors").select("name, phone_number, email").order("name").execute()
+    vendor_options = {v['name']: v for v in res_v.data} if res_v.data else {}
+    
+    # 2. Pull pending items
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
     
     if res_p.data:
@@ -218,33 +222,44 @@ with main_tabs[1]:
                     st.markdown(f"**{urgent_tag} Indent #{p_row.get('indent_no', 'N/A')}** | Job: {p_row['job_no']}")
                     st.markdown(f"**Item:** {p_row['item_name']} | Qty: {p_row['quantity']} {p_row.get('units', 'Nos')}")
                     st.caption(f"Specs: {p_row.get('specs', 'None')}")
-                
+                    
+                    # VENDOR SELECTION
+                    selected_vendor_name = st.selectbox(
+                        "Select Vendor for Enquiry", 
+                        options=["--- Choose Vendor ---"] + list(vendor_options.keys()),
+                        key=f"v_sel_{row_id}"
+                    )
+                    v_info = vendor_options.get(selected_vendor_name, {})
+
                 with h2:
-                    # --- 1. WHATSAPP BUTTON ---
+                    # --- 1. DYNAMIC WHATSAPP BUTTON ---
                     msg = f"B&G Enquiry:\nJob: {p_row['job_no']}\nItem: {p_row['item_name']}\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}"
-                    wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
+                    
+                    # Logic: If vendor has a phone number, use it; otherwise open general WA
+                    v_phone = v_info.get('phone_number', "").strip()
+                    wa_base = f"https://wa.me/{v_phone}" if v_phone else "https://wa.me/"
+                    wa_url = f"{wa_base}?text={urllib.parse.quote(msg)}"
+                    
                     st.markdown(f"""<a href="{wa_url}" target="_blank" style="text-decoration: none;">
                         <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">📲 WhatsApp</div>
                         </a>""", unsafe_allow_html=True)
 
-                    # --- 2. EMAIL ENQUIRY ---
+                    # --- 2. DYNAMIC EMAIL ENQUIRY ---
+                    v_email = v_info.get('email', "")
                     mail_subject = urllib.parse.quote(f"Material Enquiry: {p_row['item_name']} | Job: {p_row['job_no']}")
                     mail_body = urllib.parse.quote(f"Dear Sir/Madam,\n\nPlease find our enquiry for {p_row['item_name']} (Job: {p_row['job_no']}).\nQty: {p_row['quantity']}\nSpecs: {p_row.get('specs')}\n\nRegards,\nB&G Engineering")
-                    mail_url = f"mailto:?subject={mail_subject}&body={mail_body}"
+                    mail_url = f"mailto:{v_email}?subject={mail_subject}&body={mail_body}"
+                    
                     st.markdown(f"""<a href="{mail_url}" style="text-decoration: none;">
                         <div style="background-color: #007bff; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">📧 Email Enquiry</div>
                         </a>""", unsafe_allow_html=True)
                     
-                    # --- 3. PRO EXCEL EXPORT (Using your provided logic) ---
+                    # --- 3. PRO EXCEL EXPORT ---
                     html_form = f"""
                     <html><body><table>
                     <tr><td colspan="2" style="font-size: 18pt; font-weight: bold; color: #003366;">B&G ENGINEERING</td></tr>
-                    <tr><td colspan="2" style="color: #666666;">Pashamylaram, Hyderabad | Material Procurement Hub</td></tr>
-                    <tr><td>&nbsp;</td></tr>
-                    <tr><td style="font-weight: bold; width: 160pt; border-bottom: 1px solid #007bff;">DOCUMENT:</td><td style="font-weight: bold; color: #007bff; border-bottom: 1px solid #007bff;">OFFICIAL MATERIAL ENQUIRY</td></tr>
                     <tr><td>DATE:</td><td>{date.today().strftime('%d-%m-%Y')}</td></tr>
-                    <tr><td>&nbsp;</td></tr>
-                    <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold; border: 1px solid #ccc;">TECHNICAL SPECIFICATIONS</td></tr>
+                    <tr style="background-color: #f2f2f2;"><td colspan="2" style="font-weight: bold;">TECHNICAL SPECIFICATIONS</td></tr>
                     <tr><td>Item:</td><td><b>{p_row['item_name']}</b></td></tr>
                     <tr><td>Specs:</td><td>{p_row.get('specs', '-')}</td></tr>
                     <tr><td>Qty:</td><td><b>{p_row['quantity']} {p_row.get('units')}</b></td></tr>
@@ -252,33 +267,25 @@ with main_tabs[1]:
                     """
                     st.download_button(label="📄 Export Pro Enquiry", data=html_form, file_name=f"BG_{p_row['job_no']}.xls", mime='application/vnd.ms-excel', key=f"dl_{row_id}", use_container_width=True)
 
-                # --- ACTION AREA: FINALIZE OR REJECT ---
+                # --- ACTION AREA ---
                 c1, c2 = st.columns(2)
-                
                 with c1.expander("✅ Finalize Purchase Order"):
                     p_no = st.text_input("PO No", key=f"po_{row_id}")
-                    p_rem = st.text_input("Vendor / Remarks", key=f"rem_{row_id}")
+                    # Use selected vendor as default remark
+                    p_rem = st.text_input("Vendor / Remarks", value=selected_vendor_name if selected_vendor_name != "--- Choose Vendor ---" else "", key=f"rem_{row_id}")
                     if st.button("Confirm Order", key=f"ok_{row_id}", type="primary", use_container_width=True):
                         conn.table("purchase_orders").update({"status": "Ordered", "po_no": p_no, "purchase_reply": p_rem}).eq("id", row_id).execute()
                         st.rerun()
                 
                 with c2.expander("🚫 Reject Indent"):
-                    rejection_reason = st.text_area("Reason for Rejection", key=f"rej_res_{row_id}", placeholder="e.g., Specs unavailable, Wrong Job Code...")
+                    rejection_reason = st.text_area("Reason for Rejection", key=f"rej_res_{row_id}")
                     if st.button("Confirm Rejection", key=f"rej_btn_{row_id}", type="secondary", use_container_width=True):
                         if rejection_reason:
                             conn.table("purchase_orders").update({"status": "Rejected", "reject_note": rejection_reason}).eq("id", row_id).execute()
-                            st.error(f"Item Rejected and sent back to Engineer.")
                             st.rerun()
-                        else:
-                            st.warning("Please provide a reason for rejection.")
+                        else: st.warning("Please provide a reason.")
     else: 
         st.info("No pending purchase requests found.")
-
-    # --- REJECTED HISTORY (OPTIONAL VIEW) ---
-    with st.expander("📁 View Recently Rejected Indents"):
-        rej_res = conn.table("purchase_orders").select("*").eq("status", "Rejected").limit(10).execute()
-        if rej_res.data:
-            st.dataframe(pd.DataFrame(rej_res.data)[['created_at', 'job_no', 'item_name', 'reject_note']], use_container_width=True, hide_index=True)
 # --- TAB 3: STORES GRN (The Logistics Desk) ---
 with main_tabs[2]:
     st.subheader("📦 Goods Receipt Note (GRN) Desk")
