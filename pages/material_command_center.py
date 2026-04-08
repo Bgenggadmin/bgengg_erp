@@ -47,21 +47,35 @@ main_tabs = st.tabs(["📝 Indent Application", "🛒 Purchase Console", "📦 S
 # --- TAB 1: INDENT APPLICATION ---
 with main_tabs[0]:
     st.subheader("📝 Material Indent & Tracking")
-    raised_by = st.selectbox("Raised By", get_staff_list(), key="user_sel")
     
+    # Session State for Revision (Loads data back into form)
+    if "rev_data" not in st.session_state: st.session_state.rev_data = None
     if "indent_cart" not in st.session_state: st.session_state.indent_cart = []
 
-    with st.expander("➕ Add Item to Draft", expanded=True):
+    raised_by = st.selectbox("Raised By", get_staff_list(), key="user_sel")
+    
+    # PART A: THE ENTRY FORM
+    with st.expander("➕ Add Item to Draft", expanded=True if not st.session_state.indent_cart else False):
+        # Determine default values if we are in 'Revision' mode
+        rd = st.session_state.rev_data if st.session_state.rev_data else {}
+        
         with st.form("indent_form", clear_on_submit=True):
             f1, f2 = st.columns(2)
-            sel_jobs = f1.multiselect("Select Job Nos", get_jobs())
-            m_grp = f2.selectbox("Material Group", get_material_groups())
-            i_name = st.text_input("Item Name")
-            i_specs = st.text_area("Specifications")
+            # Logic to pre-select jobs if revising
+            def_jobs = rd.get('job_no', "").split(", ") if rd.get('job_no') else []
+            sel_jobs = f1.multiselect("Select Job Nos", get_jobs(), default=[j for j in def_jobs if j in get_jobs()])
+            
+            m_grp = f2.selectbox("Material Group", get_material_groups(), 
+                                 index=get_material_groups().index(rd['material_group']) if rd.get('material_group') in get_material_groups() else 0)
+            
+            i_name = st.text_input("Item Name", value=rd.get('item_name', ""))
+            i_specs = st.text_area("Specifications", value=rd.get('specs', ""))
+            
             c1, c2, c3 = st.columns(3)
-            i_qty = c1.number_input("Qty", min_value=0.1)
-            i_unit = c2.selectbox("Units", ["Nos", "Kgs", "Mts", "Sft", "Sets"])
-            i_note = c3.text_input("Notes")
+            i_qty = c1.number_input("Qty", min_value=0.1, value=float(rd.get('quantity', 0.1)))
+            i_unit = c2.selectbox("Units", ["Nos", "Kgs", "Mts", "Sft", "Sets"], 
+                                  index=["Nos", "Kgs", "Mts", "Sft", "Sets"].index(rd['units']) if rd.get('units') in ["Nos", "Kgs", "Mts", "Sft", "Sets"] else 0)
+            i_note = c3.text_input("Notes", value=rd.get('special_notes', ""))
             
             if st.form_submit_button("Add to List"):
                 if sel_jobs and i_name:
@@ -70,23 +84,37 @@ with main_tabs[0]:
                         "specs": i_specs, "quantity": i_qty, "units": i_unit, "special_notes": i_note,
                         "triggered_by": raised_by, "status": "Triggered", "is_urgent": False
                     })
+                    st.session_state.rev_data = None # Clear revision buffer after adding
+                    st.rerun()
                 else: st.error("Job and Item Name required.")
 
+    # PART B: DRAFT LIST WITH DELETE OPTION
     if st.session_state.indent_cart:
-        st.dataframe(pd.DataFrame(st.session_state.indent_cart)[['job_no', 'item_name', 'quantity']], use_container_width=True)
-        if st.button("🚀 FINAL SUBMIT INDENT", type="primary"):
+        st.markdown("### 🛒 Current Draft List")
+        for idx, item in enumerate(st.session_state.indent_cart):
+            with st.container(border=True):
+                d1, d2, d3 = st.columns([4, 1, 1])
+                d1.write(f"**{item['item_name']}** | Qty: {item['quantity']} {item['units']} | Jobs: {item['job_no']}")
+                # Delete specific item from draft
+                if d3.button("🗑️", key=f"del_draft_{idx}"):
+                    st.session_state.indent_cart.pop(idx)
+                    st.rerun()
+
+        if st.button("🚀 FINAL SUBMIT INDENT", type="primary", use_container_width=True):
             header = conn.table("indent_headers").insert({"raised_by": raised_by}).execute()
             new_id = header.data[0]['indent_no']
             for item in st.session_state.indent_cart:
                 item['indent_no'] = new_id
                 conn.table("purchase_orders").insert(item).execute()
-            st.session_state.indent_cart = []; st.rerun()
+            st.session_state.indent_cart = []; st.success("Indent Submitted!"); st.rerun()
 
     st.divider()
-    # SEARCH & URGENT TRIGGER LOGIC
+    
+    # PART C: HISTORY, TRIGGER & REVISE
     job_list = ["ALL"] + get_jobs()
     search_j = st.selectbox("Filter History by Job Code", job_list)
-    hist = conn.table("purchase_orders").select("*").neq("status", "Received").order("created_at", desc=True).execute()
+    # Pulling more statuses to allow Revision of Rejected items
+    hist = conn.table("purchase_orders").select("*").order("created_at", desc=True).limit(20).execute()
     
     if hist.data:
         df_h = pd.DataFrame(hist.data)
@@ -94,15 +122,32 @@ with main_tabs[0]:
         
         for _, h_row in df_h.iterrows():
             with st.container(border=True):
-                col1, col2 = st.columns([4, 1])
-                is_urg = h_row.get('is_urgent', False)
-                urg_icon = "🚨" if is_urg else "📦"
-                col1.write(f"**{urg_icon} {h_row['item_name']}** ({h_row['quantity']} {h_row['units']}) | Job: {h_row['job_no']}")
-                if not is_urg:
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                status = h_row['status']
+                urg_icon = "🚨" if h_row.get('is_urgent') else "📦"
+                
+                col1.write(f"**{urg_icon} {h_row['item_name']}** | Status: `{status}`")
+                col1.caption(f"Job: {h_row['job_no']} | Qty: {h_row['quantity']} {h_row['units']}")
+                
+                # Logic 1: Trigger Urgent for pending items
+                if status == "Triggered" and not h_row.get('is_urgent'):
                     if col2.button("🚨 TRIGGER", key=f"trig_{h_row['id']}", use_container_width=True):
                         conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
                         st.rerun()
-
+                
+                # Logic 2: REVISE for Rejected Items
+                if status == "Rejected":
+                    col1.error(f"Reason: {h_row.get('reject_note', 'No note provided')}")
+                    if col2.button("📝 REVISE", key=f"rev_{h_row['id']}", use_container_width=True):
+                        st.session_state.rev_data = h_row
+                        st.rerun()
+                
+                # Logic 3: Delete accidentally raised (Only if still in 'Triggered' status)
+                if status == "Triggered":
+                    if col3.button("🗑️", key=f"del_db_{h_row['id']}", use_container_width=True):
+                        conn.table("purchase_orders").delete().eq("id", h_row['id']).execute()
+                        st.rerun()
 # --- TAB 2: PURCHASE CONSOLE (With WhatsApp, Email & Pro Export) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase Processing")
