@@ -91,7 +91,7 @@ with tabs[0]:
     if status_data:
         st.dataframe(pd.DataFrame(status_data)[['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
 
-# --- TAB 2: BRAHMIAH'S DESK (MODIFIED FOR STATUS SWITCH) ---
+# --- TAB 2: BRAHMIAH'S DESK (MODIFIED WITH TIMESTAMP) ---
 with tabs[1]:
     st.subheader("👨‍✈️ Operations & Manual Controls")
     
@@ -125,28 +125,56 @@ with tabs[1]:
     
     if not activity_filter.empty:
         for _, r in activity_filter.iterrows():
-            c1, c2, c3 = st.columns([3, 2, 1])
+            # Adjusting columns to accommodate the timestamp [Info, Status, Time, Action]
+            c1, c2, c3, c4 = st.columns([3, 1.5, 1.5, 1])
+            
             status_color = "🟢" if r['status'] == "Assigned" else "✅"
             c1.write(f"{status_color} **{r['assigned_vehicle']}** | {r['requested_by']} ➔ {r['destination']}")
-            c2.write(f"Status: **{r['status']}**")
+            
+            c2.write(f"**{r['status']}**")
+            
+            # --- TIMESTAMP LOGIC ---
+            # Extracting just the time/date from created_at
+            try:
+                raw_ts = r.get('created_at', '')
+                clean_ts = pd.to_datetime(raw_ts).strftime('%d %b, %H:%M') if raw_ts else "N/A"
+            except:
+                clean_ts = "N/A"
+            c3.write(f"🕒 {clean_ts}")
             
             # Show "Close Trip" button ONLY if it is still Assigned
             if r['status'] == "Assigned":
-                if c3.button("Close Trip", key=f"close_br{r['id']}"):
+                if c4.button("Close", key=f"close_br{r['id']}", use_container_width=True):
                     conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("id", r['id']).execute()
                     st.toast(f"Trip for {r['assigned_vehicle']} is now CLOSED.")
                     st.rerun()
             else:
-                c3.write("Done")
+                c4.write("Done")
     else: st.info("No recent trip activity.")
 
-# --- TAB 3: TRIP LOGGER ---
+# --- TAB 3: TRIP LOGGER (WITH TIMESTAMP) ---
 with tabs[2]:
     st.subheader("📝 Driver Log & Trip Closure")
-    active_trips = conn.table("logistics_requests").select("assigned_vehicle, destination, requested_by").eq("status", "Assigned").execute().data
-    if active_trips:
+    
+    # Updated query to include 'created_at' for the timestamp
+    active_trips_res = conn.table("logistics_requests")\
+        .select("assigned_vehicle, destination, requested_by, created_at")\
+        .eq("status", "Assigned")\
+        .execute()
+    
+    if active_trips_res.data:
         st.write("**Vehicles currently out:**")
-        st.dataframe(pd.DataFrame(active_trips), use_container_width=True, hide_index=True)
+        active_df = pd.DataFrame(active_trips_res.data)
+        
+        # Clean up the timestamp for display
+        active_df['assigned_at'] = pd.to_datetime(active_df['created_at']).dt.strftime('%H:%M (%d %b)')
+        
+        # Reorder and display relevant columns
+        st.dataframe(
+            active_df[['assigned_vehicle', 'destination', 'requested_by', 'assigned_at']], 
+            use_container_width=True, 
+            hide_index=True
+        )
 
     with st.form("logistics_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
@@ -154,10 +182,11 @@ with tabs[2]:
             vehicle = st.selectbox("Vehicle", vehicle_list, key="log_veh")
             driver = st.selectbox("Driver Name", staff_list, key="log_driver")
         with col2:
+            # get_last_km(vehicle, df) ensures continuity in odometer readings
             start_km = st.number_input("Start KM", min_value=0, value=get_last_km(vehicle, df), step=1)
             end_km = st.number_input("End KM", min_value=0, step=1)
         with col3:
-            fuel_qty = st.number_input("Fuel Added", min_value=0.0)
+            fuel_qty = st.number_input("Fuel Added (Ltrs)", min_value=0.0)
             auth_by = st.selectbox("Authorized By", staff_list, key="log_auth")
       
         location = st.text_input("Current Location / Final Destination")
@@ -165,22 +194,40 @@ with tabs[2]:
 
         if st.form_submit_button("🚀 SUBMIT LOG & CLOSE TRIP"):
             if end_km > start_km and location:
+                # We record the exact completion time here
+                finish_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M')
+                
                 new_entry = {
-                    "timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M'), 
-                    "vehicle": vehicle, "driver": driver, "start_km": start_km, "end_km": end_km, 
-                    "distance": end_km-start_km, "fuel_ltrs": fuel_qty, "location": location.upper()
+                    "timestamp": finish_time, 
+                    "vehicle": vehicle, 
+                    "driver": driver, 
+                    "start_km": start_km, 
+                    "end_km": end_km, 
+                    "distance": end_km - start_km, 
+                    "fuel_ltrs": fuel_qty, 
+                    "location": location.upper()
                 }
-                conn.table("logistics_logs").insert(new_entry).execute()
-                conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
-                st.cache_data.clear(); st.success("✅ Logged & Trip Closed!"); st.rerun()
+                
+                try:
+                    conn.table("logistics_logs").insert(new_entry).execute()
+                    # Closing the request status
+                    conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
+                    st.cache_data.clear()
+                    st.success(f"✅ Logged at {finish_time} & Trip Closed!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error saving log: {e}")
+            else:
+                st.warning("Please ensure End KM is greater than Start KM and Location is entered.")
 
-
+# --- TAB 4: 
 with tabs[3]:
     st.subheader("📊 Fleet Performance")
     if not df.empty:
         st.metric("Total KM Covered", f"{df['distance'].sum():,}")
         st.dataframe(df[['timestamp', 'vehicle', 'driver', 'distance', 'location']], use_container_width=True, hide_index=True)
 
+# --- TAB 5
 with tabs[4]:
     st.subheader("📥 Export Reports")
     target = st.radio("Select Data", ["Full Trip Logs", "All Booking Requests"], horizontal=True)
