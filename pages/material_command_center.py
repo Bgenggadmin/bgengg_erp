@@ -357,14 +357,73 @@ with main_tabs[2]:
                          use_container_width=True, hide_index=True)
 # --- TAB 4: MASTER SETUP ---
 with main_tabs[3]:
-    st.subheader("⚙️ Configuration")
-    m1, m2 = st.columns(2)
-    with m1:
+    st.subheader("⚙️ System Configuration & Master Data")
+    
+    # Using three columns for a cleaner layout
+    col_grp, col_vend_form, col_vend_list = st.columns([1, 1.5, 2])
+
+    # --- SECTION 1: MATERIAL GROUPS ---
+    with col_grp:
+        st.markdown("#### 📦 Material Groups")
         with st.form("m_grp_form", clear_on_submit=True):
-            new_g = st.text_input("New Material Group")
-            if st.form_submit_button("➕ Save Group"):
-                if new_g: conn.table("material_master").insert({"material_group": new_g.upper()}).execute()
+            new_g = st.text_input("New Group Name")
+            if st.form_submit_button("➕ Save Group") and new_g:
+                conn.table("material_master").insert({"material_group": new_g.upper()}).execute()
                 st.rerun()
-    with m2:
+        
+        # Display existing groups
         grps = conn.table("material_master").select("*").execute().data
-        if grps: st.dataframe(pd.DataFrame(grps)[['material_group']], hide_index=True)
+        if grps:
+            st.dataframe(pd.DataFrame(grps)[['material_group']], hide_index=True, use_container_width=True)
+
+    # --- SECTION 2: VENDOR MASTER ENTRY ---
+    with col_vend_form:
+        st.markdown("#### 🤝 Add New Vendor")
+        with st.form("vendor_entry_form", clear_on_submit=True):
+            v_name = st.text_input("Vendor Company Name*")
+            v_cat = st.selectbox("Category", ["Steel", "Hardware", "Electrical", "Consumables", "Services", "General"])
+            v_phone = st.text_input("WhatsApp (91xxxxxxxxxx)", help="Important: Include 91, no spaces.")
+            v_email = st.text_input("Official Email")
+            
+            if st.form_submit_button("💾 Save Vendor Details"):
+                if v_name:
+                    v_payload = {
+                        "name": v_name.strip().upper(),
+                        "category": v_cat,
+                        "phone_number": v_phone.strip(),
+                        "email": v_email.strip().lower()
+                    }
+                    try:
+                        conn.table("master_vendors").insert(v_payload).execute()
+                        st.success(f"Vendor {v_name} Added!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                else:
+                    st.warning("Company Name is required.")
+
+    # --- SECTION 3: VENDOR DIRECTORY ---
+    with col_vend_list:
+        st.markdown("#### 🔍 Vendor Directory")
+        v_search = st.text_input("Search Vendors...", placeholder="Type name or category")
+        
+        # Fetching Vendors
+        res_v = conn.table("master_vendors").select("*").order("name").execute()
+        if res_v.data:
+            df_v = pd.DataFrame(res_v.data)
+            if v_search:
+                df_v = df_v[df_v['name'].str.contains(v_search, case=False, na=False) | 
+                            df_v['category'].str.contains(v_search, case=False, na=False)]
+            
+            # Displaying Vendors in a clean, scrollable dataframe or list
+            for _, v_row in df_v.iterrows():
+                with st.container(border=True):
+                    v_c1, v_c2 = st.columns([4, 1])
+                    v_c1.write(f"**{v_row['name']}** ({v_row['category']})")
+                    v_c1.caption(f"📞 {v_row.get('phone_number', 'N/A')} | 📧 {v_row.get('email', 'N/A')}")
+                    
+                    if v_c2.button("🗑️", key=f"del_v_{v_row['id']}"):
+                        conn.table("master_vendors").delete().eq("id", v_row['id']).execute()
+                        st.rerun()
+        else:
+            st.info("No vendors registered yet.")
