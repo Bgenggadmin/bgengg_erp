@@ -227,15 +227,43 @@ with tabs[3]:
         st.metric("Total KM Covered", f"{df['distance'].sum():,}")
         st.dataframe(df[['timestamp', 'vehicle', 'driver', 'distance', 'location']], use_container_width=True, hide_index=True)
 
-# --- TAB 5
+# --- TAB 5: EXPORT & REPORTS (FIXED) ---
 with tabs[4]:
     st.subheader("📥 Export Reports")
-    target = st.radio("Select Data", ["Full Trip Logs", "All Booking Requests"], horizontal=True)
-    table_name = "logistics_logs" if target == "Full Trip Logs" else "logistics_requests"
+    target = st.radio("Select Data", ["Full Trip Logs", "All Booking Requests"], horizontal=True, key="export_radio_selector")
     
-    # THIS LINE BELOW IS THE PROBLEM:
-    export_df = pd.DataFrame(conn.table(table_name).select("*").order("created_at" if "created_at" in table_name else "timestamp", desc=True).execute().data)
+    # 1. Explicit Mapping to prevent API Errors
+    if target == "Full Trip Logs":
+        t_name = "logistics_logs"
+        sort_col = "timestamp"   # Ensure this exists in your logs table
+    else:
+        t_name = "logistics_requests"
+        sort_col = "created_at"  # Standard Supabase timestamp column
     
-    if not export_df.empty:
-        st.dataframe(export_df, use_container_width=True)
-        st.download_button("💾 Download CSV", export_df.to_csv(index=False).encode('utf-8'), f"bg_{table_name}.csv")
+    # 2. Safe Data Fetching
+    try:
+        res_export = conn.table(t_name).select("*").order(sort_col, desc=True).execute()
+        
+        if res_export.data:
+            export_df = pd.DataFrame(res_export.data)
+            
+            # Displaying for preview
+            st.write(f"📊 Previewing last {len(export_df)} records from {target}")
+            st.dataframe(export_df, use_container_width=True, hide_index=True)
+            
+            # 3. CSV Preparation
+            csv = export_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label=f"💾 Download {target} as CSV",
+                data=csv,
+                file_name=f"bg_{t_name}_{date.today()}.csv",
+                mime='text/csv',
+                key="download_btn_action"
+            )
+        else:
+            st.info(f"📭 No records found in {t_name} yet.")
+            
+    except Exception as e:
+        st.error(f"❌ Database Error: The column '{sort_col}' was not found in table '{t_name}'.")
+        # For your internal debugging, you can uncomment the line below:
+        # st.write(e)
