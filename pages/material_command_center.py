@@ -48,7 +48,7 @@ main_tabs = st.tabs(["📝 Indent Application", "🛒 Purchase Console", "📦 S
 with main_tabs[0]:
     st.subheader("📝 Material Indent & Tracking")
     
-    # Session State for Revision (Loads data back into form)
+    # Session State for Revision/Editing
     if "rev_data" not in st.session_state: st.session_state.rev_data = None
     if "indent_cart" not in st.session_state: st.session_state.indent_cart = []
 
@@ -56,47 +56,61 @@ with main_tabs[0]:
     
     # PART A: THE ENTRY FORM
     with st.expander("➕ Add Item to Draft", expanded=True if not st.session_state.indent_cart else False):
-        # Determine default values if we are in 'Revision' mode
         rd = st.session_state.rev_data if st.session_state.rev_data else {}
         
+        # Highlighting if we are in Edit/Revise mode
+        if st.session_state.rev_data:
+            st.info(f"🔧 Editing/Revising: {rd.get('item_name')}")
+
         with st.form("indent_form", clear_on_submit=True):
             f1, f2 = st.columns(2)
-            # Logic to pre-select jobs if revising
+            
+            # Logic to pre-select jobs
             def_jobs = rd.get('job_no', "").split(", ") if rd.get('job_no') else []
             sel_jobs = f1.multiselect("Select Job Nos", get_jobs(), default=[j for j in def_jobs if j in get_jobs()])
             
-            m_grp = f2.selectbox("Material Group", get_material_groups(), 
-                                 index=get_material_groups().index(rd['material_group']) if rd.get('material_group') in get_material_groups() else 0)
+            # Material Group Indexing
+            m_list = get_material_groups()
+            def_m_idx = m_list.index(rd['material_group']) if rd.get('material_group') in m_list else 0
+            m_grp = f2.selectbox("Material Group", m_list, index=def_m_idx)
             
             i_name = st.text_input("Item Name", value=rd.get('item_name', ""))
             i_specs = st.text_area("Specifications", value=rd.get('specs', ""))
             
             c1, c2, c3 = st.columns(3)
             i_qty = c1.number_input("Qty", min_value=0.1, value=float(rd.get('quantity', 0.1)))
-            i_unit = c2.selectbox("Units", ["Nos", "Kgs", "Mts", "Sft", "Sets"], 
-                                  index=["Nos", "Kgs", "Mts", "Sft", "Sets"].index(rd['units']) if rd.get('units') in ["Nos", "Kgs", "Mts", "Sft", "Sets"] else 0)
+            
+            u_list = ["Nos", "Kgs", "Mts", "Sft", "Sets"]
+            def_u_idx = u_list.index(rd['units']) if rd.get('units') in u_list else 0
+            i_unit = c2.selectbox("Units", u_list, index=def_u_idx)
+            
             i_note = c3.text_input("Notes", value=rd.get('special_notes', ""))
             
-            if st.form_submit_button("Add to List"):
+            f_btn1, f_btn2 = st.columns([1, 4])
+            submit_item = f_btn2.form_submit_button("✅ Add Item to List", use_container_width=True)
+            if f_btn1.form_submit_button("❌ Cancel"):
+                st.session_state.rev_data = None
+                st.rerun()
+
+            if submit_item:
                 if sel_jobs and i_name:
                     st.session_state.indent_cart.append({
                         "job_no": ", ".join(sel_jobs), "material_group": m_grp, "item_name": i_name.upper(),
                         "specs": i_specs, "quantity": i_qty, "units": i_unit, "special_notes": i_note,
-                        "triggered_by": raised_by, "status": "Triggered", "is_urgent": False
+                        "triggered_by": raised_by, "status": "Triggered", "is_urgent": rd.get('is_urgent', False)
                     })
-                    st.session_state.rev_data = None # Clear revision buffer after adding
+                    st.session_state.rev_data = None 
                     st.rerun()
                 else: st.error("Job and Item Name required.")
 
-    # PART B: DRAFT LIST WITH DELETE OPTION
+    # PART B: DRAFT LIST
     if st.session_state.indent_cart:
         st.markdown("### 🛒 Current Draft List")
         for idx, item in enumerate(st.session_state.indent_cart):
             with st.container(border=True):
-                d1, d2, d3 = st.columns([4, 1, 1])
-                d1.write(f"**{item['item_name']}** | Qty: {item['quantity']} {item['units']} | Jobs: {item['job_no']}")
-                # Delete specific item from draft
-                if d3.button("🗑️", key=f"del_draft_{idx}"):
+                d1, d2 = st.columns([5, 1])
+                d1.write(f"**{item['item_name']}** | {item['quantity']} {item['units']} | {item['job_no']}")
+                if d2.button("🗑️", key=f"del_draft_{idx}"):
                     st.session_state.indent_cart.pop(idx)
                     st.rerun()
 
@@ -110,11 +124,10 @@ with main_tabs[0]:
 
     st.divider()
     
-    # PART C: HISTORY, TRIGGER & REVISE
-    job_list = ["ALL"] + get_jobs()
-    search_j = st.selectbox("Filter History by Job Code", job_list)
-    # Pulling more statuses to allow Revision of Rejected items
-    hist = conn.table("purchase_orders").select("*").order("created_at", desc=True).limit(20).execute()
+    # PART C: HISTORY WITH EDIT AND REVISE
+    st.subheader("🔍 Tracking & Adjustments")
+    search_j = st.selectbox("Filter History by Job", ["ALL"] + get_jobs())
+    hist = conn.table("purchase_orders").select("*").order("created_at", desc=True).limit(30).execute()
     
     if hist.data:
         df_h = pd.DataFrame(hist.data)
@@ -122,30 +135,33 @@ with main_tabs[0]:
         
         for _, h_row in df_h.iterrows():
             with st.container(border=True):
-                col1, col2, col3 = st.columns([3, 1, 1])
-                
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
                 status = h_row['status']
-                urg_icon = "🚨" if h_row.get('is_urgent') else "📦"
                 
-                col1.write(f"**{urg_icon} {h_row['item_name']}** | Status: `{status}`")
-                col1.caption(f"Job: {h_row['job_no']} | Qty: {h_row['quantity']} {h_row['units']}")
+                col1.write(f"**{h_row['item_name']}** | Status: `{status}`")
+                col1.caption(f"Job: {h_row['job_no']} | Qty: {h_row['quantity']}")
                 
-                # Logic 1: Trigger Urgent for pending items
-                if status == "Triggered" and not h_row.get('is_urgent'):
-                    if col2.button("🚨 TRIGGER", key=f"trig_{h_row['id']}", use_container_width=True):
-                        conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
-                        st.rerun()
-                
-                # Logic 2: REVISE for Rejected Items
+                # REVISE Logic (For Rejected)
                 if status == "Rejected":
-                    col1.error(f"Reason: {h_row.get('reject_note', 'No note provided')}")
+                    col1.error(f"Rejected: {h_row.get('reject_note', 'No details')}")
                     if col2.button("📝 REVISE", key=f"rev_{h_row['id']}", use_container_width=True):
                         st.session_state.rev_data = h_row
+                        # We don't delete yet; we wait for them to resubmit
                         st.rerun()
-                
-                # Logic 3: Delete accidentally raised (Only if still in 'Triggered' status)
+
+                # EDIT Logic (For Triggered - to fix typos)
                 if status == "Triggered":
-                    if col3.button("🗑️", key=f"del_db_{h_row['id']}", use_container_width=True):
+                    if col2.button("✏️ EDIT", key=f"edit_{h_row['id']}", use_container_width=True):
+                        st.session_state.rev_data = h_row
+                        # Delete the old one immediately so it doesn't double up
+                        conn.table("purchase_orders").delete().eq("id", h_row['id']).execute()
+                        st.rerun()
+                    
+                    if col3.button("🚨", key=f"trig_{h_row['id']}"):
+                        conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
+                        st.rerun()
+                    
+                    if col4.button("🗑️", key=f"del_{h_row['id']}"):
                         conn.table("purchase_orders").delete().eq("id", h_row['id']).execute()
                         st.rerun()
 # --- TAB 2: PURCHASE CONSOLE (With WhatsApp, Email & Pro Export) ---
