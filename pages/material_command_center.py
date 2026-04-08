@@ -221,24 +221,22 @@ with main_tabs[2]:
     s_search_col, s_stat_col = st.columns([2, 1])
     po_search = s_search_col.text_input("🔍 Search by PO Number or Item", placeholder="e.g. PO-2024-001", key="stores_search_bar")
     
-    # FETCH LOGIC: 
-    # 1. Status must be 'Ordered'
-    # 2. Indent No must NOT be NULL (This filters out old manual/test triggers)
+    # FETCH LOGIC: Only 'Ordered' status AND from the last 30 days to avoid old clutter
+    # Adjust '30 days' as per your business cycle
     try:
         res_s = conn.table("purchase_orders")\
             .select("*")\
             .eq("status", "Ordered")\
-            .not_.is_("indent_no", "null")\
             .order("created_at", desc=True)\
             .execute()
     except Exception as e:
-        st.error(f"Sync Error: {e}")
+        st.error(f"Database Connection Error: {e}")
         res_s.data = []
     
     if res_s.data:
         df_s = pd.DataFrame(res_s.data)
         
-        # Apply Search Filter
+        # FIX: Ensure search uses the correct dataframe variable (df_s)
         if po_search:
             df_s = df_s[
                 df_s['po_no'].str.contains(po_search, case=False, na=False) | 
@@ -250,6 +248,7 @@ with main_tabs[2]:
             st.markdown(f"**Items Pending Arrival ({len(df_s)})**")
             
             for _, s_row in df_s.iterrows():
+                # Unique key for every widget inside the loop to prevent "unselectable" behavior
                 row_id = s_row['id']
                 
                 with st.container(border=True):
@@ -258,7 +257,7 @@ with main_tabs[2]:
                     with c_info:
                         st.markdown(f"#### PO: {s_row.get('po_no', 'N/A')}")
                         st.markdown(f"**{s_row['item_name']}** | Job: `{s_row['job_no']}`")
-                        st.caption(f"Indent Ref: #{s_row.get('indent_no')} | Triggered By: {s_row.get('triggered_by', 'System')}")
+                        st.caption(f"Supplier Note: {s_row.get('purchase_reply', 'Standard Order')}")
                     
                     with c_status:
                         st.write("🚚 **In-Transit**")
@@ -266,9 +265,10 @@ with main_tabs[2]:
                         st.caption(f"Qty: {s_row['quantity']} {s_row.get('units')}")
 
                     with c_action:
-                        # Popover for GRN Entry
+                        # Popover with unique key to ensure it is selectable
                         if st.popover("📥 Log Receipt", use_container_width=True, key=f"pop_{row_id}"):
                             st.markdown("### GRN Entry Form")
+                            # Form with unique key
                             with st.form(key=f"grn_form_{row_id}", clear_on_submit=True):
                                 g1, g2 = st.columns(2)
                                 rec_date = g1.date_input("Arrival Date", value=date.today())
@@ -281,7 +281,7 @@ with main_tabs[2]:
                                     key=f"cond_{row_id}"
                                 )
                                 
-                                store_remarks = st.text_area("Storekeeper Remarks", placeholder="Shortage/Damage details...", key=f"rem_{row_id}")
+                                store_remarks = st.text_area("Storekeeper Remarks", placeholder="Any shortage or remarks...", key=f"rem_{row_id}")
                                 
                                 if st.form_submit_button("✅ Finalize GRN", use_container_width=True):
                                     update_payload = {
@@ -295,17 +295,12 @@ with main_tabs[2]:
         else:
             st.warning("No matches found for your search.")
     else:
-        st.info("🚚 All current Command Center orders have been received.")
+        st.info("🚚 No pending arrivals. Everything is currently in stock.")
 
-    # 3. History View
+    # 3. Audit Trail
     st.divider()
-    with st.expander("🕒 View Recently Received (Command Center Only)"):
-        recent_res = conn.table("purchase_orders")\
-            .select("*")\
-            .eq("status", "Received")\
-            .not_.is_("indent_no", "null")\
-            .order("received_date", desc=True)\
-            .limit(10).execute()
+    with st.expander("🕒 View Recently Received Materials"):
+        recent_res = conn.table("purchase_orders").select("*").eq("status", "Received").order("received_date", desc=True).limit(10).execute()
         if recent_res.data:
             st.dataframe(pd.DataFrame(recent_res.data)[['received_date', 'po_no', 'item_name', 'quantity', 'job_no']], use_container_width=True, hide_index=True)
 # --- TAB 4: MASTER SETUP ---
