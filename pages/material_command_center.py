@@ -103,7 +103,7 @@ with main_tabs[0]:
                         conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
                         st.rerun()
 
-# --- TAB 2: PURCHASE CONSOLE (Pro-Branded Export Hub) ---
+# --- TAB 2: PURCHASE CONSOLE (With WhatsApp, Email & Pro Export) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase Processing")
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
@@ -133,9 +133,31 @@ with main_tabs[1]:
                             </div>
                         </a>
                     """, unsafe_allow_html=True)
+
+                    # --- 2. EMAIL ENQUIRY (Outlook Integration) ---
+                    mail_subject = urllib.parse.quote(f"Material Enquiry: {p_row['item_name']} | Job: {p_row['job_no']}")
+                    mail_body = urllib.parse.quote(
+                        f"Dear Sir/Madam,\n\n"
+                        f"Please find our official enquiry for the following material:\n\n"
+                        f"Item: {p_row['item_name']}\n"
+                        f"Job Code: {p_row['job_no']}\n"
+                        f"Quantity: {p_row['quantity']} {p_row.get('units')}\n"
+                        f"Specifications: {p_row.get('specs')}\n\n"
+                        f"Please provide your best quote and earliest lead time.\n\n"
+                        f"Regards,\n"
+                        f"B&G Engineering - Procurement"
+                    )
+                    mail_url = f"mailto:?subject={mail_subject}&body={mail_body}"
                     
-                    # --- 2. PRO EXCEL FORMATTED EXPORT ---
-                    # This HTML block forces Excel to use specific widths and styles
+                    st.markdown(f"""
+                        <a href="{mail_url}" style="text-decoration: none;">
+                            <div style="background-color: #007bff; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 8px;">
+                                📧 Email Enquiry
+                            </div>
+                        </a>
+                    """, unsafe_allow_html=True)
+                    
+                    # --- 3. PRO EXCEL FORMATTED EXPORT ---
                     html_form = f"""
                     <html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40">
                     <head><meta charset="utf-8"></head>
@@ -191,7 +213,6 @@ with main_tabs[1]:
                         st.rerun()
     else: 
         st.info("No pending purchase requests found.")
-
 # --- TAB 3: STORES GRN ---
 with main_tabs[2]:
     st.subheader("📦 Stores Management")
