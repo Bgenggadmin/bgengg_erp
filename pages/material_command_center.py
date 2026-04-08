@@ -221,13 +221,11 @@ with main_tabs[2]:
     s_search_col, s_stat_col = st.columns([2, 1])
     po_search = s_search_col.text_input("🔍 Search by PO or Item", placeholder="e.g. PO-107", key="grn_search")
     
-    # Fetch: Status=Ordered AND only from Command Center (indent_no not null)
+    # Fetch only active Command Center orders
     res_s = conn.table("purchase_orders").select("*").eq("status", "Ordered").not_.is_("indent_no", "null").execute()
     
     if res_s.data:
         df_s = pd.DataFrame(res_s.data)
-        
-        # Apply Filter
         if po_search:
             df_s = df_s[
                 df_s['po_no'].str.contains(po_search, case=False, na=False) | 
@@ -240,48 +238,50 @@ with main_tabs[2]:
             row_id = s_row['id']
             
             with st.container(border=True):
-                # Layout
                 c_info, c_status, c_action = st.columns([2.5, 1, 1.5])
                 
                 with c_info:
                     st.markdown(f"#### PO: {s_row.get('po_no', 'N/A')}")
                     st.markdown(f"**{s_row['item_name']}** | Job: `{s_row['job_no']}`")
-                    st.caption(f"Indent Ref: #{s_row.get('indent_no')}")
+                    st.caption(f"Indent Ref: #{s_row.get('indent_no')} | Vendor Note: {s_row.get('purchase_reply', '-')}")
                 
                 with c_status:
                     st.write("🚚 **In-Transit**")
                     st.caption(f"Qty: {s_row['quantity']} {s_row.get('units')}")
-                    # Simple status bar
                     st.progress(66)
 
                 with c_action:
-                    # REMOVED POPOVER: Replaced with direct action for better reliability
+                    # Added DC No and Remarks fields
                     dc_no = st.text_input("DC / Vehicle No", key=f"dc_{row_id}", placeholder="DC-123")
+                    s_rem = st.text_input("Stores Remarks", key=f"srem_{row_id}", placeholder="Shortage/Damage?")
                     
                     if st.button("✅ Confirm Receipt", key=f"btn_{row_id}", use_container_width=True, type="primary"):
                         if dc_no:
                             update_payload = {
                                 "status": "Received",
                                 "received_date": str(date.today()),
-                                "stores_remarks": f"DC/Veh: {dc_no}"
+                                "stores_remarks": f"DC: {dc_no} | Note: {s_rem}"
                             }
                             try:
                                 conn.table("purchase_orders").update(update_payload).eq("id", row_id).execute()
-                                st.success(f"Received {s_row['item_name']}")
+                                st.success(f"GRN recorded for {s_row['item_name']}")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Error: {e}")
                         else:
-                            st.warning("Enter DC/Vehicle No first")
+                            st.warning("Please enter DC/Vehicle No")
     else:
-        st.info("🚚 No pending arrivals from the Command Center.")
+        st.info("🚚 No pending arrivals.")
 
-    # 3. Audit Trail
+    # 3. Audit Trail with Remarks Column
     st.divider()
-    with st.expander("🕒 View Recently Received (Last 5)"):
+    with st.expander("🕒 View Recently Received (Showing Stores Remarks)"):
         recent_res = conn.table("purchase_orders").select("*").eq("status", "Received").not_.is_("indent_no", "null").order("received_date", desc=True).limit(5).execute()
         if recent_res.data:
-            st.dataframe(pd.DataFrame(recent_res.data)[['received_date', 'po_no', 'item_name', 'quantity', 'job_no']], use_container_width=True, hide_index=True)
+            df_recent = pd.DataFrame(recent_res.data)
+            # Displaying the remarks in the history table
+            st.dataframe(df_recent[['received_date', 'po_no', 'item_name', 'quantity', 'job_no', 'stores_remarks']], 
+                         use_container_width=True, hide_index=True)
 # --- TAB 4: MASTER SETUP ---
 with main_tabs[3]:
     st.subheader("⚙️ Configuration")
