@@ -227,43 +227,52 @@ with tabs[3]:
         st.metric("Total KM Covered", f"{df['distance'].sum():,}")
         st.dataframe(df[['timestamp', 'vehicle', 'driver', 'distance', 'location']], use_container_width=True, hide_index=True)
 
-# --- TAB 5: EXPORT & REPORTS (FIXED) ---
+# --- TAB 5: EXPORT & REPORTS (FINAL STABLE VERSION) ---
 with tabs[4]:
     st.subheader("📥 Export Reports")
-    target = st.radio("Select Data", ["Full Trip Logs", "All Booking Requests"], horizontal=True, key="export_radio_selector")
     
-    # 1. Explicit Mapping to prevent API Errors
+    # 1. User Selection
+    target = st.radio(
+        "Select Data to Export", 
+        ["Full Trip Logs", "All Booking Requests"], 
+        horizontal=True, 
+        key="export_data_selector"
+    )
+    
+    # 2. Explicit Table & Column Mapping
+    # This prevents the 'Postgrest APIError' by using the correct schema
     if target == "Full Trip Logs":
         t_name = "logistics_logs"
-        sort_col = "timestamp"   # Ensure this exists in your logs table
+        s_col = "timestamp"   # Ensure this column exists in logistics_logs
     else:
         t_name = "logistics_requests"
-        sort_col = "created_at"  # Standard Supabase timestamp column
-    
-    # 2. Safe Data Fetching
+        s_col = "created_at"  # Standard metadata column in logistics_requests
+
+    # 3. Secure Execution
     try:
-        res_export = conn.table(t_name).select("*").order(sort_col, desc=True).execute()
+        # Fetching data from Supabase
+        res_exp = conn.table(t_name).select("*").order(s_col, desc=True).execute()
         
-        if res_export.data:
-            export_df = pd.DataFrame(res_export.data)
+        if res_exp.data:
+            export_df = pd.DataFrame(res_exp.data)
             
-            # Displaying for preview
-            st.write(f"📊 Previewing last {len(export_df)} records from {target}")
+            # Show a professional preview
+            st.write(f"📊 Previewing {len(export_df)} records from {t_name}:")
             st.dataframe(export_df, use_container_width=True, hide_index=True)
             
-            # 3. CSV Preparation
-            csv = export_df.to_csv(index=False).encode('utf-8')
+            # 4. CSV Download Trigger
+            csv_data = export_df.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label=f"💾 Download {target} as CSV",
-                data=csv,
-                file_name=f"bg_{t_name}_{date.today()}.csv",
+                label=f"💾 Download {target} (CSV)",
+                data=csv_data,
+                file_name=f"BG_Logistics_{t_name}_{date.today()}.csv",
                 mime='text/csv',
-                key="download_btn_action"
+                key="final_export_button"
             )
         else:
-            st.info(f"📭 No records found in {t_name} yet.")
+            st.info(f"📭 No data found in the '{t_name}' table yet.")
             
     except Exception as e:
-        st.error(f"❌ Database Error: The column '{sort_col}' was not found in table '{t_name}'.")
-        # For your internal debugging, you can uncomment the line below:
-        # st.write(e)
+        # If the column name is wrong in Supabase, this catches it gracefully
+        st.error(f"❌ Database Sync Error: Check if column '{s_col}' exists in table '{t_name}'.")
+        # st.write(e) # Uncomment this only if you need to see the raw error for debugging
