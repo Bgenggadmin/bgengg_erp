@@ -213,21 +213,83 @@ with main_tabs[1]:
                         st.rerun()
     else: 
         st.info("No pending purchase requests found.")
-# --- TAB 3: STORES GRN ---
+# --- TAB 3: STORES GRN (The Logistics Desk) ---
 with main_tabs[2]:
-    st.subheader("📦 Stores Management")
+    st.subheader("📦 Goods Receipt Note (GRN) Desk")
+    
+    # 1. Store Search & Filter
+    s_search_col, s_stat_col = st.columns([2, 1])
+    po_search = s_search_col.text_input("🔍 Search by PO Number or Item", placeholder="e.g. PO-2024-001")
+    
+    # Fetch only items that are 'Ordered' (In-Transit)
     res_s = conn.table("purchase_orders").select("*").eq("status", "Ordered").execute()
+    
     if res_s.data:
-        for s_row in res_s.data:
+        df_s = pd.DataFrame(res_s.data)
+        
+        # Apply Search Filter
+        if po_search:
+            df_s = df_s[
+                df_s['po_no'].str.contains(po_search, case=False, na=False) | 
+                df_h['item_name'].str.contains(po_search, case=False, na=False)
+            ]
+
+        # 2. Receipt Queue
+        st.markdown(f"**Items Pending Arrival ({len(df_s)})**")
+        
+        for _, s_row in df_s.iterrows():
             with st.container(border=True):
-                sc1, sc2 = st.columns([3, 1])
-                sc1.write(f"**PO:** {s_row.get('po_no')} | **Item:** {s_row['item_name']} ({s_row['quantity']})")
-                if sc2.popover("📥 Log Receipt"):
-                    rdt = st.date_input("Date", value=date.today(), key=f"rdt_{s_row['id']}")
-                    if st.button("Confirm", key=f"sbtn_{s_row['id']}", type="primary"):
-                        conn.table("purchase_orders").update({"status": "Received", "received_date": str(rdt)}).eq("id", s_row['id']).execute()
-                        st.rerun()
-    else: st.info("No items in transit.")
+                # Layout for the "Cargo Card"
+                c_info, c_status, c_action = st.columns([3, 1, 1])
+                
+                with c_info:
+                    st.markdown(f"#### PO: {s_row.get('po_no', 'N/A')}")
+                    st.markdown(f"**{s_row['item_name']}** | Job: `{s_row['job_no']}`")
+                    st.caption(f"Supplier Note: {s_row.get('purchase_reply', 'Standard Order')}")
+                
+                with c_status:
+                    # Visual Indicator of Progress
+                    st.write("🚚 **In-Transit**")
+                    st.progress(66) # 2/3 stages complete (Indent -> PO -> [Stores])
+                    st.caption(f"Qty: {s_row['quantity']} {s_row.get('units')}")
+
+                with c_action:
+                    # Professional Popover for the Receipt Form
+                    if st.popover("📥 Log Receipt", use_container_width=True):
+                        st.markdown("### GRN Entry Form")
+                        with st.form(key=f"grn_form_{s_row['id']}", clear_on_submit=True):
+                            g1, g2 = st.columns(2)
+                            rec_date = g1.date_input("Arrival Date", value=date.today())
+                            veh_no = g2.text_input("Vehicle / DC Number", placeholder="e.g. AP 31 XX 1234")
+                            
+                            condition = st.select_slider(
+                                "Material Condition",
+                                options=["Damaged", "Partial", "Good", "Excellent"],
+                                value="Good"
+                            )
+                            
+                            store_remarks = st.text_area("Storekeeper Remarks", placeholder="Any shortage or remarks...")
+                            
+                            if st.form_submit_button("✅ Finalize GRN & Update Stock", use_container_width=True):
+                                update_payload = {
+                                    "status": "Received",
+                                    "received_date": str(rec_date),
+                                    "stores_remarks": f"Veh: {veh_no} | Cond: {condition} | {store_remarks}"
+                                }
+                                try:
+                                    conn.table("purchase_orders").update(update_payload).eq("id", s_row['id']).execute()
+                                    st.success(f"GRN Created for {s_row['item_name']}!")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error updating stores: {e}")
+    else:
+        st.info("🚚 No pending arrivals. All issued POs have been received.")
+
+    # 3. Quick View: Recently Received (Optional Audit Trail)
+    with st.expander("🕒 View Recently Received Materials (Last 5)"):
+        recent_res = conn.table("purchase_orders").select("*").eq("status", "Received").order("received_date", desc=True).limit(5).execute()
+        if recent_res.data:
+            st.table(pd.DataFrame(recent_res.data)[['received_date', 'po_no', 'item_name', 'quantity']])
 
 # --- TAB 4: MASTER SETUP ---
 with main_tabs[3]:
