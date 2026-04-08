@@ -103,7 +103,7 @@ with main_tabs[0]:
                         conn.table("purchase_orders").update({"is_urgent": True}).eq("id", h_row['id']).execute()
                         st.rerun()
 
-# --- TAB 2: PURCHASE CONSOLE (With Email & WhatsApp) ---
+# --- TAB 2: PURCHASE CONSOLE (With Fixed Button Buttons) ---
 with main_tabs[1]:
     st.subheader("🛒 Purchase processing")
     res_p = conn.table("purchase_orders").select("*").neq("status", "Received").neq("status", "Rejected").execute()
@@ -112,28 +112,51 @@ with main_tabs[1]:
         df_p = pd.DataFrame(res_p.data).sort_values(by=['is_urgent', 'created_at'], ascending=[False, False])
         for _, p_row in df_p.iterrows():
             with st.container(border=True):
-                h1, h2 = st.columns([3, 1])
+                h1, h2 = st.columns([3, 1.2])
                 urgent_tag = "🚨 [URGENT]" if p_row.get('is_urgent') else ""
-                h1.write(f"**{urgent_tag} Indent #{p_row.get('indent_no')}** | Job: {p_row['job_no']}")
-                h1.write(f"**Item:** {p_row['item_name']} | Qty: {p_row['quantity']}")
                 
-                # --- COMMUNICATION BUTTONS ---
+                with h1:
+                    st.markdown(f"**{urgent_tag} Indent #{p_row.get('indent_no')}** | Job: {p_row['job_no']}")
+                    st.markdown(f"**Item:** {p_row['item_name']} | Qty: {p_row['quantity']} {p_row.get('units', 'Nos')}")
+                    st.caption(f"Specs: {p_row.get('specs', 'None')}")
+                
+                # --- FIXED COMMUNICATION BUTTONS ---
                 msg = f"B&G Enquiry: {p_row['item_name']} - Qty: {p_row['quantity']} for Job: {p_row['job_no']}. Specs: {p_row.get('specs')}"
                 wa_url = f"https://wa.me/?text={urllib.parse.quote(msg)}"
                 mail_url = f"mailto:?subject=Material Enquiry: {p_row['item_name']}&body={urllib.parse.quote(msg)}"
                 
                 with h2:
-                    st.markdown(f"[📲 WhatsApp]({wa_url})")
-                    st.markdown(f" [📧 Email]({mail_url})")
+                    # WhatsApp Button
+                    st.markdown(f"""
+                        <a href="{wa_url}" target="_blank" style="text-decoration: none;">
+                            <div style="background-color: #25D366; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold; margin-bottom: 5px;">
+                                📲 WhatsApp
+                            </div>
+                        </a>
+                    """, unsafe_allow_html=True)
+                    
+                    # Email Button
+                    st.markdown(f"""
+                        <a href="{mail_url}" style="text-decoration: none;">
+                            <div style="background-color: #007bff; color: white; padding: 8px; border-radius: 5px; text-align: center; font-weight: bold;">
+                                📧 Email Enquiry
+                            </div>
+                        </a>
+                    """, unsafe_allow_html=True)
 
                 with st.expander("🛠️ Finalize Order"):
                     c1, c2 = st.columns(2)
                     p_no = c1.text_input("PO No", key=f"po_{p_row['id']}")
                     p_rem = st.text_input("Vendor Remarks", key=f"rem_{p_row['id']}")
-                    if st.button("✅ Confirm Order", key=f"ok_{p_row['id']}", type="primary"):
-                        conn.table("purchase_orders").update({"status": "Ordered", "po_no": p_no, "purchase_reply": p_rem}).eq("id", p_row['id']).execute()
+                    if st.button("✅ Confirm Order", key=f"ok_{p_row['id']}", type="primary", use_container_width=True):
+                        conn.table("purchase_orders").update({
+                            "status": "Ordered", 
+                            "po_no": p_no, 
+                            "purchase_reply": p_rem
+                        }).eq("id", p_row['id']).execute()
                         st.rerun()
-    else: st.info("No pending purchase items.")
+    else: 
+        st.info("No pending purchase items.")
 
 # --- TAB 3: STORES GRN ---
 with main_tabs[2]:
