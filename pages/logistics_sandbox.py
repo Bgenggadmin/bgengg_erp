@@ -94,18 +94,28 @@ with tabs[0]:
         df_history['req_date'] = pd.to_datetime(df_history['created_at']).dt.tz_convert('Asia/Kolkata').dt.strftime('%d %b, %I:%M %p')
         st.dataframe(df_history[['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
 
-# --- TAB 2: BRAHMIAH'S DESK (MODIFIED WITH TIMESTAMP) ---
+# --- TAB 2: BRAHMIAH'S DESK (FINAL STABLE IST) ---
 with tabs[1]:
     st.subheader("👨‍✈️ Operations & Manual Controls")
     
+    # Fetch all requests
     all_res = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute().data
     ardf = pd.DataFrame(all_res) if all_res else pd.DataFrame()
 
     if not ardf.empty:
+        # Get Indian Today's Date for metrics
+        today_ist = datetime.now(IST).date()
+        
         m1, m2, m3 = st.columns(3)
         m1.metric("Pending Approval", len(ardf[ardf['status'] == 'Pending']))
         m2.metric("In-Trip (Assigned)", len(ardf[ardf['status'] == 'Assigned']))
-        m3.metric("Closed Today", len(ardf[(ardf['status'] == 'Trip Closed') & (ardf['req_date'] == str(date.today()))]))
+        
+        # Fixed: Ensure we compare date objects correctly for "Closed Today"
+        closed_today = ardf[
+            (ardf['status'] == 'Trip Closed') & 
+            (pd.to_datetime(ardf['created_at']).dt.tz_convert('Asia/Kolkata').dt.date == today_ist)
+        ]
+        m3.metric("Closed Today", len(closed_today))
 
     # SECTION 1: APPROVALS
     st.markdown("### 📬 Pending Approvals")
@@ -123,37 +133,36 @@ with tabs[1]:
 
     # SECTION 2: LIVE & RECENTLY CLOSED TRIPS
     st.markdown("### 🚚 Live Trips & Activity Switch")
-    # We show both Assigned and Closed to ensure Brahmiah sees the status "Switch"
     activity_filter = ardf[ardf['status'].isin(['Assigned', 'Trip Closed'])].head(20) 
     
     if not activity_filter.empty:
         for _, r in activity_filter.iterrows():
-            # Adjusting columns to accommodate the timestamp [Info, Status, Time, Action]
-            c1, c2, c3, c4 = st.columns([3, 1.5, 1.5, 1])
+            # Adjusted column widths for better display on tablets/mobile
+            c1, c2, c3, c4 = st.columns([3, 1.2, 1.8, 1])
             
             status_color = "🟢" if r['status'] == "Assigned" else "✅"
             c1.write(f"{status_color} **{r['assigned_vehicle']}** | {r['requested_by']} ➔ {r['destination']}")
-            
             c2.write(f"**{r['status']}**")
             
-            # --- TIMESTAMP LOGIC ---
-            # Extracting just the time/date from created_at
+            # --- ROBUST TIMESTAMP LOGIC ---
             try:
-                raw_ts = r.get('created_at', '')
+                raw_ts = r.get('created_at')
                 if raw_ts:
-                    # 1. Convert string to datetime
-                    # 2. Tell Python it's UTC (Localize)
-                    # 3. Shift it to Indian Time (Convert)
-                    dt_obj = pd.to_datetime(raw_ts).tz_localize('UTC').tz_convert('Asia/Kolkata')
-                    clean_ts = dt_obj.strftime('%d %b, %I:%M %p') # e.g., 08 Apr, 04:30 PM
+                    # pd.to_datetime is smart enough to find the TZ if it exists
+                    dt_obj = pd.to_datetime(raw_ts)
+                    
+                    # If it has no timezone, assume UTC, then convert to IST
+                    if dt_obj.tzinfo is None:
+                        dt_obj = dt_obj.tz_localize('UTC')
+                    
+                    clean_ts = dt_obj.tz_convert('Asia/Kolkata').strftime('%d %b, %I:%M %p')
                 else:
-                    clean_ts = "N/A"
-            except:
-                clean_ts = "N/A"
+                    clean_ts = "---"
+            except Exception as e:
+                clean_ts = "Time Err"
             
             c3.write(f"🕒 {clean_ts}")
             
-            # Show "Close Trip" button ONLY if it is still Assigned
             if r['status'] == "Assigned":
                 if c4.button("Close", key=f"close_br{r['id']}", use_container_width=True):
                     conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("id", r['id']).execute()
