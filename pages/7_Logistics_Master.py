@@ -89,20 +89,33 @@ with tabs[0]:
     st.subheader("📋 Complete Booking History")
     status_data = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute().data
     if status_data:
-        st.dataframe(pd.DataFrame(status_data)[['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
+        df_history = pd.DataFrame(status_data)
+        # ADD THIS LINE: Convert UTC to IST for display
+        df_history['req_date'] = pd.to_datetime(df_history['created_at']).dt.tz_convert('Asia/Kolkata').dt.strftime('%d %b, %I:%M %p')
+        st.dataframe(df_history[['requested_by', 'destination', 'req_date', 'assigned_vehicle', 'status']], use_container_width=True, hide_index=True)
 
-# --- TAB 2: BRAHMIAH'S DESK (MODIFIED FOR STATUS SWITCH) ---
+# --- TAB 2: BRAHMIAH'S DESK (FINAL STABLE IST) ---
 with tabs[1]:
     st.subheader("👨‍✈️ Operations & Manual Controls")
     
+    # Fetch all requests
     all_res = conn.table("logistics_requests").select("*").order("created_at", desc=True).execute().data
     ardf = pd.DataFrame(all_res) if all_res else pd.DataFrame()
 
     if not ardf.empty:
+        # Get Indian Today's Date for metrics
+        today_ist = datetime.now(IST).date()
+        
         m1, m2, m3 = st.columns(3)
         m1.metric("Pending Approval", len(ardf[ardf['status'] == 'Pending']))
         m2.metric("In-Trip (Assigned)", len(ardf[ardf['status'] == 'Assigned']))
-        m3.metric("Closed Today", len(ardf[(ardf['status'] == 'Trip Closed') & (ardf['req_date'] == str(date.today()))]))
+        
+        # Fixed: Ensure we compare date objects correctly for "Closed Today"
+        closed_today = ardf[
+            (ardf['status'] == 'Trip Closed') & 
+            (pd.to_datetime(ardf['created_at']).dt.tz_convert('Asia/Kolkata').dt.date == today_ist)
+        ]
+        m3.metric("Closed Today", len(closed_today))
 
     # SECTION 1: APPROVALS
     st.markdown("### 📬 Pending Approvals")
@@ -120,33 +133,68 @@ with tabs[1]:
 
     # SECTION 2: LIVE & RECENTLY CLOSED TRIPS
     st.markdown("### 🚚 Live Trips & Activity Switch")
-    # We show both Assigned and Closed to ensure Brahmiah sees the status "Switch"
     activity_filter = ardf[ardf['status'].isin(['Assigned', 'Trip Closed'])].head(20) 
     
     if not activity_filter.empty:
         for _, r in activity_filter.iterrows():
-            c1, c2, c3 = st.columns([3, 2, 1])
+            # Adjusted column widths for better display on tablets/mobile
+            c1, c2, c3, c4 = st.columns([3, 1.2, 1.8, 1])
+            
             status_color = "🟢" if r['status'] == "Assigned" else "✅"
             c1.write(f"{status_color} **{r['assigned_vehicle']}** | {r['requested_by']} ➔ {r['destination']}")
-            c2.write(f"Status: **{r['status']}**")
+            c2.write(f"**{r['status']}**")
             
-            # Show "Close Trip" button ONLY if it is still Assigned
+            # --- ROBUST TIMESTAMP LOGIC ---
+            try:
+                raw_ts = r.get('created_at')
+                if raw_ts:
+                    # pd.to_datetime is smart enough to find the TZ if it exists
+                    dt_obj = pd.to_datetime(raw_ts)
+                    
+                    # If it has no timezone, assume UTC, then convert to IST
+                    if dt_obj.tzinfo is None:
+                        dt_obj = dt_obj.tz_localize('UTC')
+                    
+                    clean_ts = dt_obj.tz_convert('Asia/Kolkata').strftime('%d %b, %I:%M %p')
+                else:
+                    clean_ts = "---"
+            except Exception as e:
+                clean_ts = "Time Err"
+            
+            c3.write(f"🕒 {clean_ts}")
+            
             if r['status'] == "Assigned":
-                if c3.button("Close Trip", key=f"close_br{r['id']}"):
+                if c4.button("Close", key=f"close_br{r['id']}", use_container_width=True):
                     conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("id", r['id']).execute()
                     st.toast(f"Trip for {r['assigned_vehicle']} is now CLOSED.")
                     st.rerun()
             else:
-                c3.write("Done")
+                c4.write("Done")
     else: st.info("No recent trip activity.")
 
-# --- TAB 3: TRIP LOGGER ---
+# --- TAB 3: TRIP LOGGER (WITH TIMESTAMP) ---
 with tabs[2]:
     st.subheader("📝 Driver Log & Trip Closure")
-    active_trips = conn.table("logistics_requests").select("assigned_vehicle, destination, requested_by").eq("status", "Assigned").execute().data
-    if active_trips:
+    
+    # Updated query to include 'created_at' for the timestamp
+    active_trips_res = conn.table("logistics_requests")\
+        .select("assigned_vehicle, destination, requested_by, created_at")\
+        .eq("status", "Assigned")\
+        .execute()
+    
+    if active_trips_res.data:
         st.write("**Vehicles currently out:**")
-        st.dataframe(pd.DataFrame(active_trips), use_container_width=True, hide_index=True)
+        active_df = pd.DataFrame(active_trips_res.data)
+        
+        # Clean up the timestamp for display
+        active_df['assigned_at'] = pd.to_datetime(active_df['created_at']).dt.strftime('%H:%M (%d %b)')
+        
+        # Reorder and display relevant columns
+        st.dataframe(
+            active_df[['assigned_vehicle', 'destination', 'requested_by', 'assigned_at']], 
+            use_container_width=True, 
+            hide_index=True
+        )
 
     with st.form("logistics_form", clear_on_submit=True):
         col1, col2, col3 = st.columns(3)
@@ -154,10 +202,11 @@ with tabs[2]:
             vehicle = st.selectbox("Vehicle", vehicle_list, key="log_veh")
             driver = st.selectbox("Driver Name", staff_list, key="log_driver")
         with col2:
+            # get_last_km(vehicle, df) ensures continuity in odometer readings
             start_km = st.number_input("Start KM", min_value=0, value=get_last_km(vehicle, df), step=1)
             end_km = st.number_input("End KM", min_value=0, step=1)
         with col3:
-            fuel_qty = st.number_input("Fuel Added", min_value=0.0)
+            fuel_qty = st.number_input("Fuel Added (Ltrs)", min_value=0.0)
             auth_by = st.selectbox("Authorized By", staff_list, key="log_auth")
       
         location = st.text_input("Current Location / Final Destination")
@@ -165,27 +214,90 @@ with tabs[2]:
 
         if st.form_submit_button("🚀 SUBMIT LOG & CLOSE TRIP"):
             if end_km > start_km and location:
+                # We record the exact completion time here
+                finish_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M')
+                
                 new_entry = {
-                    "timestamp": datetime.now(IST).strftime('%Y-%m-%d %H:%M'), 
-                    "vehicle": vehicle, "driver": driver, "start_km": start_km, "end_km": end_km, 
-                    "distance": end_km-start_km, "fuel_ltrs": fuel_qty, "location": location.upper()
+                    "timestamp": finish_time, 
+                    "vehicle": vehicle, 
+                    "driver": driver, 
+                    "start_km": start_km, 
+                    "end_km": end_km, 
+                    "distance": end_km - start_km, 
+                    "fuel_ltrs": fuel_qty, 
+                    "location": location.upper()
                 }
-                conn.table("logistics_logs").insert(new_entry).execute()
-                conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
-                st.cache_data.clear(); st.success("✅ Logged & Trip Closed!"); st.rerun()
+                
+                try:
+                    conn.table("logistics_logs").insert(new_entry).execute()
+                    # Closing the request status
+                    conn.table("logistics_requests").update({"status": "Trip Closed"}).eq("assigned_vehicle", vehicle).eq("status", "Assigned").execute()
+                    st.cache_data.clear()
+                    st.success(f"✅ Logged at {finish_time} & Trip Closed!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error saving log: {e}")
+            else:
+                st.warning("Please ensure End KM is greater than Start KM and Location is entered.")
 
-# --- TAB 4 & 5 ---
+# --- TAB 4: 
 with tabs[3]:
     st.subheader("📊 Fleet Performance")
     if not df.empty:
         st.metric("Total KM Covered", f"{df['distance'].sum():,}")
         st.dataframe(df[['timestamp', 'vehicle', 'driver', 'distance', 'location']], use_container_width=True, hide_index=True)
 
+# --- TAB 5: EXPORT & REPORTS (FIXED & IST ENABLED) ---
 with tabs[4]:
     st.subheader("📥 Export Reports")
-    target = st.radio("Select Data", ["Full Trip Logs", "All Booking Requests"], horizontal=True)
-    table_name = "logistics_logs" if target == "Full Trip Logs" else "logistics_requests"
-    export_df = pd.DataFrame(conn.table(table_name).select("*").order("created_at" if "created_at" in table_name else "timestamp", desc=True).execute().data)
-    if not export_df.empty:
-        st.dataframe(export_df, use_container_width=True)
-        st.download_button("💾 Download CSV", export_df.to_csv(index=False).encode('utf-8'), f"bg_{table_name}.csv")
+    
+    target = st.radio(
+        "Select Data to Export", 
+        ["Full Trip Logs", "All Booking Requests"], 
+        horizontal=True, 
+        key="export_data_selector"
+    )
+    
+    # 1. FIXED MAPPING: 
+    # If your logistics_logs table also uses 'created_at', change s_col below to "created_at"
+    if target == "Full Trip Logs":
+        t_name = "logistics_logs"
+        s_col = "timestamp"   # <--- IF ERROR PERSISTS, CHANGE THIS TO "created_at"
+    else:
+        t_name = "logistics_requests"
+        s_col = "created_at" 
+
+    try:
+        res_exp = conn.table(t_name).select("*").order(s_col, desc=True).execute()
+        
+        if res_exp.data:
+            export_df = pd.DataFrame(res_exp.data)
+            
+            # 2. IST TIME CONVERSION (Indian Time Fix)
+            if s_col in export_df.columns:
+                try:
+                    # Convert to datetime, localize to UTC, then convert to IST
+                    export_df[s_col] = pd.to_datetime(export_df[s_col]).dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata').dt.strftime('%Y-%m-%d %H:%M:%S')
+                except:
+                    # Fallback if already localized or format is different
+                    export_df[s_col] = pd.to_datetime(export_df[s_col]).dt.strftime('%Y-%m-%d %H:%M:%S')
+    
+            st.write(f"📊 Previewing {len(export_df)} records from {t_name} (Indian Standard Time):")
+            st.dataframe(export_df, use_container_width=True, hide_index=True)
+            
+            # 3. CSV Download Trigger
+            csv_data = export_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label=f"💾 Download {target} (CSV)",
+                data=csv_data,
+                file_name=f"BG_Logistics_{t_name}_{date.today()}.csv",
+                mime='text/csv',
+                key="final_export_button"
+            )
+        else:
+            st.info(f"📭 No data found in the '{t_name}' table yet.")
+            
+    except Exception as e:
+        # Check if the error is specifically about the 'timestamp' column
+        st.error(f"❌ Database Sync Error: The column '{s_col}' was not found in table '{t_name}'.")
+        st.info("💡 Tip: Check your Supabase table. If the column is named 'created_at', we need to update the mapping in the code.")
