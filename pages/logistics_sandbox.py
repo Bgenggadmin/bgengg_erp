@@ -230,11 +230,10 @@ with tabs[3]:
         st.metric("Total KM Covered", f"{df['distance'].sum():,}")
         st.dataframe(df[['timestamp', 'vehicle', 'driver', 'distance', 'location']], use_container_width=True, hide_index=True)
 
-# --- TAB 5: EXPORT & REPORTS (FINAL STABLE VERSION) ---
+# --- TAB 5: EXPORT & REPORTS (FIXED & IST ENABLED) ---
 with tabs[4]:
     st.subheader("📥 Export Reports")
     
-    # 1. User Selection
     target = st.radio(
         "Select Data to Export", 
         ["Full Trip Logs", "All Booking Requests"], 
@@ -242,33 +241,34 @@ with tabs[4]:
         key="export_data_selector"
     )
     
-    # 2. Explicit Table & Column Mapping
-    # This prevents the 'Postgrest APIError' by using the correct schema
+    # 1. FIXED MAPPING: 
+    # If your logistics_logs table also uses 'created_at', change s_col below to "created_at"
     if target == "Full Trip Logs":
         t_name = "logistics_logs"
-        s_col = "timestamp"   # Ensure this column exists in logistics_logs
+        s_col = "timestamp"   # <--- IF ERROR PERSISTS, CHANGE THIS TO "created_at"
     else:
         t_name = "logistics_requests"
-        s_col = "created_at"  # Standard metadata column in logistics_requests
+        s_col = "created_at" 
 
-    # 3. Secure Execution
     try:
-        # Fetching data from Supabase
         res_exp = conn.table(t_name).select("*").order(s_col, desc=True).execute()
         
         if res_exp.data:
             export_df = pd.DataFrame(res_exp.data)
-            time_col = s_col # either 'timestamp' or 'created_at'
-            if time_col in export_df.columns:
-                export_df[time_col] = pd.to_datetime(export_df[time_col]).dt.tz_convert('Asia/Kolkata').dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # 2. IST TIME CONVERSION (Indian Time Fix)
+            if s_col in export_df.columns:
+                try:
+                    # Convert to datetime, localize to UTC, then convert to IST
+                    export_df[s_col] = pd.to_datetime(export_df[s_col]).dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata').dt.strftime('%Y-%m-%d %H:%M:%S')
+                except:
+                    # Fallback if already localized or format is different
+                    export_df[s_col] = pd.to_datetime(export_df[s_col]).dt.strftime('%Y-%m-%d %H:%M:%S')
     
-            st.write(f"📊 Previewing {len(export_df)} records from {t_name} (IST):")
-            st.dataframe(export_df, use_container_width=True, hide_index=True)
-            # Show a professional preview
-            st.write(f"📊 Previewing {len(export_df)} records from {t_name}:")
+            st.write(f"📊 Previewing {len(export_df)} records from {t_name} (Indian Standard Time):")
             st.dataframe(export_df, use_container_width=True, hide_index=True)
             
-            # 4. CSV Download Trigger
+            # 3. CSV Download Trigger
             csv_data = export_df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label=f"💾 Download {target} (CSV)",
@@ -281,6 +281,6 @@ with tabs[4]:
             st.info(f"📭 No data found in the '{t_name}' table yet.")
             
     except Exception as e:
-        # If the column name is wrong in Supabase, this catches it gracefully
-        st.error(f"❌ Database Sync Error: Check if column '{s_col}' exists in table '{t_name}'.")
-        # st.write(e) # Uncomment this only if you need to see the raw error for debugging
+        # Check if the error is specifically about the 'timestamp' column
+        st.error(f"❌ Database Sync Error: The column '{s_col}' was not found in table '{t_name}'.")
+        st.info("💡 Tip: Check your Supabase table. If the column is named 'created_at', we need to update the mapping in the code.")
