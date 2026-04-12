@@ -15,7 +15,7 @@ st.set_page_config(page_title="B&G Command Center", layout="wide", page_icon="ðŸ
 # urgent-row now uses st.error() natively. Header uses neutral styling.
 st.markdown("""
     <style>
-    .bg-header { background-color: #003366; color: white; padding: 0.1rem;
+    .bg-header { background-color: #003366; color: white; padding: 0.05rem;
                  border-radius: 8px; text-align: center; }
     .blue-strip { background-color: #007bff; height: 3px; width: 100%;
                   margin: 10px 0 20px 0; }
