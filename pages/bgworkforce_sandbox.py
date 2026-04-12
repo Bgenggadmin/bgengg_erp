@@ -513,25 +513,12 @@ with tabs[0]:
                     else:
                         st.error("Please enter details")
 
-# ============================================================
-# TAB 1: STAFF DATA HISTORY
-# ============================================================
-with tabs[1]:
-    require_auth()
-    att_user = st.session_state["authenticated_user"]
-    today = str(date.today())
+    # ── TODAY'S SHIFT SUMMARY ──────────────────────────────────
+    st.divider()
+    st.markdown("### 📊 Today's Summary")
 
-    st.subheader(f"📊 Personal History: {att_user}")
-
-    # ── TODAY'S SHIFT SUMMARY CARD ──────────────────────────
-    try:
-        today_att = conn.table("attendance_logs").select("*") \
-            .eq("employee_name", att_user).eq("work_date", today).execute().data
-    except Exception:
-        today_att = []
-
-    if today_att:
-        rec = today_att[0]
+    if emp_summ_res:
+        rec = emp_summ_res[0]
         punch_in_dt  = pd.to_datetime(rec.get('punch_in')).tz_convert(IST)  if rec.get('punch_in')  else None
         punch_out_dt = pd.to_datetime(rec.get('punch_out')).tz_convert(IST) if rec.get('punch_out') else None
 
@@ -550,17 +537,102 @@ with tabs[1]:
             duration_str = "—"
             shift_status = "⚪ Not started"
 
-        is_late = punch_in_dt and punch_in_dt.time() > LATE_THRESHOLD if punch_in_dt else False
+        is_late = punch_in_dt.time() > LATE_THRESHOLD if punch_in_dt else False
 
-        st.markdown("#### 🏢 Today's Shift")
+        st.markdown("#### 🏢 Shift")
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Punch In",  punch_in_str  + (" 🔴 Late" if is_late else ""))
+        s1.metric("Punch In",  punch_in_str + (" 🔴 Late" if is_late else ""))
         s2.metric("Punch Out", punch_out_str)
         s3.metric("Duration",  duration_str)
         s4.metric("Status",    shift_status)
-        st.divider()
+    else:
+        st.info("No punch-in recorded yet today.")
 
-    # ── DATE RANGE SELECTOR + RAW DATA TABLE ─────────────────
+    st.divider()
+
+    # ── TODAY'S WORK LOG SUMMARY ─────────────────────────────
+    st.markdown("#### 📝 Work Log Summary")
+    try:
+        wlog_res = conn.table("work_logs").select("*") \
+            .eq("employee_name", att_user).eq("work_date", today) \
+            .order("created_at").execute().data
+    except Exception:
+        wlog_res = []
+
+    if wlog_res:
+        df_wlog = pd.DataFrame(wlog_res)
+        df_wlog['Time'] = pd.to_datetime(df_wlog['created_at'], errors='coerce') \
+            .dt.tz_convert(IST).dt.strftime('%I:%M %p')
+        total_hours = df_wlog['hours_spent'].sum() if 'hours_spent' in df_wlog.columns else 0
+        wc1, wc2 = st.columns([3, 1])
+        with wc1:
+            for _, w in df_wlog.iterrows():
+                st.markdown(
+                    f"<div style='padding:6px 10px; margin-bottom:6px; border-left:3px solid #007bff; "
+                    f"background:#f8f9fb; border-radius:4px;'>"
+                    f"<span style='color:#888; font-size:12px;'>{w.get('Time','')}</span>&nbsp;&nbsp;"
+                    f"{w.get('task_description','')}</div>",
+                    unsafe_allow_html=True
+                )
+        with wc2:
+            st.metric("Logs Today",   len(df_wlog))
+            st.metric("Hours Logged", f"{total_hours:.1f}h")
+    else:
+        st.info("No work logs posted today.")
+
+    st.divider()
+
+    # ── TODAY'S MOVEMENT SUMMARY ─────────────────────────────
+    st.markdown("#### 🚶 Movement Summary")
+    try:
+        today_str_full = get_now_ist().strftime("%Y-%m-%d")
+        move_res = conn.table("movement_logs").select("*") \
+            .eq("employee_name", att_user) \
+            .gte("exit_time", f"{today_str_full}T00:00:00") \
+            .order("exit_time").execute().data
+    except Exception:
+        move_res = []
+
+    if move_res:
+        total_out_mins = 0
+        for mv in move_res:
+            exit_dt   = pd.to_datetime(mv['exit_time']).tz_convert(IST)   if mv.get('exit_time')   else None
+            return_dt = pd.to_datetime(mv['return_time']).tz_convert(IST) if mv.get('return_time') else None
+            exit_str   = exit_dt.strftime("%I:%M %p")   if exit_dt   else "—"
+            return_str = return_dt.strftime("%I:%M %p") if return_dt else "Still Out"
+            if exit_dt and return_dt:
+                dur_m = int((return_dt - exit_dt).total_seconds() // 60)
+                total_out_mins += dur_m
+                dur_str, badge_color = f"{dur_m}m", "#28a745"
+            else:
+                dur_str, badge_color = "ongoing", "#ffc107"
+            st.markdown(
+                f"<div style='display:flex; align-items:center; gap:12px; padding:8px 12px; "
+                f"margin-bottom:6px; border-radius:6px; background:#f8f9fb; border:1px solid #e6e9ef;'>"
+                f"<span style='font-size:12px; background:{badge_color}; color:white; "
+                f"padding:2px 8px; border-radius:99px;'>{mv.get('reason','')}</span>"
+                f"<b>{mv.get('destination','')}</b>"
+                f"<span style='margin-left:auto; color:#888; font-size:12px;'>"
+                f"{exit_str} → {return_str} &nbsp;|&nbsp; {dur_str}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        hours_out = total_out_mins // 60
+        mins_out  = total_out_mins % 60
+        st.caption(f"Total time outside office today: **{hours_out}h {mins_out}m**")
+    else:
+        st.info("No movements recorded today.")
+
+
+# ============================================================
+# TAB 1: STAFF DATA HISTORY
+# ============================================================
+with tabs[1]:
+    require_auth()
+    att_user = st.session_state["authenticated_user"]
+    today = str(date.today())
+
+    st.subheader(f"📊 Personal History: {att_user}")
     h_col1, h_col2 = st.columns([1, 2])
     with h_col1:
         hist_type = st.radio(
@@ -610,88 +682,6 @@ with tabs[1]:
             )
         else:
             st.info(f"No records found for {hist_type} in this date range.")
-
-        st.divider()
-
-        # ── TODAY'S WORK LOG SUMMARY ──────────────────────────
-        st.markdown("#### 📝 Today's Work Log Summary")
-        try:
-            wlog_res = conn.table("work_logs").select("*") \
-                .eq("employee_name", att_user).eq("work_date", today) \
-                .order("created_at").execute().data
-        except Exception:
-            wlog_res = []
-
-        if wlog_res:
-            df_wlog = pd.DataFrame(wlog_res)
-            df_wlog['Time'] = pd.to_datetime(df_wlog['created_at'], errors='coerce') \
-                .dt.tz_convert(IST).dt.strftime('%I:%M %p')
-            total_hours = df_wlog['hours_spent'].sum() if 'hours_spent' in df_wlog.columns else 0
-
-            wc1, wc2 = st.columns([3, 1])
-            with wc1:
-                for _, w in df_wlog.iterrows():
-                    st.markdown(
-                        f"<div style='padding:6px 10px; margin-bottom:6px; border-left:3px solid #007bff; "
-                        f"background:#f8f9fb; border-radius:4px;'>"
-                        f"<span style='color:#888; font-size:12px;'>{w.get('Time','')}</span>&nbsp;&nbsp;"
-                        f"{w.get('task_description','')}</div>",
-                        unsafe_allow_html=True
-                    )
-            with wc2:
-                st.metric("Logs Today", len(df_wlog))
-                st.metric("Hours Logged", f"{total_hours:.1f}h")
-        else:
-            st.info("No work logs posted today.")
-
-        st.divider()
-
-        # ── TODAY'S MOVEMENT SUMMARY ──────────────────────────
-        st.markdown("#### 🚶 Today's Movement Summary")
-        try:
-            today_str_full = get_now_ist().strftime("%Y-%m-%d")
-            move_res = conn.table("movement_logs").select("*") \
-                .eq("employee_name", att_user) \
-                .gte("exit_time", f"{today_str_full}T00:00:00") \
-                .order("exit_time").execute().data
-        except Exception:
-            move_res = []
-
-        if move_res:
-            total_out_mins = 0
-            for mv in move_res:
-                exit_dt   = pd.to_datetime(mv['exit_time']).tz_convert(IST)  if mv.get('exit_time')   else None
-                return_dt = pd.to_datetime(mv['return_time']).tz_convert(IST) if mv.get('return_time') else None
-
-                exit_str   = exit_dt.strftime("%I:%M %p")   if exit_dt   else "—"
-                return_str = return_dt.strftime("%I:%M %p")  if return_dt else "Still Out"
-
-                if exit_dt and return_dt:
-                    dur_m = int((return_dt - exit_dt).total_seconds() // 60)
-                    total_out_mins += dur_m
-                    dur_str = f"{dur_m}m"
-                    badge_color = "#28a745"
-                else:
-                    dur_str = "ongoing"
-                    badge_color = "#ffc107"
-
-                st.markdown(
-                    f"<div style='display:flex; align-items:center; gap:12px; padding:8px 12px; "
-                    f"margin-bottom:6px; border-radius:6px; background:#f8f9fb; border:1px solid #e6e9ef;'>"
-                    f"<span style='font-size:12px; background:{badge_color}; color:white; "
-                    f"padding:2px 8px; border-radius:99px;'>{mv.get('reason','')}</span>"
-                    f"<b>{mv.get('destination','')}</b>"
-                    f"<span style='margin-left:auto; color:#888; font-size:12px;'>"
-                    f"{exit_str} → {return_str} &nbsp;|&nbsp; {dur_str}</span>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-
-            hours_out = total_out_mins // 60
-            mins_out  = total_out_mins % 60
-            st.caption(f"Total time outside office today: **{hours_out}h {mins_out}m**")
-        else:
-            st.info("No movements recorded today.")
 
 # ============================================================
 # TAB 2: LEAVE APPLICATION
