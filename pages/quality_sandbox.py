@@ -334,9 +334,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
             pdf.ln(5)
 
     # ---- Stitch MTCs ----
-    report_buf = io.BytesIO()
-    pdf_bytes  = pdf.output(dest='S').encode('latin-1', 'ignore')
-    report_buf.write(pdf_bytes)
+    report_buf = io.BytesIO(bytes(pdf.output()))
     report_buf.seek(0)
 
     merger = PdfWriter()
