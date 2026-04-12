@@ -16,9 +16,9 @@ st.set_page_config(page_title="B&G Command Center", layout="wide", page_icon="�
 st.markdown("""
     <style>
     .bg-header { background-color: #003366; color: white; padding: 1rem;
-                 border-radius: 4px; text-align: center; }
-    .blue-strip { background-color: #007bff; height: 1px; width: 100%;
-                  margin:5px 0 5px 0; }
+                 border-radius: 8px; text-align: center; }
+    .blue-strip { background-color: #007bff; height: 3px; width: 100%;
+                  margin: 10px 0 20px 0; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -326,131 +326,236 @@ with main_tabs[1]:
         pending_data = []
 
     if pending_data:
-        df_p = pd.DataFrame(pending_data).sort_values(
-            by=['is_urgent', 'created_at'], ascending=[False, False]
+        df_p = pd.DataFrame(pending_data)
+
+        # ── GROUP BY INDENT ──────────────────────────────────
+        # Sort: urgent indents first, then by indent_no descending
+        df_p['_has_urgent'] = df_p['is_urgent'].fillna(False)
+        df_p = df_p.sort_values(
+            by=['_has_urgent', 'indent_no'], ascending=[False, False]
         )
 
-        for _, p_row in df_p.iterrows():
-            row_id = p_row['id']
+        indent_groups = df_p.groupby('indent_no', sort=False)
+        vendor_list   = ["--- Choose Vendor ---"] + list(vendor_options.keys())
+
+        for indent_no, grp in indent_groups:
+            grp         = grp.reset_index(drop=True)
+            has_urgent  = grp['is_urgent'].fillna(False).any()
+            all_jobs    = ", ".join(sorted(grp['job_no'].dropna().unique()))
+            item_count  = len(grp)
+            raised_by_i = grp.iloc[0].get('triggered_by', '—')
+            indent_label = f"{'🚨 ' if has_urgent else ''}Indent #{indent_no}"
+
             with st.container(border=True):
-                h1, h2 = st.columns([3, 1.2])
-                urgent_tag = "🚨 [URGENT]" if p_row.get('is_urgent') else ""
-
-                with h1:
+                # ── INDENT HEADER ROW ────────────────────────
+                ih1, ih2 = st.columns([3, 1.2])
+                with ih1:
                     st.markdown(
-                        f"**{urgent_tag} Indent #{p_row.get('indent_no', 'N/A')}** "
-                        f"| Job: {p_row['job_no']}"
+                        f"### {indent_label} &nbsp; "
+                        f"<span style='font-size:14px; color:gray;'>"
+                        f"{item_count} item{'s' if item_count > 1 else ''} | "
+                        f"Job(s): {all_jobs} | Raised by: {raised_by_i}</span>",
+                        unsafe_allow_html=True
                     )
-                    st.markdown(
-                        f"**Item:** {p_row['item_name']} "
-                        f"| Qty: {p_row['quantity']} {p_row.get('units', 'Nos')}"
-                    )
-                    st.caption(f"Specs: {p_row.get('specs', 'None')}")
 
-                    selected_vendor_name = st.selectbox(
-                        "Select Vendor for Enquiry",
-                        options=["--- Choose Vendor ---"] + list(vendor_options.keys()),
-                        key=f"v_sel_{row_id}"
+                with ih2:
+                    # ONE vendor selector per indent
+                    sel_vendor = st.selectbox(
+                        "Send enquiry to",
+                        options=vendor_list,
+                        key=f"v_sel_indent_{indent_no}"
                     )
-                    v_info = vendor_options.get(selected_vendor_name, {})
+                    v_info  = vendor_options.get(sel_vendor, {})
+                    v_phone = clean_phone(v_info.get('phone_number', ""))
+                    v_email = v_info.get('email', "")
 
-                with h2:
-                    # WhatsApp button
-                    msg = (
-                        f"B&G Enquiry:\nJob: {p_row['job_no']}\n"
-                        f"Item: {p_row['item_name']}\nQty: {p_row['quantity']}\n"
-                        f"Specs: {p_row.get('specs', '-')}"
+                    # Build combined message for ALL items in this indent
+                    item_lines = ""
+                    for i, row in grp.iterrows():
+                        item_lines += (
+                            f"\n{i+1}. {row['item_name']}"
+                            f" | Qty: {row['quantity']} {row.get('units','Nos')}"
+                            f" | Job: {row['job_no']}"
+                            f"{' | Specs: ' + row['specs'] if row.get('specs') else ''}"
+                        )
+
+                    wa_msg = (
+                        f"B&G Engineering — Material Enquiry\n"
+                        f"Indent Ref: #{indent_no}\n"
+                        f"Date: {date.today().strftime('%d-%m-%Y')}\n"
+                        f"{'='*30}\n"
+                        f"{item_lines}\n"
+                        f"{'='*30}\n"
+                        f"Please share your best quote.\nRegards, B&G Engineering"
                     )
-                    # FIX [Warning]: Clean phone number before building URL
-                    v_phone  = clean_phone(v_info.get('phone_number', ""))
-                    wa_base  = f"https://wa.me/{v_phone}" if v_phone else "https://wa.me/"
-                    wa_url   = f"{wa_base}?text={urllib.parse.quote(msg)}"
+
+                    wa_base = f"https://wa.me/{v_phone}" if v_phone else "https://wa.me/"
+                    wa_url  = f"{wa_base}?text={urllib.parse.quote(wa_msg)}"
                     st.markdown(
                         f'<a href="{wa_url}" target="_blank" style="text-decoration:none;">'
                         f'<div style="background-color:#25D366; color:white; padding:8px; '
                         f'border-radius:5px; text-align:center; font-weight:bold; '
-                        f'margin-bottom:8px;">📲 WhatsApp</div></a>',
+                        f'margin-bottom:6px;">📲 WhatsApp All Items</div></a>',
                         unsafe_allow_html=True
                     )
 
-                    # Email button
-                    v_email      = v_info.get('email', "")
                     mail_subject = urllib.parse.quote(
-                        f"Material Enquiry: {p_row['item_name']} | Job: {p_row['job_no']}"
+                        f"Material Enquiry — Indent #{indent_no} | B&G Engineering"
                     )
-                    mail_body = urllib.parse.quote(
-                        f"Dear Sir/Madam,\n\nPlease find our enquiry for "
-                        f"{p_row['item_name']} (Job: {p_row['job_no']}).\n"
-                        f"Qty: {p_row['quantity']}\nSpecs: {p_row.get('specs', '-')}\n\n"
+                    mail_body_str = (
+                        f"Dear Sir/Madam,\n\n"
+                        f"Please find our material enquiry for Indent #{indent_no}:\n"
+                        f"{item_lines}\n\n"
+                        f"Kindly share your best quote at the earliest.\n\n"
                         f"Regards,\nB&G Engineering"
                     )
-                    mail_url = f"mailto:{v_email}?subject={mail_subject}&body={mail_body}"
+                    mail_url = (
+                        f"mailto:{v_email}"
+                        f"?subject={mail_subject}"
+                        f"&body={urllib.parse.quote(mail_body_str)}"
+                    )
                     st.markdown(
                         f'<a href="{mail_url}" style="text-decoration:none;">'
                         f'<div style="background-color:#007bff; color:white; padding:8px; '
                         f'border-radius:5px; text-align:center; font-weight:bold; '
-                        f'margin-bottom:8px;">📧 Email Enquiry</div></a>',
+                        f'margin-bottom:6px;">📧 Email All Items</div></a>',
                         unsafe_allow_html=True
                     )
 
-                    # Pro Excel export
+                    # Pro Excel export — all items in one sheet
+                    item_rows_html = "".join([
+                        f"<tr><td>{i+1}</td><td><b>{r['item_name']}</b></td>"
+                        f"<td>{r.get('specs','-')}</td>"
+                        f"<td><b>{r['quantity']} {r.get('units','Nos')}</b></td>"
+                        f"<td>{r['job_no']}</td></tr>"
+                        for i, r in grp.iterrows()
+                    ])
                     html_form = f"""
-                    <html><body><table>
-                    <tr><td colspan="2" style="font-size:18pt;font-weight:bold;color:#003366;">
-                        B&G ENGINEERING</td></tr>
-                    <tr><td>DATE:</td><td>{date.today().strftime('%d-%m-%Y')}</td></tr>
-                    <tr style="background-color:#f2f2f2;">
-                        <td colspan="2" style="font-weight:bold;">TECHNICAL SPECIFICATIONS</td></tr>
-                    <tr><td>Item:</td><td><b>{p_row['item_name']}</b></td></tr>
-                    <tr><td>Specs:</td><td>{p_row.get('specs', '-')}</td></tr>
-                    <tr><td>Qty:</td>
-                        <td><b>{p_row['quantity']} {p_row.get('units', 'Nos')}</b></td></tr>
+                    <html><body>
+                    <table border="1" cellpadding="5" cellspacing="0">
+                    <tr><td colspan="5" style="font-size:18pt;font-weight:bold;
+                        color:#003366;">B&G ENGINEERING</td></tr>
+                    <tr><td colspan="2">Indent Ref:</td>
+                        <td colspan="3"><b>#{indent_no}</b></td></tr>
+                    <tr><td colspan="2">Date:</td>
+                        <td colspan="3">{date.today().strftime('%d-%m-%Y')}</td></tr>
+                    <tr style="background:#003366; color:white;">
+                        <td>#</td><td>Item</td><td>Specifications</td>
+                        <td>Qty</td><td>Job No</td></tr>
+                    {item_rows_html}
                     </table></body></html>
                     """
                     st.download_button(
-                        label="📄 Export Pro Enquiry",
+                        label="📄 Export Indent (XLS)",
                         data=html_form,
-                        file_name=f"BG_{p_row['job_no']}.xls",
+                        file_name=f"BG_Indent_{indent_no}.xls",
                         mime='application/vnd.ms-excel',
-                        key=f"dl_{row_id}",
+                        key=f"dl_indent_{indent_no}",
                         use_container_width=True
                     )
 
-                # Action area
-                c1, c2 = st.columns(2)
-                with c1.expander("✅ Finalize Purchase Order"):
-                    p_no  = st.text_input("PO No", key=f"po_{row_id}")
-                    p_rem = st.text_input(
-                        "Vendor / Remarks",
-                        value=selected_vendor_name if selected_vendor_name != "--- Choose Vendor ---" else "",
-                        key=f"rem_{row_id}"
-                    )
-                    if st.button("Confirm Order", key=f"ok_{row_id}", type="primary",
-                                 use_container_width=True):
-                        safe_db_write(
-                            lambda: conn.table("purchase_orders").update({
-                                "status": "Ordered", "po_no": p_no, "purchase_reply": p_rem
-                            }).eq("id", row_id).execute(),
-                            success_msg="Order confirmed!",
-                            error_prefix="Order Error"
-                        )
-                        st.cache_data.clear()
-                        st.rerun()
+                st.divider()
 
-                with c2.expander("🚫 Reject Indent"):
-                    rejection_reason = st.text_area("Reason for Rejection", key=f"rej_res_{row_id}")
-                    if st.button("Confirm Rejection", key=f"rej_btn_{row_id}",
-                                 type="secondary", use_container_width=True):
-                        if rejection_reason:
+                # ── ITEMS TABLE inside the indent card ───────
+                for i, p_row in grp.iterrows():
+                    row_id = p_row['id']
+                    status = p_row['status']
+                    urg_icon = "🚨" if p_row.get('is_urgent') else "▪️"
+
+                    ic1, ic2, ic3, ic4 = st.columns([3.5, 1, 1, 1])
+                    ic1.markdown(
+                        f"{urg_icon} **{p_row['item_name']}** &nbsp; "
+                        f"`{p_row['quantity']} {p_row.get('units','Nos')}` &nbsp; "
+                        f"Job: {p_row['job_no']} &nbsp; Status: `{status}`"
+                    )
+                    if p_row.get('specs'):
+                        ic1.caption(f"Specs: {p_row['specs']}")
+
+                    if status == "Rejected":
+                        ic1.error(f"Reason: {p_row.get('reject_note', 'No details')}")
+                        if ic2.button("📝 Revise", key=f"rev_{row_id}", use_container_width=True):
+                            st.session_state.rev_data = dict(p_row)
+                            st.rerun()
+
+                    if status == "Triggered":
+                        if not p_row.get('is_urgent'):
+                            if ic3.button("🚨", key=f"trig_{row_id}", help="Mark Urgent"):
+                                safe_db_write(
+                                    lambda: conn.table("purchase_orders")
+                                        .update({"is_urgent": True})
+                                        .eq("id", row_id).execute(),
+                                    error_prefix="Urgent flag error"
+                                )
+                                st.rerun()
+                        else:
+                            ic3.caption("Priority")
+
+                        if ic4.button("🗑️", key=f"del_db_{row_id}", help="Delete item"):
                             safe_db_write(
-                                lambda: conn.table("purchase_orders").update({
-                                    "status": "Rejected", "reject_note": rejection_reason
-                                }).eq("id", row_id).execute(),
-                                error_prefix="Rejection Error"
+                                lambda: conn.table("purchase_orders")
+                                    .delete().eq("id", row_id).execute(),
+                                error_prefix="Delete error"
                             )
                             st.rerun()
+
+                    if status in ["Ordered", "Received"]:
+                        ic2.write("✅ Active")
+
+                # ── INDENT-LEVEL ACTIONS ─────────────────────
+                st.markdown("**Actions for this Indent:**")
+                a1, a2 = st.columns(2)
+
+                with a1.expander("✅ Confirm Purchase Order (whole indent)"):
+                    p_no  = st.text_input("PO No", key=f"po_indent_{indent_no}")
+                    p_rem = st.text_input(
+                        "Vendor / Remarks",
+                        value=sel_vendor if sel_vendor != "--- Choose Vendor ---" else "",
+                        key=f"rem_indent_{indent_no}"
+                    )
+                    if st.button("Confirm Order", key=f"ok_indent_{indent_no}",
+                                 type="primary", use_container_width=True):
+                        all_ids = grp['id'].tolist()
+                        errors  = []
+                        for rid in all_ids:
+                            try:
+                                conn.table("purchase_orders").update({
+                                    "status": "Ordered",
+                                    "po_no": p_no,
+                                    "purchase_reply": p_rem
+                                }).eq("id", rid).execute()
+                            except Exception as e:
+                                errors.append(str(e))
+                        if errors:
+                            st.error(f"Some items failed: {'; '.join(errors)}")
+                        else:
+                            st.success(f"✅ Indent #{indent_no} — all items ordered!")
+                            st.cache_data.clear()
+                            st.rerun()
+
+                with a2.expander("🚫 Reject Indent (whole indent)"):
+                    rej_reason = st.text_area(
+                        "Reason for Rejection", key=f"rej_res_indent_{indent_no}"
+                    )
+                    if st.button("Confirm Rejection", key=f"rej_btn_indent_{indent_no}",
+                                 type="secondary", use_container_width=True):
+                        if rej_reason:
+                            all_ids = grp['id'].tolist()
+                            errors  = []
+                            for rid in all_ids:
+                                try:
+                                    conn.table("purchase_orders").update({
+                                        "status": "Rejected",
+                                        "reject_note": rej_reason
+                                    }).eq("id", rid).execute()
+                                except Exception as e:
+                                    errors.append(str(e))
+                            if errors:
+                                st.error(f"Some items failed: {'; '.join(errors)}")
+                            else:
+                                st.rerun()
                         else:
                             st.warning("Please provide a reason.")
+
     else:
         st.info("No pending purchase requests found (last 90 days).")
 
