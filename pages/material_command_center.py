@@ -15,7 +15,7 @@ st.set_page_config(page_title="B&G Command Center", layout="wide", page_icon="�
 # urgent-row now uses st.error() natively. Header uses neutral styling.
 st.markdown("""
     <style>
-    .bg-header { background-color: #003366; color: white; padding: 0.01rem;
+    .bg-header { background-color: #003366; color: white; padding: 1rem;
                  border-radius: 8px; text-align: center; }
     .blue-strip { background-color: #007bff; height: 3px; width: 100%;
                   margin: 10px 0 20px 0; }
@@ -96,6 +96,7 @@ main_tabs = st.tabs([
     "📝 Indent Application",
     "🛒 Purchase Console",
     "📦 Stores GRN",
+    "📊 Analytics",
     "⚙️ Master Setup"
 ])
 
@@ -487,6 +488,38 @@ with main_tabs[1]:
                                 unsafe_allow_html=True
                             )
 
+                            # ── ENQUIRY SENT TRACKER ──────────
+                            grp_ids       = grp_items['id'].tolist()
+                            already_sent  = grp_items['enquiry_sent_at'].notna().all() \
+                                            if 'enquiry_sent_at' in grp_items.columns else False
+                            if already_sent:
+                                first_sent = grp_items['enquiry_sent_at'].min()
+                                try:
+                                    sent_fmt = pd.to_datetime(first_sent).strftime('%d-%m %I:%M %p')
+                                except Exception:
+                                    sent_fmt = str(first_sent)[:16]
+                                st.success(f"✅ Enquiry sent: {sent_fmt}")
+                            else:
+                                if st.button(
+                                    "📬 Mark Enquiry Sent",
+                                    key=f"pc_enq_{gkey}",
+                                    use_container_width=True
+                                ):
+                                    now_ist = datetime.now(IST).isoformat()
+                                    errors  = []
+                                    for rid in grp_ids:
+                                        try:
+                                            conn.table("purchase_orders").update({
+                                                "enquiry_sent_at": now_ist
+                                            }).eq("id", rid).execute()
+                                        except Exception as e:
+                                            errors.append(str(e))
+                                    if errors:
+                                        st.error(f"Error: {errors[0]}")
+                                    else:
+                                        st.success("Enquiry timestamp recorded!")
+                                        st.rerun()
+
                             # XLS export for this group
                             item_rows_html = "".join([
                                 f"<tr><td>{ii+1}</td><td><b>{r['item_name']}</b></td>"
@@ -818,7 +851,7 @@ with main_tabs[2]:
 # ============================================================
 # TAB 3: MASTER SETUP
 # ============================================================
-with main_tabs[3]:
+with main_tabs[4]:
     st.subheader("⚙️ System Configuration & Master Data")
 
     col_grp, col_vend_form, col_vend_list = st.columns([1, 1.5, 2])
@@ -925,3 +958,316 @@ with main_tabs[3]:
                 st.info("No vendors match your search.")
         else:
             st.info("No vendors registered yet.")
+
+# ============================================================
+# TAB 3: ANALYTICS — Procurement Timeline
+# ============================================================
+with main_tabs[3]:
+    st.subheader("📊 Procurement Analytics — Timeline & Stage Tracker")
+
+    # ── FILTERS ──────────────────────────────────────────────
+    fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+    cutoff_opts = {"Last 30 days": 30, "Last 60 days": 60, "Last 90 days": 90, "Last 180 days": 180}
+    cutoff_sel  = fc1.selectbox("Date Range", list(cutoff_opts.keys()), index=2, key="an_range")
+    cutoff_days = cutoff_opts[cutoff_sel]
+    cutoff_date = date.today() - timedelta(days=cutoff_days)
+
+    an_status = fc2.selectbox(
+        "Status", ["All", "Triggered", "Ordered", "Partial", "Received", "Rejected"],
+        key="an_status"
+    )
+    an_group = fc3.selectbox(
+        "Material Group", ["All"] + get_material_groups(), key="an_group"
+    )
+    an_overdue = fc4.selectbox(
+        "Overdue filter", ["All items", "Overdue only", "On time only"], key="an_overdue"
+    )
+    an_job = fc5.selectbox(
+        "Job No", ["All"] + get_jobs(), key="an_job"
+    )
+
+    # ── FETCH DATA ───────────────────────────────────────────
+    try:
+        an_res = conn.table("purchase_orders").select("*") \
+            .gte("created_at", f"{cutoff_date}T00:00:00") \
+            .order("created_at", desc=True) \
+            .limit(300).execute()
+        an_data = an_res.data or []
+    except Exception as e:
+        st.error(f"Analytics load error: {e}")
+        an_data = []
+
+    # Fetch GRN receipts for partial receipt dates
+    try:
+        if an_data:
+            an_ids  = [r['id'] for r in an_data]
+            grn_an  = conn.table("grn_receipts").select("po_id, received_date, received_qty") \
+                .in_("po_id", an_ids).execute()
+            grn_an_data = grn_an.data or []
+        else:
+            grn_an_data = []
+    except Exception:
+        grn_an_data = []
+
+    # Build GRN lookup: po_id -> first receipt date, total received qty
+    from collections import defaultdict
+    grn_lookup = defaultdict(lambda: {"first_date": None, "total_qty": 0})
+    for g in grn_an_data:
+        pid = g['po_id']
+        grn_lookup[pid]["total_qty"] += float(g.get('received_qty', 0))
+        fd = g.get('received_date')
+        if fd and (grn_lookup[pid]["first_date"] is None or fd < grn_lookup[pid]["first_date"]):
+            grn_lookup[pid]["first_date"] = fd
+
+    if an_data:
+        df_an = pd.DataFrame(an_data)
+
+        # ── DATE PARSING (all to date objects) ───────────────
+        today_d = date.today()
+
+        def to_date(val):
+            if pd.isna(val) or val is None or val == '': return None
+            try:
+                return pd.to_datetime(val).date()
+            except Exception:
+                return None
+
+        def days_between(d1, d2):
+            if d1 and d2:
+                return (d2 - d1).days
+            return None
+
+        def fmt_date(d):
+            return d.strftime('%d-%m-%Y') if d else '—'
+
+        rows = []
+        for _, r in df_an.iterrows():
+            indent_date   = to_date(r.get('created_at'))
+            enquiry_date  = to_date(r.get('enquiry_sent_at'))
+            po_dt         = to_date(r.get('po_date'))
+            exp_delivery  = to_date(r.get('expected_delivery'))
+            received_dt   = to_date(r.get('received_date'))
+            grn_info      = grn_lookup.get(r['id'], {})
+            first_grn     = to_date(grn_info.get('first_date'))
+            total_recd    = grn_info.get('total_qty', 0)
+            ordered_qty   = float(r.get('quantity', 0) or 0)
+            status        = r.get('status', '')
+
+            # Effective receipt date
+            eff_receipt = received_dt or first_grn
+
+            # Stage days
+            d_indent_enq  = days_between(indent_date, enquiry_date)
+            d_enq_po      = days_between(enquiry_date, po_dt)
+            d_indent_po   = days_between(indent_date, po_dt)   # fallback if no enquiry
+            d_po_receipt  = days_between(po_dt, eff_receipt)
+            d_total       = days_between(indent_date, eff_receipt or today_d)
+
+            # Overdue logic
+            if status in ['Received'] and eff_receipt and exp_delivery:
+                overdue_days = (eff_receipt - exp_delivery).days
+            elif status in ['Ordered', 'Partial', 'Triggered'] and exp_delivery:
+                overdue_days = (today_d - exp_delivery).days
+            else:
+                overdue_days = None
+
+            is_overdue = overdue_days is not None and overdue_days > 0
+
+            # % fulfilled
+            pct = min(100, round(total_recd / ordered_qty * 100)) if ordered_qty > 0 else (
+                100 if status == 'Received' else 0
+            )
+
+            rows.append({
+                'id':           r.get('id'),
+                'indent_no':    r.get('indent_no'),
+                'item_name':    r.get('item_name', ''),
+                'material_group': r.get('material_group', ''),
+                'job_no':       r.get('job_no', ''),
+                'triggered_by': r.get('triggered_by', ''),
+                'status':       status,
+                'is_urgent':    r.get('is_urgent', False),
+                'quantity':     ordered_qty,
+                'units':        r.get('units', 'Nos'),
+                'po_no':        r.get('po_no', ''),
+                'vendor':       r.get('purchase_reply', ''),
+                'indent_date':  indent_date,
+                'enquiry_date': enquiry_date,
+                'po_date':      po_dt,
+                'exp_delivery': exp_delivery,
+                'received_date':eff_receipt,
+                'd_indent_enq': d_indent_enq,
+                'd_enq_po':     d_enq_po,
+                'd_indent_po':  d_indent_po,
+                'd_po_receipt': d_po_receipt,
+                'd_total':      d_total,
+                'overdue_days': overdue_days,
+                'is_overdue':   is_overdue,
+                'pct_fulfilled':pct,
+            })
+
+        df_view = pd.DataFrame(rows)
+
+        # Apply filters
+        if an_status != "All":
+            df_view = df_view[df_view['status'] == an_status]
+        if an_group != "All":
+            df_view = df_view[df_view['material_group'] == an_group]
+        if an_job != "All":
+            df_view = df_view[df_view['job_no'].str.contains(an_job, na=False)]
+        if an_overdue == "Overdue only":
+            df_view = df_view[df_view['is_overdue'] == True]
+        elif an_overdue == "On time only":
+            df_view = df_view[df_view['is_overdue'] == False]
+
+        # ── SUMMARY METRICS ───────────────────────────────────
+        total_items    = len(df_view)
+        overdue_count  = df_view['is_overdue'].sum()
+        received_df    = df_view[df_view['status'] == 'Received']
+        pending_df     = df_view[df_view['status'].isin(['Triggered','Ordered','Partial'])]
+
+        avg_i_to_po    = df_view['d_indent_po'].dropna().mean()
+        avg_po_to_recv = received_df['d_po_receipt'].dropna().mean()
+        avg_total      = received_df['d_total'].dropna().mean()
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Items", total_items)
+        m2.metric("Pending",     len(pending_df))
+        m3.metric("Avg Indent→PO",
+                  f"{avg_i_to_po:.1f}d" if not pd.isna(avg_i_to_po) else "—")
+        m4.metric("Avg PO→Receipt",
+                  f"{avg_po_to_recv:.1f}d" if not pd.isna(avg_po_to_recv) else "—")
+        m5.metric("Overdue", int(overdue_count),
+                  delta=f"{int(overdue_count)} items" if overdue_count else None,
+                  delta_color="inverse")
+
+        st.divider()
+
+        # ── OVERDUE ALERT BOX ─────────────────────────────────
+        overdue_df = df_view[df_view['is_overdue'] == True].sort_values(
+            'overdue_days', ascending=False
+        )
+        if not overdue_df.empty:
+            with st.expander(f"🔴 {len(overdue_df)} Overdue Items — click to expand", expanded=True):
+                for _, od in overdue_df.iterrows():
+                    od_label = (
+                        f"No PO placed yet ({od['d_total']}d since indent)"
+                        if not od['po_no']
+                        else f"{od['overdue_days']}d past expected delivery"
+                    )
+                    st.error(
+                        f"🚨 **{od['item_name']}** | Indent #{od['indent_no']} | "
+                        f"Job: {od['job_no']} | {od['material_group']} | {od_label}"
+                    )
+
+        # ── MAIN TIMELINE TABLE ───────────────────────────────
+        st.markdown("#### 📋 Item-wise Procurement Timeline")
+
+        status_colors = {
+            'Triggered': '🟡', 'Ordered': '🔵',
+            'Partial':   '🟠', 'Received': '🟢',
+            'Rejected':  '🔴', 'Editing': '⚪'
+        }
+
+        def day_cell(d, warn_above=None):
+            if d is None: return '—'
+            if warn_above and d > warn_above: return f"⚠️ {d}d"
+            return f"{d}d"
+
+        # Build display dataframe
+        display_rows = []
+        for _, r in df_view.iterrows():
+            overdue_str = (
+                f"🔴 {r['overdue_days']}d late"   if r['is_overdue'] and r['overdue_days'] else
+                f"🔴 No PO ({r['d_total']}d)"     if r['is_overdue'] and not r['po_no'] else
+                f"🟢 {abs(r['overdue_days'])}d early" if r['overdue_days'] is not None and r['overdue_days'] < 0 else
+                "🟡 Pending"                       if r['exp_delivery'] is None else
+                "✅ On time"
+            )
+            display_rows.append({
+                'Indent #':       f"#{r['indent_no']}",
+                'Item':           ('🚨 ' if r['is_urgent'] else '') + str(r['item_name']),
+                'Group':          r['material_group'],
+                'Job':            r['job_no'],
+                'Raised By':      r['triggered_by'],
+                'Vendor':         r['vendor'] or '—',
+                'Status':         status_colors.get(r['status'], '⚪') + ' ' + r['status'],
+                'Indent Date':    fmt_date(r['indent_date']),
+                'Enquiry Sent':   fmt_date(r['enquiry_date']),
+                'PO Date':        fmt_date(r['po_date']),
+                'Exp. Delivery':  fmt_date(r['exp_delivery']),
+                'Received':       fmt_date(r['received_date']),
+                'I→Enq (d)':      day_cell(r['d_indent_enq'], warn_above=3),
+                'Enq→PO (d)':     day_cell(r['d_enq_po'],    warn_above=5),
+                'PO→Recv (d)':    day_cell(r['d_po_receipt'], warn_above=20),
+                'Total (d)':      day_cell(r['d_total'],      warn_above=30),
+                'PO Overdue':     overdue_str,
+                'Fulfilled %':    f"{r['pct_fulfilled']}%",
+            })
+
+        df_display = pd.DataFrame(display_rows)
+        st.dataframe(df_display, use_container_width=True, hide_index=True, height=420)
+
+        # ── CSV EXPORT ────────────────────────────────────────
+        def convert_df(df):
+            return df.to_csv(index=False).encode('utf-8')
+
+        st.download_button(
+            "📥 Export Timeline (CSV)",
+            data=convert_df(df_display),
+            file_name=f"BG_Procurement_Analytics_{date.today()}.csv",
+            mime="text/csv",
+            key="an_dl_csv"
+        )
+
+        st.divider()
+
+        # ── GROUP SUMMARY TABLE ───────────────────────────────
+        st.markdown("#### 📦 Average Days by Material Group")
+        if not df_view.empty:
+            grp_summary = df_view.groupby('material_group').agg(
+                Items       =('id',            'count'),
+                Overdue     =('is_overdue',     'sum'),
+                Avg_I_Enq   =('d_indent_enq',  'mean'),
+                Avg_Enq_PO  =('d_enq_po',      'mean'),
+                Avg_PO_Recv =('d_po_receipt',  'mean'),
+                Avg_Total   =('d_total',        'mean'),
+            ).reset_index()
+            grp_summary.columns = [
+                'Material Group', 'Items', 'Overdue',
+                'Avg I→Enq (d)', 'Avg Enq→PO (d)',
+                'Avg PO→Recv (d)', 'Avg Total (d)'
+            ]
+            for col in ['Avg I→Enq (d)', 'Avg Enq→PO (d)', 'Avg PO→Recv (d)', 'Avg Total (d)']:
+                grp_summary[col] = grp_summary[col].apply(
+                    lambda x: f"{x:.1f}" if pd.notna(x) else '—'
+                )
+            grp_summary['Overdue'] = grp_summary['Overdue'].astype(int)
+            st.dataframe(grp_summary, use_container_width=True, hide_index=True)
+
+        # ── VENDOR PERFORMANCE TABLE ──────────────────────────
+        st.markdown("#### 🤝 Vendor-wise Performance")
+        vendor_df = df_view[df_view['vendor'].notna() & (df_view['vendor'] != '')]
+        if not vendor_df.empty:
+            vend_summary = vendor_df.groupby('vendor').agg(
+                Orders      =('id',            'count'),
+                Overdue     =('is_overdue',     'sum'),
+                Avg_PO_Recv =('d_po_receipt',  'mean'),
+                Avg_Total   =('d_total',        'mean'),
+            ).reset_index()
+            vend_summary.columns = [
+                'Vendor', 'Orders', 'Overdue',
+                'Avg PO→Recv (d)', 'Avg Total (d)'
+            ]
+            for col in ['Avg PO→Recv (d)', 'Avg Total (d)']:
+                vend_summary[col] = vend_summary[col].apply(
+                    lambda x: f"{x:.1f}" if pd.notna(x) else '—'
+                )
+            vend_summary['Overdue'] = vend_summary['Overdue'].astype(int)
+            vend_summary = vend_summary.sort_values('Overdue', ascending=False)
+            st.dataframe(vend_summary, use_container_width=True, hide_index=True)
+        else:
+            st.info("No vendor data available yet.")
+
+    else:
+        st.info(f"No purchase data found for the last {cutoff_days} days.")
