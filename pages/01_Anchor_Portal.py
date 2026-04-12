@@ -21,7 +21,7 @@ st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_
 # ---------------------------------------------------------------------------
 # PASSWORD PROTECTION
 # Add this to your Streamlit Cloud Secrets:
-#   APP_PASSWORD = "your_chosen_password"
+#   APP_PASSWORD = "1234"
 # ---------------------------------------------------------------------------
 def check_password() -> bool:
     def _verify():
