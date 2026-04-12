@@ -7,6 +7,15 @@ import io
 import requests
 from tempfile import NamedTemporaryFile
 import os
+from PIL import Image
+
+# fpdf2 + pypdf are optional — only needed for Master Data Book PDF generation
+try:
+    from fpdf import FPDF
+    from pypdf import PdfWriter, PdfReader
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
 
 # ============================================================
 # 1. SETUP
@@ -41,38 +50,317 @@ def fmt_date(d):
         return str(d) if d else 'N/A'
 
 # ============================================================
-# 3. DATA LOADERS
+# 3. PHOTO COMPRESSION — 60 KB MAX, PASSPORT SIZE (400×500 px)
 # ============================================================
-@st.cache_data(ttl=30)
-def get_staff_list():
-    try:
-        res = conn.table("master_staff").select("name").execute()
-        return sorted([s['name'] for s in res.data]) if res.data else ["QC Inspector"]
-    except Exception:
-        return ["QC Inspector"]
+PHOTO_MAX_BYTES   = 60 * 1024   # 60 KB hard limit
+PHOTO_MAX_PX      = (400, 500)  # width × height — passport aspect ratio
+PHOTO_QUALITY_HI  = 60          # first attempt
+PHOTO_QUALITY_LO  = 40          # fallback if still over limit
 
-@st.cache_data(ttl=30)
-def get_job_list():
-    try:
-        res = conn.table("anchor_projects").select(
-            "job_no, client_name, po_no, po_date, equipment_type"
-        ).execute()
-        df = pd.DataFrame(res.data or [])
-        if not df.empty:
-            df = df[df['job_no'].notna() & (df['job_no'].astype(str).str.strip() != '')]
-            df['job_no'] = df['job_no'].astype(str).str.strip().str.upper()
-            df = df.drop_duplicates(subset=['job_no'])
-        return df
-    except Exception:
-        return pd.DataFrame()
+def compress_photo(uploaded_file) -> bytes:
+    """
+    Resize to passport dimensions (≤400×500 px) and compress to ≤60 KB.
+    Returns JPEG bytes ready for upload.
+    """
+    img = Image.open(uploaded_file)
 
+    # Convert palette / RGBA → RGB so JPEG encoder works
+    if img.mode in ("P", "RGBA", "LA"):
+        img = img.convert("RGB")
+
+    # Resize — thumbnail preserves aspect ratio within the bounding box
+    img.thumbnail(PHOTO_MAX_PX, Image.LANCZOS)
+
+    # First compression pass
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=PHOTO_QUALITY_HI, optimize=True)
+
+    # Second pass if still over limit
+    if buf.tell() > PHOTO_MAX_BYTES:
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=PHOTO_QUALITY_LO, optimize=True)
+
+    return buf.getvalue()
+
+def upload_photos(photos, job_no, gate_name) -> list[str]:
+    """
+    Compress and upload up to 4 photos.
+    Returns list of public URLs.
+    """
+    urls = []
+    for i, photo_file in enumerate(photos[:4]):
+        compressed = compress_photo(photo_file)
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        safe_job = str(job_no).replace('/', '-')
+        safe_gate = str(gate_name).replace(' ', '_')
+        file_name = f"{safe_job}/{safe_gate}_{ts}_{i}.jpg"
+        conn.client.storage.from_("quality-photos").upload(
+            path=file_name,
+            file=compressed,
+            file_options={"content-type": "image/jpeg"}
+        )
+        url = conn.client.storage.from_("quality-photos").get_public_url(file_name)
+        urls.append(url)
+    return urls
+
+# ============================================================
+# 4. MASTER DATA BOOK PDF GENERATOR
+# ============================================================
+def generate_master_data_book(job_no, project_info, df_plan):
+    """
+    Stitches Technical Reports, MTCs, and Photo Logs into one stamped PDF.
+    Requires: fpdf2, pypdf, requests, Pillow
+    """
+    if not PDF_AVAILABLE:
+        raise RuntimeError(
+            "fpdf2 and pypdf are not installed. "
+            "Add them to requirements.txt and redeploy."
+        )
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # --- Load logo / stamp from storage ---
+    logo_path, stamp_path = None, None
+    try:
+        l_data = conn.client.storage.from_("progress-photos").download("logo.png")
+        s_data = conn.client.storage.from_("progress-photos").download("round_stamp.png")
+        if l_data:
+            with NamedTemporaryFile(delete=False, suffix=".png") as t:
+                t.write(l_data); logo_path = t.name
+        if s_data:
+            with NamedTemporaryFile(delete=False, suffix=".png") as t:
+                t.write(s_data); stamp_path = t.name
+    except Exception:
+        pass
+
+    # ---- Cover page ----
+    pdf.add_page()
+    pdf.set_draw_color(0, 51, 102)
+    pdf.set_line_width(1.5)
+    pdf.rect(5, 5, 200, 287)
+
+    if logo_path:
+        pdf.image(logo_path, x=75, y=30, w=60)
+
+    pdf.set_text_color(0, 51, 102)
+    pdf.set_font("Arial", 'B', 26)
+    pdf.set_y(100)
+    pdf.cell(0, 15, "QUALITY DATA BOOK", ln=True, align='C')
+    pdf.set_font("Arial", '', 14)
+    pdf.cell(0, 10, "COMPLETE PRODUCT BIRTH CERTIFICATE", ln=True, align='C')
+
+    pdf.set_y(160)
+    pdf.set_fill_color(245, 245, 245)
+    pdf.set_font("Arial", 'B', 11)
+    client_name = (
+        project_info.get('client_name')
+        if not callable(getattr(project_info, 'get', None))
+        else project_info.get('client_name', 'N/A')
+    )
+    details = [
+        f"  JOB NUMBER: {job_no}",
+        f"  CLIENT: {client_name}",
+        f"  PO REF: {project_info.get('po_no', 'N/A')}",
+        f"  DATE: {datetime.now().strftime('%d-%m-%Y')}"
+    ]
+    for line in details:
+        fill = ("JOB" in line or "PO" in line)
+        pdf.cell(0, 10, line, ln=True, fill=fill)
+
+    if stamp_path:
+        pdf.image(stamp_path, x=150, y=235, w=38)
+        pdf.set_xy(150, 275)
+        pdf.set_font("Arial", 'B', 7)
+        pdf.cell(38, 5, "AUTHORIZED SIGNATORY", align='C')
+
+    # ---- Table of contents ----
+    pdf.add_page()
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 20, "TABLE OF CONTENTS", ln=True)
+    sections = [
+        "1. Technical Checklist",
+        "2. Dimensional Reports",
+        "3. Hydro Test Data",
+        "4. Material Certificates (MTC)",
+        "5. Manufacturing Photo Evidence Log",
+    ]
+    pdf.set_font("Arial", '', 11)
+    for s in sections:
+        pdf.cell(0, 12, s, border="B", ln=True)
+
+    def add_section_header(title):
+        pdf.add_page()
+        if logo_path:
+            pdf.image(logo_path, x=10, y=8, h=10)
+        pdf.set_font("Arial", 'B', 10)
+        pdf.set_xy(120, 10)
+        pdf.cell(80, 10, f"JOB: {job_no} | {title}", align='R', ln=True)
+        pdf.line(10, 22, 200, 22)
+        pdf.ln(10)
+
+    # ---- Dimensional data ----
+    try:
+        dim_res = conn.table("dimensional_reports").select("*").eq("job_no", job_no).execute()
+        if dim_res.data:
+            add_section_header("DIMENSIONAL INSPECTION")
+            pdf.set_font("Arial", 'B', 9)
+            for col, w in [("Sl", 12), ("Description", 80), ("Specified", 48), ("Measured", 48)]:
+                pdf.cell(w, 8, col, 1)
+            pdf.ln()
+            pdf.set_font("Arial", '', 9)
+            for report in dim_res.data:
+                for row in report.get('dim_grid_data', []):
+                    pdf.cell(12, 7, str(row.get('Sl_No', '')), 1)
+                    pdf.cell(80, 7, str(row.get('Description', ''))[:30], 1)
+                    pdf.cell(48, 7, str(row.get('Specified_Dimension', ''))[:20], 1)
+                    pdf.cell(48, 7, str(row.get('Measured_Dimension', ''))[:20], 1)
+                    pdf.ln()
+    except Exception:
+        pass
+
+    # ---- Hydro test data ----
+    try:
+        hydro_res = conn.table("hydro_test_reports").select("*").eq("job_no", job_no).execute()
+        if hydro_res.data:
+            add_section_header("HYDRO TEST REPORT")
+            pdf.set_font("Arial", '', 10)
+            for report in hydro_res.data:
+                pdf.set_font("Arial", 'B', 10)
+                pdf.cell(0, 8, f"Equipment: {report.get('equipment_name', 'N/A')}", ln=True)
+                pdf.set_font("Arial", '', 10)
+                pdf.cell(0, 7, f"Test Pressure: {report.get('test_pressure', 'N/A')} Kg/cm²", ln=True)
+                pdf.cell(0, 7, f"Test Medium: {report.get('test_medium', 'N/A')}", ln=True)
+                pdf.cell(0, 7, f"Holding Time: {report.get('holding_time', 'N/A')}", ln=True)
+                pdf.cell(0, 7, f"Inspected By: {report.get('inspected_by', 'N/A')}", ln=True)
+                pdf.cell(0, 7, f"Observations: {report.get('inspection_notes', 'N/A')}", ln=True)
+                pdf.ln(4)
+    except Exception:
+        pass
+
+    # ---- Manufacturing evidence / photo log ----
+    job_photos = (
+        df_plan[df_plan['job_no'].astype(str) == str(job_no)]
+        .dropna(subset=['quality_updated_at'])
+        .sort_values('quality_updated_at')
+    )
+
+    if not job_photos.empty:
+        add_section_header("MANUFACTURING EVIDENCE LOG")
+        for _, row in job_photos.iterrows():
+            if pdf.get_y() > 230:
+                add_section_header("MANUFACTURING EVIDENCE LOG (CONT.)")
+
+            pdf.set_font("Arial", 'B', 10)
+            pdf.set_fill_color(240, 240, 240)
+            upd = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
+            stage_title = f" Stage: {row['gate_name']} | Date: {upd}"
+            pdf.cell(0, 8, stage_title, ln=True, fill=True, border="T")
+
+            pdf.set_font("Arial", '', 9)
+            pdf.multi_cell(
+                0, 6,
+                f" Inspector: {row.get('quality_by', '—')} | "
+                f"Result: {row.get('quality_status', '—')} | "
+                f"Remarks: {row.get('quality_notes') or 'N/A'}",
+                border="B"
+            )
+            pdf.ln(2)
+
+            urls = row.get('quality_photo_url', [])
+            if isinstance(urls, list) and len(urls) > 0:
+                if pdf.get_y() > 200:
+                    add_section_header("MANUFACTURING EVIDENCE LOG (CONT.)")
+
+                img_y   = pdf.get_y()
+                img_w   = 60
+                img_h   = 45
+
+                for i, url in enumerate(urls[:3]):
+                    try:
+                        r = requests.get(url, timeout=10)
+                        if r.status_code == 200:
+                            with NamedTemporaryFile(delete=False, suffix=".jpg") as t:
+                                t.write(r.content)
+                                tmp = t.name
+                            img_x = 10 + (i * 65)
+                            pdf.image(tmp, x=img_x, y=img_y, w=img_w, h=img_h)
+                            os.unlink(tmp)
+                    except Exception:
+                        continue
+
+                pdf.set_y(img_y + img_h + 5)
+
+            pdf.ln(5)
+
+    # ---- Stitch MTCs ----
+    report_buf = io.BytesIO()
+    pdf_bytes  = pdf.output(dest='S').encode('latin-1', 'ignore')
+    report_buf.write(pdf_bytes)
+    report_buf.seek(0)
+
+    merger = PdfWriter()
+    merger.append(PdfReader(report_buf))
+
+    try:
+        mtc_res = conn.table("project_certificates").select("file_url") \
+            .eq("job_no", job_no).eq("cert_type", "Material Test Certificate (MTC)").execute()
+        for doc in (mtc_res.data or []):
+            try:
+                r = requests.get(doc['file_url'], timeout=15)
+                if r.status_code == 200:
+                    merger.append(PdfReader(io.BytesIO(r.content)))
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # Cleanup temp files
+    if logo_path:
+        os.unlink(logo_path)
+    if stamp_path:
+        os.unlink(stamp_path)
+
+    final_out = io.BytesIO()
+    merger.write(final_out)
+    data = final_out.getvalue()
+    merger.close()
+    return data
+
+# ============================================================
+# 5. DATA LOADERS
+# ============================================================
 @st.cache_data(ttl=10)
-def get_planning_data():
+def get_quality_context():
+    """
+    Single combined loader — replaces the scattered @st.cache_data functions.
+    Returns planning df, anchor df, and staff list.
+    """
+    plan_res = conn.table("job_planning").select("*").execute()
+    df_plan  = pd.DataFrame(plan_res.data or [])
+
+    anchor_res = conn.table("anchor_projects").select(
+        "job_no, client_name, po_no, po_date, equipment_type"
+    ).execute()
+    df_anchor_raw = pd.DataFrame(anchor_res.data or [])
+    if not df_anchor_raw.empty:
+        df_anchor = df_anchor_raw[
+            df_anchor_raw['job_no'].notna() &
+            (df_anchor_raw['job_no'].astype(str).str.strip() != '')
+        ].copy()
+        df_anchor['job_no'] = df_anchor['job_no'].astype(str).str.strip().str.upper()
+        df_anchor = df_anchor.drop_duplicates(subset=['job_no'])
+    else:
+        df_anchor = pd.DataFrame()
+
     try:
-        res = conn.table("job_planning").select("*").execute()
-        return pd.DataFrame(res.data or [])
+        staff_res  = conn.table("master_staff").select("name").execute()
+        staff_list = sorted([s['name'] for s in staff_res.data]) if staff_res.data else ["QC Inspector"]
     except Exception:
-        return pd.DataFrame()
+        staff_list = ["QC Inspector"]
+
+    return df_plan, df_anchor, staff_list
 
 @st.cache_data(ttl=60)
 def get_config(category):
@@ -88,25 +376,25 @@ def get_proj(df_anchor, job_no):
     return match.iloc[0] if not match.empty else None
 
 def job_header(proj):
-    """Standard project info header used across all tabs."""
+    """Standard 4-column project info header."""
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns(4)
-        c1.write(f"**Client:** {proj.get('client_name','N/A')}")
-        c2.write(f"**PO No:** {proj.get('po_no','N/A')}")
+        c1.write(f"**Client:** {proj.get('client_name', 'N/A')}")
+        c2.write(f"**PO No:** {proj.get('po_no', 'N/A')}")
         c3.write(f"**PO Date:** {fmt_date(proj.get('po_date'))}")
-        c4.write(f"**Equipment Type:** {proj.get('equipment_type','N/A')}")
+        c4.write(f"**Equipment:** {proj.get('equipment_type', 'N/A')}")
 
 # ============================================================
-# 4. LOAD MASTER DATA
+# 6. INITIALISE MASTER DATA
 # ============================================================
-df_anchor   = get_job_list()
-df_planning = get_planning_data()
-inspectors  = get_staff_list()
-job_list    = sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist()) \
-              if not df_anchor.empty else []
+df_plan, df_anchor, inspectors = get_quality_context()
+job_list = (
+    sorted(df_anchor['job_no'].dropna().astype(str).unique().tolist())
+    if not df_anchor.empty else []
+)
 
 # ============================================================
-# 5. NAVIGATION
+# 7. NAVIGATION
 # ============================================================
 st.markdown("""
 <div style="background:#003366; color:white; padding:0.6rem 1rem;
@@ -116,7 +404,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 main_tabs = st.tabs([
-    "🚪 Process Gate",          # 0
+    "🚪 Process Gate",          # 0  — live timeline + inspection entry + photo mgmt
     "📋 Quality Checklist",     # 1
     "📜 QAP",                   # 2
     "📉 Material Flow Chart",   # 3
@@ -133,58 +421,247 @@ main_tabs = st.tabs([
 ])
 
 # ============================================================
-# TAB 0: PROCESS GATE — Live Evidence Viewer
+# TAB 0: PROCESS GATE — Inspection Entry + Live Evidence + Photo Mgmt
 # ============================================================
 with main_tabs[0]:
-    st.subheader("🗓️ Real-Time Inspection Timeline")
+    st.subheader("🚪 Process Gate — Inspection & Evidence")
 
-    if not df_planning.empty:
-        unique_jobs = sorted(df_planning['job_no'].dropna().astype(str).unique().tolist())
-        sel_job = st.selectbox("Select Job", ["-- Select --"] + unique_jobs, key="pg_job")
+    gate_subtab, timeline_subtab, gallery_subtab = st.tabs([
+        "📝 Record Inspection",
+        "🗓️ Live Timeline",
+        "🖼️ Photo Gallery & Management",
+    ])
 
-        if sel_job != "-- Select --":
-            p_data = df_planning[
-                df_planning['job_no'].astype(str) == str(sel_job)
-            ].sort_values('quality_updated_at', na_position='last')
+    # ── Sub-tab A: Record Inspection ──────────────────────────
+    with gate_subtab:
+        if not df_plan.empty:
+            gc1, gc2 = st.columns(2)
 
-            if not p_data.empty:
-                st.info(f"Manufacturing evidence for **{sel_job}**. For final stamped report → Master Data Book tab.")
-                for _, row in p_data.iterrows():
-                    update_date = fmt_date(row.get('quality_updated_at')) \
-                        if pd.notna(row.get('quality_updated_at')) else "Pending"
-                    with st.container(border=True):
-                        c1, c2 = st.columns([1, 3])
-                        status = str(row.get('quality_status', '')).upper()
-                        if any(w in status for w in ['PASS', 'ACCEPT', 'OK']):
-                            c1.success(f"✅ {row['gate_name']}")
-                        elif any(w in status for w in ['REWORK', 'REJECT', 'FAIL']):
-                            c1.error(f"❌ {row['gate_name']}")
-                        elif status and status not in ['', 'NONE', 'NAN']:
-                            c1.warning(f"⚠️ {row['gate_name']}")
+            # Only show jobs that have active / completed stages (skip pure-pending)
+            active_jobs = sorted(
+                df_plan[df_plan['current_status'].str.upper().ne('PENDING')]
+                ['job_no'].dropna().astype(str).unique().tolist()
+            ) if 'current_status' in df_plan.columns else sorted(
+                df_plan['job_no'].dropna().astype(str).unique().tolist()
+            )
+
+            sel_job = gc1.selectbox(
+                "🏗️ Select Job", ["-- Select --"] + active_jobs, key="pg_insp_job"
+            )
+
+            if sel_job != "-- Select --":
+                job_stages = df_plan[df_plan['job_no'].astype(str) == str(sel_job)]
+                stage_names = job_stages['gate_name'].dropna().tolist()
+                sel_gate = gc2.selectbox(
+                    "🚪 Select Gate / Process Stage", stage_names, key="pg_insp_gate"
+                )
+                stage_record = job_stages[job_stages['gate_name'] == sel_gate].iloc[0]
+
+                st.divider()
+
+                with st.form("inspection_entry_form", clear_on_submit=True):
+                    st.markdown(f"#### Inspection: **{sel_job}** → **{sel_gate}**")
+                    f1, f2 = st.columns(2)
+
+                    with f1:
+                        q_result = st.segmented_control(
+                            "Inspection Result",
+                            ["✅ Pass", "❌ Reject", "⚠️ Rework"],
+                            default="✅ Pass",
+                            key="pg_result"
+                        )
+                        inspector = st.selectbox(
+                            "Authorized Inspector",
+                            ["-- Select --"] + inspectors,
+                            key="pg_inspector"
+                        )
+                        q_notes = st.text_area(
+                            "Technical Observations",
+                            placeholder="Record findings, measurements, deviations…"
+                        )
+
+                    with f2:
+                        st.markdown("**Upload Evidence Photos** (max 4)")
+                        st.caption(
+                            "📐 Auto-resized to passport size (400×500 px) | "
+                            "📦 Compressed to ≤60 KB"
+                        )
+                        q_photos = st.file_uploader(
+                            "Choose photos",
+                            type=['png', 'jpg', 'jpeg'],
+                            accept_multiple_files=True,
+                            key="pg_photos",
+                            label_visibility="collapsed"
+                        )
+                        if q_photos:
+                            for ph in q_photos[:4]:
+                                st.caption(
+                                    f"📷 {ph.name} — "
+                                    f"{round(ph.size / 1024, 1)} KB raw "
+                                    f"(will be compressed)"
+                                )
+                        if len(q_photos) > 4:
+                            st.warning("Only the first 4 photos will be uploaded.")
+
+                    if st.form_submit_button("🚀 Submit Inspection Record", use_container_width=True):
+                        if inspector == "-- Select --":
+                            st.error("Please select an authorized inspector.")
                         else:
-                            c1.info(f"🔹 {row['gate_name']}")
-
-                        c2.write(f"**Date:** {update_date} | **Inspector:** {row.get('quality_by','—')}")
-                        c2.write(f"**Stage:** {row.get('sub_task','General')} | **Remarks:** {row.get('quality_notes') or 'No remarks'}")
-                        if row.get('final_remarks'):
-                            c2.caption(f"Final: {row['final_remarks']}")
-
-                        urls = row.get('quality_photo_url', [])
-                        if isinstance(urls, list) and len(urls) > 0:
-                            cols = st.columns(min(4, len(urls)))
-                            for i, url in enumerate(urls[:4]):
+                            with st.spinner("Compressing photos and saving record…"):
                                 try:
-                                    cols[i].image(url, use_container_width=True,
-                                                  caption=f"Evidence {i+1}")
-                                except Exception:
-                                    cols[i].caption(f"📎 Photo {i+1}")
+                                    all_urls = []
+                                    if q_photos:
+                                        all_urls = upload_photos(
+                                            q_photos[:4], sel_job, sel_gate
+                                        )
+
+                                    conn.table("job_planning").update({
+                                        "quality_status":     q_result,
+                                        "quality_notes":      (
+                                            f"{get_now_ist().strftime('%d/%m %H:%M')}: "
+                                            f"{q_notes}"
+                                        ),
+                                        "quality_by":         inspector,
+                                        "quality_photo_url":  all_urls,
+                                        "quality_updated_at": get_now_ist().isoformat()
+                                    }).eq("id", int(stage_record['id'])).execute()
+
+                                    st.success(
+                                        f"✅ Inspection recorded for {sel_gate} "
+                                        f"with {len(all_urls)} photo(s)."
+                                    )
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Submission error: {e}")
+        else:
+            st.error("No planning data available. Check the Production Portal.")
+
+    # ── Sub-tab B: Live Timeline ───────────────────────────────
+    with timeline_subtab:
+        if not df_plan.empty:
+            unique_jobs = sorted(df_plan['job_no'].dropna().astype(str).unique().tolist())
+            sel_job_tl = st.selectbox(
+                "Select Job", ["-- Select --"] + unique_jobs, key="pg_timeline_job"
+            )
+
+            if sel_job_tl != "-- Select --":
+                p_data = (
+                    df_plan[df_plan['job_no'].astype(str) == str(sel_job_tl)]
+                    .sort_values('quality_updated_at', na_position='last')
+                )
+
+                if not p_data.empty:
+                    st.info(
+                        f"Manufacturing evidence for **{sel_job_tl}**. "
+                        "For the final stamped report → Master Data Book tab."
+                    )
+                    for _, row in p_data.iterrows():
+                        update_date = (
+                            fmt_date(row.get('quality_updated_at'))
+                            if pd.notna(row.get('quality_updated_at'))
+                            else "Pending"
+                        )
+                        with st.container(border=True):
+                            c1, c2 = st.columns([1, 3])
+                            status = str(row.get('quality_status', '')).upper()
+                            if any(w in status for w in ['PASS', 'ACCEPT', 'OK']):
+                                c1.success(f"✅ {row['gate_name']}")
+                            elif any(w in status for w in ['REWORK', 'REJECT', 'FAIL']):
+                                c1.error(f"❌ {row['gate_name']}")
+                            elif status and status not in ['', 'NONE', 'NAN']:
+                                c1.warning(f"⚠️ {row['gate_name']}")
+                            else:
+                                c1.info(f"🔹 {row['gate_name']}")
+
+                            c2.write(
+                                f"**Date:** {update_date} | "
+                                f"**Inspector:** {row.get('quality_by', '—')}"
+                            )
+                            c2.write(
+                                f"**Remarks:** {row.get('quality_notes') or 'No remarks'}"
+                            )
+                            if row.get('final_remarks'):
+                                c2.caption(f"Final: {row['final_remarks']}")
+
+                            urls = row.get('quality_photo_url', [])
+                            if isinstance(urls, list) and len(urls) > 0:
+                                cols = st.columns(min(4, len(urls)))
+                                for i, url in enumerate(urls[:4]):
+                                    try:
+                                        cols[i].image(
+                                            url,
+                                            use_container_width=True,
+                                            caption=f"Evidence {i+1}"
+                                        )
+                                    except Exception:
+                                        cols[i].caption(f"📎 Photo {i+1}")
+                else:
+                    st.warning("No quality records found for this job yet.")
+        else:
+            st.error("No planning data available.")
+
+    # ── Sub-tab C: Photo Gallery & Management ─────────────────
+    with gallery_subtab:
+        if not df_plan.empty:
+            inspected_df = (
+                df_plan.dropna(subset=['quality_status'])
+                .sort_values('quality_updated_at', ascending=False)
+            )
+
+            if not inspected_df.empty:
+                photo_rows = inspected_df[
+                    inspected_df['quality_photo_url'].apply(
+                        lambda x: isinstance(x, list) and len(x) > 0
+                    )
+                ]
+
+                if not photo_rows.empty:
+                    sel_idx = st.selectbox(
+                        "Select record to manage",
+                        photo_rows.index,
+                        format_func=lambda x: (
+                            f"{photo_rows.loc[x, 'job_no']} — "
+                            f"{photo_rows.loc[x, 'gate_name']} "
+                            f"({fmt_date(photo_rows.loc[x, 'quality_updated_at'])})"
+                        ),
+                        key="gallery_sel"
+                    )
+
+                    current_urls = photo_rows.loc[sel_idx, 'quality_photo_url']
+                    record_id    = photo_rows.loc[sel_idx, 'id']
+
+                    st.caption(
+                        f"{len(current_urls)} photo(s) — "
+                        "all compressed to ≤60 KB / passport size at upload time"
+                    )
+                    cols = st.columns(4)
+                    for i, url in enumerate(current_urls):
+                        with cols[i % 4]:
+                            st.image(url, use_container_width=True, caption=f"Photo {i+1}")
+                            if st.button(f"🗑️ Remove", key=f"del_{record_id}_{i}"):
+                                try:
+                                    # Extract filename from URL (last path segment)
+                                    file_name = "/".join(url.split("/")[-2:])
+                                    conn.client.storage.from_("quality-photos").remove([file_name])
+                                    updated = [u for u in current_urls if u != url]
+                                    conn.table("job_planning").update({
+                                        "quality_photo_url": updated
+                                    }).eq("id", record_id).execute()
+                                    st.toast("Photo removed.")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Delete failed: {e}")
+                else:
+                    st.info("No photos uploaded yet for any inspection.")
             else:
-                st.warning("No quality records found for this job yet.")
-    else:
-        st.error("No planning data available.")
+                st.info("No inspections recorded yet.")
+        else:
+            st.warning("No planning data found.")
 
 # ============================================================
-# TAB 1: QUALITY CHECK LIST  (matches PDF page 2 exactly)
+# TAB 1: QUALITY CHECK LIST
 # ============================================================
 with main_tabs[1]:
     st.subheader("📋 Quality Check List")
@@ -196,18 +673,19 @@ with main_tabs[1]:
             job_header(proj)
             e_type = proj.get('equipment_type', 'Storage Tank')
 
-            # View existing records
             try:
                 existing = conn.table("quality_check_list").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(5).execute()
                 if existing.data:
-                    with st.expander(f"📂 {len(existing.data)} existing record(s) — click to view"):
+                    with st.expander(f"📂 {len(existing.data)} existing record(s)"):
                         df_ex = pd.DataFrame(existing.data)
-                        st.dataframe(df_ex[['inspection_date','item_name','drawing_no',
-                                            'mat_cert_status','fit_up_status','visual_status',
-                                            'pt_weld_status','hydro_status','final_status',
-                                            'punching_status','ncr_status','inspected_by']],
-                                     use_container_width=True, hide_index=True)
+                        cols_show = [c for c in [
+                            'inspection_date','item_name','drawing_no',
+                            'mat_cert_status','fit_up_status','visual_status',
+                            'pt_weld_status','hydro_status','final_status',
+                            'punching_status','ncr_status','inspected_by'
+                        ] if c in df_ex.columns]
+                        st.dataframe(df_ex[cols_show], use_container_width=True, hide_index=True)
             except Exception:
                 pass
 
@@ -224,25 +702,25 @@ with main_tabs[1]:
                 ins_date = r6.date_input("Inspection Date", value=get_now_ist().date())
 
                 st.markdown("#### 🔍 Inspection Check Points")
-                st.caption("Record status: **W** = Witnessed | **V** = Verified | **R** = Review | **NIL** = Not Applicable | **√** = Enclosed | **X** = Not Enclosed")
+                st.caption("W = Witnessed | V = Verified | R = Review | NIL = Not Applicable | √ = Enclosed | X = Not Enclosed")
 
-                # Match PDF table exactly: Checkpoint | Extent | Format of Record | Cust/Insp Verification | Docs Enclosed | Remarks
                 checklist_data = [
-                    {"Check Point": "Material Certification — Material Flow Chart", "Extent": "100%", "Format": "Material Flow Chart"},
-                    {"Check Point": "Material Certification — Mat Test Certificates", "Extent": "100%", "Format": "Mat Test Certificates"},
-                    {"Check Point": "Fit-up Exam",         "Extent": "100%", "Format": "Inspection Report"},
-                    {"Check Point": "Dimensions & Visual Exam", "Extent": "100%", "Format": "Inspection Report"},
-                    {"Check Point": "PT of all Welds",     "Extent": "As per QAP/Dwg", "Format": "LPI Report"},
-                    {"Check Point": "Hydro Test / Vacuum Test Shell Side", "Extent": "100%", "Format": "Hydro Test Report"},
-                    {"Check Point": "Final Inspection before Dispatch",    "Extent": "100%", "Format": "Inspection Report"},
-                    {"Check Point": "Identification Punching", "Extent": "", "Format": "Punching"},
-                    {"Check Point": "NCR If any", "Extent": "", "Format": "NC Report"},
+                    {"Check Point": "Material Certification — Material Flow Chart",      "Extent": "100%",           "Format": "Material Flow Chart"},
+                    {"Check Point": "Material Certification — Mat Test Certificates",    "Extent": "100%",           "Format": "Mat Test Certificates"},
+                    {"Check Point": "Fit-up Exam",                                       "Extent": "100%",           "Format": "Inspection Report"},
+                    {"Check Point": "Dimensions & Visual Exam",                          "Extent": "100%",           "Format": "Inspection Report"},
+                    {"Check Point": "PT of all Welds",                                   "Extent": "As per QAP/Dwg", "Format": "LPI Report"},
+                    {"Check Point": "Hydro Test / Vacuum Test Shell Side",               "Extent": "100%",           "Format": "Hydro Test Report"},
+                    {"Check Point": "Final Inspection before Dispatch",                  "Extent": "100%",           "Format": "Inspection Report"},
+                    {"Check Point": "Identification Punching",                           "Extent": "",               "Format": "Punching"},
+                    {"Check Point": "NCR If any",                                        "Extent": "",               "Format": "NC Report"},
                 ]
 
                 grid_cols = st.columns([3, 1, 2, 2, 1, 2])
-                headers = ["Check Point", "Extent", "Format of Record",
-                           "Cust/Insp Verification", "Docs Enclosed", "Remarks"]
-                for h, col in zip(headers, grid_cols):
+                for h, col in zip(
+                    ["Check Point","Extent","Format of Record","Cust/Insp Verification","Docs Enclosed","Remarks"],
+                    grid_cols
+                ):
                     col.markdown(f"**{h}**")
 
                 check_results = []
@@ -257,29 +735,25 @@ with main_tabs[1]:
                                              key=f"qcl_d_{i}", label_visibility="collapsed")
                     remark = gc[5].text_input("", key=f"qcl_r_{i}", label_visibility="collapsed")
                     check_results.append({
-                        "checkpoint": row["Check Point"],
-                        "extent": row["Extent"],
-                        "format": row["Format"],
-                        "verification": verif,
-                        "docs_enclosed": docs,
-                        "remarks": remark
+                        "checkpoint": row["Check Point"], "extent": row["Extent"],
+                        "format": row["Format"], "verification": verif,
+                        "docs_enclosed": docs, "remarks": remark
                     })
 
-                # Equipment-type specific fields
                 if e_type == "Reactor":
                     st.markdown("#### ⚛️ Reactor Specific")
                     r1, r2 = st.columns(2)
-                    agitator_stat = r1.text_input("Agitator Run Test", value="NA")
-                    jacket_hydro  = r2.text_input("Jacket Hydro Test", value="NA")
+                    r1.text_input("Agitator Run Test", value="NA")
+                    r2.text_input("Jacket Hydro Test",  value="NA")
                 if e_type == "Storage Tank":
                     st.markdown("#### 🛢️ Tank Specific")
                     t1, t2 = st.columns(2)
-                    roof_fitup = t1.text_input("Roof Structure Fit-up", value="NA")
-                    curb_angle = t2.text_input("Curb Angle Inspection", value="NA")
+                    t1.text_input("Roof Structure Fit-up", value="NA")
+                    t2.text_input("Curb Angle Inspection",  value="NA")
 
                 st.markdown("#### ✍️ Authorization")
                 f1, f2 = st.columns(2)
-                insp_by  = f1.selectbox("Quality Inspector", inspectors, key="qcl_insp")
+                insp_by    = f1.selectbox("Quality Inspector", inspectors, key="qcl_insp")
                 tech_notes = st.text_area("Technical Notes / Deviations")
 
                 if st.form_submit_button("🚀 Save Quality Check List", use_container_width=True):
@@ -312,7 +786,7 @@ with main_tabs[1]:
                     st.cache_data.clear()
 
 # ============================================================
-# TAB 2: QAP — Quality Assurance Plan (matches PDF p.3-4)
+# TAB 2: QAP — Quality Assurance Plan
 # ============================================================
 with main_tabs[2]:
     st.subheader("📜 Quality Assurance Plan (QAP)")
@@ -330,77 +804,60 @@ with main_tabs[2]:
                 equip_name = h2.text_input("Equipment Name")
                 prep_by    = h3.selectbox("Prepared By", inspectors, key="qap_prep")
                 drg_no_qap = h1.text_input("Drawing No.")
-                client_val = h2.text_input("Client Name", value=proj.get('client_name',''))
-                po_val     = h3.text_input("PO No & Date",
-                                           value=f"{proj.get('po_no','')} & {fmt_date(proj.get('po_date'))}")
+                h2.text_input("Client Name", value=proj.get('client_name', ''))
+                h3.text_input(
+                    "PO No & Date",
+                    value=f"{proj.get('po_no','')} & {fmt_date(proj.get('po_date'))}"
+                )
 
                 st.markdown("#### 📋 Inspection Activity Grid")
                 st.caption("W = Witness | R = Review | P = Perform | H = Hold Point")
 
-                # Template matching PDF exactly
                 qap_template = pd.DataFrame([
-                    {"Sl": 1, "Activity": "Plates — Material Identification & Verification of TC",
-                     "Characteristics": "Material Identification & Verification of TC",
-                     "Classification": "Major", "Type_of_Check": "Visual Inspection & Verification of TC",
+                    {"Sl": 1, "Activity": "Plates — Material ID & TC Verification",
+                     "Classification": "Major", "Type_of_Check": "Visual & TC Verification",
                      "Quantum": "100%", "Ref_Document": "As per Dwg.",
-                     "Formats_Records": "Mill/Lab T.Cs", "QA": "Inspection Report", "BG": "W"},
-                    {"Sl": 2, "Activity": "Nozzle pipes, Nozzle Flanges — Material ID & TC Verification",
-                     "Characteristics": "Material Identification & Verification of TC",
-                     "Classification": "Major", "Type_of_Check": "Visual Inspection & Verification of TC",
+                     "Formats_Records": "Mill/Lab T.Cs", "QA": "W", "BG": "W"},
+                    {"Sl": 2, "Activity": "Nozzle pipes & Flanges — Material ID & TC",
+                     "Classification": "Major", "Type_of_Check": "Visual & TC Verification",
                      "Quantum": "100%", "Ref_Document": "As per Dwg.",
-                     "Formats_Records": "Mill/Lab T.Cs", "QA": "Inspection Report", "BG": "W"},
+                     "Formats_Records": "Mill/Lab T.Cs", "QA": "W", "BG": "W"},
                     {"Sl": 3, "Activity": "L & C-Seam Fit up",
-                     "Characteristics": "Dimensional check",
                      "Classification": "Major", "Type_of_Check": "Measurement & Visual",
                      "Quantum": "100%", "Ref_Document": "As per Dwg.",
-                     "Formats_Records": "Stage Inspection report", "QA": "Inspection Report", "BG": "R"},
+                     "Formats_Records": "Stage Inspection Report", "QA": "R", "BG": "R"},
                     {"Sl": 4, "Activity": "Nozzles Fit up",
-                     "Characteristics": "Dimensional check",
                      "Classification": "Major", "Type_of_Check": "Dimensional & Visual",
                      "Quantum": "100%", "Ref_Document": "As per Dwg.",
-                     "Formats_Records": "Stage Inspection report", "QA": "Inspection Report", "BG": "R"},
-                    {"Sl": 5, "Activity": "Nozzles — Visual Check",
-                     "Characteristics": "Visual Check",
-                     "Classification": "Major", "Type_of_Check": "Visual check",
-                     "Quantum": "100%", "Ref_Document": "As per Dwg.",
-                     "Formats_Records": "Stage Inspection report", "QA": "Inspection Report", "BG": "R"},
-                    {"Sl": 6, "Activity": "Hydrotest",
-                     "Characteristics": "Pneumatic/hydraulic testing",
-                     "Classification": "Visual check", "Type_of_Check": "100%",
-                     "Quantum": "ASME SEC VIII-DIV1-UG-99.",
-                     "Ref_Document": "ASME SEC VIII-DIV1-UG-99.",
+                     "Formats_Records": "Stage Inspection Report", "QA": "R", "BG": "R"},
+                    {"Sl": 5, "Activity": "Hydrotest",
+                     "Classification": "Critical", "Type_of_Check": "Pneumatic/Hydraulic",
+                     "Quantum": "100%", "Ref_Document": "ASME SEC VIII-DIV1-UG-99.",
                      "Formats_Records": "Hydro Test Report", "QA": "P", "BG": "R"},
-                    {"Sl": 7, "Activity": "240 Grit MATT",
-                     "Characteristics": "Visual Check",
-                     "Classification": "Major", "Type_of_Check": "Visual Check",
-                     "Quantum": "100%", "Ref_Document": "*As per Dwg.",
-                     "Formats_Records": "Stage Inspection report", "QA": "Inspection Report", "BG": "R"},
-                    {"Sl": 8, "Activity": "Documentation Review",
-                     "Characteristics": "Check for approved drg. and review of stage inspection Report",
+                    {"Sl": 6, "Activity": "240 Grit MATT Finish",
                      "Classification": "Major", "Type_of_Check": "Visual Check",
                      "Quantum": "100%", "Ref_Document": "As per Dwg.",
-                     "Formats_Records": "Stage Inspection report", "QA": "Inspection Report", "BG": "R"},
-                    {"Sl": 9, "Activity": "Final Stamping and Clearance for Dispatch",
-                     "Characteristics": "Stamping on Name Plate & Issue of Release Note",
+                     "Formats_Records": "Stage Inspection Report", "QA": "R", "BG": "R"},
+                    {"Sl": 7, "Activity": "Documentation Review",
+                     "Classification": "Major", "Type_of_Check": "Visual Check",
+                     "Quantum": "100%", "Ref_Document": "As per Dwg.",
+                     "Formats_Records": "Stage Inspection Report", "QA": "R", "BG": "R"},
+                    {"Sl": 8, "Activity": "Final Stamping and Clearance for Dispatch",
                      "Classification": "Major", "Type_of_Check": "Visual check",
                      "Quantum": "100%", "Ref_Document": "As per Dwg.",
-                     "Formats_Records": "Release note", "QA": "Inspection Report", "BG": "W"},
+                     "Formats_Records": "Release note", "QA": "W", "BG": "W"},
                 ])
 
                 qap_grid = st.data_editor(
-                    qap_template,
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    hide_index=True,
-                    key="qap_grid",
+                    qap_template, num_rows="dynamic",
+                    use_container_width=True, hide_index=True, key="qap_grid",
                     column_config={
                         "Sl": st.column_config.NumberColumn("Sl", width="small", disabled=True),
                         "Activity": st.column_config.TextColumn("Activity Description", width="large"),
-                        "Characteristics": st.column_config.TextColumn("Characteristics", width="medium"),
                         "Classification": st.column_config.SelectboxColumn(
-                            "Classification", options=["Major", "Minor", "Critical"], width="small"),
+                            "Classification", options=["Major","Minor","Critical"], width="small"),
                         "Type_of_Check": st.column_config.TextColumn("Type of Check", width="medium"),
-                        "Quantum": st.column_config.TextColumn("Quantum of Check", width="small"),
+                        "Quantum": st.column_config.TextColumn("Quantum", width="small"),
                         "Ref_Document": st.column_config.TextColumn("Ref. Document", width="medium"),
                         "Formats_Records": st.column_config.TextColumn("Formats/Records", width="medium"),
                         "QA": st.column_config.SelectboxColumn("QA", options=["W","R","P","H",""], width="small"),
@@ -412,23 +869,21 @@ with main_tabs[2]:
 
                 if st.form_submit_button("💾 Save QAP", use_container_width=True):
                     payload = {
-                        "job_no":          sel_job,
-                        "equipment_name":  equip_name,
-                        "nozzle_mark":     qap_no,
+                        "job_no":            sel_job,
+                        "equipment_name":    equip_name,
+                        "nozzle_mark":       qap_no,
                         "traceability_data": qap_grid.to_dict('records'),
-                        "verified_by":     prep_by,
-                        "remarks":         note_qap,
-                        "created_at":      get_now_ist().isoformat()
+                        "verified_by":       prep_by,
+                        "remarks":           note_qap,
+                        "created_at":        get_now_ist().isoformat()
                     }
-                    # Store QAP in nozzle_flow_charts temporarily with a special mark field
-                    # Better: store in project_certificates as JSON — no schema change needed
                     safe_write(
                         lambda: conn.table("nozzle_flow_charts").insert(payload).execute(),
                         success_msg=f"✅ QAP for {sel_job} saved!"
                     )
 
 # ============================================================
-# TAB 3: MATERIAL FLOW CHART  (matches PDF p.5-6)
+# TAB 3: MATERIAL FLOW CHART
 # ============================================================
 with main_tabs[3]:
     st.subheader("📉 Material Flow Chart & Traceability")
@@ -439,7 +894,6 @@ with main_tabs[3]:
         if proj is not None:
             job_header(proj)
 
-            # View existing
             try:
                 existing_mfc = conn.table("material_flow_charts").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute()
@@ -454,24 +908,21 @@ with main_tabs[3]:
                 pass
 
             c1, c2 = st.columns(2)
-            item_desc = c1.text_input("Equipment Description",
-                                      placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
+            item_desc = c1.text_input("Equipment Description", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
             total_qty = c2.text_input("Quantity", placeholder="e.g. 1 No.")
 
             st.markdown("#### 🔍 Material Identification Matrix")
-            st.caption("Columns: Sl | Description | Size | MOC | Test Report No. | Heat No.")
 
-            # Matching PDF page 5 exactly
             mfc_template = pd.DataFrame([
-                {"Sl": 1, "Description": "SHELL",            "Size": "ID2750X5100LX8THK",      "MOC": "SS304", "Test_Report_No": "2268648",  "Heat_No": "50227B06C"},
-                {"Sl": 2, "Description": "TOP DISH",          "Size": "ID2750X10THKX10%TORI",  "MOC": "SS304", "Test_Report_No": "2265157",  "Heat_No": "41204F12"},
-                {"Sl": 3, "Description": "BOTTOM DISH",       "Size": "ID2750X10THKX10%TORI",  "MOC": "SS304", "Test_Report_No": "2265157",  "Heat_No": "41204F12"},
-                {"Sl": 4, "Description": "BOTTOM LUGS",       "Size": "300CX1140LX8THK",        "MOC": "SS304", "Test_Report_No": "2268648",  "Heat_No": "50227B06C"},
-                {"Sl": 5, "Description": "LIFTING HOOKS",     "Size": "25THK",                  "MOC": "SS304", "Test_Report_No": "1846912",  "Heat_No": "40308B20"},
-                {"Sl": 6, "Description": "RF PADS",           "Size": "8THK",                   "MOC": "SS304", "Test_Report_No": "2268648",  "Heat_No": "50227B06C"},
-                {"Sl": 7, "Description": "BOTTOM BASE PLATE", "Size": "450LX450WX20THK",        "MOC": "SS304", "Test_Report_No": "2408309",  "Heat_No": "50424B02C"},
-                {"Sl": 8, "Description": "LADDER",            "Size": "32 & 25NB PIPE",         "MOC": "SS304", "Test_Report_No": "",         "Heat_No": ""},
-                {"Sl": 9, "Description": "RAILING",           "Size": "32 & 25NB PIPE",         "MOC": "SS304", "Test_Report_No": "",         "Heat_No": ""},
+                {"Sl": 1, "Description": "SHELL",            "Size": "ID2750X5100LX8THK",     "MOC": "SS304", "Test_Report_No": "2268648", "Heat_No": "50227B06C"},
+                {"Sl": 2, "Description": "TOP DISH",          "Size": "ID2750X10THKX10%TORI",  "MOC": "SS304", "Test_Report_No": "2265157", "Heat_No": "41204F12"},
+                {"Sl": 3, "Description": "BOTTOM DISH",       "Size": "ID2750X10THKX10%TORI",  "MOC": "SS304", "Test_Report_No": "2265157", "Heat_No": "41204F12"},
+                {"Sl": 4, "Description": "BOTTOM LUGS",       "Size": "300CX1140LX8THK",        "MOC": "SS304", "Test_Report_No": "2268648", "Heat_No": "50227B06C"},
+                {"Sl": 5, "Description": "LIFTING HOOKS",     "Size": "25THK",                  "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
+                {"Sl": 6, "Description": "RF PADS",           "Size": "8THK",                   "MOC": "SS304", "Test_Report_No": "2268648", "Heat_No": "50227B06C"},
+                {"Sl": 7, "Description": "BOTTOM BASE PLATE", "Size": "450LX450WX20THK",        "MOC": "SS304", "Test_Report_No": "2408309", "Heat_No": "50424B02C"},
+                {"Sl": 8, "Description": "LADDER",            "Size": "32 & 25NB PIPE",         "MOC": "SS304", "Test_Report_No": "",        "Heat_No": ""},
+                {"Sl": 9, "Description": "RAILING",           "Size": "32 & 25NB PIPE",         "MOC": "SS304", "Test_Report_No": "",        "Heat_No": ""},
             ])
 
             mfc_key = f"mfc_grid_{sel_job}"
@@ -479,10 +930,8 @@ with main_tabs[3]:
                 st.session_state[mfc_key] = mfc_template
 
             mfc_grid = st.data_editor(
-                st.session_state[mfc_key],
-                num_rows="dynamic",
-                use_container_width=True,
-                hide_index=True,
+                st.session_state[mfc_key], num_rows="dynamic",
+                use_container_width=True, hide_index=True,
                 key=f"mfc_editor_{sel_job}",
                 column_config={
                     "Sl": st.column_config.NumberColumn("Sl", width="small"),
@@ -495,14 +944,11 @@ with main_tabs[3]:
             )
 
             with st.form("mfc_form", clear_on_submit=False):
-                f1, f2 = st.columns(2)
-                verifier   = f1.selectbox("Verified By (QC)", inspectors, key="mfc_verifier")
-                mfc_rem    = st.text_area("Observations / Traceability Notes")
+                f1, _ = st.columns(2)
+                verifier  = f1.selectbox("Verified By (QC)", inspectors, key="mfc_verifier")
+                mfc_rem   = st.text_area("Observations / Traceability Notes")
                 if st.form_submit_button("🚀 Save Material Flow Chart", use_container_width=True):
-                    final_rows = []
-                    for i, row in enumerate(mfc_grid.to_dict('records')):
-                        row['Sl'] = i + 1
-                        final_rows.append(row)
+                    final_rows = [{**r, "Sl": i+1} for i, r in enumerate(mfc_grid.to_dict('records'))]
                     payload = {
                         "job_no":            sel_job,
                         "item_name":         item_desc,
@@ -520,7 +966,7 @@ with main_tabs[3]:
                         st.balloons()
 
 # ============================================================
-# TAB 4: NOZZLE FLOW CHART  (matches PDF p.6 & p.17)
+# TAB 4: NOZZLE FLOW CHART
 # ============================================================
 with main_tabs[4]:
     st.subheader("🔧 Nozzle Flow Chart & Traceability")
@@ -532,42 +978,27 @@ with main_tabs[4]:
             job_header(proj)
 
             c1, c2 = st.columns(2)
-            equip_name_nfc = c1.text_input("Equipment Name",
-                                           placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
+            equip_name_nfc = c1.text_input("Equipment Name", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
             dwg_no_nfc     = c2.text_input("DWG No.", placeholder="e.g. 3050101710")
 
-            # PDF has two sub-tables: FLANGES and PIPES
-            st.markdown("#### 🔩 Flanges Traceability")
-            flange_template = pd.DataFrame([
-                {"Nozzle_No": "N1",  "Description": "DRAIN",               "QTY": 1, "Size_NB": "40NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N2",  "Description": "OIL OUTLET",          "QTY": 1, "Size_NB": "50NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N3",  "Description": "OIL INLET",           "QTY": 1, "Size_NB": "80X50NB", "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N4",  "Description": "LEVEL SENSOR",        "QTY": 1, "Size_NB": "80NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N5",  "Description": "OIL BREATHER",        "QTY": 1, "Size_NB": "25NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N6",  "Description": "MANHOLE",             "QTY": 1, "Size_NB": "450NB",   "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N7",  "Description": "MANHOLE",             "QTY": 1, "Size_NB": "450NB",   "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N8",  "Description": "LEVEL INDICATORS",    "QTY": 4, "Size_NB": "25NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N9",  "Description": "SAFTEY VALVE",        "QTY": 1, "Size_NB": "40NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N10", "Description": "N2 SUPPLY",           "QTY": 1, "Size_NB": "40X25NB", "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N11", "Description": "OIL SAMPLING",        "QTY": 1, "Size_NB": "15NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N12", "Description": "PRESSURE TRANSMITTER","QTY": 1, "Size_NB": "25NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N13", "Description": "RTD SENSOR-1",        "QTY": 1, "Size_NB": "40X20NB", "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N14", "Description": "RTD SENSOR-2",        "QTY": 1, "Size_NB": "40X20NB", "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N15", "Description": "VACUUM TRANSMITTER",  "QTY": 1, "Size_NB": "25NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N16", "Description": "HIGH LEVEL SWITCH",   "QTY": 1, "Size_NB": "50NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N17", "Description": "OVER FLOW",           "QTY": 1, "Size_NB": "100NB",   "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-            ])
-
             nfc_col_cfg = {
-                "Nozzle_No":     st.column_config.TextColumn("Nozzle No", width="small"),
-                "Description":   st.column_config.TextColumn("Description", width="large"),
-                "QTY":           st.column_config.NumberColumn("Qty", width="small"),
-                "Size_NB":       st.column_config.TextColumn("Size (NB)", width="medium"),
-                "MOC":           st.column_config.TextColumn("MOC", width="small"),
-                "Test_Report_No":st.column_config.TextColumn("Test Report No.", width="medium"),
-                "Heat_No":       st.column_config.TextColumn("Heat No.", width="medium"),
+                "Nozzle_No":      st.column_config.TextColumn("Nozzle No", width="small"),
+                "Description":    st.column_config.TextColumn("Description", width="large"),
+                "QTY":            st.column_config.NumberColumn("Qty", width="small"),
+                "Size_NB":        st.column_config.TextColumn("Size (NB)", width="medium"),
+                "MOC":            st.column_config.TextColumn("MOC", width="small"),
+                "Test_Report_No": st.column_config.TextColumn("Test Report No.", width="medium"),
+                "Heat_No":        st.column_config.TextColumn("Heat No.", width="medium"),
             }
 
+            st.markdown("#### 🔩 Flanges Traceability")
+            flange_template = pd.DataFrame([
+                {"Nozzle_No": "N1",  "Description": "DRAIN",                "QTY": 1, "Size_NB": "40NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
+                {"Nozzle_No": "N2",  "Description": "OIL OUTLET",           "QTY": 1, "Size_NB": "50NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
+                {"Nozzle_No": "N3",  "Description": "OIL INLET",            "QTY": 1, "Size_NB": "80X50NB", "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
+                {"Nozzle_No": "N6",  "Description": "MANHOLE",              "QTY": 1, "Size_NB": "450NB",   "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
+                {"Nozzle_No": "N17", "Description": "OVER FLOW",            "QTY": 1, "Size_NB": "100NB",   "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
+            ])
             flange_grid = st.data_editor(
                 flange_template, num_rows="dynamic",
                 use_container_width=True, hide_index=True,
@@ -576,50 +1007,24 @@ with main_tabs[4]:
 
             st.markdown("#### 🔧 Pipes Traceability")
             pipe_template = pd.DataFrame([
-                {"Nozzle_No": "N1",  "Description": "DRAIN",               "QTY": 1, "Size_NB": "40NB",    "MOC": "SS304", "Test_Report_No": "WYYK8937", "Heat_No": "K972180"},
-                {"Nozzle_No": "N2",  "Description": "OIL OUTLET",          "QTY": 1, "Size_NB": "50NB",    "MOC": "SS304", "Test_Report_No": "WYYK8735", "Heat_No": "F936215"},
-                {"Nozzle_No": "N3",  "Description": "OIL INLET",           "QTY": 1, "Size_NB": "80X50NB", "MOC": "SS304", "Test_Report_No": "WYYK8957", "Heat_No": "N974258"},
-                {"Nozzle_No": "N4",  "Description": "LEVEL SENSOR",        "QTY": 1, "Size_NB": "80NB",    "MOC": "SS304", "Test_Report_No": "WYYK8957", "Heat_No": "N974258"},
-                {"Nozzle_No": "N5",  "Description": "OIL BREATHER",        "QTY": 1, "Size_NB": "25NB",    "MOC": "SS304", "Test_Report_No": "WYYK8974", "Heat_No": "K758197"},
-                {"Nozzle_No": "N6",  "Description": "MANHOLE",             "QTY": 1, "Size_NB": "450NB",   "MOC": "SS304", "Test_Report_No": "2268648",  "Heat_No": "50227B06C"},
-                {"Nozzle_No": "N17", "Description": "OVER FLOW",           "QTY": 1, "Size_NB": "100NB",   "MOC": "SS304", "Test_Report_No": "",         "Heat_No": ""},
+                {"Nozzle_No": "N1",  "Description": "DRAIN",     "QTY": 1, "Size_NB": "40NB",  "MOC": "SS304", "Test_Report_No": "WYYK8937", "Heat_No": "K972180"},
+                {"Nozzle_No": "N2",  "Description": "OIL OUTLET","QTY": 1, "Size_NB": "50NB",  "MOC": "SS304", "Test_Report_No": "WYYK8735", "Heat_No": "F936215"},
+                {"Nozzle_No": "N17", "Description": "OVER FLOW", "QTY": 1, "Size_NB": "100NB", "MOC": "SS304", "Test_Report_No": "",         "Heat_No": ""},
             ])
-
             pipe_grid = st.data_editor(
                 pipe_template, num_rows="dynamic",
                 use_container_width=True, hide_index=True,
                 key=f"nfc_pipe_{sel_job}", column_config=nfc_col_cfg
             )
 
-            # Nozzle Flow Chart (Projection data from PDF p.17)
-            st.markdown("#### 📐 Nozzle Flow Chart — Projection Details")
-            nozzle_proj_template = pd.DataFrame([
-                {"Nozzle_No": "N1",  "Description": "DRAIN",               "QTY": 1, "Size_NB": "40NB",    "MOC": "SS304", "Projection": 150, "Remarks": ""},
-                {"Nozzle_No": "N2",  "Description": "OIL OUTLET",          "QTY": 1, "Size_NB": "50NB",    "MOC": "SS304", "Projection": 150, "Remarks": ""},
-                {"Nozzle_No": "N3",  "Description": "OIL INLET",           "QTY": 1, "Size_NB": "80X50NB", "MOC": "SS304", "Projection": 150, "Remarks": ""},
-                {"Nozzle_No": "N4",  "Description": "LEVEL SENSOR",        "QTY": 1, "Size_NB": "80NB",    "MOC": "SS304", "Projection": 150, "Remarks": ""},
-                {"Nozzle_No": "N17", "Description": "OVER FLOW",           "QTY": 1, "Size_NB": "100NB",   "MOC": "SS304", "Projection": 150, "Remarks": ""},
-            ])
-            proj_grid = st.data_editor(
-                nozzle_proj_template, num_rows="dynamic",
-                use_container_width=True, hide_index=True,
-                key=f"nfc_proj_{sel_job}",
-                column_config={
-                    **nfc_col_cfg,
-                    "Projection": st.column_config.NumberColumn("Projection (mm)", width="small"),
-                    "Remarks":    st.column_config.TextColumn("Remarks", width="medium"),
-                }
-            )
-
             with st.form("nfc_form", clear_on_submit=True):
-                f1, f2 = st.columns(2)
+                f1, _ = st.columns(2)
                 nfc_verifier = f1.selectbox("Inspected By", inspectors, key="nfc_verifier")
                 nfc_remarks  = st.text_area("Orientation / Fit-up Remarks")
                 if st.form_submit_button("🚀 Save Nozzle Flow Chart"):
                     combined = {
-                        "flanges":    flange_grid.to_dict('records'),
-                        "pipes":      pipe_grid.to_dict('records'),
-                        "projection": proj_grid.to_dict('records'),
+                        "flanges": flange_grid.to_dict('records'),
+                        "pipes":   pipe_grid.to_dict('records'),
                     }
                     payload = {
                         "job_no":            sel_job,
@@ -638,7 +1043,7 @@ with main_tabs[4]:
                         st.balloons()
 
 # ============================================================
-# TAB 5: DIMENSIONAL INSPECTION REPORT (DIR — matches PDF p.18)
+# TAB 5: DIMENSIONAL INSPECTION REPORT
 # ============================================================
 with main_tabs[5]:
     st.subheader("📐 Dimensional Inspection Report (DIR)")
@@ -650,10 +1055,9 @@ with main_tabs[5]:
             with st.container(border=True):
                 c1, c2, c3 = st.columns(3)
                 c1.write(f"**Customer:** {proj.get('client_name','N/A')}")
-                drg_no_dir   = c2.text_input("Drawing No.", value="3050101710", key="dir_drg")
-                report_date  = c3.date_input("Date", value=get_now_ist().date(), key="dir_date")
+                drg_no_dir  = c2.text_input("Drawing No.", value="3050101710", key="dir_drg")
+                report_date = c3.date_input("Date", value=get_now_ist().date(), key="dir_date")
 
-            # Report No auto-gen
             report_no = f"BG/QA/DIR-{sel_job}"
             st.caption(f"Report No: **{report_no}**")
 
@@ -661,10 +1065,8 @@ with main_tabs[5]:
                 ["Shell","Top Dish","Bottom Dish","Bottom Lugs","Ladder","Railing",
                  "Lifting Hooks","Nozzle Pipes","Nozzle Flanges","Overall weld Visual",
                  "Surface finish Inside","Surface finish Outside"]
-            options_moc = get_config("MOC List") or \
-                ["SS304","SS316L","SS316","MS","CS","Duplex"]
+            options_moc  = get_config("MOC List") or ["SS304","SS316L","SS316","MS","CS","Duplex"]
 
-            # Auto-load existing
             dir_key = f"dir_data_{sel_job}"
             if dir_key not in st.session_state:
                 try:
@@ -675,31 +1077,27 @@ with main_tabs[5]:
                         st.session_state[dir_key] = pd.DataFrame(report.get('dim_grid_data', []))
                         st.info(f"✅ Loaded record from {fmt_date(report['created_at'])}")
                     else:
-                        # Template matching PDF p.18 exactly
                         st.session_state[dir_key] = pd.DataFrame([
-                            {"Sl_No": 1,  "Description": "Shell",               "Specified_Dimension": "ID2750X5100HX8THK",     "Measured_Dimension": "ID2750X5100HX8THK",     "MOC": "SS304"},
-                            {"Sl_No": 2,  "Description": "Top Dish",            "Specified_Dimension": "ID2750X10THK",           "Measured_Dimension": "ID2750X10THK",           "MOC": "SS304"},
-                            {"Sl_No": 3,  "Description": "Bottom Dish",         "Specified_Dimension": "ID2750X10THK",           "Measured_Dimension": "ID2750X10THK",           "MOC": "SS304"},
-                            {"Sl_No": 4,  "Description": "Bottom Lugs",         "Specified_Dimension": "300CX1140LX8THK",        "Measured_Dimension": "300CX1140LX8THK",        "MOC": "SS304"},
-                            {"Sl_No": 5,  "Description": "Ladder",              "Specified_Dimension": "32NB & 25NB",            "Measured_Dimension": "32NB & 25NB",            "MOC": "SS304"},
-                            {"Sl_No": 6,  "Description": "Railing",             "Specified_Dimension": "32NB & 25NB",            "Measured_Dimension": "32NB & 25NB",            "MOC": "SS304"},
-                            {"Sl_No": 7,  "Description": "Lifting Hooks",       "Specified_Dimension": "25THK",                  "Measured_Dimension": "25THK",                  "MOC": "SS304"},
-                            {"Sl_No": 8,  "Description": "Nozzle Pipes",        "Specified_Dimension": "SCH40, ERW, 150 PROJ",   "Measured_Dimension": "SCH40, ERW, 150 PROJ",   "MOC": "SS304"},
-                            {"Sl_No": 9,  "Description": "Nozzle Flanges",      "Specified_Dimension": "ASA150THK, PCD",         "Measured_Dimension": "ASA150THK, PCD",         "MOC": "SS304"},
-                            {"Sl_No": 10, "Description": "Overall weld Visual", "Specified_Dimension": "",                        "Measured_Dimension": "Found ok",              "MOC": "-"},
-                            {"Sl_No": 11, "Description": "Surface finish Inside","Specified_Dimension": "MATT",                   "Measured_Dimension": "MATT",                  "MOC": "SS"},
-                            {"Sl_No": 12, "Description": "Surface finish Outside","Specified_Dimension": "MATT",                  "Measured_Dimension": "MATT",                  "MOC": "SS"},
+                            {"Sl_No": 1,  "Description": "Shell",                "Specified_Dimension": "ID2750X5100HX8THK",   "Measured_Dimension": "ID2750X5100HX8THK",   "MOC": "SS304"},
+                            {"Sl_No": 2,  "Description": "Top Dish",             "Specified_Dimension": "ID2750X10THK",         "Measured_Dimension": "ID2750X10THK",         "MOC": "SS304"},
+                            {"Sl_No": 3,  "Description": "Bottom Dish",          "Specified_Dimension": "ID2750X10THK",         "Measured_Dimension": "ID2750X10THK",         "MOC": "SS304"},
+                            {"Sl_No": 4,  "Description": "Bottom Lugs",          "Specified_Dimension": "300CX1140LX8THK",      "Measured_Dimension": "300CX1140LX8THK",      "MOC": "SS304"},
+                            {"Sl_No": 5,  "Description": "Ladder",               "Specified_Dimension": "32NB & 25NB",          "Measured_Dimension": "32NB & 25NB",          "MOC": "SS304"},
+                            {"Sl_No": 6,  "Description": "Railing",              "Specified_Dimension": "32NB & 25NB",          "Measured_Dimension": "32NB & 25NB",          "MOC": "SS304"},
+                            {"Sl_No": 7,  "Description": "Lifting Hooks",        "Specified_Dimension": "25THK",                "Measured_Dimension": "25THK",                "MOC": "SS304"},
+                            {"Sl_No": 8,  "Description": "Nozzle Pipes",         "Specified_Dimension": "SCH40, ERW, 150 PROJ", "Measured_Dimension": "SCH40, ERW, 150 PROJ", "MOC": "SS304"},
+                            {"Sl_No": 9,  "Description": "Nozzle Flanges",       "Specified_Dimension": "ASA150THK, PCD",       "Measured_Dimension": "ASA150THK, PCD",       "MOC": "SS304"},
+                            {"Sl_No": 10, "Description": "Overall weld Visual",  "Specified_Dimension": "",                     "Measured_Dimension": "Found ok",             "MOC": "-"},
+                            {"Sl_No": 11, "Description": "Surface finish Inside", "Specified_Dimension": "MATT",                "Measured_Dimension": "MATT",                 "MOC": "SS"},
+                            {"Sl_No": 12, "Description": "Surface finish Outside","Specified_Dimension": "MATT",                "Measured_Dimension": "MATT",                 "MOC": "SS"},
                         ])
-                    st.session_state[f"dir_loaded_{sel_job}"] = True
                 except Exception as e:
                     st.error(f"Load error: {e}")
 
             dim_grid = st.data_editor(
                 st.session_state.get(dir_key, pd.DataFrame()),
-                num_rows="dynamic",
-                use_container_width=True,
-                hide_index=True,
-                key=f"dir_editor_{sel_job}",
+                num_rows="dynamic", use_container_width=True,
+                hide_index=True, key=f"dir_editor_{sel_job}",
                 column_config={
                     "Sl_No":               st.column_config.NumberColumn("Sl", width="small", disabled=True),
                     "Description":         st.column_config.SelectboxColumn("Description", options=options_desc, width="large"),
@@ -709,7 +1107,6 @@ with main_tabs[5]:
                 }
             )
 
-            # Footer acceptance section matching PDF
             st.markdown("#### Acceptance Status")
             acc_cols = st.columns(4)
             acc1 = acc_cols[0].checkbox("1. Part accepted.")
@@ -718,18 +1115,15 @@ with main_tabs[5]:
             acc4 = acc_cols[3].text_input("4. Deviation accepted reason")
 
             f1, f2, f3 = st.columns(3)
-            dir_insp   = f1.selectbox("Executive (QA)", inspectors, key="dir_insp")
-            dir_tpi    = f2.text_input("TPI Name")
-            dir_cust   = f3.text_input("Customer Representative")
+            dir_insp = f1.selectbox("Executive (QA)", inspectors, key="dir_insp")
+            dir_tpi  = f2.text_input("TPI Name")
+            f3.text_input("Customer Representative")
 
             if st.button("🚀 Save DIR Report", type="primary", use_container_width=True):
-                raw_rows   = dim_grid.to_dict('records')
-                final_rows = [{**r, "Sl_No": i+1} for i, r in enumerate(raw_rows)]
+                final_rows = [{**r, "Sl_No": i+1} for i, r in enumerate(dim_grid.to_dict('records'))]
                 acceptance = {
-                    "part_accepted":  acc1,
-                    "to_be_reworked": acc2,
-                    "rejected":       acc3,
-                    "deviation_reason": acc4
+                    "part_accepted": acc1, "to_be_reworked": acc2,
+                    "rejected": acc3, "deviation_reason": acc4
                 }
                 payload = {
                     "job_no":          sel_job,
@@ -749,7 +1143,7 @@ with main_tabs[5]:
                     st.rerun()
 
 # ============================================================
-# TAB 6: HYDRO TEST REPORT  (matches PDF p.19)
+# TAB 6: HYDRO TEST REPORT
 # ============================================================
 with main_tabs[6]:
     st.subheader("💧 Hydrostatic / Pneumatic Test Report")
@@ -760,69 +1154,49 @@ with main_tabs[6]:
         if proj is not None:
             job_header(proj)
 
-            # View existing
             try:
                 ex_hydro = conn.table("hydro_test_reports").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(3).execute()
                 if ex_hydro.data:
                     with st.expander(f"📂 {len(ex_hydro.data)} existing hydro report(s)"):
                         df_ex = pd.DataFrame(ex_hydro.data)
-                        st.dataframe(df_ex[['created_at','equipment_name','test_pressure',
-                                            'holding_time','test_medium','inspected_by']],
-                                     use_container_width=True, hide_index=True)
+                        cols_show = [c for c in ['created_at','equipment_name','test_pressure',
+                                                  'holding_time','test_medium','inspected_by']
+                                     if c in df_ex.columns]
+                        st.dataframe(df_ex[cols_show], use_container_width=True, hide_index=True)
             except Exception:
                 pass
 
             with st.form("hydro_form", clear_on_submit=True):
                 st.markdown("#### Report References")
                 r1, r2, r3 = st.columns(3)
-                report_no_h  = r1.text_input("Test Report No.",  value=f"BG/QA/HTR-{sel_job}")
-                fir_no_h     = r2.text_input("FIR No.",          value=f"BG/QA/FIR-{sel_job}")
-                ref_doc_h    = r3.text_input("Reference Document", value="ASME SEC VIII DIVI.1 UG-99")
-                e_name_h     = r1.text_input("Equipment Description",
-                                             placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
-                equip_no_h   = r2.text_input("Equipment No.", placeholder="e.g. 1500")
-                drg_ref_h    = r3.text_input("Drawing No.", placeholder="e.g. 3050101710")
+                report_no_h = r1.text_input("Test Report No.",    value=f"BG/QA/HTR-{sel_job}")
+                r2.text_input("FIR No.",                           value=f"BG/QA/FIR-{sel_job}")
+                r3.text_input("Reference Document",                value="ASME SEC VIII DIVI.1 UG-99")
+                e_name_h    = r1.text_input("Equipment Description", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
+                r2.text_input("Equipment No.", placeholder="e.g. 1500")
+                r3.text_input("Drawing No.",   placeholder="e.g. 3050101710")
 
                 st.markdown("#### ⏲️ Test Parameters")
                 p1, p2, p3 = st.columns(3)
-                t_pressure = p1.text_input("Test Pressure (Kg/cm²)", placeholder="e.g. 1.0")
-                d_pressure = p2.text_input("Design Pressure (Kg/cm²)", placeholder="e.g. 0.5")
-                h_time     = p3.text_input("Holding Duration", placeholder="e.g. 1 Hrs.")
+                t_pressure = p1.text_input("Test Pressure (Kg/cm²)",   placeholder="e.g. 1.0")
+                p2.text_input("Design Pressure (Kg/cm²)",               placeholder="e.g. 0.5")
+                h_time     = p3.text_input("Holding Duration",           placeholder="e.g. 1 Hrs.")
 
                 p4, p5, p6 = st.columns(3)
-                medium  = p4.selectbox("Test Medium",
-                                       ["Potable Water","WATER","Hydraulic Oil",
-                                        "Compressed Air","Nitrogen"])
-                g_nos   = p5.text_input("Pressure Gauge ID(s)", placeholder="BG/QC/PG-01")
-                temp    = p6.text_input("Temperature", value="ATMP.")
+                medium = p4.selectbox("Test Medium",
+                    ["Potable Water","WATER","Hydraulic Oil","Compressed Air","Nitrogen"])
+                g_nos  = p5.text_input("Pressure Gauge ID(s)", placeholder="BG/QC/PG-01")
+                p6.text_input("Temperature", value="ATMP.")
 
-                st.markdown("#### Calibration Details")
-                cal1, cal2 = st.columns(2)
-                cal_date   = cal1.date_input("Calibration Date", value=get_now_ist().date())
-                cal_valid  = cal2.date_input("Valid Upto")
-
-                # Test results grid matching PDF
-                st.markdown("#### Test Results")
-                test_grid_data = pd.DataFrame([
-                    {"Description": "Shell side", "Test_Pressure": t_pressure,
-                     "Duration": h_time, "Test_Fluid": "WATER",
-                     "Temperature": "ATMP.", "Remarks": "ACCEPTABLE"}
-                ])
-                test_grid = st.data_editor(
-                    test_grid_data, num_rows="dynamic",
-                    use_container_width=True, hide_index=True,
-                    key="hydro_test_grid"
-                )
-
-                h_remarks = st.text_area("Observations", value="No leakages found during the test period.")
+                h_remarks = st.text_area("Observations",
+                                          value="No leakages found during the test period.")
 
                 st.markdown("#### ✍️ Authorization")
                 w1, w2, w3 = st.columns(3)
-                insp_h = w1.selectbox("Executive (QA) / Inspected By",
-                                       inspectors, key="hydro_insp")
+                insp_h = w1.selectbox("Executive (QA)", inspectors, key="hydro_insp")
                 wit_h  = w2.text_input("Customer / TPI Witness")
-                prod_h = w3.text_input("Production I/C")
+                w3.text_input("Production I/C")
 
                 if st.form_submit_button("🚀 Save Hydro Test Report", use_container_width=True):
                     payload = {
@@ -846,11 +1220,11 @@ with main_tabs[6]:
                         st.cache_data.clear()
 
 # ============================================================
-# TAB 7: CALIBRATION CERTIFICATE  (matches PDF p.20 — NEW)
+# TAB 7: CALIBRATION CERTIFICATE
 # ============================================================
 with main_tabs[7]:
     st.subheader("📏 Calibration Certificate — Upload & View")
-    st.info("Calibration certificates are issued by external labs. Upload the scanned PDF here and link it to the job.")
+    st.info("Calibration certificates are issued by external labs. Upload the scanned PDF here.")
 
     sel_job = st.selectbox("Select Job", ["-- Select --"] + job_list, key="cal_job")
     if sel_job != "-- Select --":
@@ -858,7 +1232,6 @@ with main_tabs[7]:
         if proj is not None:
             job_header(proj)
 
-            # Calibration details entry
             with st.form("cal_form", clear_on_submit=True):
                 st.markdown("#### Calibration Details")
                 c1, c2, c3 = st.columns(3)
@@ -871,32 +1244,16 @@ with main_tabs[7]:
                 least_count   = c3.text_input("Least Count", placeholder="e.g. 0.1kg/cm²")
 
                 c4, c5 = st.columns(2)
-                cal_date_val  = c4.date_input("Date of Calibration", value=get_now_ist().date())
-                cal_due_date  = c5.date_input("Calibration Due Date")
+                cal_date_val = c4.date_input("Date of Calibration", value=get_now_ist().date())
+                cal_due_date = c5.date_input("Calibration Due Date")
 
-                st.markdown("#### Calibration Results Grid")
-                cal_grid_data = pd.DataFrame([
-                    {"S_No": 1, "Standard_Reading_kg_cm2": 0.00, "UUC_Reading_kg_cm2": 0.0,  "Error_kg_cm2": 0.00},
-                    {"S_No": 2, "Standard_Reading_kg_cm2": 1.00, "UUC_Reading_kg_cm2": 1.0,  "Error_kg_cm2": 0.00},
-                    {"S_No": 3, "Standard_Reading_kg_cm2": 3.00, "UUC_Reading_kg_cm2": 3.0,  "Error_kg_cm2": 0.00},
-                    {"S_No": 4, "Standard_Reading_kg_cm2": 4.98, "UUC_Reading_kg_cm2": 5.0,  "Error_kg_cm2": 0.02},
-                    {"S_No": 5, "Standard_Reading_kg_cm2": 6.98, "UUC_Reading_kg_cm2": 7.0,  "Error_kg_cm2": 0.02},
-                ])
-                cal_grid = st.data_editor(
-                    cal_grid_data, num_rows="dynamic",
-                    use_container_width=True, hide_index=True,
-                    key="cal_result_grid"
-                )
-
-                st.markdown("#### Remarks")
                 cal_remarks = st.text_area("Calibration Remarks",
-                    value="The Instrument is Satisfactory with respect to the Specified limits of Calibration.")
+                    value="The Instrument is Satisfactory with respect to the Specified limits.")
                 cal_by  = st.text_input("Calibrated By")
-                appr_by = st.text_input("Approved By")
 
-                st.markdown("#### 📎 Upload Calibration Certificate (PDF)")
-                cal_file = st.file_uploader("Upload scanned certificate", type=['pdf','jpg','png'],
-                                            key="cal_upload")
+                st.markdown("#### 📎 Upload Certificate (PDF / Image)")
+                cal_file = st.file_uploader("Upload scanned certificate",
+                                             type=['pdf','jpg','png'], key="cal_upload")
 
                 if st.form_submit_button("🚀 Save & Upload Calibration Record"):
                     file_url = ""
@@ -904,10 +1261,11 @@ with main_tabs[7]:
                         try:
                             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                             file_path = f"{sel_job}/CAL_{timestamp}_{cal_file.name}"
-                            content   = cal_file.getvalue()
-                            conn.client.storage.from_("project-certificates").upload(file_path, content)
-                            file_url = conn.client.storage.from_("project-certificates").get_public_url(file_path)
-                            # Record in project_certificates
+                            conn.client.storage.from_("project-certificates").upload(
+                                file_path, cal_file.getvalue()
+                            )
+                            file_url = conn.client.storage.from_("project-certificates") \
+                                           .get_public_url(file_path)
                             conn.table("project_certificates").insert({
                                 "job_no":      sel_job,
                                 "cert_type":   "Calibration Certificate",
@@ -920,26 +1278,24 @@ with main_tabs[7]:
                         except Exception as e:
                             st.error(f"Upload error: {e}")
 
-                    # Save calibration details in quality_inspection_logs
                     payload = {
-                        "job_no":        sel_job,
-                        "gate_name":     "Calibration",
-                        "gauge_id":      sr_no,
-                        "gauge_cal_due": str(cal_due_date),
-                        "moc_type":      make,
-                        "specified_val": range_val,
-                        "measured_val":  least_count,
-                        "quality_notes": f"Report: {cal_report_no} | Instrument: {instrument} | {cal_remarks}",
+                        "job_no":         sel_job,
+                        "gate_name":      "Calibration",
+                        "gauge_id":       sr_no,
+                        "gauge_cal_due":  str(cal_due_date),
+                        "moc_type":       make,
+                        "specified_val":  range_val,
+                        "measured_val":   least_count,
+                        "quality_notes":  f"Report: {cal_report_no} | Instrument: {instrument} | {cal_remarks}",
                         "inspector_name": cal_by,
                         "quality_status": "Calibrated",
-                        "created_at":    get_now_ist().isoformat()
+                        "created_at":     get_now_ist().isoformat()
                     }
                     safe_write(
                         lambda: conn.table("quality_inspection_logs").insert(payload).execute(),
                         success_msg="✅ Calibration record saved!"
                     )
 
-            # View existing calibration records
             st.divider()
             st.markdown("#### 📂 Existing Calibration Records")
             try:
@@ -958,7 +1314,7 @@ with main_tabs[7]:
                 st.error(f"Load error: {e}")
 
 # ============================================================
-# TAB 8: FINAL INSPECTION REPORT  (matches PDF p.21)
+# TAB 8: FINAL INSPECTION REPORT
 # ============================================================
 with main_tabs[8]:
     st.subheader("🏁 Final Inspection Report (FIR)")
@@ -967,91 +1323,50 @@ with main_tabs[8]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            # FIR header matching PDF exactly
             with st.container(border=True):
                 r1, r2, r3 = st.columns(3)
-                fir_no    = r1.text_input("FIR No.",       value=f"FIR/{sel_job}")
-                fir_date  = r2.date_input("Date",          value=get_now_ist().date())
+                fir_no   = r1.text_input("FIR No.", value=f"FIR/{sel_job}")
+                r2.date_input("Date", value=get_now_ist().date())
                 r1.write(f"**Customer:** {proj.get('client_name','N/A')}")
                 r1.write(f"**PO No & Date:** {proj.get('po_no','N/A')} & {fmt_date(proj.get('po_date'))}")
-                fir_equip = r2.text_input("Equipment",     placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
-                fir_type  = r3.selectbox("Type",           ["VERTICAL","HORIZONTAL","OTHER"])
-                fir_cap   = r1.text_input("Capacity",      placeholder="e.g. 30.KL")
-                fir_ga    = r2.text_input("GA Drg. No.",   placeholder="e.g. 3050101710")
-                fir_moc   = r3.text_input("MOC",           value="SS304")
+                fir_equip = r2.text_input("Equipment", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
+                fir_type  = r3.selectbox("Type", ["VERTICAL","HORIZONTAL","OTHER"])
+                fir_cap   = r1.text_input("Capacity", placeholder="e.g. 30.KL")
+                fir_ga    = r2.text_input("GA Drg. No.", placeholder="e.g. 3050101710")
+                fir_moc   = r3.text_input("MOC", value="SS304")
                 fir_iwo   = r1.text_input("IWO No. / Equipment No.", placeholder="e.g. 1500")
 
             with st.form("fir_form", clear_on_submit=True):
-                # Dimensional Check section
-                st.markdown("#### 📐 Dimensional Check")
-                d1, d2, d3, d4 = st.columns(4)
-                dir_result  = d1.text_input("Result",             value="OK")
-                dir_ref     = d2.text_input("DIR Ref. No.",       value=f"QA/DIR/{sel_job}")
-                dir_date_v  = d3.date_input("DIR Date",           value=get_now_ist().date())
-                dir_enc     = d4.selectbox("DIR Enclosed (YES/NO)", ["YES","NO"])
-                dir_dev     = st.text_input("Deviations from GA Drawing (if any)", value="NIL")
-
-                # Materials of Construction section
-                st.markdown("#### 🔩 Materials of Construction")
-                moc_data = pd.DataFrame([
-                    {"Component": "SHELL & DISH SS304", "Material_Certified": "YES",
-                     "MTRs_Enclosed": "YES", "MTRs_Heat_No_Date": "AS PER MATERIAL",
-                     "MTRs_Attested_By": "", "Remarks": ""},
-                    {"Component": "BONNET & BONNET DISHES", "Material_Certified": "",
-                     "MTRs_Enclosed": "", "MTRs_Heat_No_Date": "",
-                     "MTRs_Attested_By": "", "Remarks": ""},
-                ])
-                moc_grid = st.data_editor(
-                    moc_data, num_rows="dynamic",
-                    use_container_width=True, hide_index=True,
-                    key="fir_moc_grid"
-                )
-
-                # Pressure / Vacuum Test section
-                st.markdown("#### 💧 Pressure / Vacuum / Pneumatic Test")
-                pt_data = pd.DataFrame([
-                    {"Description": "SHELL SIDE", "Test_Fluid": "WATER",
-                     "Test_Pressure_kg_cm2": "1.0 Kg/cm2", "Duration": "1 hour",
-                     "Result": "OK", "Test_Report_No": f"BG/QA/{sel_job}", "Date": ""},
-                ])
-                pt_grid = st.data_editor(
-                    pt_data, num_rows="dynamic",
-                    use_container_width=True, hide_index=True,
-                    key="fir_pt_grid"
-                )
-
-                # Quantity
-                st.markdown("#### 📊 Quantity")
+                st.markdown("#### 📊 Quantity & Clearance")
                 q1, q2, q3 = st.columns(3)
-                ord_qty  = q1.text_input("Ordered Qty",        value="1 No.")
-                off_qty  = q2.text_input("Offered for Insp.",  value="1 No.")
-                acc_qty  = q3.text_input("Accepted Qty",       value="1 No.")
+                ord_qty = q1.text_input("Ordered Qty",       value="1 No.")
+                off_qty = q2.text_input("Offered for Insp.", value="1 No.")
+                acc_qty = q3.text_input("Accepted Qty",      value="1 No.")
 
-                # Final verdict
                 st.markdown("#### 🏁 Final Verdict & Authorization")
                 fv1, fv2 = st.columns(2)
                 fir_status   = fv1.selectbox("Inspection Result",
-                                              ["✅ Accepted","❌ Rejected","⚠️ Rework Required"])
+                    ["✅ Accepted","❌ Rejected","⚠️ Rework Required"])
                 fir_inspector= fv2.selectbox("Quality Inspector", inspectors, key="fir_insp")
                 fir_witness  = fv1.text_input("Customer / TPI Representative")
-                fir_prod     = fv2.text_input("Production I/C")
+                fv2.text_input("Production I/C")
                 fir_remarks  = st.text_area("Final Observations / Notes",
                     value="Notes: 1. Entries marked with * are for Customer representative.\n"
                           "2. Please quote FIR No. & date in all correspondences.")
 
                 if st.form_submit_button("🚀 Finalize & Save FIR", use_container_width=True):
                     payload = {
-                        "job_no":           sel_job,
-                        "equipment_name":   fir_equip,
-                        "tag_no":           fir_iwo,
-                        "ordered_qty":      ord_qty,
-                        "offered_qty":      off_qty,
-                        "accepted_qty":     acc_qty,
+                        "job_no":            sel_job,
+                        "equipment_name":    fir_equip,
+                        "tag_no":            fir_iwo,
+                        "ordered_qty":       ord_qty,
+                        "offered_qty":       off_qty,
+                        "accepted_qty":      acc_qty,
                         "inspection_status": fir_status,
-                        "inspected_by":     fir_inspector,
-                        "witnessed_by":     fir_witness,
-                        "remarks":          fir_remarks,
-                        "created_at":       get_now_ist().isoformat()
+                        "inspected_by":      fir_inspector,
+                        "witnessed_by":      fir_witness,
+                        "remarks":           fir_remarks,
+                        "created_at":        get_now_ist().isoformat()
                     }
                     ok = safe_write(
                         lambda: conn.table("final_inspection_reports").insert(payload).execute(),
@@ -1062,7 +1377,7 @@ with main_tabs[8]:
                         st.cache_data.clear()
 
 # ============================================================
-# TAB 9: GUARANTEE CERTIFICATE  (matches PDF p.22)
+# TAB 9: GUARANTEE CERTIFICATE
 # ============================================================
 with main_tabs[9]:
     st.subheader("🛡️ Guarantee Certificate")
@@ -1073,7 +1388,6 @@ with main_tabs[9]:
         if proj is not None:
             job_header(proj)
 
-            # View existing
             try:
                 ex_gc = conn.table("guarantee_certificates").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute()
@@ -1088,23 +1402,20 @@ with main_tabs[9]:
                 pass
 
             with st.form("gc_form", clear_on_submit=True):
-                st.markdown("#### Certificate Details")
                 g1, g2, g3 = st.columns(3)
-                gc_equip   = g1.text_input("Equipment Description",
-                                            value=proj.get('project_description',
-                                                  '30KL SS304 OIL HOLDING TANK'))
-                gc_drg     = g2.text_input("DRG. No.", placeholder="e.g. 3050101710")
-                gc_equip_no= g3.text_input("Equipment No.", placeholder="e.g. 1500")
-                gc_fir_no  = g1.text_input("FIR No.",   value=f"QA/FIR/{sel_job}")
-                cert_date  = g2.date_input("Date of Issue", value=get_now_ist().date())
-                inv_ref    = g3.text_input("Invoice / Dispatch Ref No.")
+                gc_equip    = g1.text_input("Equipment Description",
+                                             value=proj.get('project_description',
+                                                   '30KL SS304 OIL HOLDING TANK'))
+                gc_drg      = g2.text_input("DRG. No.", placeholder="e.g. 3050101710")
+                gc_equip_no = g3.text_input("Equipment No.", placeholder="e.g. 1500")
+                gc_fir_no   = g1.text_input("FIR No.", value=f"QA/FIR/{sel_job}")
+                g2.date_input("Date of Issue", value=get_now_ist().date())
+                inv_ref     = g3.text_input("Invoice / Dispatch Ref No.")
 
-                # Guarantee terms matching PDF
-                st.markdown("#### 📜 Guarantee Terms")
                 g_period = st.text_area("Guarantee Terms",
                     value=(
                         "B&G Engineering Industries guarantee the above equipment for 12 months "
-                        "from the date of supply against on any manufacturing defectives. "
+                        "from the date of supply against any manufacturing defectives. "
                         "In this duration any defectives found the same will be rectified or "
                         "replaced if necessary. The following terms will apply;\n\n"
                         "Guarantee will not apply:\n"
@@ -1112,9 +1423,7 @@ with main_tabs[9]:
                         "2. Using equipment beyond specified operating conditions.\n"
                         "3. Any Misalignment of equipment in plant.\n"
                         "4. The product will not guarantee for corrosion and erosion.\n"
-                        "5. Repairs with any unauthorised persons other than company approved service persons.\n\n"
-                        "The problem will rectify as early as possible after finding or getting the information. "
-                        "To rectify the same there is no fixed time bound and it will rectify within minimum possible time."
+                        "5. Repairs with any unauthorised persons."
                     ), height=200)
 
                 certifier  = st.selectbox("Authorised Signatory", inspectors, key="gc_certifier")
@@ -1141,7 +1450,7 @@ with main_tabs[9]:
                         st.cache_data.clear()
 
 # ============================================================
-# TAB 10: CUSTOMER FEEDBACK  (matches PDF p.23)
+# TAB 10: CUSTOMER FEEDBACK
 # ============================================================
 with main_tabs[10]:
     st.subheader("⭐ Customer Feedback")
@@ -1161,51 +1470,44 @@ with main_tabs[10]:
                 c_person = f1.text_input("Name of Customer Contact Person")
                 c_desig  = f2.text_input("Designation")
 
-                # Match PDF feedback parameters exactly
                 st.markdown("#### Feedback Parameters")
                 st.caption("Rate each parameter: Excellent | Very Good | Good | Bad | Other")
 
-                params = [
-                    ("Conformity with Specs", "rating_quality"),
-                    ("Quality",               "rating_quality"),
-                    ("Delivery",              "rating_delivery"),
-                    ("Responsiveness to Quiries", "rating_response"),
-                    ("Courtesy",              "rating_technical_support"),
-                    ("Responsiveness to Complaints", "rating_documentation"),
-                ]
-
                 rating_options = ["Excellent", "Very Good", "Good", "Bad", "Other"]
+                params = [
+                    ("Conformity with Specs",           "spec"),
+                    ("Quality",                          "quality"),
+                    ("Delivery",                         "delivery"),
+                    ("Responsiveness to Queries",        "response"),
+                    ("Courtesy",                         "courtesy"),
+                    ("Responsiveness to Complaints",     "complaints"),
+                ]
                 fb_ratings = {}
                 for label, key in params:
                     col1, col2 = st.columns([2, 3])
                     col1.write(f"**{label}**")
                     fb_ratings[key] = col2.radio(
-                        label, rating_options,
-                        horizontal=True,
-                        key=f"fb_{key}_{label[:5]}",
-                        label_visibility="collapsed"
+                        label, rating_options, horizontal=True,
+                        key=f"fb_{key}", label_visibility="collapsed"
                     )
 
-                rating_map = {"Excellent": 5, "Very Good": 4, "Good": 3, "Bad": 2, "Other": 1}
+                rating_map   = {"Excellent": 5, "Very Good": 4, "Good": 3, "Bad": 2, "Other": 1}
+                suggestions  = st.text_area("Any Suggestions for Improvement")
+                reviewed_by  = st.text_input("Reviewed By (B&G Staff)")
 
-                st.divider()
-                suggestions = st.text_area("Any Suggestions for Improvement")
-                reviewed_by = st.text_input("Reviewed By (B&G Staff)")
-
-                if st.form_submit_button("🚀 Submit Customer Feedback",
-                                          use_container_width=True):
+                if st.form_submit_button("🚀 Submit Customer Feedback", use_container_width=True):
                     payload = {
-                        "job_no":                  sel_job,
-                        "customer_name":           proj.get('client_name'),
-                        "contact_person":          f"{c_person} ({c_desig})",
-                        "rating_quality":          rating_map.get(fb_ratings.get('rating_quality','Good'), 3),
-                        "rating_delivery":         rating_map.get(fb_ratings.get('rating_delivery','Good'), 3),
-                        "rating_response":         rating_map.get(fb_ratings.get('rating_response','Good'), 3),
-                        "rating_technical_support":rating_map.get(fb_ratings.get('rating_technical_support','Good'), 3),
-                        "rating_documentation":    rating_map.get(fb_ratings.get('rating_documentation','Good'), 3),
-                        "suggestions":             suggestions,
-                        "recommend_bg":            reviewed_by,
-                        "created_at":              get_now_ist().isoformat()
+                        "job_no":                   sel_job,
+                        "customer_name":            proj.get('client_name'),
+                        "contact_person":           f"{c_person} ({c_desig})",
+                        "rating_quality":           rating_map.get(fb_ratings.get('quality','Good'), 3),
+                        "rating_delivery":          rating_map.get(fb_ratings.get('delivery','Good'), 3),
+                        "rating_response":          rating_map.get(fb_ratings.get('response','Good'), 3),
+                        "rating_technical_support": rating_map.get(fb_ratings.get('courtesy','Good'), 3),
+                        "rating_documentation":     rating_map.get(fb_ratings.get('complaints','Good'), 3),
+                        "suggestions":              suggestions,
+                        "recommend_bg":             reviewed_by,
+                        "created_at":               get_now_ist().isoformat()
                     }
                     ok = safe_write(
                         lambda: conn.table("customer_feedback").insert(payload).execute(),
@@ -1242,7 +1544,7 @@ with main_tabs[11]:
                 up_files = u2.file_uploader("Upload PDF / Image",
                                              accept_multiple_files=True,
                                              type=['pdf','jpg','jpeg','png'])
-                u_notes  = st.text_input("Document Label / Description")
+                st.text_input("Document Label / Description")
 
                 if st.form_submit_button("🚀 Upload to Vault"):
                     if up_files:
@@ -1250,9 +1552,11 @@ with main_tabs[11]:
                             try:
                                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                                 file_path = f"{sel_job}/{c_type.split()[0]}_{timestamp}_{uploaded_file.name}"
-                                content   = uploaded_file.getvalue()
-                                conn.client.storage.from_("project-certificates").upload(file_path, content)
-                                file_url = conn.client.storage.from_("project-certificates").get_public_url(file_path)
+                                conn.client.storage.from_("project-certificates").upload(
+                                    file_path, uploaded_file.getvalue()
+                                )
+                                file_url = conn.client.storage.from_("project-certificates") \
+                                               .get_public_url(file_path)
                                 conn.table("project_certificates").insert({
                                     "job_no":      sel_job,
                                     "cert_type":   c_type,
@@ -1273,7 +1577,6 @@ with main_tabs[11]:
                 docs_res = conn.table("project_certificates").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).execute()
                 if docs_res.data:
-                    # Group by cert_type
                     df_docs = pd.DataFrame(docs_res.data)
                     for cert_type, group in df_docs.groupby('cert_type'):
                         st.markdown(f"**{cert_type}** ({len(group)})")
@@ -1294,7 +1597,17 @@ with main_tabs[11]:
 # ============================================================
 with main_tabs[12]:
     st.header("📑 Master Data Book Generator")
-    st.info("Compiles all quality documents into a single stamped PDF — the B&G Product Birth Certificate.")
+    st.info(
+        "Compiles all quality documents into a single stamped PDF — "
+        "the B&G Product Birth Certificate."
+    )
+
+    if not PDF_AVAILABLE:
+        st.warning(
+            "PDF generation requires **fpdf2** and **pypdf**. "
+            "Add these to `requirements.txt` and redeploy:\n\n"
+            "```\nfpdf2\npypdf\nrequests\nPillow\n```"
+        )
 
     if not df_anchor.empty:
         target = st.selectbox("Select Job Number", ["-- Select --"] + job_list,
@@ -1305,19 +1618,20 @@ with main_tabs[12]:
             if proj is not None:
                 job_header(proj)
 
-                # Show document completion status
+                # Document completion dashboard
                 st.markdown("#### 📊 Document Completion Status")
-                doc_checks = {}
                 check_tables = [
-                    ("Quality Checklist",    "quality_check_list"),
-                    ("Material Flow Chart",  "material_flow_charts"),
-                    ("Nozzle Flow Chart",    "nozzle_flow_charts"),
-                    ("Dimensional Report",   "dimensional_reports"),
-                    ("Hydro Test Report",    "hydro_test_reports"),
-                    ("Final Inspection",     "final_inspection_reports"),
-                    ("Guarantee Certificate","guarantee_certificates"),
-                    ("Customer Feedback",    "customer_feedback"),
+                    ("Quality Checklist",     "quality_check_list"),
+                    ("Material Flow Chart",   "material_flow_charts"),
+                    ("Nozzle Flow Chart",     "nozzle_flow_charts"),
+                    ("Dimensional Report",    "dimensional_reports"),
+                    ("Hydro Test Report",     "hydro_test_reports"),
+                    ("Final Inspection",      "final_inspection_reports"),
+                    ("Guarantee Certificate", "guarantee_certificates"),
+                    ("Customer Feedback",     "customer_feedback"),
                 ]
+
+                doc_checks = {}
                 cols = st.columns(4)
                 for i, (label, table) in enumerate(check_tables):
                     try:
@@ -1332,27 +1646,53 @@ with main_tabs[12]:
                         else:
                             st.error(f"❌ {label}")
 
-                # MTC count
+                # Photo log summary
+                job_photo_rows = df_plan[
+                    df_plan['job_no'].astype(str) == str(target)
+                ]
+                total_photos = job_photo_rows['quality_photo_url'].apply(
+                    lambda x: len(x) if isinstance(x, list) else 0
+                ).sum()
+
+                completed_stages = job_photo_rows['quality_status'].notna().sum()
+                total_stages     = len(job_photo_rows)
+
+                col_a, col_b = st.columns(2)
+                col_a.metric("Process Gates Inspected",
+                             f"{int(completed_stages)} / {int(total_stages)}")
+                col_b.metric("Evidence Photos (all ≤60 KB)",
+                             f"{int(total_photos)}")
+
                 try:
                     mtc_res = conn.table("project_certificates").select("id") \
-                        .eq("job_no", target).eq("cert_type", "Material Test Certificate (MTC)").execute()
+                        .eq("job_no", target) \
+                        .eq("cert_type", "Material Test Certificate (MTC)").execute()
                     mtc_count = len(mtc_res.data) if mtc_res.data else 0
-                    st.info(f"📎 {mtc_count} MTC(s) uploaded in Document Vault")
+                    st.info(f"📎 {mtc_count} MTC(s) uploaded — will be appended to the Data Book")
                 except Exception:
                     mtc_count = 0
 
                 completed = sum(doc_checks.values())
                 st.progress(completed / len(doc_checks))
-                st.caption(f"{completed} of {len(doc_checks)} documents completed")
+                st.caption(f"{completed} of {len(doc_checks)} quality documents completed")
+
+                st.divider()
 
                 if st.button("🚀 COMPILE MASTER DATA BOOK", type="primary",
-                              use_container_width=True):
-                    st.warning("⚡ Master Data Book PDF generation requires the fpdf2 and pypdf libraries. "
-                               "Ensure these are installed in your Streamlit Cloud environment "
-                               "(`pip install fpdf2 pypdf requests`). "
-                               "The generator from the original code is preserved — "
-                               "click below to use the original generator function.")
-                    st.code("# Add to requirements.txt:\nfpdf2\npypdf\nrequests\nPillow", language="text")
+                              use_container_width=True, disabled=not PDF_AVAILABLE):
+                    with st.spinner("⚡ Fetching data, stitching photos, appending MTCs…"):
+                        try:
+                            final_pdf = generate_master_data_book(target, proj, df_plan)
+                            st.success("✅ Master Quality Data Book compiled successfully!")
+                            st.download_button(
+                                label="📥 Download Data Book PDF",
+                                data=final_pdf,
+                                file_name=f"BGE_DataBook_{target}.pdf",
+                                mime="application/pdf",
+                                use_container_width=True
+                            )
+                        except Exception as e:
+                            st.error(f"Compilation error: {e}")
 
 # ============================================================
 # TAB 13: CONFIG
@@ -1377,9 +1717,9 @@ with main_tabs[13]:
             conf_res = conn.table("quality_config").select("*") \
                 .eq("category", report_cat).execute()
             df_conf = pd.DataFrame(conf_res.data) if conf_res.data else \
-                pd.DataFrame(columns=["parameter_name", "equipment_type", "default_design_value"])
+                pd.DataFrame(columns=["parameter_name","equipment_type","default_design_value"])
         except Exception:
-            df_conf = pd.DataFrame(columns=["parameter_name", "equipment_type", "default_design_value"])
+            df_conf = pd.DataFrame(columns=["parameter_name","equipment_type","default_design_value"])
 
         col_cfg = {
             "parameter_name": st.column_config.TextColumn("Parameter Name", required=True),
@@ -1393,24 +1733,20 @@ with main_tabs[13]:
         }
 
         edited_conf = st.data_editor(
-            df_conf, num_rows="dynamic",
-            use_container_width=True,
-            key=f"config_editor_{report_cat}",
-            column_config=col_cfg,
-            hide_index=True
+            df_conf, num_rows="dynamic", use_container_width=True,
+            key=f"config_editor_{report_cat}", column_config=col_cfg, hide_index=True
         )
 
         if st.button(f"💾 Sync {report_cat}", type="primary"):
             try:
-                final_data = edited_conf.to_dict('records')
-                cleaned    = [
+                cleaned = [
                     {
-                        "category":            report_cat,
-                        "parameter_name":      str(r.get('parameter_name','')).strip(),
-                        "equipment_type":      r.get('equipment_type','General'),
-                        "default_design_value":r.get('default_design_value','')
+                        "category":             report_cat,
+                        "parameter_name":       str(r.get('parameter_name','')).strip(),
+                        "equipment_type":       r.get('equipment_type','General'),
+                        "default_design_value": r.get('default_design_value','')
                     }
-                    for r in final_data
+                    for r in edited_conf.to_dict('records')
                     if str(r.get('parameter_name','')).strip() not in ['','None','nan']
                 ]
                 conn.table("quality_config").delete().eq("category", report_cat).execute()
@@ -1429,14 +1765,15 @@ with main_tabs[13]:
         with st.form("add_staff_form", clear_on_submit=True):
             s1, s2 = st.columns(2)
             new_name = s1.text_input("Name")
-            new_role = s2.selectbox("Role", ["QC Inspector","Production I/C",
-                                              "QA Engineer","Manager","Other"])
+            new_role = s2.selectbox("Role", [
+                "QC Inspector","Production I/C","QA Engineer","Manager","Other"
+            ])
             if st.form_submit_button("➕ Add Staff"):
                 if new_name:
                     safe_write(
                         lambda: conn.table("master_staff").insert({
-                            "name": new_name.strip().title(),
-                            "role": new_role,
+                            "name":       new_name.strip().title(),
+                            "role":       new_role,
                             "created_at": get_now_ist().isoformat()
                         }).execute(),
                         success_msg=f"✅ {new_name} added!",
