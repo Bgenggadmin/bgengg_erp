@@ -457,9 +457,11 @@ with main_tabs[1]:
                 st.divider()
 
                 # ── ITEMS TABLE inside the indent card ───────
-                for i, p_row in grp.iterrows():
+                # Use enumerate — ukey = indent_no + position, globally unique
+                for item_idx, p_row in enumerate(grp.to_dict('records')):
                     row_id = p_row['id']
                     status = p_row['status']
+                    ukey   = f"{indent_no}_{item_idx}"
                     urg_icon = "🚨" if p_row.get('is_urgent') else "▪️"
 
                     ic1, ic2, ic3, ic4 = st.columns([3.5, 1, 1, 1])
@@ -473,27 +475,30 @@ with main_tabs[1]:
 
                     if status == "Rejected":
                         ic1.error(f"Reason: {p_row.get('reject_note', 'No details')}")
-                        if ic2.button("📝 Revise", key=f"rev_{row_id}", use_container_width=True):
-                            st.session_state.rev_data = dict(p_row)
+                        if ic2.button("📝 Revise", key=f"pc_rev_{ukey}",
+                                      use_container_width=True):
+                            st.session_state.rev_data = p_row
                             st.rerun()
 
                     if status == "Triggered":
                         if not p_row.get('is_urgent'):
-                            if ic3.button("🚨", key=f"trig_{row_id}", help="Mark Urgent"):
+                            if ic3.button("🚨", key=f"pc_trig_{ukey}", help="Mark Urgent"):
+                                _rid = row_id
                                 safe_db_write(
-                                    lambda: conn.table("purchase_orders")
+                                    lambda rid=_rid: conn.table("purchase_orders")
                                         .update({"is_urgent": True})
-                                        .eq("id", row_id).execute(),
+                                        .eq("id", rid).execute(),
                                     error_prefix="Urgent flag error"
                                 )
                                 st.rerun()
                         else:
                             ic3.caption("Priority")
 
-                        if ic4.button("🗑️", key=f"del_db_{row_id}", help="Delete item"):
+                        if ic4.button("🗑️", key=f"del_{ukey}", help="Delete item"):
+                            _rid = row_id
                             safe_db_write(
-                                lambda: conn.table("purchase_orders")
-                                    .delete().eq("id", row_id).execute(),
+                                lambda rid=_rid: conn.table("purchase_orders")
+                                    .delete().eq("id", rid).execute(),
                                 error_prefix="Delete error"
                             )
                             st.rerun()
