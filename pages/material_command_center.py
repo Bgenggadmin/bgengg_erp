@@ -581,7 +581,16 @@ with main_tabs[1]:
         st.info("No pending purchase requests found (last 90 days).")
 
 # ============================================================
-# TAB 2: STORES GRN
+# TAB 2: STORES GRN  (Partial Receipt Support)
+# ============================================================
+# SUPABASE TABLE REQUIRED: grn_receipts
+#   id            uuid PK default gen_random_uuid()
+#   po_id         bigint  references purchase_orders(id)
+#   received_qty  numeric not null
+#   dc_no         text
+#   remarks       text
+#   received_date date    default current_date
+#   created_at    timestamptz default now()
 # ============================================================
 with main_tabs[2]:
     st.subheader("📦 Goods Receipt Note (GRN) Desk")
@@ -590,10 +599,10 @@ with main_tabs[2]:
         "🔍 Search by PO or Item", placeholder="e.g. PO-107", key="grn_search"
     )
 
-    # FIX [Warning]: Added 90-day filter + limit(100) — was unbounded
+    # Fetch all Ordered items (not yet fully received)
     try:
         res_s = conn.table("purchase_orders").select("*") \
-            .eq("status", "Ordered") \
+            .in_("status", ["Ordered", "Partial"]) \
             .not_.is_("indent_no", "null") \
             .gte("created_at", f"{cutoff_90}T00:00:00") \
             .limit(100).execute()
@@ -610,67 +619,199 @@ with main_tabs[2]:
                 df_s['item_name'].str.contains(po_search, case=False, na=False)
             ]
 
-        st.markdown(f"**Items Pending Arrival ({len(df_s)})**")
+        # Fetch all past receipts for these PO IDs in one query
+        po_ids = df_s['id'].tolist()
+        try:
+            grn_res = conn.table("grn_receipts").select("*") \
+                .in_("po_id", po_ids).execute()
+            grn_data = grn_res.data or []
+        except Exception:
+            grn_data = []
 
-        for _, s_row in df_s.iterrows():
-            row_id = s_row['id']
+        # Build a lookup: po_id -> list of receipt dicts
+        from collections import defaultdict
+        receipts_by_po = defaultdict(list)
+        for r in grn_data:
+            receipts_by_po[r['po_id']].append(r)
+
+        partial_count = sum(1 for r in stores_data if r.get('status') == 'Partial')
+        ordered_count = sum(1 for r in stores_data if r.get('status') == 'Ordered')
+        st.markdown(
+            f"**Pending Arrivals: {len(df_s)}** &nbsp;|&nbsp; "
+            f"🆕 New: {ordered_count} &nbsp;|&nbsp; "
+            f"🔄 Partial: {partial_count}"
+        )
+
+        for s_idx, s_row in enumerate(df_s.to_dict('records')):
+            row_id      = s_row['id']
+            ordered_qty = float(s_row.get('quantity', 0))
+            units       = s_row.get('units', 'Nos')
+            past        = receipts_by_po.get(row_id, [])
+            recd_so_far = sum(float(r.get('received_qty', 0)) for r in past)
+            balance_qty = max(0, ordered_qty - recd_so_far)
+            pct_done    = min(100, int((recd_so_far / ordered_qty * 100) if ordered_qty else 0))
+            skey        = f"grn_{row_id}"
+            is_partial  = s_row.get('status') == 'Partial'
+
             with st.container(border=True):
-                c_info, c_status, c_action = st.columns([2.5, 1, 1.5])
+                c_info, c_status, c_action = st.columns([2.5, 1.2, 1.8])
 
+                # ── INFO ──────────────────────────────────────
                 with c_info:
-                    st.markdown(f"#### PO: {s_row.get('po_no', 'N/A')}")
+                    st.markdown(
+                        f"#### PO: {s_row.get('po_no','N/A')} "
+                        f"{'🔄' if is_partial else '🆕'}"
+                    )
                     st.markdown(f"**{s_row['item_name']}** | Job: `{s_row['job_no']}`")
                     st.caption(
-                        f"Indent Ref: #{s_row.get('indent_no')} "
-                        f"| Vendor: {s_row.get('purchase_reply', '-')}"
+                        f"Indent: #{s_row.get('indent_no')} "
+                        f"| Vendor: {s_row.get('purchase_reply','-')} "
+                        f"| Group: {s_row.get('material_group','-')}"
                     )
 
-                with c_status:
-                    st.write("🚚 **In-Transit**")
-                    st.caption(f"Qty: {s_row['quantity']} {s_row.get('units', 'Nos')}")
-                    st.progress(66)
+                    # Show receipt history if any partial receipts exist
+                    if past:
+                        with st.expander(
+                            f"📋 Receipt history ({len(past)} delivery/ies — "
+                            f"{recd_so_far:.1f} of {ordered_qty:.1f} {units} received)"
+                        ):
+                            for pr in sorted(past, key=lambda x: x.get('received_date','')):
+                                st.markdown(
+                                    f"- **{pr.get('received_date','?')}** — "
+                                    f"`{pr.get('received_qty',0)} {units}` | "
+                                    f"DC: {pr.get('dc_no','-')} | "
+                                    f"{pr.get('remarks','-')}"
+                                )
 
+                # ── STATUS ────────────────────────────────────
+                with c_status:
+                    if is_partial:
+                        st.warning("🔄 Partial")
+                    else:
+                        st.info("🚚 In-Transit")
+
+                    st.caption(f"Ordered: {ordered_qty:.1f} {units}")
+                    if recd_so_far > 0:
+                        st.caption(f"Received: {recd_so_far:.1f} {units}")
+                        st.caption(f"Balance: **{balance_qty:.1f} {units}**")
+                    st.progress(pct_done / 100)
+                    st.caption(f"{pct_done}% fulfilled")
+
+                # ── GRN ACTION ────────────────────────────────
                 with c_action:
+                    st.markdown("**Record Receipt**")
+
+                    recv_qty = st.number_input(
+                        f"Qty received ({units})",
+                        min_value=0.1,
+                        max_value=float(balance_qty) if balance_qty > 0 else 0.1,
+                        value=min(float(balance_qty), float(balance_qty)) if balance_qty > 0 else 0.1,
+                        step=0.1,
+                        key=f"rqty_{skey}"
+                    )
                     dc_no = st.text_input(
-                        "DC / Vehicle No", key=f"dc_{row_id}", placeholder="DC-123"
+                        "DC / Vehicle No", key=f"dc_{skey}", placeholder="DC-123"
                     )
                     s_rem = st.text_input(
-                        "Stores Remarks", key=f"srem_{row_id}", placeholder="Shortage/Damage?"
+                        "Remarks", key=f"srem_{skey}",
+                        placeholder="Shortage/Damage/OK?"
                     )
-                    if st.button("✅ Confirm Receipt", key=f"btn_{row_id}",
+
+                    is_full_receipt = abs(recv_qty - balance_qty) < 0.01
+
+                    btn_label = (
+                        "✅ Full Receipt — Close PO"
+                        if is_full_receipt
+                        else f"📦 Partial Receipt ({recv_qty} {units})"
+                    )
+
+                    if st.button(btn_label, key=f"btn_{skey}",
                                  use_container_width=True, type="primary"):
-                        if dc_no:
-                            safe_db_write(
-                                lambda: conn.table("purchase_orders").update({
-                                    "status": "Received",
-                                    "received_date": str(date.today()),
-                                    "stores_remarks": f"DC: {dc_no} | Note: {s_rem}"
-                                }).eq("id", row_id).execute(),
-                                success_msg=f"GRN recorded for {s_row['item_name']}",
-                                error_prefix="GRN Error"
-                            )
-                            st.rerun()
+                        if not dc_no:
+                            st.warning("Please enter DC / Vehicle No")
+                        elif recv_qty <= 0:
+                            st.warning("Quantity must be greater than 0")
                         else:
-                            st.warning("Please enter DC/Vehicle No")
+                            # 1. Insert into grn_receipts
+                            grn_ok = safe_db_write(
+                                lambda: conn.table("grn_receipts").insert({
+                                    "po_id":        row_id,
+                                    "received_qty": recv_qty,
+                                    "dc_no":        dc_no,
+                                    "remarks":      s_rem,
+                                    "received_date": str(date.today())
+                                }).execute(),
+                                error_prefix="GRN Insert Error"
+                            )
+
+                            if grn_ok:
+                                # 2. Update purchase_orders status
+                                new_status = "Received" if is_full_receipt else "Partial"
+                                update_payload = {"status": new_status}
+                                if is_full_receipt:
+                                    update_payload["received_date"] = str(date.today())
+                                    update_payload["stores_remarks"] = (
+                                        f"DC: {dc_no} | {s_rem} | "
+                                        f"Full qty {ordered_qty} {units} received"
+                                    )
+
+                                safe_db_write(
+                                    lambda st=new_status, pl=update_payload:
+                                        conn.table("purchase_orders")
+                                            .update(pl).eq("id", row_id).execute(),
+                                    success_msg=(
+                                        f"✅ PO closed — full qty received!"
+                                        if is_full_receipt
+                                        else f"📦 Partial GRN recorded. "
+                                             f"Balance: {balance_qty - recv_qty:.1f} {units}"
+                                    ),
+                                    error_prefix="Status Update Error"
+                                )
+                                st.rerun()
     else:
         st.info("🚚 No pending arrivals (last 90 days).")
 
-    # Audit trail
+    # ── AUDIT TRAIL ───────────────────────────────────────────
     st.divider()
-    with st.expander("🕒 View Recently Received"):
+    with st.expander("🕒 GRN Audit Trail — All Receipts"):
         try:
-            recent_res = conn.table("purchase_orders").select("*") \
-                .eq("status", "Received") \
-                .not_.is_("indent_no", "null") \
-                .order("received_date", desc=True).limit(10).execute()
+            recent_res = conn.table("grn_receipts").select(
+                "*, purchase_orders(po_no, item_name, job_no, quantity, units)"
+            ).order("received_date", desc=True).limit(20).execute()
+
             if recent_res.data:
-                df_recent = pd.DataFrame(recent_res.data)
-                cols = [c for c in
-                        ['received_date', 'po_no', 'item_name', 'quantity', 'job_no', 'stores_remarks']
-                        if c in df_recent.columns]
-                st.dataframe(df_recent[cols], use_container_width=True, hide_index=True)
+                rows = []
+                for r in recent_res.data:
+                    po = r.get('purchase_orders') or {}
+                    rows.append({
+                        "Date":       r.get('received_date', ''),
+                        "PO No":      po.get('po_no', '-'),
+                        "Item":       po.get('item_name', '-'),
+                        "Job":        po.get('job_no', '-'),
+                        "Recd Qty":   r.get('received_qty', 0),
+                        "Units":      po.get('units', '-'),
+                        "DC No":      r.get('dc_no', '-'),
+                        "Remarks":    r.get('remarks', '-'),
+                    })
+                st.dataframe(
+                    pd.DataFrame(rows),
+                    use_container_width=True, hide_index=True
+                )
             else:
-                st.info("No received items yet.")
+                # Fallback: show from purchase_orders if grn_receipts is empty
+                fallback = conn.table("purchase_orders").select("*") \
+                    .eq("status", "Received") \
+                    .not_.is_("indent_no", "null") \
+                    .order("received_date", desc=True).limit(10).execute()
+                if fallback.data:
+                    df_fb = pd.DataFrame(fallback.data)
+                    cols  = [c for c in [
+                        'received_date', 'po_no', 'item_name',
+                        'quantity', 'job_no', 'stores_remarks'
+                    ] if c in df_fb.columns]
+                    st.dataframe(df_fb[cols], use_container_width=True, hide_index=True)
+                else:
+                    st.info("No receipts recorded yet.")
         except Exception as e:
             st.error(f"Audit load error: {e}")
 
