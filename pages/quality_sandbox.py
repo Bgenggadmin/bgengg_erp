@@ -106,6 +106,47 @@ def upload_photos(photos, job_no, gate_name) -> list[str]:
 # ============================================================
 # 4. MASTER DATA BOOK PDF GENERATOR
 # ============================================================
+def _pdf_safe(text: str) -> str:
+    """
+    Strip / replace characters that are outside the latin-1 range
+    supported by FPDF's built-in Arial / Helvetica fonts.
+    Emoji, smart-quotes, em-dashes, degree symbols etc. are mapped to
+    plain ASCII equivalents so the PDF never raises a character error.
+    """
+    replacements = {
+        # result emoji → short ASCII labels
+        "✅": "[PASS]",
+        "❌": "[FAIL]",
+        "⚠️": "[WARN]",
+        "⚠":  "[WARN]",
+        # common unicode punctuation → ASCII
+        "\u2014": "-",   # em dash
+        "\u2013": "-",   # en dash
+        "\u2018": "'",   # left single quote
+        "\u2019": "'",   # right single quote
+        "\u201c": '"',   # left double quote
+        "\u201d": '"',   # right double quote
+        "\u2022": "*",   # bullet
+        "\u00b2": "2",   # superscript 2
+        "\u00b3": "3",   # superscript 3
+        "\u00b0": " deg",# degree sign
+        "\u2264": "<=",  # ≤
+        "\u2265": ">=",  # ≥
+        "\u00d7": "x",   # multiplication sign
+        "\u00f7": "/",   # division sign
+        "\u2212": "-",   # minus sign
+        "\u00e9": "e",   # é
+        "\u2026": "...", # ellipsis
+        "\u00a0": " ",   # non-breaking space
+        "\u2192": "->",  # →
+        "\u2190": "<-",  # ←
+    }
+    for char, sub in replacements.items():
+        text = text.replace(char, sub)
+    # Final safety net: drop any remaining non-latin-1 characters
+    return text.encode("latin-1", errors="ignore").decode("latin-1")
+
+
 def generate_master_data_book(job_no, project_info, df_plan):
     """
     Stitches Technical Reports, MTCs, and Photo Logs into one stamped PDF.
@@ -153,15 +194,11 @@ def generate_master_data_book(job_no, project_info, df_plan):
     pdf.set_y(160)
     pdf.set_fill_color(245, 245, 245)
     pdf.set_font("Arial", 'B', 11)
-    client_name = (
-        project_info.get('client_name')
-        if not callable(getattr(project_info, 'get', None))
-        else project_info.get('client_name', 'N/A')
-    )
+    client_name = project_info.get('client_name', 'N/A')
     details = [
         f"  JOB NUMBER: {job_no}",
-        f"  CLIENT: {client_name}",
-        f"  PO REF: {project_info.get('po_no', 'N/A')}",
+        f"  CLIENT: {_pdf_safe(str(client_name))}",
+        f"  PO REF: {_pdf_safe(str(project_info.get('po_no', 'N/A')))}",
         f"  DATE: {datetime.now().strftime('%d-%m-%Y')}"
     ]
     for line in details:
@@ -212,10 +249,10 @@ def generate_master_data_book(job_no, project_info, df_plan):
             pdf.set_font("Arial", '', 9)
             for report in dim_res.data:
                 for row in report.get('dim_grid_data', []):
-                    pdf.cell(12, 7, str(row.get('Sl_No', '')), 1)
-                    pdf.cell(80, 7, str(row.get('Description', ''))[:30], 1)
-                    pdf.cell(48, 7, str(row.get('Specified_Dimension', ''))[:20], 1)
-                    pdf.cell(48, 7, str(row.get('Measured_Dimension', ''))[:20], 1)
+                    pdf.cell(12, 7, _pdf_safe(str(row.get('Sl_No', ''))), 1)
+                    pdf.cell(80, 7, _pdf_safe(str(row.get('Description', ''))[:30]), 1)
+                    pdf.cell(48, 7, _pdf_safe(str(row.get('Specified_Dimension', ''))[:20]), 1)
+                    pdf.cell(48, 7, _pdf_safe(str(row.get('Measured_Dimension', ''))[:20]), 1)
                     pdf.ln()
     except Exception:
         pass
@@ -225,16 +262,15 @@ def generate_master_data_book(job_no, project_info, df_plan):
         hydro_res = conn.table("hydro_test_reports").select("*").eq("job_no", job_no).execute()
         if hydro_res.data:
             add_section_header("HYDRO TEST REPORT")
-            pdf.set_font("Arial", '', 10)
             for report in hydro_res.data:
                 pdf.set_font("Arial", 'B', 10)
-                pdf.cell(0, 8, f"Equipment: {report.get('equipment_name', 'N/A')}", ln=True)
+                pdf.cell(0, 8, _pdf_safe(f"Equipment: {report.get('equipment_name', 'N/A')}"), ln=True)
                 pdf.set_font("Arial", '', 10)
-                pdf.cell(0, 7, f"Test Pressure: {report.get('test_pressure', 'N/A')} Kg/cm²", ln=True)
-                pdf.cell(0, 7, f"Test Medium: {report.get('test_medium', 'N/A')}", ln=True)
-                pdf.cell(0, 7, f"Holding Time: {report.get('holding_time', 'N/A')}", ln=True)
-                pdf.cell(0, 7, f"Inspected By: {report.get('inspected_by', 'N/A')}", ln=True)
-                pdf.cell(0, 7, f"Observations: {report.get('inspection_notes', 'N/A')}", ln=True)
+                pdf.cell(0, 7, _pdf_safe(f"Test Pressure: {report.get('test_pressure', 'N/A')} Kg/cm2"), ln=True)
+                pdf.cell(0, 7, _pdf_safe(f"Test Medium: {report.get('test_medium', 'N/A')}"), ln=True)
+                pdf.cell(0, 7, _pdf_safe(f"Holding Time: {report.get('holding_time', 'N/A')}"), ln=True)
+                pdf.cell(0, 7, _pdf_safe(f"Inspected By: {report.get('inspected_by', 'N/A')}"), ln=True)
+                pdf.cell(0, 7, _pdf_safe(f"Observations: {report.get('inspection_notes', 'N/A')}"), ln=True)
                 pdf.ln(4)
     except Exception:
         pass
@@ -255,15 +291,18 @@ def generate_master_data_book(job_no, project_info, df_plan):
             pdf.set_font("Arial", 'B', 10)
             pdf.set_fill_color(240, 240, 240)
             upd = pd.to_datetime(row['quality_updated_at']).strftime('%d-%m-%Y')
-            stage_title = f" Stage: {row['gate_name']} | Date: {upd}"
+            stage_title = _pdf_safe(f" Stage: {row['gate_name']} | Date: {upd}")
             pdf.cell(0, 8, stage_title, ln=True, fill=True, border="T")
+
+            # Strip emoji from result field (e.g. "✅ Pass" → "[PASS] Pass")
+            result_raw  = _pdf_safe(str(row.get('quality_status', 'N/A')))
+            notes_raw   = _pdf_safe(str(row.get('quality_notes') or 'N/A'))
+            insp_raw    = _pdf_safe(str(row.get('quality_by', 'N/A')))
 
             pdf.set_font("Arial", '', 9)
             pdf.multi_cell(
                 0, 6,
-                f" Inspector: {row.get('quality_by', '—')} | "
-                f"Result: {row.get('quality_status', '—')} | "
-                f"Remarks: {row.get('quality_notes') or 'N/A'}",
+                f" Inspector: {insp_raw} | Result: {result_raw} | Remarks: {notes_raw}",
                 border="B"
             )
             pdf.ln(2)
@@ -466,8 +505,8 @@ with main_tabs[0]:
                     with f1:
                         q_result = st.segmented_control(
                             "Inspection Result",
-                            ["✅ Pass", "❌ Reject", "⚠️ Rework"],
-                            default="✅ Pass",
+                            ["Pass", "Reject", "Rework"],
+                            default="Pass",
                             key="pg_result"
                         )
                         inspector = st.selectbox(
@@ -566,13 +605,13 @@ with main_tabs[0]:
                             c1, c2 = st.columns([1, 3])
                             status = str(row.get('quality_status', '')).upper()
                             if any(w in status for w in ['PASS', 'ACCEPT', 'OK']):
-                                c1.success(f"✅ {row['gate_name']}")
+                                c1.success(f"PASS  {row['gate_name']}")
                             elif any(w in status for w in ['REWORK', 'REJECT', 'FAIL']):
-                                c1.error(f"❌ {row['gate_name']}")
+                                c1.error(f"FAIL  {row['gate_name']}")
                             elif status and status not in ['', 'NONE', 'NAN']:
-                                c1.warning(f"⚠️ {row['gate_name']}")
+                                c1.warning(f"WARN  {row['gate_name']}")
                             else:
-                                c1.info(f"🔹 {row['gate_name']}")
+                                c1.info(f">>  {row['gate_name']}")
 
                             c2.write(
                                 f"**Date:** {update_date} | "
@@ -1346,7 +1385,7 @@ with main_tabs[8]:
                 st.markdown("#### 🏁 Final Verdict & Authorization")
                 fv1, fv2 = st.columns(2)
                 fir_status   = fv1.selectbox("Inspection Result",
-                    ["✅ Accepted","❌ Rejected","⚠️ Rework Required"])
+                    ["Accepted","Rejected","Rework Required"])
                 fir_inspector= fv2.selectbox("Quality Inspector", inspectors, key="fir_insp")
                 fir_witness  = fv1.text_input("Customer / TPI Representative")
                 fv2.text_input("Production I/C")
