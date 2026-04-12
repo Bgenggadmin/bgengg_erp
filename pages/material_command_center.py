@@ -18,7 +18,7 @@ st.markdown("""
     .bg-header { background-color: #003366; color: white; padding: 1rem;
                  border-radius: 8px; text-align: center; }
     .blue-strip { background-color: #007bff; height: 3px; width: 100%;
-                  margin: 10px 0 20px 0; }
+                  margin: 10px 0 10px 0; }
     </style>
     """, unsafe_allow_html=True)
 
