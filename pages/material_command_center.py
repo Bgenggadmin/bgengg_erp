@@ -1197,10 +1197,10 @@ with main_tabs[3]:
                 'PO Date':        fmt_date(r['po_date']),
                 'Exp. Delivery':  fmt_date(r['exp_delivery']),
                 'Received':       fmt_date(r['received_date']),
-                'I→Enq (d)':      day_cell(r['d_indent_enq'], warn_above=3),
-                'Enq→PO (d)':     day_cell(r['d_enq_po'],    warn_above=5),
+                'I→Enq (d)':      day_cell(r['d_indent_enq'], warn_above=1),
+                'Enq→PO (d)':     day_cell(r['d_enq_po'],    warn_above=3),
                 'PO→Recv (d)':    day_cell(r['d_po_receipt'], warn_above=20),
-                'Total (d)':      day_cell(r['d_total'],      warn_above=30),
+                'Total (d)':      day_cell(r['d_total'],      warn_above=24),
                 'PO Overdue':     overdue_str,
                 'Fulfilled %':    f"{r['pct_fulfilled']}%",
             })
