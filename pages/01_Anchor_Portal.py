@@ -3,6 +3,8 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date
 import plotly.express as px
+import hashlib
+print(hashlib.sha256("your_actual_password".encode()).hexdigest())
 
 # ---------------------------------------------------------------------------
 # CONSTANTS
@@ -25,12 +27,13 @@ st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_
 # Generate with: import bcrypt; bcrypt.hashpw(b"yourpass", bcrypt.gensalt())
 # ---------------------------------------------------------------------------
 def check_password() -> bool:
-    import bcrypt
+    import hashlib
 
     def _verify():
-        stored = st.secrets.get("APP_PASSWORD_HASH", "")
-        entered = st.session_state.get("password", "").encode()
-        if stored and bcrypt.checkpw(entered, stored.encode()):
+        entered_hash = hashlib.sha256(
+            st.session_state.get("password", "").encode()
+        ).hexdigest()
+        if entered_hash == st.secrets.get("APP_PASSWORD_HASH", ""):
             st.session_state["password_correct"] = True
         else:
             st.session_state["password_correct"] = False
