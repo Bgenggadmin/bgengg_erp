@@ -25,7 +25,7 @@ st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_
 # ---------------------------------------------------------------------------
 def check_password() -> bool:
     def _verify():
-        if st.session_state.get("password") == st.secrets.get("APP_PASSWORD", ""):
+        if st.session_state.get("password") == "1234":
             st.session_state["password_correct"] = True
         else:
             st.session_state["password_correct"] = False
@@ -40,7 +40,6 @@ def check_password() -> bool:
         st.error("😕 Password incorrect")
         return False
     return True
-
 
 if not check_password():
     st.stop()
