@@ -3,7 +3,7 @@ st-supabase-connection
 pandas
 plotly
 pytz
-fpdf
+fpdf2
 pillow
 requests
 pypdf
