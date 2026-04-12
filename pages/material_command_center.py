@@ -16,7 +16,7 @@ st.set_page_config(page_title="B&G Command Center", layout="wide", page_icon="ðŸ
 st.markdown("""
     <style>
     .bg-header { background-color: #003366; color: white; padding: 1rem;
-                 border-radius: 8px; text-align: center; }
+                 border-radius: 4px; text-align: center; }
     .blue-strip { background-color: #007bff; height: 1px; width: 100%;
                   margin:5px 0 5px 0; }
     </style>
