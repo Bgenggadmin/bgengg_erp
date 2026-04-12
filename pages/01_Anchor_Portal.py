@@ -3,8 +3,6 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date
 import plotly.express as px
-import hashlib
-print(hashlib.sha256("your_actual_password".encode()).hexdigest())
 
 # ---------------------------------------------------------------------------
 # CONSTANTS
@@ -22,18 +20,12 @@ st.set_page_config(page_title="Anchor Portal | BGEngg ERP", layout="wide", page_
 
 # ---------------------------------------------------------------------------
 # PASSWORD PROTECTION
-# Use st.secrets for the password hash. In your Streamlit secrets.toml add:
-#   APP_PASSWORD_HASH = "<bcrypt hash of your password>"
-# Generate with: import bcrypt; bcrypt.hashpw(b"yourpass", bcrypt.gensalt())
+# Add this to your Streamlit Cloud Secrets:
+#   APP_PASSWORD = "your_chosen_password"
 # ---------------------------------------------------------------------------
 def check_password() -> bool:
-    import hashlib
-
     def _verify():
-        entered_hash = hashlib.sha256(
-            st.session_state.get("password", "").encode()
-        ).hexdigest()
-        if entered_hash == st.secrets.get("APP_PASSWORD_HASH", ""):
+        if st.session_state.get("password") == st.secrets.get("APP_PASSWORD", ""):
             st.session_state["password_correct"] = True
         else:
             st.session_state["password_correct"] = False
@@ -360,7 +352,10 @@ with tabs[1]:
                     )
                     u_rev_del = d2.date_input(
                         "Revised Del. Date",
-                        value=safe_date(row.get("revised_delivery_date"), fallback=safe_date(row.get("po_delivery_date"))),
+                        value=safe_date(
+                            row.get("revised_delivery_date"),
+                            fallback=safe_date(row.get("po_delivery_date")),
+                        ),
                         key=f"rev_del_date_{row['id']}",
                     )
                     days_to_go = (u_rev_del - date.today()).days
@@ -461,7 +456,9 @@ with tabs[1]:
                             raw_job = row.get("job_no")
                             delete_project(
                                 row["id"],
-                                str(raw_job).strip().upper() if pd.notnull(raw_job) and str(raw_job).strip() else None,
+                                str(raw_job).strip().upper()
+                                if pd.notnull(raw_job) and str(raw_job).strip()
+                                else None,
                             )
                             st.rerun()
 
@@ -502,7 +499,6 @@ with tabs[3]:
     if df_anchor.empty:
         st.info("No projects found.")
     else:
-        # Show purchase items only for Won projects that have a job_no
         won_with_job = df_anchor[
             (df_anchor["status"] == "Won") &
             df_anchor["job_no"].notna() &
@@ -575,7 +571,9 @@ with tabs[4]:
                 won_df.groupby("delivery_month")["actual_value"].sum().reset_index()
             )
             st.markdown("##### 📅 Revenue Forecast (by Delivery Month)")
-            fig_month = px.bar(monthly_data, x="delivery_month", y="actual_value", text_auto=".2s")
+            fig_month = px.bar(
+                monthly_data, x="delivery_month", y="actual_value", text_auto=".2s"
+            )
             st.plotly_chart(fig_month, use_container_width=True)
 
         st.divider()
