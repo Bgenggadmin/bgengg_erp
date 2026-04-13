@@ -426,8 +426,11 @@ with tabs[0]:
 
     if show_shift_controls:
         if log_data and not log_data.get('punch_out'):
+            # Seed session state from DB on first load — this handles page refreshes and
+            # re-logins: if the employee already confirmed today, system_promise is True in DB.
             if "promise_confirmed" not in st.session_state:
-                st.session_state["promise_confirmed"] = log_data.get('system_promise', False)
+                st.session_state["promise_confirmed"] = bool(log_data.get('system_promise', False))
+
             if not st.session_state["promise_confirmed"]:
                 with st.container(border=True):
                     st.markdown(
@@ -437,8 +440,20 @@ with tabs[0]:
                         unsafe_allow_html=True
                     )
                     if st.checkbox("🛡️ I acknowledge and commit to the above statement.", key="temp_promise_check"):
-                        st.session_state["promise_confirmed"] = True
-                        st.rerun()
+                        # FIX: Write to DB immediately — do NOT wait until punch-out.
+                        # Previously, system_promise was only saved at punch-out, so the checkbox
+                        # would reappear on every rerun until end of day. Now it's persisted
+                        # instantly, so seeding from DB on next load will correctly skip the prompt.
+                        ok = safe_db_write(
+                            lambda: conn.table("attendance_logs")
+                                .update({"system_promise": True})
+                                .eq("id", log_data['id']).execute(),
+                            error_prefix="Promise Save Error"
+                        )
+                        if ok:
+                            st.session_state["promise_confirmed"] = True
+                            st.cache_data.clear()  # flush so next load reads updated system_promise
+                            st.rerun()
             else:
                 st.success("🙏 Thank you for your commitment to B&G systems!")
 
@@ -462,14 +477,12 @@ with tabs[0]:
                     st.markdown("**Productivity Rating**")
                     work_sat = st.feedback("stars", key="prod_stars_fb")
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
-                        # FIX [Warning #1]: Guard against None rating — default to 0 instead of
-                        # storing None which shows as 0.0 ⭐ in admin metrics anyway but corrupts avg
                         safe_work_sat = work_sat if work_sat is not None else 0
+                        # system_promise is already written to DB at checkbox time — not needed here
                         safe_db_write(
                             lambda: conn.table("attendance_logs").update({
                                 "punch_out": get_now_ist().isoformat(),
                                 "work_satisfaction": safe_work_sat,
-                                "system_promise": st.session_state.get("promise_confirmed", False)
                             }).eq("id", log_data['id']).execute(),
                             error_prefix="Punch Out Error"
                         )
