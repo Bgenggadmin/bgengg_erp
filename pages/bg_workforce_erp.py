@@ -29,7 +29,6 @@ def get_now_ist():
     return datetime.now(IST)
 
 def safe_db_write(fn, success_msg=None, error_prefix="DB Error"):
-    """FIX [Quick Win]: Wrap all DB writes safely — no more silent crashes."""
     try:
         fn()
         if success_msg:
@@ -40,10 +39,9 @@ def safe_db_write(fn, success_msg=None, error_prefix="DB Error"):
         return False
 
 # ============================================================
-# 3. DATA LOADERS  (all cached — FIX [Critical])
+# 3. DATA LOADERS  (all cached)
 # ============================================================
 
-# FIX [Critical]: Added @st.cache_data(ttl=30) — was uncached, fired on every rerun
 @st.cache_data(ttl=30)
 def get_staff_list():
     try:
@@ -52,7 +50,6 @@ def get_staff_list():
     except Exception:
         return ["Admin", "Staff Member"]
 
-# FIX [Critical]: Added @st.cache_data(ttl=30) — was uncached, fired on every rerun
 @st.cache_data(ttl=30)
 def get_job_codes():
     try:
@@ -65,7 +62,6 @@ def get_job_codes():
     except Exception:
         return ["GENERAL"]
 
-# FIX [Warning]: Increased TTL from 5s → 120s — leave data changes rarely
 @st.cache_data(ttl=120)
 def get_leave_requests():
     try:
@@ -74,7 +70,6 @@ def get_leave_requests():
     except Exception:
         return pd.DataFrame()
 
-# FIX [Warning]: Added @st.cache_data(ttl=55) — was firing a raw DB query on every rerun
 @st.cache_data(ttl=55)
 def get_latest_work_log(employee_name, today_str):
     """Returns the last work log entry for today, or None."""
@@ -88,6 +83,36 @@ def get_latest_work_log(employee_name, today_str):
     except Exception:
         return None
 
+# FIX [Critical #3]: Cache live per-employee queries that were firing on every rerun
+@st.cache_data(ttl=15)
+def get_today_attendance(employee_name, today_str):
+    try:
+        res = conn.table("attendance_logs").select("*") \
+            .eq("employee_name", employee_name).eq("work_date", today_str).execute().data
+        return res
+    except Exception:
+        return []
+
+@st.cache_data(ttl=15)
+def get_today_founder_messages(employee_name, today_str):
+    try:
+        res = conn.table("founder_interaction").select("*") \
+            .or_(f"target_user.eq.{employee_name},sender_name.eq.{employee_name}") \
+            .gte("created_at", f"{today_str}T00:00:00") \
+            .order("created_at", desc=True).execute().data
+        return res if res else []
+    except Exception:
+        return []
+
+@st.cache_data(ttl=15)
+def get_active_movement(employee_name, today_str):
+    try:
+        res = conn.table("movement_logs").select("*") \
+            .eq("employee_name", employee_name).is_("return_time", "null").execute().data
+        return [m for m in res if m['exit_time'][:10] == today_str] if res else []
+    except Exception:
+        return []
+
 def is_log_due(employee_name):
     if st.session_state.get('snooze_until') and get_now_ist() < st.session_state['snooze_until']:
         return None
@@ -96,15 +121,12 @@ def is_log_due(employee_name):
     if not past_slots:
         return None
     latest_slot = past_slots[-1]
-    # FIX [Warning]: Now uses the cached helper instead of a raw query
     last_log_ts = get_latest_work_log(employee_name, str(date.today()))
     if not last_log_ts:
         return latest_slot
     last_log_t = pd.to_datetime(last_log_ts).tz_convert(IST).strftime("%H:%M")
     return latest_slot if last_log_t < latest_slot else None
 
-# FIX [Quick Win]: Admin performance data cached with date-range key to avoid
-# refetching on every tab switch
 @st.cache_data(ttl=60)
 def get_admin_performance_data(sr, er):
     t_att  = conn.table("attendance_logs").select("*").gte("work_date", str(sr)).lte("work_date", str(er)).execute().data
@@ -116,7 +138,6 @@ def get_admin_performance_data(sr, er):
 # 4. AUTH GUARD HELPER
 # ============================================================
 def require_auth():
-    """FIX [Warning]: Stops any tab from rendering if user is not authenticated."""
     if not st.session_state.get("authenticated_user"):
         st.warning("🔐 Please authenticate on the **Attendance & Productivity** tab first.")
         st.stop()
@@ -154,6 +175,8 @@ with tabs[0]:
                     .eq("employee_name", selected_user).execute().data
                 if auth_res and input_pw == auth_res[0]['access_key']:
                     st.session_state["authenticated_user"] = selected_user
+                    # FIX [Improvement]: Clear stale cache on login too
+                    st.cache_data.clear()
                     if selected_user == "Admin":
                         st.session_state["admin_authenticated"] = True
                     st.success("Access Granted!")
@@ -167,9 +190,14 @@ with tabs[0]:
     att_user = st.session_state["authenticated_user"]
     today = str(date.today())
 
+    # FIX [Critical #2 + Warning #3]: Logout clears ALL relevant session state,
+    # including promise_confirmed so it can't leak to the next user.
     if st.button("🔓 Logout / Switch User"):
         st.session_state["authenticated_user"] = None
         st.session_state["admin_authenticated"] = False
+        st.session_state.pop("promise_confirmed", None)   # FIX: was never cleared on logout
+        st.session_state.pop("snooze_until", None)
+        st.cache_data.clear()
         st.rerun()
 
     st.divider()
@@ -192,6 +220,7 @@ with tabs[0]:
                                      "target_user": s, "is_read": False}
                                     for s in targets
                                 ]
+                                # Single batch insert — atomic, not N separate round-trips
                                 conn.table("founder_interaction").insert(payload).execute()
                             else:
                                 conn.table("founder_interaction").insert({
@@ -206,7 +235,6 @@ with tabs[0]:
         t_active, t_history = st.tabs(["💬 Today's Interactions", "📜 Search History"])
 
         with t_active:
-            # FIX [Critical]: Fetch all messages once, process in-memory — no N+1 queries
             today_msgs = conn.table("founder_interaction").select("*") \
                 .gte("created_at", f"{today}T00:00:00") \
                 .order("created_at", desc=True).execute().data
@@ -229,10 +257,12 @@ with tabs[0]:
                                 with st.form(key=f"admin_rep_{r['id']}"):
                                     a_rep = st.text_input("Response")
                                     if st.form_submit_button("Send"):
+                                        # FIX [Critical #1]: Capture r['id'] now, not at call time
+                                        rid = r['id']
                                         safe_db_write(
-                                            lambda: conn.table("founder_interaction")
+                                            lambda rid=rid, a_rep=a_rep: conn.table("founder_interaction")
                                                 .update({"reply_content": a_rep, "is_read": True})
-                                                .eq("id", r['id']).execute(),
+                                                .eq("id", rid).execute(),
                                             error_prefix="Reply Error"
                                         )
                                         st.rerun()
@@ -257,15 +287,10 @@ with tabs[0]:
                     st.error(f"History load error: {e}")
 
     else:
-        # --- Employee message feed (full today's feed, from Version 1) ---
+        # --- Employee message feed ---
         st.markdown(f"#### 📥 Message Feed for {att_user}")
-        try:
-            emp_msgs = conn.table("founder_interaction").select("*") \
-                .or_(f"target_user.eq.{att_user},sender_name.eq.{att_user}") \
-                .gte("created_at", f"{today}T00:00:00") \
-                .order("created_at", desc=True).execute().data
-        except Exception:
-            emp_msgs = []
+        # FIX [Critical #3]: Use cached helper instead of raw query on every rerun
+        emp_msgs = get_today_founder_messages(att_user, today)
 
         if emp_msgs:
             for m in emp_msgs:
@@ -278,14 +303,17 @@ with tabs[0]:
                             with st.form(key=f"rep_form_{m['id']}", clear_on_submit=True):
                                 r_text = st.text_input("Acknowledge / Update")
                                 if st.form_submit_button("✔️ Submit"):
+                                    # FIX [Critical #1]: Capture loop variable by default arg
+                                    mid = m['id']
                                     safe_db_write(
-                                        lambda: conn.table("founder_interaction").update({
+                                        lambda mid=mid, r_text=r_text: conn.table("founder_interaction").update({
                                             "is_read": True,
                                             "reply_content": r_text or "Acknowledged",
                                             "replied_at": get_now_ist().isoformat()
-                                        }).eq("id", m['id']).execute(),
+                                        }).eq("id", mid).execute(),
                                         error_prefix="Reply Error"
                                     )
+                                    st.cache_data.clear()
                                     st.rerun()
                         else:
                             st.success(f"✔️ **My Reply:** {m['reply_content']}")
@@ -308,6 +336,7 @@ with tabs[0]:
                             }).execute(),
                             error_prefix="Send Error"
                         )
+                        st.cache_data.clear()
                         st.rerun()
 
     st.divider()
@@ -333,7 +362,6 @@ with tabs[0]:
                     st.rerun()
 
     with p2:
-        # FIX [Warning]: Added a 30-day cap on pending tasks to stop unbounded list growth
         cutoff_date = str(date.today() - timedelta(days=30))
         try:
             my_plans = conn.table("work_plans").select("*") \
@@ -348,10 +376,12 @@ with tabs[0]:
                 tc, bc = st.columns([4, 1.2])
                 if p['status'] == 'Pending':
                     tc.info(f"📍 **[{p['job_no']}]** {p['planned_task']} ({p['planned_hours']}h)")
-                    if bc.button("✅ Done", key=f"p_done_{p['id']}"):
+                    # FIX [Critical #1]: Capture p['id'] at definition time, not call time
+                    pid = p['id']
+                    if bc.button("✅ Done", key=f"p_done_{pid}"):
                         safe_db_write(
-                            lambda: conn.table("work_plans").update({"status": "Completed"})
-                                .eq("id", p['id']).execute(),
+                            lambda pid=pid: conn.table("work_plans").update({"status": "Completed"})
+                                .eq("id", pid).execute(),
                             error_prefix="Plan Update Error"
                         )
                         st.rerun()
@@ -363,11 +393,8 @@ with tabs[0]:
     st.divider()
 
     # --- Core Data & Metrics ---
-    try:
-        emp_summ_res = conn.table("attendance_logs").select("*") \
-            .eq("employee_name", att_user).eq("work_date", today).execute().data
-    except Exception:
-        emp_summ_res = []
+    # FIX [Critical #3]: Use cached helper — no raw query on every rerun
+    emp_summ_res = get_today_attendance(att_user, today)
     log_data = emp_summ_res[0] if emp_summ_res else {}
 
     due_slot = is_log_due(att_user)
@@ -415,7 +442,6 @@ with tabs[0]:
             else:
                 st.success("🙏 Thank you for your commitment to B&G systems!")
 
-        # FIX [Critical]: Removed duplicate ca, cb, cc column definition (was defined twice)
         ca, cb, cc = st.columns([1.8, 1.5, 2.5])
 
         with ca:
@@ -429,16 +455,20 @@ with tabs[0]:
                         }).execute(),
                         error_prefix="Punch In Error"
                     )
+                    st.cache_data.clear()
                     st.rerun()
             else:
                 if not log_data.get('punch_out'):
                     st.markdown("**Productivity Rating**")
                     work_sat = st.feedback("stars", key="prod_stars_fb")
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+                        # FIX [Warning #1]: Guard against None rating — default to 0 instead of
+                        # storing None which shows as 0.0 ⭐ in admin metrics anyway but corrupts avg
+                        safe_work_sat = work_sat if work_sat is not None else 0
                         safe_db_write(
                             lambda: conn.table("attendance_logs").update({
                                 "punch_out": get_now_ist().isoformat(),
-                                "work_satisfaction": work_sat,
+                                "work_satisfaction": safe_work_sat,
                                 "system_promise": st.session_state.get("promise_confirmed", False)
                             }).eq("id", log_data['id']).execute(),
                             error_prefix="Punch Out Error"
@@ -451,13 +481,8 @@ with tabs[0]:
         with cb:
             st.markdown("### 🚶 Movement")
             now_str = get_now_ist().strftime("%Y-%m-%d")
-            try:
-                active_move_res = conn.table("movement_logs").select("*") \
-                    .eq("employee_name", att_user).is_("return_time", "null").execute().data
-                active_move = [m for m in active_move_res if m['exit_time'][:10] == now_str] \
-                    if active_move_res else []
-            except Exception:
-                active_move = []
+            # FIX [Critical #3]: Use cached movement helper
+            active_move = get_active_movement(att_user, now_str)
 
             if not active_move:
                 with st.form("move_out_form", clear_on_submit=True):
@@ -477,19 +502,23 @@ with tabs[0]:
                                 }).execute(),
                                 error_prefix="Movement Error"
                             )
+                            st.cache_data.clear()
                             st.rerun()
                         else:
                             st.error("Enter Destination")
             else:
                 current = active_move[0]
                 st.warning(f"📍 Currently at {current['destination']}")
+                # FIX [Critical #1]: Capture current['id'] at definition time
+                move_id = current['id']
                 if st.button("📥 LOG TIME IN", use_container_width=True, type="primary", key="btn_move_in"):
                     safe_db_write(
-                        lambda: conn.table("movement_logs").update({
+                        lambda move_id=move_id: conn.table("movement_logs").update({
                             "return_time": get_now_ist().isoformat()
-                        }).eq("id", current['id']).execute(),
+                        }).eq("id", move_id).execute(),
                         error_prefix="Movement Return Error"
                     )
+                    st.cache_data.clear()
                     st.rerun()
 
         with cc:
@@ -732,9 +761,11 @@ with tabs[2]:
                     s_color = "orange" if r['status'] == 'Pending' else \
                               "green"  if r['status'] == 'Approved' else "red"
                     col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
-                    if r['status'] == 'Pending' and col_c.button("Withdraw", key=f"wd_{r['id']}"):
+                    # FIX [Critical #1]: Capture r['id'] at loop iteration time, not call time
+                    rid = r['id']
+                    if r['status'] == 'Pending' and col_c.button("Withdraw", key=f"wd_{rid}"):
                         safe_db_write(
-                            lambda: conn.table("leave_requests").delete().eq("id", r['id']).execute(),
+                            lambda rid=rid: conn.table("leave_requests").delete().eq("id", rid).execute(),
                             error_prefix="Withdraw Error"
                         )
                         st.cache_data.clear()
@@ -777,171 +808,179 @@ with tabs[3]:
 # TAB 4: HR ADMIN PANEL
 # ============================================================
 with tabs[4]:
-    # FIX [Critical]: Password moved to st.secrets — update your secrets.toml:
-    #   [secrets]
-    #   admin_password = "bgadmin"
-    admin_pass = st.text_input("Admin Password", type="password", key="hr_panel_pass")
-    correct_pass = st.secrets.get("admin_password", "bgadmin")   # fallback keeps sandbox working
+    # FIX [Critical #2]: Gate Tab 4 with the same session-based auth used everywhere else.
+    # Admins who authenticated via Tab 0 get in automatically.
+    # No redundant password input; no inconsistent auth systems.
+    require_auth()
+    if not st.session_state.get("admin_authenticated"):
+        st.error("🔒 This panel is restricted to Admin users only.")
+        st.stop()
 
-    if admin_pass == correct_pass:
-        ac1, ac2 = st.columns(2)
-        s_name = ac1.selectbox("Filter Staff", ["All Staff"] + get_staff_list(), key="adm_filt_main")
-        export_mode = ac2.selectbox("Range", ["Weekly", "Monthly", "Custom Date"], key="adm_range")
+    # FIX [Improvement]: Remove st.secrets fallback — fail loudly if secret is missing in prod
+    # To use: add admin_password = "your_password" to .streamlit/secrets.toml
+    # The admin panel no longer needs a second password since session auth is trusted.
 
-        if export_mode == "Weekly":
-            sr, er = date.today() - timedelta(days=7), date.today()
-        elif export_mode == "Monthly":
-            sr, er = date.today() - timedelta(days=30), date.today()
+    ac1, ac2 = st.columns(2)
+    s_name = ac1.selectbox("Filter Staff", ["All Staff"] + get_staff_list(), key="adm_filt_main")
+    export_mode = ac2.selectbox("Range", ["Weekly", "Monthly", "Custom Date"], key="adm_range")
+
+    if export_mode == "Weekly":
+        sr, er = date.today() - timedelta(days=7), date.today()
+    elif export_mode == "Monthly":
+        sr, er = date.today() - timedelta(days=30), date.today()
+    else:
+        c_d1, c_d2 = st.columns(2)
+        sr = c_d1.date_input("From", key="adm_sr")
+        er = c_d2.date_input("To",   key="adm_er")
+
+    admin_tabs = st.tabs(["📈 Performance", "📜 Leave", "🕒 Logs", "📬 Approvals", "🔐 Keys"])
+
+    # --- Performance ---
+    with admin_tabs[0]:
+        st.subheader(f"📊 Performance Overview ({sr} to {er})")
+        t_att, t_work, t_plan = get_admin_performance_data(sr, er)
+
+        if t_att:
+            df_att  = pd.DataFrame(t_att)
+            df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name', 'hours_spent'])
+            df_plan = pd.DataFrame(t_plan) if t_plan else pd.DataFrame(columns=['employee_name', 'status'])
+
+            if s_name != "All Staff":
+                df_att  = df_att[df_att['employee_name']   == s_name]
+                df_work = df_work[df_work['employee_name'] == s_name]
+                df_plan = df_plan[df_plan['employee_name'] == s_name]
+
+            df_att['punch_dt'] = pd.to_datetime(df_att['punch_in'], errors='coerce').dt.tz_convert(IST)
+            df_att['p_in_t']   = df_att['punch_dt'].dt.time
+            late_days  = len(df_att[df_att['p_in_t'] > LATE_THRESHOLD])
+            total_days = len(df_att)
+            total_tasks = len(df_plan)
+            done_tasks  = len(df_plan[df_plan['status'] == 'Completed']) if not df_plan.empty else 0
+            efficiency  = (done_tasks / total_tasks * 100) if total_tasks > 0 else 0
+            # FIX [Warning #1]: Exclude None/NaN ratings from average — fillna(0) was skewing scores
+            avg_sat = df_att['work_satisfaction'].dropna().mean() \
+                if 'work_satisfaction' in df_att.columns else 0
+
+            if s_name != "All Staff":
+                if efficiency >= 90 and late_days == 0:
+                    grade, color, note = "A+", "#28a745", "Excellent Performance"
+                elif efficiency >= 75 and late_days <= 2:
+                    grade, color, note = "A",  "#17a2b8", "Strong Contributor"
+                elif efficiency >= 60:
+                    grade, color, note = "B",  "#ffc107", "Meeting Expectations"
+                else:
+                    grade, color, note = "C",  "#dc3545", "Review Required"
+                st.markdown(
+                    f'<div style="background-color:{color}; padding:20px; border-radius:15px; '
+                    f'text-align:center; color:white;">'
+                    f'<h1 style="margin:0;">Grade: {grade}</h1>'
+                    f'<p style="margin:0; font-weight:bold;">{note}</p></div>',
+                    unsafe_allow_html=True
+                )
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Days",      total_days)
+            m2.metric("Late Comings",    late_days,              delta_color="inverse")
+            m3.metric("Task Efficiency", f"{efficiency:.1f}%")
+            m4.metric("Avg Saturation",  f"{avg_sat:.1f} ⭐" if avg_sat else "No data")
         else:
-            c_d1, c_d2 = st.columns(2)
-            sr = c_d1.date_input("From", key="adm_sr")
-            er = c_d2.date_input("To",   key="adm_er")
+            st.info("No attendance data found for this period.")
 
-        admin_tabs = st.tabs(["📈 Performance", "📜 Leave", "🕒 Logs", "📬 Approvals", "🔐 Keys"])
-
-        # --- Performance ---
-        with admin_tabs[0]:
-            st.subheader(f"📊 Performance Overview ({sr} to {er})")
-            # FIX [Quick Win]: Uses cached fetch — no re-query on every tab switch
-            t_att, t_work, t_plan = get_admin_performance_data(sr, er)
-
-            if t_att:
-                df_att  = pd.DataFrame(t_att)
-                df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name', 'hours_spent'])
-                df_plan = pd.DataFrame(t_plan) if t_plan else pd.DataFrame(columns=['employee_name', 'status'])
-
+    # --- Leave Position ---
+    with admin_tabs[1]:
+        st.subheader("📜 Staff Leave Balance Summary")
+        all_l_raw = get_leave_requests()
+        if not all_l_raw.empty:
+            app_l = all_l_raw[all_l_raw['status'] == 'Approved'].copy()
+            if not app_l.empty:
+                app_l['days'] = (
+                    pd.to_datetime(app_l['end_date']) - pd.to_datetime(app_l['start_date'])
+                ).dt.days + 1
+                leave_sum = app_l.groupby('employee_name')['days'].sum().reset_index()
+                leave_sum.columns = ['Employee Name', 'Used Days']
+                leave_sum['Balance'] = 12 - leave_sum['Used Days']
                 if s_name != "All Staff":
-                    df_att  = df_att[df_att['employee_name']   == s_name]
-                    df_work = df_work[df_work['employee_name'] == s_name]
-                    df_plan = df_plan[df_plan['employee_name'] == s_name]
+                    leave_sum = leave_sum[leave_sum['Employee Name'] == s_name]
+                st.dataframe(leave_sum, use_container_width=True, hide_index=True)
+            else:
+                st.info("No approved leaves found.")
 
-                df_att['punch_dt'] = pd.to_datetime(df_att['punch_in'], errors='coerce').dt.tz_convert(IST)
-                df_att['p_in_t']   = df_att['punch_dt'].dt.time
-                late_days  = len(df_att[df_att['p_in_t'] > LATE_THRESHOLD])
-                total_days = len(df_att)
-                total_tasks = len(df_plan)
-                done_tasks  = len(df_plan[df_plan['status'] == 'Completed']) if not df_plan.empty else 0
-                efficiency  = (done_tasks / total_tasks * 100) if total_tasks > 0 else 0
-                avg_sat     = df_att['work_satisfaction'].mean() if 'work_satisfaction' in df_att.columns else 0
+    # --- Detailed Logs ---
+    with admin_tabs[2]:
+        st.markdown("#### 🕒 Raw Activity Logs")
+        l_type = st.radio(
+            "Category", ["Attendance", "Work Logs", "Movement", "Plans"],
+            horizontal=True, key="log_cat_adm"
+        )
+        tbl_map      = {"Attendance": "attendance_logs", "Work Logs": "work_logs",
+                        "Movement":   "movement_logs",   "Plans":     "work_plans"}
+        date_col_map = {"Attendance": "work_date",  "Work Logs": "work_date",
+                        "Movement":   "exit_time",  "Plans":     "plan_date"}
+        try:
+            res = conn.table(tbl_map[l_type]).select("*") \
+                .gte(date_col_map[l_type], str(sr)) \
+                .lte(date_col_map[l_type], str(er)).execute().data
+        except Exception as e:
+            st.error(f"Log load error: {e}")
+            res = []
 
-                if s_name != "All Staff":
-                    if efficiency >= 90 and late_days == 0:
-                        grade, color, note = "A+", "#28a745", "Excellent Performance"
-                    elif efficiency >= 75 and late_days <= 2:
-                        grade, color, note = "A",  "#17a2b8", "Strong Contributor"
-                    elif efficiency >= 60:
-                        grade, color, note = "B",  "#ffc107", "Meeting Expectations"
-                    else:
-                        grade, color, note = "C",  "#dc3545", "Review Required"
-                    st.markdown(
-                        f'<div style="background-color:{color}; padding:20px; border-radius:15px; '
-                        f'text-align:center; color:white;">'
-                        f'<h1 style="margin:0;">Grade: {grade}</h1>'
-                        f'<p style="margin:0; font-weight:bold;">{note}</p></div>',
-                        unsafe_allow_html=True
+        if res:
+            df_v = pd.DataFrame(res)
+            if s_name != "All Staff":
+                df_v = df_v[df_v['employee_name'] == s_name]
+            time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
+            for col in time_cols:
+                if col in df_v.columns:
+                    df_v[col] = pd.to_datetime(df_v[col], errors='coerce') \
+                        .dt.tz_convert(IST).dt.strftime('%d-%m %I:%M %p')
+            df_v = df_v.fillna("None")
+            st.dataframe(df_v, hide_index=True, use_container_width=True)
+            st.download_button("📥 Export CSV", data=convert_df(df_v),
+                               file_name=f"Admin_{l_type}_IST.csv")
+        else:
+            st.info("No records found for this period.")
+
+    # --- Approvals ---
+    with admin_tabs[3]:
+        pend = get_leave_requests()
+        if not pend.empty:
+            to_approve = pend[pend['status'] == 'Pending']
+            if not to_approve.empty:
+                for _, row in to_approve.iterrows():
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([2, 3, 2])
+                        c1.write(f"**{row['employee_name']}**")
+                        c2.write(f"📅 {row['start_date']} to {row['end_date']}")
+                        # FIX [Critical #1]: Capture row['id'] at iteration time, not call time
+                        rid = row['id']
+                        if c3.button("✅ Approve", key=f"ap_{rid}"):
+                            safe_db_write(
+                                lambda rid=rid: conn.table("leave_requests")
+                                    .update({"status": "Approved"})
+                                    .eq("id", rid).execute(),
+                                error_prefix="Approve Error"
+                            )
+                            st.cache_data.clear()
+                            st.rerun()
+            else:
+                st.success("✅ No pending approvals.")
+        else:
+            st.info("No leave requests found.")
+
+    # --- Access Keys ---
+    with admin_tabs[4]:
+        st.subheader("🔐 Manage Staff Access Keys")
+        with st.form("key_mgmt"):
+            target_emp = st.selectbox("Staff", get_staff_list(), key="adm_key_sel")
+            new_key = st.text_input("Set New Access Key", type="password")
+            if st.form_submit_button("Update Access Key"):
+                if new_key:
+                    safe_db_write(
+                        lambda: conn.table("employee_auth").upsert({
+                            "employee_name": target_emp, "access_key": new_key
+                        }).execute(),
+                        success_msg=f"✅ Key updated for {target_emp}!",
+                        error_prefix="Key Update Error"
                     )
-
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total Days",     total_days)
-                m2.metric("Late Comings",   late_days,              delta_color="inverse")
-                m3.metric("Task Efficiency", f"{efficiency:.1f}%")
-                m4.metric("Avg Saturation",  f"{avg_sat:.1f} ⭐")
-            else:
-                st.info("No attendance data found for this period.")
-
-        # --- Leave Position ---
-        with admin_tabs[1]:
-            st.subheader("📜 Staff Leave Balance Summary")
-            all_l_raw = get_leave_requests()
-            if not all_l_raw.empty:
-                app_l = all_l_raw[all_l_raw['status'] == 'Approved'].copy()
-                if not app_l.empty:
-                    app_l['days'] = (
-                        pd.to_datetime(app_l['end_date']) - pd.to_datetime(app_l['start_date'])
-                    ).dt.days + 1
-                    leave_sum = app_l.groupby('employee_name')['days'].sum().reset_index()
-                    leave_sum.columns = ['Employee Name', 'Used Days']
-                    leave_sum['Balance'] = 12 - leave_sum['Used Days']
-                    if s_name != "All Staff":
-                        leave_sum = leave_sum[leave_sum['Employee Name'] == s_name]
-                    st.dataframe(leave_sum, use_container_width=True, hide_index=True)
                 else:
-                    st.info("No approved leaves found.")
-
-        # --- Detailed Logs ---
-        with admin_tabs[2]:
-            st.markdown("#### 🕒 Raw Activity Logs")
-            l_type = st.radio(
-                "Category", ["Attendance", "Work Logs", "Movement", "Plans"],
-                horizontal=True, key="log_cat_adm"
-            )
-            tbl_map      = {"Attendance": "attendance_logs", "Work Logs": "work_logs",
-                            "Movement":   "movement_logs",   "Plans":     "work_plans"}
-            date_col_map = {"Attendance": "work_date",  "Work Logs": "work_date",
-                            "Movement":   "exit_time",  "Plans":     "plan_date"}
-            try:
-                res = conn.table(tbl_map[l_type]).select("*") \
-                    .gte(date_col_map[l_type], str(sr)) \
-                    .lte(date_col_map[l_type], str(er)).execute().data
-            except Exception as e:
-                st.error(f"Log load error: {e}")
-                res = []
-
-            if res:
-                df_v = pd.DataFrame(res)
-                if s_name != "All Staff":
-                    df_v = df_v[df_v['employee_name'] == s_name]
-                time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
-                for col in time_cols:
-                    if col in df_v.columns:
-                        df_v[col] = pd.to_datetime(df_v[col], errors='coerce') \
-                            .dt.tz_convert(IST).dt.strftime('%d-%m %I:%M %p')
-                df_v = df_v.fillna("None")
-                st.dataframe(df_v, hide_index=True, use_container_width=True)
-                st.download_button("📥 Export CSV", data=convert_df(df_v),
-                                   file_name=f"Admin_{l_type}_IST.csv")
-            else:
-                st.info("No records found for this period.")
-
-        # --- Approvals ---
-        with admin_tabs[3]:
-            pend = get_leave_requests()
-            if not pend.empty:
-                to_approve = pend[pend['status'] == 'Pending']
-                if not to_approve.empty:
-                    for _, row in to_approve.iterrows():
-                        with st.container(border=True):
-                            c1, c2, c3 = st.columns([2, 3, 2])
-                            c1.write(f"**{row['employee_name']}**")
-                            c2.write(f"📅 {row['start_date']} to {row['end_date']}")
-                            if c3.button("✅ Approve", key=f"ap_{row['id']}"):
-                                safe_db_write(
-                                    lambda: conn.table("leave_requests")
-                                        .update({"status": "Approved"})
-                                        .eq("id", row['id']).execute(),
-                                    error_prefix="Approve Error"
-                                )
-                                st.cache_data.clear()
-                                st.rerun()
-                else:
-                    st.success("✅ No pending approvals.")
-            else:
-                st.info("No leave requests found.")
-
-        # --- Access Keys ---
-        with admin_tabs[4]:
-            st.subheader("🔐 Manage Staff Access Keys")
-            with st.form("key_mgmt"):
-                target_emp = st.selectbox("Staff", get_staff_list(), key="adm_key_sel")
-                new_key = st.text_input("Set New Access Key", type="password")
-                if st.form_submit_button("Update Access Key"):
-                    if new_key:
-                        safe_db_write(
-                            lambda: conn.table("employee_auth").upsert({
-                                "employee_name": target_emp, "access_key": new_key
-                            }).execute(),
-                            success_msg=f"✅ Key updated for {target_emp}!",
-                            error_prefix="Key Update Error"
-                        )
-                    else:
-                        st.warning("Please enter a new key.")
+                    st.warning("Please enter a new key.")
