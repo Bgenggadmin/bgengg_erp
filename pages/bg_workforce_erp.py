@@ -83,6 +83,31 @@ def get_latest_work_log(employee_name, today_str):
     except Exception:
         return None
 
+@st.cache_data(ttl=60)
+def get_missed_punchouts(employee_name, today_str):
+    """Attendance rows with punch_in but no punch_out, on days before today."""
+    try:
+        res = conn.table("attendance_logs").select("*") \
+            .eq("employee_name", employee_name) \
+            .lt("work_date", today_str) \
+            .is_("punch_out", "null") \
+            .order("work_date", desc=True).limit(10).execute().data
+        return res if res else []
+    except Exception:
+        return []
+
+@st.cache_data(ttl=60)
+def get_all_missed_punchouts(today_str):
+    """Admin view — all staff with open punch-ins from any previous day."""
+    try:
+        res = conn.table("attendance_logs").select("*") \
+            .lt("work_date", today_str) \
+            .is_("punch_out", "null") \
+            .order("work_date", desc=True).execute().data
+        return res if res else []
+    except Exception:
+        return []
+
 # FIX [Critical #3]: Cache live per-employee queries that were firing on every rerun
 @st.cache_data(ttl=15)
 def get_today_attendance(employee_name, today_str):
@@ -201,6 +226,26 @@ with tabs[0]:
         st.rerun()
 
     st.divider()
+
+    # ── MISSED PUNCH-OUT ALERT ────────────────────────────────
+    missed = get_missed_punchouts(att_user, today)
+    if missed:
+        st.error(
+            f"🚨 **Missed Punch-Out Detected!** You have **{len(missed)} day(s)** with no punch-out recorded. "
+            f"Please contact HR to correct your attendance record."
+        )
+        with st.expander("📋 View affected days", expanded=True):
+            for m in missed:
+                punch_in_ist = pd.to_datetime(m['punch_in']).tz_convert(IST).strftime('%d %b %Y, %I:%M %p') \
+                    if m.get('punch_in') else "—"
+                st.markdown(
+                    f"<div style='padding:8px 12px; margin-bottom:6px; border-left:4px solid #dc3545; "
+                    f"background:#fff5f5; border-radius:4px;'>"
+                    f"📅 <b>{m['work_date']}</b> &nbsp;|&nbsp; Punched in at {punch_in_ist} &nbsp;|&nbsp; "
+                    f"<span style='color:#dc3545;'>No punch-out recorded</span></div>",
+                    unsafe_allow_html=True
+                )
+        st.divider()
 
     # --- Founder's Desk ---
     st.markdown("### 📢 Founder's Desk")
@@ -474,15 +519,40 @@ with tabs[0]:
                     st.rerun()
             else:
                 if not log_data.get('punch_out'):
+                    # ── Live short-shift warning ──────────────────────────
+                    REQUIRED_MINS = 510  # 8h 30m
+                    punch_in_live = pd.to_datetime(log_data.get('punch_in')).tz_convert(IST) \
+                        if log_data.get('punch_in') else None
+                    elapsed_mins  = int((get_now_ist() - punch_in_live).total_seconds() // 60) \
+                        if punch_in_live else 0
+                    short_shift   = elapsed_mins < REQUIRED_MINS
+
+                    if short_shift and punch_in_live:
+                        still_needed  = REQUIRED_MINS - elapsed_mins
+                        st.warning(
+                            f"⏳ Only **{elapsed_mins // 60}h {elapsed_mins % 60}m** logged. "
+                            f"Full shift needs **8h 30m** — {still_needed // 60}h {still_needed % 60}m remaining."
+                        )
+
                     st.markdown("**Productivity Rating**")
                     work_sat = st.feedback("stars", key="prod_stars_fb")
-                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
+
+                    # If shift is short, require an explicit acknowledgement before allowing punch-out
+                    allow_punchout = True
+                    if short_shift:
+                        allow_punchout = st.checkbox(
+                            "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
+                            key="short_shift_ack"
+                        )
+
+                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary",
+                                 disabled=not allow_punchout):
                         safe_work_sat = work_sat if work_sat is not None else 0
-                        # system_promise is already written to DB at checkbox time — not needed here
                         safe_db_write(
                             lambda: conn.table("attendance_logs").update({
                                 "punch_out": get_now_ist().isoformat(),
                                 "work_satisfaction": safe_work_sat,
+                                "short_shift": short_shift,  # flag for admin reports
                             }).eq("id", log_data['id']).execute(),
                             error_prefix="Punch Out Error"
                         )
@@ -570,13 +640,16 @@ with tabs[0]:
         if punch_in_dt and punch_out_dt:
             duration_mins = int((punch_out_dt - punch_in_dt).total_seconds() // 60)
             duration_str  = f"{duration_mins // 60}h {duration_mins % 60}m"
-            shift_status  = "✅ Completed"
+            is_short      = duration_mins < 510  # under 8h 30m
+            shift_status  = "⚠️ Short Shift" if is_short else "✅ Completed"
         elif punch_in_dt:
             duration_mins = int((get_now_ist() - punch_in_dt).total_seconds() // 60)
             duration_str  = f"{duration_mins // 60}h {duration_mins % 60}m (live)"
+            is_short      = False
             shift_status  = "🟢 Active"
         else:
             duration_str = "—"
+            is_short     = False
             shift_status = "⚪ Not started"
 
         is_late = punch_in_dt.time() > LATE_THRESHOLD if punch_in_dt else False
@@ -587,6 +660,15 @@ with tabs[0]:
         s2.metric("Punch Out", punch_out_str)
         s3.metric("Duration",  duration_str)
         s4.metric("Status",    shift_status)
+
+        if is_short and punch_out_dt:
+            shortfall = 510 - duration_mins
+            st.error(
+                f"🔴 **Short shift recorded.** Today's shift was "
+                f"**{duration_mins // 60}h {duration_mins % 60}m** — "
+                f"{shortfall // 60}h {shortfall % 60}m below the required 8h 30m. "
+                f"This will be visible to HR."
+            )
     else:
         st.info("No punch-in recorded yet today.")
 
@@ -846,58 +928,319 @@ with tabs[4]:
         sr = c_d1.date_input("From", key="adm_sr")
         er = c_d2.date_input("To",   key="adm_er")
 
-    admin_tabs = st.tabs(["📈 Performance", "📜 Leave", "🕒 Logs", "📬 Approvals", "🔐 Keys"])
+    admin_tabs = st.tabs(["📈 Performance", "📜 Leave", "🕒 Logs", "📬 Approvals", "🚨 Missed P/O", "🔐 Keys"])
 
     # --- Performance ---
     with admin_tabs[0]:
-        st.subheader(f"📊 Performance Overview ({sr} to {er})")
+        st.subheader(f"📊 Performance Overview — {sr} to {er}")
         t_att, t_work, t_plan = get_admin_performance_data(sr, er)
 
-        if t_att:
+        if not t_att:
+            st.info("No attendance data found for this period.")
+        else:
             df_att  = pd.DataFrame(t_att)
-            df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(columns=['employee_name', 'hours_spent'])
-            df_plan = pd.DataFrame(t_plan) if t_plan else pd.DataFrame(columns=['employee_name', 'status'])
+            df_work = pd.DataFrame(t_work) if t_work else pd.DataFrame(
+                columns=['employee_name', 'hours_spent', 'task_description', 'work_date', 'created_at'])
+            df_plan = pd.DataFrame(t_plan) if t_plan else pd.DataFrame(
+                columns=['employee_name', 'status', 'planned_hours', 'planned_task', 'job_no', 'plan_date'])
 
+            # ── Common date/time derivations ──────────────────────
+            df_att['punch_dt']     = pd.to_datetime(df_att['punch_in'],  errors='coerce').dt.tz_convert(IST)
+            df_att['punch_out_dt'] = pd.to_datetime(df_att['punch_out'], errors='coerce').dt.tz_convert(IST)
+            df_att['p_in_t']       = df_att['punch_dt'].dt.time
+            df_att['shift_mins']   = (
+                (df_att['punch_out_dt'] - df_att['punch_dt']).dt.total_seconds() // 60
+            ).where(df_att['punch_out_dt'].notna())
+
+            # Extract job code from task_description — stored as "[JOB] @slot: details"
+            if not df_work.empty and 'task_description' in df_work.columns:
+                df_work['job_code'] = df_work['task_description'].str.extract(r'^\[([^\]]+)\]')
+                df_work['log_time'] = pd.to_datetime(
+                    df_work['created_at'], errors='coerce').dt.tz_convert(IST)
+
+            # ── Scope to selected employee ─────────────────────────
+            staff_scope = get_staff_list() if s_name == "All Staff" else [s_name]
+            df_att_f  = df_att[df_att['employee_name'].isin(staff_scope)]
+            df_work_f = df_work[df_work['employee_name'].isin(staff_scope)] if not df_work.empty else df_work
+            df_plan_f = df_plan[df_plan['employee_name'].isin(staff_scope)] if not df_plan.empty else df_plan
+
+            # ── Core KPIs ─────────────────────────────────────────
+            total_days   = len(df_att_f)
+            late_days    = int((df_att_f['p_in_t'] > LATE_THRESHOLD).sum())
+            short_days   = int((df_att_f['shift_mins'] < 510).sum())
+            missed_days  = int(df_att_f['punch_out_dt'].isna().sum())
+            avg_shift_h  = df_att_f['shift_mins'].dropna().mean() / 60 if total_days else 0
+            total_shift_h = df_att_f['shift_mins'].dropna().sum() / 60
+
+            # Plan KPIs
+            total_planned    = len(df_plan_f)
+            done_tasks       = int((df_plan_f['status'] == 'Completed').sum()) if not df_plan_f.empty else 0
+            pending_tasks    = total_planned - done_tasks
+            planned_hrs_tot  = df_plan_f['planned_hours'].sum() if not df_plan_f.empty else 0
+            planned_hrs_done = df_plan_f[df_plan_f['status'] == 'Completed']['planned_hours'].sum() \
+                               if not df_plan_f.empty else 0
+            task_efficiency  = (done_tasks / total_planned * 100) if total_planned else 0
+
+            # Work log KPIs
+            total_logs      = len(df_work_f)
+            logged_hrs_tot  = df_work_f['hours_spent'].sum() if not df_work_f.empty else 0
+            avg_logs_per_day = (total_logs / total_days) if total_days else 0
+
+            avg_sat = df_att_f['work_satisfaction'].dropna().mean() \
+                if 'work_satisfaction' in df_att_f.columns else 0
+
+            # ── Grade (single employee only) ───────────────────────
             if s_name != "All Staff":
-                df_att  = df_att[df_att['employee_name']   == s_name]
-                df_work = df_work[df_work['employee_name'] == s_name]
-                df_plan = df_plan[df_plan['employee_name'] == s_name]
-
-            df_att['punch_dt'] = pd.to_datetime(df_att['punch_in'], errors='coerce').dt.tz_convert(IST)
-            df_att['p_in_t']   = df_att['punch_dt'].dt.time
-            late_days  = len(df_att[df_att['p_in_t'] > LATE_THRESHOLD])
-            total_days = len(df_att)
-            total_tasks = len(df_plan)
-            done_tasks  = len(df_plan[df_plan['status'] == 'Completed']) if not df_plan.empty else 0
-            efficiency  = (done_tasks / total_tasks * 100) if total_tasks > 0 else 0
-            # FIX [Warning #1]: Exclude None/NaN ratings from average — fillna(0) was skewing scores
-            avg_sat = df_att['work_satisfaction'].dropna().mean() \
-                if 'work_satisfaction' in df_att.columns else 0
-
-            if s_name != "All Staff":
-                if efficiency >= 90 and late_days == 0:
-                    grade, color, note = "A+", "#28a745", "Excellent Performance"
-                elif efficiency >= 75 and late_days <= 2:
-                    grade, color, note = "A",  "#17a2b8", "Strong Contributor"
-                elif efficiency >= 60:
-                    grade, color, note = "B",  "#ffc107", "Meeting Expectations"
+                if task_efficiency >= 90 and late_days == 0 and short_days == 0 and missed_days == 0:
+                    grade, gcolor, gnote = "A+", "#28a745", "Excellent Performance"
+                elif task_efficiency >= 75 and late_days <= 2 and short_days <= 1 and missed_days == 0:
+                    grade, gcolor, gnote = "A",  "#17a2b8", "Strong Contributor"
+                elif task_efficiency >= 60:
+                    grade, gcolor, gnote = "B",  "#ffc107", "Meeting Expectations"
                 else:
-                    grade, color, note = "C",  "#dc3545", "Review Required"
+                    grade, gcolor, gnote = "C",  "#dc3545", "Review Required"
                 st.markdown(
-                    f'<div style="background-color:{color}; padding:20px; border-radius:15px; '
-                    f'text-align:center; color:white;">'
-                    f'<h1 style="margin:0;">Grade: {grade}</h1>'
-                    f'<p style="margin:0; font-weight:bold;">{note}</p></div>',
+                    f'<div style="background-color:{gcolor}; padding:16px 24px; border-radius:12px; '
+                    f'text-align:center; color:white; margin-bottom:16px;">'
+                    f'<h1 style="margin:0; font-size:2rem;">Grade: {grade}</h1>'
+                    f'<p style="margin:4px 0 0; font-weight:500;">{gnote}</p></div>',
                     unsafe_allow_html=True
                 )
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Days",      total_days)
-            m2.metric("Late Comings",    late_days,              delta_color="inverse")
-            m3.metric("Task Efficiency", f"{efficiency:.1f}%")
-            m4.metric("Avg Saturation",  f"{avg_sat:.1f} ⭐" if avg_sat else "No data")
-        else:
-            st.info("No attendance data found for this period.")
+            # ══════════════════════════════════════════════════════
+            # SECTION 1 — ATTENDANCE
+            # ══════════════════════════════════════════════════════
+            st.markdown("#### 🏢 Attendance")
+            a1, a2, a3, a4, a5, a6 = st.columns(6)
+            a1.metric("Days Present",     total_days)
+            a2.metric("Late Arrivals",    late_days,   delta_color="inverse")
+            a3.metric("Short Shifts",     short_days,  delta_color="inverse",
+                      help="Shifts under 8h 30m")
+            a4.metric("Missed Punch-Out", missed_days, delta_color="inverse")
+            a5.metric("Avg Shift",        f"{avg_shift_h:.1f}h")
+            a6.metric("Total Hours In",   f"{total_shift_h:.1f}h")
+
+            if s_name != "All Staff" and short_days > 0:
+                short_rows = df_att_f[df_att_f['shift_mins'] < 510][['work_date', 'shift_mins']].copy()
+                short_rows['Duration'] = short_rows['shift_mins'].apply(
+                    lambda m: f"{int(m)//60}h {int(m)%60}m" if pd.notna(m) else "No punch-out")
+                short_rows['Shortfall'] = short_rows['shift_mins'].apply(
+                    lambda m: f"−{int(510-m)//60}h {int(510-m)%60}m" if pd.notna(m) else "—")
+                short_rows = short_rows.rename(columns={"work_date": "Date"}).drop(columns="shift_mins")
+                with st.expander("🔴 Short shift breakdown"):
+                    st.dataframe(short_rows, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # ══════════════════════════════════════════════════════
+            # SECTION 2 — PLANNED vs ACTUAL (the Monday review core)
+            # ══════════════════════════════════════════════════════
+            st.markdown("#### 📋 Planned vs Actual — Task Execution")
+
+            p1c, p2c, p3c, p4c, p5c, p6c = st.columns(6)
+            p1c.metric("Tasks Planned",   total_planned)
+            p2c.metric("Tasks Completed", done_tasks,
+                       delta=f"{task_efficiency:.0f}%",
+                       delta_color="normal" if task_efficiency >= 75 else "inverse")
+            p3c.metric("Still Pending",   pending_tasks,  delta_color="inverse")
+            p4c.metric("Planned Hrs (all)",  f"{planned_hrs_tot:.1f}h",
+                       help="Sum of estimated hours across all planned tasks")
+            p5c.metric("Planned Hrs (done)", f"{planned_hrs_done:.1f}h",
+                       help="Estimated hours for completed tasks only")
+            p6c.metric("Completion Rate",    f"{task_efficiency:.1f}%")
+
+            # ── Per-employee planned vs actual table (All Staff view) ──
+            if s_name == "All Staff" and not df_plan_f.empty:
+                st.markdown("##### Staff-wise breakdown")
+                grp = df_plan_f.groupby('employee_name').apply(lambda g: pd.Series({
+                    'Planned Tasks':   len(g),
+                    'Completed':       int((g['status'] == 'Completed').sum()),
+                    'Pending':         int((g['status'] == 'Pending').sum()),
+                    'Planned Hrs':     round(g['planned_hours'].sum(), 1),
+                    'Done Hrs (est)':  round(g[g['status'] == 'Completed']['planned_hours'].sum(), 1),
+                })).reset_index().rename(columns={'employee_name': 'Employee'})
+                grp['Completion %'] = (grp['Completed'] / grp['Planned Tasks'] * 100).round(1).astype(str) + '%'
+
+                # Colour-code completion % column
+                def style_completion(val):
+                    v = float(val.replace('%',''))
+                    color = '#d4edda' if v >= 90 else '#fff3cd' if v >= 60 else '#f8d7da'
+                    return f'background-color: {color}'
+
+                st.dataframe(
+                    grp.style.applymap(style_completion, subset=['Completion %']),
+                    use_container_width=True, hide_index=True
+                )
+
+            # ── Day-wise plan detail (single employee) ──
+            if s_name != "All Staff" and not df_plan_f.empty:
+                with st.expander("📅 Day-wise task detail"):
+                    day_plan = df_plan_f[['plan_date','job_no','planned_task',
+                                          'planned_hours','status']].copy()
+                    day_plan = day_plan.rename(columns={
+                        'plan_date': 'Date', 'job_no': 'Job',
+                        'planned_task': 'Task', 'planned_hours': 'Est Hrs', 'status': 'Status'
+                    }).sort_values('Date', ascending=False)
+                    st.dataframe(day_plan, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # ══════════════════════════════════════════════════════
+            # SECTION 3 — WORK LOGS & PRODUCTIVITY
+            # ══════════════════════════════════════════════════════
+            st.markdown("#### 📝 Work Logs & Productivity")
+
+            w1, w2, w3, w4, w5 = st.columns(5)
+            w1.metric("Total Logs Posted", total_logs)
+            w2.metric("Logged Hours",      f"{logged_hrs_tot:.1f}h",
+                      help="Sum of hours_spent across all work log entries")
+            w3.metric("Avg Logs / Day",    f"{avg_logs_per_day:.1f}",
+                      help="Work log entries per working day — target: ≥6 per day")
+            w4.metric("Hours In Office",   f"{total_shift_h:.1f}h",
+                      help="Total shift hours (punch-in to punch-out)")
+            w5.metric("Self-Rating",       f"{avg_sat:.1f} ⭐" if avg_sat else "No data",
+                      help="Average self-reported productivity star rating at punch-out")
+
+            # ── Job-code time split (how they actually spent time) ──
+            if not df_work_f.empty and 'job_code' in df_work_f.columns:
+                st.markdown("##### ⏱️ Time by Job Code")
+                job_grp = df_work_f.groupby('job_code')['hours_spent'].sum().reset_index()
+                job_grp.columns = ['Job Code', 'Hours']
+                job_grp = job_grp.sort_values('Hours', ascending=False)
+                job_grp['% of Logged Time'] = (
+                    job_grp['Hours'] / job_grp['Hours'].sum() * 100
+                ).round(1).astype(str) + '%'
+                job_grp['Hours'] = job_grp['Hours'].round(2)
+
+                # Classify job codes into productive vs overhead categories
+                OVERHEAD_CODES = {'GENERAL', 'ACCOUNTS', 'PURCHASE', '5S', 'MAINTENANCE',
+                                  'CLIENT_CALLS', 'ESTIMATIONS', 'QUOTATIONS', 'PROD_PLAN'}
+                job_grp['Type'] = job_grp['Job Code'].apply(
+                    lambda c: 'Overhead' if str(c).upper() in OVERHEAD_CODES else 'Project Work'
+                )
+                productive_hrs  = job_grp[job_grp['Type'] == 'Project Work']['Hours'].sum()
+                overhead_hrs    = job_grp[job_grp['Type'] == 'Overhead']['Hours'].sum()
+                productive_pct  = (productive_hrs / logged_hrs_tot * 100) if logged_hrs_tot else 0
+
+                pt1, pt2, pt3 = st.columns(3)
+                pt1.metric("Project Work Hrs",  f"{productive_hrs:.1f}h",
+                           help="Hours logged against actual project job codes")
+                pt2.metric("Overhead Hrs",      f"{overhead_hrs:.1f}h",
+                           help="Hours on GENERAL, ACCOUNTS, PURCHASE etc.")
+                pt3.metric("Productivity Index", f"{productive_pct:.1f}%",
+                           delta="target ≥ 60%",
+                           delta_color="normal" if productive_pct >= 60 else "inverse")
+
+                def style_type(val):
+                    return 'background-color: #d4edda' if val == 'Project Work' else 'background-color: #fff3cd'
+
+                st.dataframe(
+                    job_grp.style.applymap(style_type, subset=['Type']),
+                    use_container_width=True, hide_index=True
+                )
+
+            # ── Day-wise log count heatmap (single employee) ──
+            if s_name != "All Staff" and not df_work_f.empty:
+                with st.expander("📅 Day-wise log count"):
+                    day_logs = df_work_f.groupby('work_date').agg(
+                        Logs=('id', 'count'),
+                        Hours=('hours_spent', 'sum')
+                    ).reset_index().rename(columns={'work_date': 'Date'})
+                    day_logs['Hours'] = day_logs['Hours'].round(1)
+                    day_logs['Logs OK?'] = day_logs['Logs'].apply(
+                        lambda n: '✅' if n >= 6 else '⚠️' if n >= 3 else '🔴')
+                    day_logs = day_logs.sort_values('Date', ascending=False)
+                    st.dataframe(day_logs, use_container_width=True, hide_index=True)
+
+            # ── All-staff log frequency table (All Staff view) ──
+            if s_name == "All Staff" and not df_work_f.empty:
+                st.markdown("##### Staff-wise log activity")
+                log_grp = df_work_f.groupby('employee_name').agg(
+                    Total_Logs=('id', 'count'),
+                    Logged_Hrs=('hours_spent', 'sum'),
+                ).reset_index().rename(columns={
+                    'employee_name': 'Employee',
+                    'Total_Logs': 'Total Logs',
+                    'Logged_Hrs': 'Logged Hrs'
+                })
+                # Merge with attendance day count
+                att_days = df_att_f.groupby('employee_name').size().reset_index(
+                    name='Days').rename(columns={'employee_name': 'Employee'})
+                log_grp = log_grp.merge(att_days, on='Employee', how='left')
+                log_grp['Avg Logs/Day'] = (log_grp['Total Logs'] / log_grp['Days']).round(1)
+                log_grp['Logged Hrs']   = log_grp['Logged Hrs'].round(1)
+                log_grp['Activity']     = log_grp['Avg Logs/Day'].apply(
+                    lambda v: '✅ Active' if v >= 6 else '⚠️ Low' if v >= 3 else '🔴 Poor')
+                st.dataframe(log_grp, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # ══════════════════════════════════════════════════════
+            # SECTION 4 — MONDAY REVIEW EXPORT
+            # ══════════════════════════════════════════════════════
+            st.markdown("#### 📤 Monday Review Export")
+            st.caption("One-click export of the full review sheet for the selected period.")
+
+            # Build a consolidated summary per employee
+            all_staff_names = df_att_f['employee_name'].unique()
+            review_rows = []
+            for emp in all_staff_names:
+                ea = df_att_f[df_att_f['employee_name'] == emp]
+                ew = df_work_f[df_work_f['employee_name'] == emp] if not df_work_f.empty else pd.DataFrame()
+                ep = df_plan_f[df_plan_f['employee_name'] == emp] if not df_plan_f.empty else pd.DataFrame()
+
+                e_shift_h   = ea['shift_mins'].dropna().sum() / 60
+                e_logs      = len(ew)
+                e_logged_h  = ew['hours_spent'].sum() if not ew.empty else 0
+                e_planned   = len(ep)
+                e_done      = int((ep['status'] == 'Completed').sum()) if not ep.empty else 0
+                e_planned_h = ep['planned_hours'].sum() if not ep.empty else 0
+                e_done_h    = ep[ep['status'] == 'Completed']['planned_hours'].sum() \
+                              if not ep.empty else 0
+                e_eff       = round(e_done / e_planned * 100, 1) if e_planned else 0
+                e_late      = int((ea['p_in_t'] > LATE_THRESHOLD).sum())
+                e_short     = int((ea['shift_mins'] < 510).sum())
+                e_missed    = int(ea['punch_out_dt'].isna().sum())
+                e_sat       = round(ea['work_satisfaction'].dropna().mean(), 1) \
+                              if 'work_satisfaction' in ea.columns else 0
+
+                # Productivity index
+                if not ew.empty and 'job_code' in ew.columns:
+                    proj_h = ew[~ew['job_code'].str.upper().isin(OVERHEAD_CODES)]['hours_spent'].sum()
+                    e_prod_idx = round(proj_h / e_logged_h * 100, 1) if e_logged_h else 0
+                else:
+                    e_prod_idx = 0
+
+                review_rows.append({
+                    'Employee':          emp,
+                    'Days Present':      len(ea),
+                    'Total Shift Hrs':   round(e_shift_h, 1),
+                    'Late Arrivals':     e_late,
+                    'Short Shifts':      e_short,
+                    'Missed Punch-Out':  e_missed,
+                    'Tasks Planned':     e_planned,
+                    'Tasks Done':        e_done,
+                    'Pending Tasks':     e_planned - e_done,
+                    'Planned Hrs (all)': round(e_planned_h, 1),
+                    'Planned Hrs (done)':round(e_done_h, 1),
+                    'Completion %':      e_eff,
+                    'Work Logs':         e_logs,
+                    'Logged Hrs':        round(e_logged_h, 1),
+                    'Avg Logs/Day':      round(e_logs / len(ea), 1) if len(ea) else 0,
+                    'Productivity Index':e_prod_idx,
+                    'Self-Rating ⭐':    e_sat,
+                })
+
+            df_review = pd.DataFrame(review_rows)
+            st.dataframe(df_review, use_container_width=True, hide_index=True)
+            st.download_button(
+                label="📥 Download Monday Review Sheet (CSV)",
+                data=convert_df(df_review),
+                file_name=f"BG_Monday_Review_{sr}_to_{er}.csv",
+                mime="text/csv",
+                type="primary",
+                use_container_width=True
+            )
 
     # --- Leave Position ---
     with admin_tabs[1]:
@@ -980,8 +1323,57 @@ with tabs[4]:
         else:
             st.info("No leave requests found.")
 
-    # --- Access Keys ---
+    # --- Missed Punch-Outs ---
     with admin_tabs[4]:
+        st.subheader("🚨 Missed Punch-Outs")
+        all_missed = get_all_missed_punchouts(str(date.today()))
+
+        if all_missed:
+            st.error(f"**{len(all_missed)} open shift(s)** with no punch-out recorded across all staff.")
+            st.caption("Use the correction tool below to set the punch-out time for any affected record.")
+
+            for m in all_missed:
+                punch_in_ist = pd.to_datetime(m['punch_in']).tz_convert(IST) if m.get('punch_in') else None
+                punch_in_str = punch_in_ist.strftime('%d %b %Y, %I:%M %p') if punch_in_ist else "—"
+
+                with st.container(border=True):
+                    mc1, mc2, mc3 = st.columns([2, 3, 3])
+                    mc1.markdown(f"**{m['employee_name']}**")
+                    mc2.markdown(f"📅 `{m['work_date']}` &nbsp; Punched in: **{punch_in_str}**")
+
+                    # Manual punch-out correction form
+                    mid = m['id']
+                    with mc3:
+                        with st.form(key=f"fix_po_{mid}"):
+                            fix_time = st.time_input(
+                                "Set punch-out time",
+                                value=time(18, 30),
+                                key=f"fix_t_{mid}"
+                            )
+                            if st.form_submit_button("🔧 Apply Correction"):
+                                # Combine the work_date with the corrected time in IST
+                                corrected_dt = IST.localize(
+                                    datetime.combine(
+                                        date.fromisoformat(m['work_date']), fix_time
+                                    )
+                                )
+                                safe_db_write(
+                                    lambda mid=mid, corrected_dt=corrected_dt: conn.table("attendance_logs")
+                                        .update({
+                                            "punch_out": corrected_dt.isoformat(),
+                                            "short_shift": (corrected_dt - punch_in_ist).total_seconds() < 30600
+                                        })
+                                        .eq("id", mid).execute(),
+                                    success_msg="✅ Punch-out corrected.",
+                                    error_prefix="Correction Error"
+                                )
+                                st.cache_data.clear()
+                                st.rerun()
+        else:
+            st.success("✅ No missed punch-outs — all shifts are properly closed.")
+
+    # --- Access Keys ---
+    with admin_tabs[5]:
         st.subheader("🔐 Manage Staff Access Keys")
         with st.form("key_mgmt"):
             target_emp = st.selectbox("Staff", get_staff_list(), key="adm_key_sel")
