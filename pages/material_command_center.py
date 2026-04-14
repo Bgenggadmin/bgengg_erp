@@ -473,7 +473,7 @@ with main_tabs[1]:
                                 f"{'='*28}\n"
                                 f"{item_lines}\n"
                                 f"{'='*28}\n"
-                                f"Please share your best quote.\nRegards, B&G Engineering"
+                                f"Please share your best quote.\nRegards, Santhoshi, B&G Engineering Industries"
                             )
                             wa_base = f"https://wa.me/{v_phone}" if v_phone else "https://wa.me/"
                             wa_url  = f"{wa_base}?text={urllib.parse.quote(wa_msg)}"
