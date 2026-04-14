@@ -11,6 +11,8 @@ IST = pytz.timezone('Asia/Kolkata')
 LATE_THRESHOLD = time(9, 5)
 LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
+OVERHEAD_CODES = {'GENERAL', 'ACCOUNTS', 'PURCHASE', '5S', 'MAINTENANCE',
+                  'CLIENT_CALLS', 'ESTIMATIONS', 'QUOTATIONS', 'PROD_PLAN'}
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -1059,18 +1061,12 @@ with tabs[4]:
                     'Planned Hrs':     round(g['planned_hours'].sum(), 1),
                     'Done Hrs (est)':  round(g[g['status'] == 'Completed']['planned_hours'].sum(), 1),
                 })).reset_index().rename(columns={'employee_name': 'Employee'})
-                grp['Completion %'] = (grp['Completed'] / grp['Planned Tasks'] * 100).round(1).astype(str) + '%'
+                grp['Completion %'] = (grp['Completed'] / grp['Planned Tasks'] * 100).round(1)
+                grp['Status'] = grp['Completion %'].apply(
+                    lambda v: '🟢 On Track' if v >= 90 else '🟡 Partial' if v >= 60 else '🔴 Low')
+                grp['Completion %'] = grp['Completion %'].astype(str) + '%'
 
-                # Colour-code completion % column
-                def style_completion(val):
-                    v = float(val.replace('%',''))
-                    color = '#d4edda' if v >= 90 else '#fff3cd' if v >= 60 else '#f8d7da'
-                    return f'background-color: {color}'
-
-                st.dataframe(
-                    grp.style.applymap(style_completion, subset=['Completion %']),
-                    use_container_width=True, hide_index=True
-                )
+                st.dataframe(grp, use_container_width=True, hide_index=True)
 
             # ── Day-wise plan detail (single employee) ──
             if s_name != "All Staff" and not df_plan_f.empty:
@@ -1112,32 +1108,29 @@ with tabs[4]:
                 ).round(1).astype(str) + '%'
                 job_grp['Hours'] = job_grp['Hours'].round(2)
 
-                # Classify job codes into productive vs overhead categories
-                OVERHEAD_CODES = {'GENERAL', 'ACCOUNTS', 'PURCHASE', '5S', 'MAINTENANCE',
-                                  'CLIENT_CALLS', 'ESTIMATIONS', 'QUOTATIONS', 'PROD_PLAN'}
-                job_grp['Type'] = job_grp['Job Code'].apply(
-                    lambda c: 'Overhead' if str(c).upper() in OVERHEAD_CODES else 'Project Work'
-                )
-                productive_hrs  = job_grp[job_grp['Type'] == 'Project Work']['Hours'].sum()
-                overhead_hrs    = job_grp[job_grp['Type'] == 'Overhead']['Hours'].sum()
-                productive_pct  = (productive_hrs / logged_hrs_tot * 100) if logged_hrs_tot else 0
+                # Compute productive/overhead totals directly from raw job_code — not from Type col
+                productive_hrs = df_work_f[
+                    ~df_work_f['job_code'].str.upper().isin(OVERHEAD_CODES)
+                ]['hours_spent'].sum() if not df_work_f.empty else 0
+                overhead_hrs   = df_work_f[
+                    df_work_f['job_code'].str.upper().isin(OVERHEAD_CODES)
+                ]['hours_spent'].sum() if not df_work_f.empty else 0
+                productive_pct = (productive_hrs / logged_hrs_tot * 100) if logged_hrs_tot else 0
 
                 pt1, pt2, pt3 = st.columns(3)
-                pt1.metric("Project Work Hrs",  f"{productive_hrs:.1f}h",
+                pt1.metric("Project Work Hrs",   f"{productive_hrs:.1f}h",
                            help="Hours logged against actual project job codes")
-                pt2.metric("Overhead Hrs",      f"{overhead_hrs:.1f}h",
+                pt2.metric("Overhead Hrs",        f"{overhead_hrs:.1f}h",
                            help="Hours on GENERAL, ACCOUNTS, PURCHASE etc.")
-                pt3.metric("Productivity Index", f"{productive_pct:.1f}%",
+                pt3.metric("Productivity Index",  f"{productive_pct:.1f}%",
                            delta="target ≥ 60%",
                            delta_color="normal" if productive_pct >= 60 else "inverse")
 
-                def style_type(val):
-                    return 'background-color: #d4edda' if val == 'Project Work' else 'background-color: #fff3cd'
-
-                st.dataframe(
-                    job_grp.style.applymap(style_type, subset=['Type']),
-                    use_container_width=True, hide_index=True
+                job_grp['Type'] = job_grp['Job Code'].apply(
+                    lambda c: '🟢 Project Work' if str(c).upper() not in OVERHEAD_CODES else '🟡 Overhead'
                 )
+
+                st.dataframe(job_grp, use_container_width=True, hide_index=True)
 
             # ── Day-wise log count heatmap (single employee) ──
             if s_name != "All Staff" and not df_work_f.empty:
