@@ -914,12 +914,6 @@ with main_tabs[1]:
                     r1, r2 = st.columns(2)
                     r1.text_input("Agitator Run Test", value="NA")
                     r2.text_input("Jacket Hydro Test",  value="NA")
-                if e_type == "Storage Tank":
-                    st.markdown("#### Tank Specific")
-                    t1, t2 = st.columns(2)
-                    t1.text_input("Roof Structure Fit-up", value="NA")
-                    t2.text_input("Curb Angle Inspection",  value="NA")
-
                 st.markdown("#### Authorization")
                 insp_by    = st.selectbox("Quality Inspector", inspectors, key="qcl_insp")
                 tech_notes = st.text_area("Technical Notes / Deviations")
