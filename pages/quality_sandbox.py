@@ -871,83 +871,84 @@ with main_tabs[1]:
             except Exception:
                 pass
 
-            with st.form("qcl_form", clear_on_submit=True):
-                st.markdown("#### Equipment Details")
-                r1, r2, r3 = st.columns(3)
-                item_n   = r1.text_input("Name of Item / Description", value="30KL SS304 OIL HOLDING TANK")
-                drg_n    = r2.text_input("Drawing Number",             value="3050101710")
-                qap_n    = r3.text_input("QAP Reference No.",          value="BGEI/2025-26/1500")
-                r4, r5, r6 = st.columns(3)
-                e_id     = r4.text_input("Equipment ID No.")
-                qty_val  = r5.text_input("Quantity",                   value="1 No.")
-                ins_date = r6.date_input("Inspection Date",            value=get_now_ist().date())
+            # ── Equipment Details (outside form so checkpoint buttons work) ──
+            st.markdown("#### Equipment Details")
+            r1, r2, r3 = st.columns(3)
+            item_n   = r1.text_input("Name of Item / Description", value="30KL SS304 OIL HOLDING TANK", key="qcl_item")
+            drg_n    = r2.text_input("Drawing Number",             value="3050101710",                  key="qcl_drg")
+            qap_n    = r3.text_input("QAP Reference No.",          value="BGEI/2025-26/1500",           key="qcl_qap")
+            r4, r5, r6 = st.columns(3)
+            e_id     = r4.text_input("Equipment ID No.",  key="qcl_eid")
+            qty_val  = r5.text_input("Quantity", value="1 No.", key="qcl_qty")
+            ins_date = r6.date_input("Inspection Date", value=get_now_ist().date(), key="qcl_date")
 
-                st.markdown("#### Inspection Check Points")
-                st.caption("W = Witnessed | V = Verified | R = Review | NIL = Not Applicable")
+            # ── Inspection Check Points ──────────────────────────────────
+            st.markdown("#### Inspection Check Points")
+            st.caption("W = Witnessed | V = Verified | R = Review | NIL = Not Applicable")
 
-                # Session-state key scoped to job so switching jobs resets rows
-                _ck_key = f"qcl_checkpoints_{sel_job}"
-                _default_checkpoints = [
-                    {"checkpoint": "Material Certification — Material Flow Chart",   "extent": "100%",           "format": "Material Flow Chart"},
-                    {"checkpoint": "Material Certification — Mat Test Certificates", "extent": "100%",           "format": "Mat Test Certificates"},
-                    {"checkpoint": "Fit-up Exam",                                    "extent": "100%",           "format": "Inspection Report"},
-                    {"checkpoint": "Dimensions & Visual Exam",                       "extent": "100%",           "format": "Inspection Report"},
-                    {"checkpoint": "PT of all Welds",                                "extent": "As per QAP/Dwg","format": "LPI Report"},
-                    {"checkpoint": "Hydro Test / Vacuum Test Shell Side",            "extent": "100%",           "format": "Hydro Test Report"},
-                    {"checkpoint": "Final Inspection before Dispatch",               "extent": "100%",           "format": "Inspection Report"},
-                    {"checkpoint": "Identification Punching",                        "extent": "",               "format": "Punching"},
-                    {"checkpoint": "NCR If any",                                     "extent": "",               "format": "NC Report"},
-                ]
-                if _ck_key not in st.session_state:
-                    st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
+            _ck_key = f"qcl_checkpoints_{sel_job}"
+            _default_checkpoints = [
+                {"checkpoint": "Material Certification — Material Flow Chart",   "extent": "100%",            "format": "Material Flow Chart"},
+                {"checkpoint": "Material Certification — Mat Test Certificates", "extent": "100%",            "format": "Mat Test Certificates"},
+                {"checkpoint": "Fit-up Exam",                                    "extent": "100%",            "format": "Inspection Report"},
+                {"checkpoint": "Dimensions & Visual Exam",                       "extent": "100%",            "format": "Inspection Report"},
+                {"checkpoint": "PT of all Welds",                                "extent": "As per QAP/Dwg", "format": "LPI Report"},
+                {"checkpoint": "Hydro Test / Vacuum Test Shell Side",            "extent": "100%",            "format": "Hydro Test Report"},
+                {"checkpoint": "Final Inspection before Dispatch",               "extent": "100%",            "format": "Inspection Report"},
+                {"checkpoint": "Identification Punching",                        "extent": "",                "format": "Punching"},
+                {"checkpoint": "NCR If any",                                     "extent": "",                "format": "NC Report"},
+            ]
+            if _ck_key not in st.session_state:
+                st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
 
-                # Add / Reset buttons (outside form so they trigger rerun)
-                _ba, _bb, _ = st.columns([1, 1, 6])
-                if _ba.button("+ Add Row", key="qcl_add_row"):
-                    st.session_state[_ck_key].append(
-                        {"checkpoint": "", "extent": "100%", "format": "Inspection Report"})
-                    st.rerun()
-                if _bb.button("Reset Defaults", key="qcl_reset"):
-                    st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
-                    st.rerun()
+            # Add / Reset / Delete buttons — must be OUTSIDE any form
+            _ba, _bb, _ = st.columns([1, 1, 6])
+            if _ba.button("+ Add Row", key="qcl_add_row"):
+                st.session_state[_ck_key].append(
+                    {"checkpoint": "", "extent": "100%", "format": "Inspection Report"})
+                st.rerun()
+            if _bb.button("Reset Defaults", key="qcl_reset"):
+                st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
+                st.rerun()
 
-                # Column headers
-                hcols = st.columns([4, 2, 2, 2, 2, 2, 1])
-                for _h, _col in zip(["Check Point","Extent","Format",
-                                      "Verification","Docs","Remarks","Del"], hcols):
-                    _col.markdown(f"**{_h}**")
+            # Column headers
+            hcols = st.columns([4, 2, 2, 2, 2, 2, 1])
+            for _h, _col in zip(["Check Point","Extent","Format",
+                                  "Verification","Docs","Remarks",""], hcols):
+                _col.markdown(f"**{_h}**")
 
-                check_results = []
-                _del_idx = None
-                for i, row in enumerate(st.session_state[_ck_key]):
-                    gc = st.columns([4, 2, 2, 2, 2, 2, 1])
-                    cp  = gc[0].text_input("", value=row.get("checkpoint",""), key=f"qcl_cp_{i}", label_visibility="collapsed")
-                    ext = gc[1].text_input("", value=row.get("extent",""),     key=f"qcl_ex_{i}", label_visibility="collapsed")
-                    fmt = gc[2].text_input("", value=row.get("format",""),     key=f"qcl_fm_{i}", label_visibility="collapsed")
-                    verif  = gc[3].selectbox("", ["W","V","R","NIL","P"], key=f"qcl_v_{i}",  label_visibility="collapsed")
-                    docs   = gc[4].selectbox("", ["Yes","No","NA"],       key=f"qcl_d_{i}",  label_visibility="collapsed")
-                    remark = gc[5].text_input("",                          key=f"qcl_r_{i}",  label_visibility="collapsed")
-                    if gc[6].button("🗑", key=f"qcl_del_{i}"):
-                        _del_idx = i
-                    check_results.append({"checkpoint": cp, "extent": ext, "format": fmt,
-                                          "verification": verif, "docs": docs, "remarks": remark})
+            check_results = []
+            _del_idx = None
+            for i, row in enumerate(st.session_state[_ck_key]):
+                gc = st.columns([4, 2, 2, 2, 2, 2, 1])
+                cp     = gc[0].text_input("", value=row.get("checkpoint",""), key=f"qcl_cp_{i}", label_visibility="collapsed")
+                ext    = gc[1].text_input("", value=row.get("extent",""),     key=f"qcl_ex_{i}", label_visibility="collapsed")
+                fmt    = gc[2].text_input("", value=row.get("format",""),     key=f"qcl_fm_{i}", label_visibility="collapsed")
+                verif  = gc[3].selectbox("", ["W","V","R","NIL","P"],         key=f"qcl_v_{i}",  label_visibility="collapsed")
+                docs   = gc[4].selectbox("", ["Yes","No","NA"],               key=f"qcl_d_{i}",  label_visibility="collapsed")
+                remark = gc[5].text_input("",                                  key=f"qcl_r_{i}",  label_visibility="collapsed")
+                if gc[6].button("🗑", key=f"qcl_del_{i}"):
+                    _del_idx = i
+                check_results.append({"checkpoint": cp, "extent": ext, "format": fmt,
+                                      "verification": verif, "docs": docs, "remarks": remark})
 
-                # Delete row outside inner loop to avoid index shift
-                if _del_idx is not None:
-                    st.session_state[_ck_key].pop(_del_idx)
-                    st.rerun()
+            if _del_idx is not None:
+                st.session_state[_ck_key].pop(_del_idx)
+                st.rerun()
 
-                if e_type == "Reactor":
-                    st.markdown("#### Reactor Specific")
-                    r1, r2 = st.columns(2)
-                    r1.text_input("Agitator Run Test", value="NA")
-                    r2.text_input("Jacket Hydro Test",  value="NA")
-                st.markdown("#### Authorization")
+            if e_type == "Reactor":
+                st.markdown("#### Reactor Specific")
+                _r1, _r2 = st.columns(2)
+                _r1.text_input("Agitator Run Test", value="NA", key="qcl_agit")
+                _r2.text_input("Jacket Hydro Test",  value="NA", key="qcl_jack")
+
+            # ── Authorization + Save (only these need to be in a form) ──
+            st.markdown("#### Authorization")
+            with st.form("qcl_form", clear_on_submit=False):
                 insp_by    = st.selectbox("Quality Inspector", inspectors, key="qcl_insp")
                 tech_notes = st.text_area("Technical Notes / Deviations")
 
                 if st.form_submit_button("Save Quality Check List", use_container_width=True):
-                    # Build named status fields from dynamic rows (match by checkpoint name)
                     def _get_verif(name_fragment):
                         for r in check_results:
                             if name_fragment.lower() in r["checkpoint"].lower():
@@ -971,17 +972,16 @@ with main_tabs[1]:
                         "final_status":    _get_verif("final insp"),
                         "punching_status": _get_verif("punching"),
                         "ncr_status":      _get_verif("ncr"),
-                        "checklist_data":  check_results,   # full dynamic rows as JSONB
+                        "checklist_data":  check_results,
                         "technical_notes": tech_notes,
                         "inspected_by":    insp_by,
                         "inspection_date": str(ins_date),
                     }
-                    safe_write(
+                    ok = safe_write(
                         lambda: conn.table("quality_check_list").insert(payload).execute(),
                         success_msg=f"Quality Check List for {sel_job} saved!"
                     )
-                    # Clear session rows after successful save
-                    if _ck_key in st.session_state:
+                    if ok and _ck_key in st.session_state:
                         del st.session_state[_ck_key]
                     st.cache_data.clear()
 
