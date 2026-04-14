@@ -406,6 +406,11 @@ with main_tabs[1]:
                                 ic1.caption(f"📐 Specs: {p_row['specs']}")
                             if p_row.get('special_notes'):
                                 ic1.caption(f"📝 Notes: {p_row['special_notes']}")
+                            try:
+                                indent_dt_fmt = pd.to_datetime(p_row['created_at']).astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
+                            except Exception:
+                                indent_dt_fmt = str(p_row.get('created_at', '—'))[:16]
+                            ic1.caption(f"🕐 Indented: {indent_dt_fmt}")
 
                             if status == "Rejected":
                                 ic1.error(f"Reason: {p_row.get('reject_note','No details')}")
