@@ -494,7 +494,7 @@ with main_tabs[1]:
                                 f"(Indent #{indent_no}):\n"
                                 f"{item_lines}\n\n"
                                 f"Kindly share your best quote at the earliest.\n\n"
-                                f"Regards,\nSanthoshi\nB&G Engineering Industries"
+                                f"Regards,\nSanthoshi-7995565797\nB&G Engineering Industries"
                             )
                             mail_url = (
                                 f"mailto:{v_email}"
