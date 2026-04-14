@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 import pytz
 import urllib.parse
+from collections import defaultdict
 
 # ============================================================
 # 1. SETUP & BRANDING
@@ -37,13 +38,6 @@ def safe_db_write(fn, success_msg=None, error_prefix="DB Error"):
 
 def clean_phone(raw):
     return ''.join(filter(str.isdigit, str(raw or "")))
-
-def get_staff_phones():
-    try:
-        res = conn.table("master_staff").select("name, phone, email").execute()
-        return {r['name']: r for r in res.data} if res.data else {}
-    except Exception:
-        return {}
 
 # ============================================================
 # 3. DATA LOADERS
@@ -79,6 +73,13 @@ def get_vendors():
         return res.data if res.data else []
     except Exception:
         return []
+
+def get_staff_phones():
+    try:
+        res = conn.table("master_staff").select("name, phone, email").execute()
+        return {r['name']: r for r in res.data} if res.data else {}
+    except Exception:
+        return {}
 
 # ============================================================
 # 4. BRANDED HEADER
@@ -170,16 +171,16 @@ with main_tabs[0]:
                     st.warning("⚠️ Draft limit reached (20 items). Please submit before adding more.")
                 else:
                     st.session_state.indent_cart.append({
-                        "job_no": ", ".join(sel_jobs),
+                        "job_no":         ", ".join(sel_jobs),
                         "material_group": m_grp,
-                        "item_name": i_name.upper(),
-                        "specs": i_specs,
-                        "quantity": i_qty,
-                        "units": i_unit,
-                        "special_notes": i_note,
-                        "triggered_by": raised_by,
-                        "status": "Triggered",
-                        "is_urgent": rd.get('is_urgent', False)
+                        "item_name":      i_name.upper(),
+                        "specs":          i_specs,
+                        "quantity":       i_qty,
+                        "units":          i_unit,
+                        "special_notes":  i_note,
+                        "triggered_by":   raised_by,
+                        "status":         "Triggered",
+                        "is_urgent":      rd.get('is_urgent', False)
                     })
                     st.session_state.rev_data = None
                     st.rerun()
@@ -268,14 +269,12 @@ with main_tabs[0]:
                     if h_row.get('special_notes'):
                         col1.caption(f"📝 Notes: {h_row['special_notes']}")
 
-                    # Rejected
                     if status == "Rejected":
                         col1.error(f"Reason: {h_row.get('reject_note', 'No details')}")
                         if col2.button("📝 REVISE", key=f"rev_{row_id}", use_container_width=True):
                             st.session_state.rev_data = h_row
                             st.rerun()
 
-                    # Triggered
                     if status == "Triggered":
                         if col2.button("✏️ EDIT", key=f"edit_{row_id}", use_container_width=True):
                             safe_db_write(
@@ -308,7 +307,6 @@ with main_tabs[0]:
                             )
                             st.rerun()
 
-                    # Editing
                     if status == "Editing":
                         col1.warning("⚠️ Edit in progress")
                         if col2.button("▶️ RESUME", key=f"res_{row_id}", use_container_width=True):
@@ -326,13 +324,14 @@ with main_tabs[0]:
                             )
                             st.rerun()
 
-                    # Active / received — read only
                     if status in ["Ordered", "Received", "Partial"]:
                         col2.write("✅ Active")
     else:
         st.info("No indent history found.")
 
-st.divider()
+    st.divider()
+
+    # ── RATE ENQUIRY SECTION ─────────────────────────────────
     st.subheader("💰 Rate Enquiry Requests")
 
     with st.expander("➕ Request Rate Enquiry", expanded=False):
@@ -341,9 +340,9 @@ st.divider()
             re_item  = re1.text_input("Item Name*")
             re_specs = re2.text_input("Specifications")
             re3, re4, re5 = st.columns(3)
-            re_qty   = re3.number_input("Qty", min_value=0.1, value=1.0)
-            re_unit  = re4.selectbox("Units", ["Nos", "Kgs", "Mts", "Sft", "Sets"])
-            re_job   = re5.text_input("Job No (optional)")
+            re_qty  = re3.number_input("Qty", min_value=0.1, value=1.0)
+            re_unit = re4.selectbox("Units", ["Nos", "Kgs", "Mts", "Sft", "Sets"])
+            re_job  = re5.text_input("Job No (optional)")
 
             if st.form_submit_button("📨 Submit Rate Enquiry", use_container_width=True):
                 if not re_item:
@@ -365,7 +364,7 @@ st.divider()
 
     st.markdown("#### 📋 My Rate Enquiries")
     try:
-        my_re = conn.table("rate_enquiries").select("*") \
+        my_re      = conn.table("rate_enquiries").select("*") \
             .eq("requested_by", raised_by) \
             .order("created_at", desc=True).limit(30).execute()
         my_re_data = my_re.data or []
@@ -391,7 +390,7 @@ st.divider()
                 try:
                     re_dt = pd.to_datetime(re_row['created_at']).astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
                 except Exception:
-                    re_dt = str(re_row.get('created_at',''))[:16]
+                    re_dt = str(re_row.get('created_at', ''))[:16]
                 rc1.caption(f"🕐 Requested: {re_dt}")
 
                 if re_status == "Quoted":
@@ -446,9 +445,7 @@ with main_tabs[1]:
     if pending_data:
         df_p = pd.DataFrame(pending_data)
         df_p['_has_urgent'] = df_p['is_urgent'].fillna(False)
-        df_p = df_p.sort_values(
-            by=['_has_urgent', 'indent_no'], ascending=[False, False]
-        )
+        df_p = df_p.sort_values(by=['_has_urgent', 'indent_no'], ascending=[False, False])
 
         for indent_no, indent_grp in df_p.groupby('indent_no', sort=False):
             indent_grp  = indent_grp.reset_index(drop=True)
@@ -473,7 +470,6 @@ with main_tabs[1]:
                     grp_items = indent_grp[
                         indent_grp['material_group'] == mat_grp
                     ].reset_index(drop=True)
-
                     gkey = f"{indent_no}_g{grp_idx}"
 
                     gh1, gh2 = st.columns([2.5, 2])
@@ -504,7 +500,7 @@ with main_tabs[1]:
                             try:
                                 indent_dt_fmt = pd.to_datetime(p_row['created_at']).astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
                             except Exception:
-                                indent_dt_fmt = str(p_row.get('created_at', '—'))[:16]
+                                indent_dt_fmt = str(p_row.get('created_at', ''))[:16]
                             ic1.caption(f"🕐 Indented: {indent_dt_fmt}")
 
                             if status == "Rejected":
@@ -516,8 +512,7 @@ with main_tabs[1]:
 
                             if status == "Triggered":
                                 if not p_row.get('is_urgent'):
-                                    if ic3.button("🚨", key=f"pc_trig_{ukey}",
-                                                  help="Mark Urgent"):
+                                    if ic3.button("🚨", key=f"pc_trig_{ukey}", help="Mark Urgent"):
                                         safe_db_write(
                                             lambda rid=row_id: conn.table("purchase_orders")
                                                 .update({"is_urgent": True})
@@ -528,8 +523,7 @@ with main_tabs[1]:
                                 else:
                                     ic3.caption("Priority")
 
-                                if ic4.button("🗑️", key=f"pc_del_{ukey}",
-                                              help="Delete item"):
+                                if ic4.button("🗑️", key=f"pc_del_{ukey}", help="Delete item"):
                                     safe_db_write(
                                         lambda rid=row_id: conn.table("purchase_orders")
                                             .delete().eq("id", rid).execute(),
@@ -545,9 +539,7 @@ with main_tabs[1]:
                             st.caption(f"Enquiry for **{mat_grp}** group")
 
                             sel_vendor = st.selectbox(
-                                "Select vendor",
-                                options=vendor_list,
-                                key=f"pc_vsel_{gkey}"
+                                "Select vendor", options=vendor_list, key=f"pc_vsel_{gkey}"
                             )
                             v_info  = vendor_options.get(sel_vendor, {})
                             v_phone = clean_phone(v_info.get('phone_number', ""))
@@ -562,26 +554,27 @@ with main_tabs[1]:
                                 )
 
                             wa_msg = (
-                                f"B&G Engineering — {mat_grp} Enquiry\n"
+                                f"B&G Engineering Industries — {mat_grp} Enquiry\n"
                                 f"Indent Ref: #{indent_no}\n"
                                 f"Date: {date.today().strftime('%d-%m-%Y')}\n"
                                 f"{'='*28}\n"
                                 f"{item_lines}\n"
                                 f"{'='*28}\n"
-                                f"Please share your best quote.\nRegards,\nSanthoshi,\nB&G Engineering Industries"
+                                f"Please share your best quote.\n"
+                                f"Regards,\nSanthoshi,\nB&G Engineering Industries"
                             )
                             wa_base = f"https://wa.me/{v_phone}" if v_phone else "https://wa.me/"
                             wa_url  = f"{wa_base}?text={urllib.parse.quote(wa_msg)}"
-                            st.markdown(
+                            wa_html = (
                                 f'<a href="{wa_url}" target="_blank" style="text-decoration:none;">'
                                 f'<div style="background:#25D366; color:white; padding:7px; '
                                 f'border-radius:5px; text-align:center; font-weight:bold; '
-                                f'margin-bottom:5px;">📲 WhatsApp — {mat_grp}</div></a>',
-                                unsafe_allow_html=True
+                                f'margin-bottom:5px;">📲 WhatsApp — {mat_grp}</div></a>'
                             )
+                            st.markdown(wa_html, unsafe_allow_html=True)
 
-                            mail_subj = urllib.parse.quote(
-                                f"{mat_grp} Enquiry — Indent #{indent_no} | B&G Engineering"
+                            mail_subj     = urllib.parse.quote(
+                                f"{mat_grp} Enquiry — Indent #{indent_no} | B&G Engineering Industries"
                             )
                             mail_body_str = (
                                 f"Dear Sir/Madam,\n\n"
@@ -589,20 +582,20 @@ with main_tabs[1]:
                                 f"(Indent #{indent_no}):\n"
                                 f"{item_lines}\n\n"
                                 f"Kindly share your best quote at the earliest.\n\n"
-                                f"Regards,\nSanthoshi-7995565797\nB&G Engineering Industries"
+                                f"Regards,\nSanthoshi\nB&G Engineering Industries"
                             )
-                            mail_url = (
+                            mail_url  = (
                                 f"mailto:{v_email}"
                                 f"?subject={mail_subj}"
                                 f"&body={urllib.parse.quote(mail_body_str)}"
                             )
-                            st.markdown(
+                            mail_html = (
                                 f'<a href="{mail_url}" style="text-decoration:none;">'
                                 f'<div style="background:#007bff; color:white; padding:7px; '
                                 f'border-radius:5px; text-align:center; font-weight:bold; '
-                                f'margin-bottom:5px;">📧 Email — {mat_grp}</div></a>',
-                                unsafe_allow_html=True
+                                f'margin-bottom:5px;">📧 Email — {mat_grp}</div></a>'
                             )
+                            st.markdown(mail_html, unsafe_allow_html=True)
 
                             grp_ids      = grp_items['id'].tolist()
                             already_sent = grp_items['enquiry_sent_at'].notna().all() \
@@ -615,11 +608,8 @@ with main_tabs[1]:
                                     sent_fmt = str(first_sent)[:16]
                                 st.success(f"✅ Enquiry sent: {sent_fmt}")
                             else:
-                                if st.button(
-                                    "📬 Mark Enquiry Sent",
-                                    key=f"pc_enq_{gkey}",
-                                    use_container_width=True
-                                ):
+                                if st.button("📬 Mark Enquiry Sent", key=f"pc_enq_{gkey}",
+                                             use_container_width=True):
                                     now_ist = datetime.now(IST).isoformat()
                                     errors  = []
                                     for rid in grp_ids:
@@ -642,21 +632,23 @@ with main_tabs[1]:
                                 f"<td>{r['job_no']}</td></tr>"
                                 for ii, r in enumerate(grp_items.to_dict('records'))
                             ])
-                            html_form = f"""<html><body>
-                            <table border="1" cellpadding="5" cellspacing="0">
-                            <tr><td colspan="5" style="font-size:16pt;font-weight:bold;
-                                color:#003366;">B&G ENGINEERING</td></tr>
-                            <tr><td colspan="2">Indent Ref:</td>
-                                <td colspan="3"><b>#{indent_no}</b></td></tr>
-                            <tr><td colspan="2">Material Group:</td>
-                                <td colspan="3"><b>{mat_grp}</b></td></tr>
-                            <tr><td colspan="2">Date:</td>
-                                <td colspan="3">{date.today().strftime('%d-%m-%Y')}</td></tr>
-                            <tr style="background:#003366;color:white;">
-                                <td>#</td><td>Item</td><td>Specifications</td>
-                                <td>Qty</td><td>Job No</td></tr>
-                            {item_rows_html}
-                            </table></body></html>"""
+                            html_form = (
+                                f"<html><body>"
+                                f"<table border='1' cellpadding='5' cellspacing='0'>"
+                                f"<tr><td colspan='5' style='font-size:16pt;font-weight:bold;"
+                                f"color:#003366;'>B&G ENGINEERING INDUSTRIES</td></tr>"
+                                f"<tr><td colspan='2'>Indent Ref:</td>"
+                                f"<td colspan='3'><b>#{indent_no}</b></td></tr>"
+                                f"<tr><td colspan='2'>Material Group:</td>"
+                                f"<td colspan='3'><b>{mat_grp}</b></td></tr>"
+                                f"<tr><td colspan='2'>Date:</td>"
+                                f"<td colspan='3'>{date.today().strftime('%d-%m-%Y')}</td></tr>"
+                                f"<tr style='background:#003366;color:white;'>"
+                                f"<td>#</td><td>Item</td><td>Specifications</td>"
+                                f"<td>Qty</td><td>Job No</td></tr>"
+                                f"{item_rows_html}"
+                                f"</table></body></html>"
+                            )
                             st.download_button(
                                 label=f"📄 Export {mat_grp} (XLS)",
                                 data=html_form,
@@ -675,14 +667,13 @@ with main_tabs[1]:
                                 )
                                 if st.button("Confirm Order", key=f"pc_ok_{gkey}",
                                              type="primary", use_container_width=True):
-                                    grp_ids = grp_items['id'].tolist()
-                                    errors  = []
+                                    errors = []
                                     for rid in grp_ids:
                                         try:
                                             conn.table("purchase_orders").update({
-                                                "status": "Ordered",
-                                                "po_no": p_no,
-                                                "purchase_reply": p_rem
+                                                "status":           "Ordered",
+                                                "po_no":            p_no,
+                                                "purchase_reply":   p_rem
                                             }).eq("id", rid).execute()
                                         except Exception as e:
                                             errors.append(str(e))
@@ -694,20 +685,15 @@ with main_tabs[1]:
                                         st.rerun()
 
                             with st.expander("🚫 Reject this group"):
-                                rej_r = st.text_area(
-                                    "Rejection reason", key=f"pc_rejr_{gkey}"
-                                )
-                                if st.button("Confirm Rejection",
-                                             key=f"pc_rejb_{gkey}",
-                                             type="secondary",
-                                             use_container_width=True):
+                                rej_r = st.text_area("Rejection reason", key=f"pc_rejr_{gkey}")
+                                if st.button("Confirm Rejection", key=f"pc_rejb_{gkey}",
+                                             type="secondary", use_container_width=True):
                                     if rej_r:
-                                        grp_ids = grp_items['id'].tolist()
-                                        errors  = []
+                                        errors = []
                                         for rid in grp_ids:
                                             try:
                                                 conn.table("purchase_orders").update({
-                                                    "status": "Rejected",
+                                                    "status":      "Rejected",
                                                     "reject_note": rej_r
                                                 }).eq("id", rid).execute()
                                             except Exception as e:
@@ -725,11 +711,14 @@ with main_tabs[1]:
     else:
         st.info("No pending purchase requests found (last 90 days).")
 
-st.divider()
+    # ── RATE ENQUIRIES FROM ESTIMATION ───────────────────────
+    st.divider()
     st.subheader("💰 Rate Enquiries from Estimation Team")
 
+    staff_contacts = get_staff_phones()
+
     try:
-        all_re = conn.table("rate_enquiries").select("*") \
+        all_re      = conn.table("rate_enquiries").select("*") \
             .eq("status", "Pending") \
             .order("created_at", desc=True).limit(50).execute()
         all_re_data = all_re.data or []
@@ -737,21 +726,19 @@ st.divider()
         st.error(f"Rate enquiry load error: {e}")
         all_re_data = []
 
-    staff_contacts = get_staff_phones()
-
     if all_re_data:
-        st.caption(f"{len(all_re_data)} pending rate enquirie(s)")
+        st.caption(f"{len(all_re_data)} pending rate enquiry/ies")
         for re_row in all_re_data:
-            re_id       = re_row['id']
-            requester   = re_row.get('requested_by', '—')
-            req_info    = staff_contacts.get(requester, {})
-            req_phone   = clean_phone(req_info.get('phone', ''))
-            req_email   = req_info.get('email', '')
+            re_id     = re_row['id']
+            requester = re_row.get('requested_by', '—')
+            req_info  = staff_contacts.get(requester, {})
+            req_phone = clean_phone(req_info.get('phone', ''))
+            req_email = req_info.get('email', '')
 
             try:
                 re_dt = pd.to_datetime(re_row['created_at']).astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
             except Exception:
-                re_dt = str(re_row.get('created_at',''))[:16]
+                re_dt = str(re_row.get('created_at', ''))[:16]
 
             with st.container(border=True):
                 st.markdown(
@@ -765,65 +752,62 @@ st.divider()
                     st.caption(f"Job: {re_row['job_no']}")
                 st.caption(f"🕐 Requested: {re_dt}")
 
-                st.markdown("**Send Vendor Enquiry:**")
                 pv1, pv2 = st.columns(2)
 
-                # Vendor WhatsApp for rate enquiry
                 with pv1:
-                    re_vsel = st.selectbox(
-                        "Select Vendor",
-                        vendor_list,
-                        key=f"re_vsel_{re_id}"
-                    )
-                    re_vinfo  = vendor_options.get(re_vsel, {})
-                    re_vphone = clean_phone(re_vinfo.get('phone_number', ''))
-                    re_vemail = re_vinfo.get('email', '')
+                    with st.container(border=True):
+                        st.caption("📤 Send Vendor Enquiry")
+                        re_vsel   = st.selectbox(
+                            "Select Vendor", vendor_list, key=f"re_vsel_{re_id}"
+                        )
+                        re_vinfo  = vendor_options.get(re_vsel, {})
+                        re_vphone = clean_phone(re_vinfo.get('phone_number', ''))
+                        re_vemail = re_vinfo.get('email', '')
 
-                    re_va_msg = (
-                        f"B&G Engineering Industries — Rate Enquiry\n"
-                        f"Date: {date.today().strftime('%d-%m-%Y')}\n"
-                        f"{'='*28}\n"
-                        f"Item: {re_row['item_name']}\n"
-                        f"Qty: {re_row['quantity']} {re_row['units']}\n"
-                        + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
-                        + f"{'='*28}\n"
-                        f"Please share your best rate.\n"
-                        f"Regards,\nSanthoshi,\nB&G Engineering Industries"
-                    )
-                    re_wa_url = (
-                        f"https://wa.me/{re_vphone}?text={urllib.parse.quote(re_va_msg)}"
-                        if re_vphone else "https://wa.me/"
-                    )
-                    st.markdown(
-                        f'<a href="{re_wa_url}" target="_blank" style="text-decoration:none;">'
-                        f'<div style="background:#25D366; color:white; padding:7px; '
-                        f'border-radius:5px; text-align:center; font-weight:bold;">
-                        f'📲 WhatsApp Vendor</div></a>',
-                        unsafe_allow_html=True
-                    )
+                        re_va_msg = (
+                            f"B&G Engineering Industries — Rate Enquiry\n"
+                            f"Date: {date.today().strftime('%d-%m-%Y')}\n"
+                            f"{'='*28}\n"
+                            f"Item: {re_row['item_name']}\n"
+                            f"Qty: {re_row['quantity']} {re_row['units']}\n"
+                            + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
+                            + f"{'='*28}\n"
+                            f"Please share your best rate.\n"
+                            f"Regards,\nSanthoshi,\nB&G Engineering Industries"
+                        )
+                        re_wa_url = (
+                            f"https://wa.me/{re_vphone}?text={urllib.parse.quote(re_va_msg)}"
+                            if re_vphone else "https://wa.me/"
+                        )
+                        re_wa_html = (
+                            f'<a href="{re_wa_url}" target="_blank" style="text-decoration:none;">'
+                            f'<div style="background:#25D366; color:white; padding:7px; '
+                            f'border-radius:5px; text-align:center; font-weight:bold; '
+                            f'margin-bottom:5px;">📲 WhatsApp Vendor</div></a>'
+                        )
+                        st.markdown(re_wa_html, unsafe_allow_html=True)
 
-                    re_mail_subj = urllib.parse.quote(
-                        f"Rate Enquiry — {re_row['item_name']} | B&G Engineering Industries"
-                    )
-                    re_mail_body = urllib.parse.quote(
-                        f"Dear Sir/Madam,\n\n"
-                        f"Please find our rate enquiry:\n\n"
-                        f"Item: {re_row['item_name']}\n"
-                        f"Qty: {re_row['quantity']} {re_row['units']}\n"
-                        + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
-                        + f"\nKindly share your best rate at the earliest.\n\n"
-                        f"Regards,\nSanthoshi\nB&G Engineering Industries"
-                    )
-                    re_mail_url = f"mailto:{re_vemail}?subject={re_mail_subj}&body={re_mail_body}"
-                    st.markdown(
-                        f'<a href="{re_mail_url}" style="text-decoration:none;">'
-                        f'<div style="background:#007bff; color:white; padding:7px; '
-                        f'border-radius:5px; text-align:center; font-weight:bold;">
-                        f'📧 Email Vendor</div></a>',
-                        unsafe_allow_html=True
-                    )
+                        re_mail_subj = urllib.parse.quote(
+                            f"Rate Enquiry — {re_row['item_name']} | B&G Engineering Industries"
+                        )
+                        re_mail_body = urllib.parse.quote(
+                            f"Dear Sir/Madam,\n\n"
+                            f"Please find our rate enquiry:\n\n"
+                            f"Item: {re_row['item_name']}\n"
+                            f"Qty: {re_row['quantity']} {re_row['units']}\n"
+                            + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
+                            + f"\nKindly share your best rate at the earliest.\n\n"
+                            f"Regards,\nSanthoshi\nB&G Engineering Industries"
+                        )
+                        re_mail_url  = f"mailto:{re_vemail}?subject={re_mail_subj}&body={re_mail_body}"
+                        re_mail_html = (
+                            f'<a href="{re_mail_url}" style="text-decoration:none;">'
+                            f'<div style="background:#007bff; color:white; padding:7px; '
+                            f'border-radius:5px; text-align:center; font-weight:bold; '
+                            f'margin-bottom:5px;">📧 Email Vendor</div></a>'
+                        )
+                        st.markdown(re_mail_html, unsafe_allow_html=True)
 
-                # Enter rate + send back to requester
                 with pv2:
                     with st.container(border=True):
                         st.caption("📥 Enter Quoted Rate & Notify Requester")
@@ -842,7 +826,6 @@ st.divider()
                             key=f"re_rem_{re_id}"
                         )
 
-                        # Build quote summary message
                         quote_summary = (
                             f"B&G Engineering Industries — Rate Quote\n"
                             f"{'='*28}\n"
@@ -851,27 +834,25 @@ st.divider()
                             + f"Qty: {re_row['quantity']} {re_row['units']}\n"
                             f"{'='*28}\n"
                             f"Vendor: {q_vendor}\n"
-                            f"Rate: ₹{q_rate} per {re_row['units']}\n"
-                            f"Total (approx): ₹{round(q_rate * re_row['quantity'], 2)}\n"
+                            f"Rate: Rs.{q_rate} per {re_row['units']}\n"
+                            f"Total (approx): Rs.{round(q_rate * re_row['quantity'], 2)}\n"
                             + (f"Remarks: {q_remarks}\n" if q_remarks else "")
                             + f"{'='*28}\n"
                             f"Regards,\nSanthoshi,\nB&G Engineering Industries"
                         )
 
-                        # WhatsApp to requester
-                        req_wa_url = (
+                        req_wa_url  = (
                             f"https://wa.me/{req_phone}?text={urllib.parse.quote(quote_summary)}"
                             if req_phone else "https://wa.me/"
                         )
-                        st.markdown(
+                        req_wa_html = (
                             f'<a href="{req_wa_url}" target="_blank" style="text-decoration:none;">'
                             f'<div style="background:#25D366; color:white; padding:7px; '
                             f'border-radius:5px; text-align:center; font-weight:bold; '
-                            f'margin-bottom:5px;">📲 WhatsApp Quote → {requester}</div></a>',
-                            unsafe_allow_html=True
+                            f'margin-bottom:5px;">📲 WhatsApp Quote → {requester}</div></a>'
                         )
+                        st.markdown(req_wa_html, unsafe_allow_html=True)
 
-                        # Email to requester
                         req_mail_subj = urllib.parse.quote(
                             f"Rate Quote — {re_row['item_name']} | B&G Engineering Industries"
                         )
@@ -882,23 +863,23 @@ st.divider()
                             + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
                             + f"Qty: {re_row['quantity']} {re_row['units']}\n\n"
                             f"Vendor: {q_vendor}\n"
-                            f"Rate: ₹{q_rate} per {re_row['units']}\n"
-                            f"Total (approx): ₹{round(q_rate * re_row['quantity'], 2)}\n"
+                            f"Rate: Rs.{q_rate} per {re_row['units']}\n"
+                            f"Total (approx): Rs.{round(q_rate * re_row['quantity'], 2)}\n"
                             + (f"Remarks: {q_remarks}\n" if q_remarks else "")
                             + f"\nRegards,\nSanthoshi\nB&G Engineering Industries"
                         )
-                        req_mail_url = (
+                        req_mail_url  = (
                             f"mailto:{req_email}"
                             f"?subject={req_mail_subj}"
                             f"&body={req_mail_body}"
                         )
-                        st.markdown(
+                        req_mail_html = (
                             f'<a href="{req_mail_url}" style="text-decoration:none;">'
                             f'<div style="background:#007bff; color:white; padding:7px; '
                             f'border-radius:5px; text-align:center; font-weight:bold; '
-                            f'margin-bottom:5px;">📧 Email Quote → {requester}</div></a>',
-                            unsafe_allow_html=True
+                            f'margin-bottom:5px;">📧 Email Quote → {requester}</div></a>'
                         )
+                        st.markdown(req_mail_html, unsafe_allow_html=True)
 
                         if st.button(
                             "✅ Save Rate & Mark Quoted",
@@ -957,13 +938,11 @@ with main_tabs[2]:
 
         po_ids = df_s['id'].tolist()
         try:
-            grn_res = conn.table("grn_receipts").select("*") \
-                .in_("po_id", po_ids).execute()
+            grn_res  = conn.table("grn_receipts").select("*").in_("po_id", po_ids).execute()
             grn_data = grn_res.data or []
         except Exception:
             grn_data = []
 
-        from collections import defaultdict
         receipts_by_po = defaultdict(list)
         for r in grn_data:
             receipts_by_po[r['po_id']].append(r)
@@ -1024,7 +1003,6 @@ with main_tabs[2]:
                         st.warning("🔄 Partial")
                     else:
                         st.info("🚚 In-Transit")
-
                     st.caption(f"Ordered: {ordered_qty:.1f} {units}")
                     if recd_so_far > 0:
                         st.caption(f"Received: {recd_so_far:.1f} {units}")
@@ -1046,8 +1024,7 @@ with main_tabs[2]:
                         "DC / Vehicle No", key=f"dc_{skey}", placeholder="DC-123"
                     )
                     s_rem = st.text_input(
-                        "Remarks", key=f"srem_{skey}",
-                        placeholder="Shortage/Damage/OK?"
+                        "Remarks", key=f"srem_{skey}", placeholder="Shortage/Damage/OK?"
                     )
 
                     is_full_receipt = abs(recv_qty - balance_qty) < 0.01
@@ -1078,13 +1055,13 @@ with main_tabs[2]:
                                 new_status     = "Received" if is_full_receipt else "Partial"
                                 update_payload = {"status": new_status}
                                 if is_full_receipt:
-                                    update_payload["received_date"]   = str(date.today())
-                                    update_payload["stores_remarks"]  = (
+                                    update_payload["received_date"]  = str(date.today())
+                                    update_payload["stores_remarks"] = (
                                         f"DC: {dc_no} | {s_rem} | "
                                         f"Full qty {ordered_qty} {units} received"
                                     )
                                 safe_db_write(
-                                    lambda st=new_status, pl=update_payload:
+                                    lambda pl=update_payload:
                                         conn.table("purchase_orders")
                                             .update(pl).eq("id", row_id).execute(),
                                     success_msg=(
@@ -1120,10 +1097,7 @@ with main_tabs[2]:
                         "DC No":    r.get('dc_no', '-'),
                         "Remarks":  r.get('remarks', '-'),
                     })
-                st.dataframe(
-                    pd.DataFrame(rows),
-                    use_container_width=True, hide_index=True
-                )
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             else:
                 fallback = conn.table("purchase_orders").select("*") \
                     .eq("status", "Received") \
@@ -1153,25 +1127,22 @@ with main_tabs[3]:
     cutoff_days = cutoff_opts[cutoff_sel]
     cutoff_date = date.today() - timedelta(days=cutoff_days)
 
-    an_status = fc2.selectbox(
+    an_status  = fc2.selectbox(
         "Status", ["All", "Triggered", "Ordered", "Partial", "Received", "Rejected"],
         key="an_status"
     )
-    an_group = fc3.selectbox(
+    an_group   = fc3.selectbox(
         "Material Group", ["All"] + get_material_groups(), key="an_group"
     )
     an_overdue = fc4.selectbox(
         "Overdue filter", ["All items", "Overdue only", "On time only"], key="an_overdue"
     )
-    an_job = fc5.selectbox(
-        "Job No", ["All"] + get_jobs(), key="an_job"
-    )
+    an_job     = fc5.selectbox("Job No", ["All"] + get_jobs(), key="an_job")
 
     try:
-        an_res = conn.table("purchase_orders").select("*") \
+        an_res  = conn.table("purchase_orders").select("*") \
             .gte("created_at", f"{cutoff_date}T00:00:00") \
-            .order("created_at", desc=True) \
-            .limit(300).execute()
+            .order("created_at", desc=True).limit(300).execute()
         an_data = an_res.data or []
     except Exception as e:
         st.error(f"Analytics load error: {e}")
@@ -1179,8 +1150,8 @@ with main_tabs[3]:
 
     try:
         if an_data:
-            an_ids  = [r['id'] for r in an_data]
-            grn_an  = conn.table("grn_receipts").select("po_id, received_date, received_qty") \
+            an_ids      = [r['id'] for r in an_data]
+            grn_an      = conn.table("grn_receipts").select("po_id, received_date, received_qty") \
                 .in_("po_id", an_ids).execute()
             grn_an_data = grn_an.data or []
         else:
@@ -1188,7 +1159,6 @@ with main_tabs[3]:
     except Exception:
         grn_an_data = []
 
-    from collections import defaultdict
     grn_lookup = defaultdict(lambda: {"first_date": None, "total_qty": 0})
     for g in grn_an_data:
         pid = g['po_id']
@@ -1198,7 +1168,7 @@ with main_tabs[3]:
             grn_lookup[pid]["first_date"] = fd
 
     if an_data:
-        df_an = pd.DataFrame(an_data)
+        df_an   = pd.DataFrame(an_data)
         today_d = date.today()
 
         def to_date(val):
@@ -1244,7 +1214,7 @@ with main_tabs[3]:
                 overdue_days = None
 
             is_overdue = overdue_days is not None and overdue_days > 0
-            pct = min(100, round(total_recd / ordered_qty * 100)) if ordered_qty > 0 else (
+            pct        = min(100, round(total_recd / ordered_qty * 100)) if ordered_qty > 0 else (
                 100 if status == 'Received' else 0
             )
 
@@ -1293,14 +1263,12 @@ with main_tabs[3]:
         overdue_count  = df_view['is_overdue'].sum()
         received_df    = df_view[df_view['status'] == 'Received']
         pending_df     = df_view[df_view['status'].isin(['Triggered','Ordered','Partial'])]
-
         avg_i_to_po    = df_view['d_indent_po'].dropna().mean()
         avg_po_to_recv = received_df['d_po_receipt'].dropna().mean()
-        avg_total      = received_df['d_total'].dropna().mean()
 
         m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Total Items",    total_items)
-        m2.metric("Pending",        len(pending_df))
+        m1.metric("Total Items",   total_items)
+        m2.metric("Pending",       len(pending_df))
         m3.metric("Avg Indent→PO",
                   f"{avg_i_to_po:.1f}d" if not pd.isna(avg_i_to_po) else "—")
         m4.metric("Avg PO→Receipt",
@@ -1343,10 +1311,10 @@ with main_tabs[3]:
         display_rows = []
         for _, r in df_view.iterrows():
             overdue_str = (
-                f"🔴 {r['overdue_days']}d late"      if r['is_overdue'] and r['overdue_days'] else
-                f"🔴 No PO ({r['d_total']}d)"        if r['is_overdue'] and not r['po_no'] else
-                f"🟢 {abs(r['overdue_days'])}d early" if r['overdue_days'] is not None and r['overdue_days'] < 0 else
-                "🟡 Pending"                          if r['exp_delivery'] is None else
+                f"🔴 {r['overdue_days']}d late"       if r['is_overdue'] and r['overdue_days'] else
+                f"🔴 No PO ({r['d_total']}d)"         if r['is_overdue'] and not r['po_no'] else
+                f"🟢 {abs(r['overdue_days'])}d early"  if r['overdue_days'] is not None and r['overdue_days'] < 0 else
+                "🟡 Pending"                           if r['exp_delivery'] is None else
                 "✅ On time"
             )
             display_rows.append({
@@ -1373,12 +1341,9 @@ with main_tabs[3]:
         df_display = pd.DataFrame(display_rows)
         st.dataframe(df_display, use_container_width=True, hide_index=True, height=420)
 
-        def convert_df(df):
-            return df.to_csv(index=False).encode('utf-8')
-
         st.download_button(
             "📥 Export Timeline (CSV)",
-            data=convert_df(df_display),
+            data=df_display.to_csv(index=False).encode('utf-8'),
             file_name=f"BG_Procurement_Analytics_{date.today()}.csv",
             mime="text/csv",
             key="an_dl_csv"
@@ -1455,7 +1420,6 @@ with main_tabs[4]:
                 )
                 st.cache_data.clear()
                 st.rerun()
-
         try:
             grps = conn.table("material_master").select("*").execute().data
             if grps:
@@ -1478,7 +1442,6 @@ with main_tabs[4]:
                 "WhatsApp (91xxxxxxxxxx)", help="Include country code 91, no spaces."
             )
             v_email = st.text_input("Official Email")
-
             if st.form_submit_button("💾 Save Vendor Details"):
                 if v_name:
                     safe_db_write(
@@ -1498,8 +1461,7 @@ with main_tabs[4]:
 
     with col_vend_list:
         st.markdown("#### 🔍 Vendor Directory")
-        v_search = st.text_input("Search Vendors...", placeholder="Name or category")
-
+        v_search    = st.text_input("Search Vendors...", placeholder="Name or category")
         vendors_all = get_vendors()
         if vendors_all:
             df_v = pd.DataFrame(vendors_all)
