@@ -38,6 +38,13 @@ def safe_db_write(fn, success_msg=None, error_prefix="DB Error"):
 def clean_phone(raw):
     return ''.join(filter(str.isdigit, str(raw or "")))
 
+def get_staff_phones():
+    try:
+        res = conn.table("master_staff").select("name, phone, email").execute()
+        return {r['name']: r for r in res.data} if res.data else {}
+    except Exception:
+        return {}
+
 # ============================================================
 # 3. DATA LOADERS
 # ============================================================
@@ -324,6 +331,94 @@ with main_tabs[0]:
                         col2.write("✅ Active")
     else:
         st.info("No indent history found.")
+
+st.divider()
+    st.subheader("💰 Rate Enquiry Requests")
+
+    with st.expander("➕ Request Rate Enquiry", expanded=False):
+        with st.form("rate_enq_form", clear_on_submit=True):
+            re1, re2 = st.columns(2)
+            re_item  = re1.text_input("Item Name*")
+            re_specs = re2.text_input("Specifications")
+            re3, re4, re5 = st.columns(3)
+            re_qty   = re3.number_input("Qty", min_value=0.1, value=1.0)
+            re_unit  = re4.selectbox("Units", ["Nos", "Kgs", "Mts", "Sft", "Sets"])
+            re_job   = re5.text_input("Job No (optional)")
+
+            if st.form_submit_button("📨 Submit Rate Enquiry", use_container_width=True):
+                if not re_item:
+                    st.error("Item Name is required.")
+                else:
+                    safe_db_write(
+                        lambda: conn.table("rate_enquiries").insert({
+                            "requested_by": raised_by,
+                            "item_name":    re_item.upper(),
+                            "specs":        re_specs,
+                            "quantity":     re_qty,
+                            "units":        re_unit,
+                            "job_no":       re_job,
+                            "status":       "Pending"
+                        }).execute(),
+                        success_msg="✅ Rate enquiry submitted to Purchase team!",
+                        error_prefix="Rate Enquiry Error"
+                    )
+
+    st.markdown("#### 📋 My Rate Enquiries")
+    try:
+        my_re = conn.table("rate_enquiries").select("*") \
+            .eq("requested_by", raised_by) \
+            .order("created_at", desc=True).limit(30).execute()
+        my_re_data = my_re.data or []
+    except Exception as e:
+        st.error(f"Rate enquiry load error: {e}")
+        my_re_data = []
+
+    if my_re_data:
+        for re_row in my_re_data:
+            re_status = re_row.get('status', 'Pending')
+            with st.container(border=True):
+                rc1, rc2 = st.columns([4, 1])
+                status_icon = "🟡" if re_status == "Pending" else "🟢" if re_status == "Quoted" else "⚪"
+                rc1.markdown(
+                    f"**{re_row['item_name']}** | "
+                    f"`{re_row['quantity']} {re_row['units']}` | "
+                    f"Status: {status_icon} `{re_status}`"
+                )
+                if re_row.get('specs'):
+                    rc1.caption(f"📐 Specs: {re_row['specs']}")
+                if re_row.get('job_no'):
+                    rc1.caption(f"Job: {re_row['job_no']}")
+                try:
+                    re_dt = pd.to_datetime(re_row['created_at']).astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
+                except Exception:
+                    re_dt = str(re_row.get('created_at',''))[:16]
+                rc1.caption(f"🕐 Requested: {re_dt}")
+
+                if re_status == "Quoted":
+                    rc1.success(
+                        f"💰 Rate: ₹{re_row.get('quoted_rate','—')} per {re_row['units']} | "
+                        f"Vendor: {re_row.get('vendor_name','—')} | "
+                        f"Remarks: {re_row.get('rate_remarks','—')}"
+                    )
+                    try:
+                        qt = pd.to_datetime(re_row['quoted_at']).astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
+                    except Exception:
+                        qt = '—'
+                    rc1.caption(f"🕐 Quoted at: {qt}")
+
+                if rc2.button("🗑️", key=f"re_del_{re_row['id']}", help="Delete"):
+                    if re_status == "Pending":
+                        safe_db_write(
+                            lambda: conn.table("rate_enquiries")
+                                .delete().eq("id", re_row['id']).execute(),
+                            success_msg="Deleted.",
+                            error_prefix="Delete Error"
+                        )
+                        st.rerun()
+                    else:
+                        st.warning("Only Pending enquiries can be deleted.")
+    else:
+        st.info("No rate enquiries raised yet.")
 
 # ============================================================
 # TAB 1: PURCHASE CONSOLE
@@ -629,6 +724,207 @@ with main_tabs[1]:
 
     else:
         st.info("No pending purchase requests found (last 90 days).")
+
+st.divider()
+    st.subheader("💰 Rate Enquiries from Estimation Team")
+
+    try:
+        all_re = conn.table("rate_enquiries").select("*") \
+            .eq("status", "Pending") \
+            .order("created_at", desc=True).limit(50).execute()
+        all_re_data = all_re.data or []
+    except Exception as e:
+        st.error(f"Rate enquiry load error: {e}")
+        all_re_data = []
+
+    staff_contacts = get_staff_phones()
+
+    if all_re_data:
+        st.caption(f"{len(all_re_data)} pending rate enquirie(s)")
+        for re_row in all_re_data:
+            re_id       = re_row['id']
+            requester   = re_row.get('requested_by', '—')
+            req_info    = staff_contacts.get(requester, {})
+            req_phone   = clean_phone(req_info.get('phone', ''))
+            req_email   = req_info.get('email', '')
+
+            try:
+                re_dt = pd.to_datetime(re_row['created_at']).astimezone(IST).strftime('%d-%m-%Y %I:%M %p')
+            except Exception:
+                re_dt = str(re_row.get('created_at',''))[:16]
+
+            with st.container(border=True):
+                st.markdown(
+                    f"**{re_row['item_name']}** | "
+                    f"`{re_row['quantity']} {re_row['units']}` | "
+                    f"👤 Requested by: **{requester}**"
+                )
+                if re_row.get('specs'):
+                    st.caption(f"📐 Specs: {re_row['specs']}")
+                if re_row.get('job_no'):
+                    st.caption(f"Job: {re_row['job_no']}")
+                st.caption(f"🕐 Requested: {re_dt}")
+
+                st.markdown("**Send Vendor Enquiry:**")
+                pv1, pv2 = st.columns(2)
+
+                # Vendor WhatsApp for rate enquiry
+                with pv1:
+                    re_vsel = st.selectbox(
+                        "Select Vendor",
+                        vendor_list,
+                        key=f"re_vsel_{re_id}"
+                    )
+                    re_vinfo  = vendor_options.get(re_vsel, {})
+                    re_vphone = clean_phone(re_vinfo.get('phone_number', ''))
+                    re_vemail = re_vinfo.get('email', '')
+
+                    re_va_msg = (
+                        f"B&G Engineering Industries — Rate Enquiry\n"
+                        f"Date: {date.today().strftime('%d-%m-%Y')}\n"
+                        f"{'='*28}\n"
+                        f"Item: {re_row['item_name']}\n"
+                        f"Qty: {re_row['quantity']} {re_row['units']}\n"
+                        + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
+                        + f"{'='*28}\n"
+                        f"Please share your best rate.\n"
+                        f"Regards,\nSanthoshi,\nB&G Engineering Industries"
+                    )
+                    re_wa_url = (
+                        f"https://wa.me/{re_vphone}?text={urllib.parse.quote(re_va_msg)}"
+                        if re_vphone else "https://wa.me/"
+                    )
+                    st.markdown(
+                        f'<a href="{re_wa_url}" target="_blank" style="text-decoration:none;">'
+                        f'<div style="background:#25D366; color:white; padding:7px; '
+                        f'border-radius:5px; text-align:center; font-weight:bold;">
+                        f'📲 WhatsApp Vendor</div></a>',
+                        unsafe_allow_html=True
+                    )
+
+                    re_mail_subj = urllib.parse.quote(
+                        f"Rate Enquiry — {re_row['item_name']} | B&G Engineering Industries"
+                    )
+                    re_mail_body = urllib.parse.quote(
+                        f"Dear Sir/Madam,\n\n"
+                        f"Please find our rate enquiry:\n\n"
+                        f"Item: {re_row['item_name']}\n"
+                        f"Qty: {re_row['quantity']} {re_row['units']}\n"
+                        + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
+                        + f"\nKindly share your best rate at the earliest.\n\n"
+                        f"Regards,\nSanthoshi\nB&G Engineering Industries"
+                    )
+                    re_mail_url = f"mailto:{re_vemail}?subject={re_mail_subj}&body={re_mail_body}"
+                    st.markdown(
+                        f'<a href="{re_mail_url}" style="text-decoration:none;">'
+                        f'<div style="background:#007bff; color:white; padding:7px; '
+                        f'border-radius:5px; text-align:center; font-weight:bold;">
+                        f'📧 Email Vendor</div></a>',
+                        unsafe_allow_html=True
+                    )
+
+                # Enter rate + send back to requester
+                with pv2:
+                    with st.container(border=True):
+                        st.caption("📥 Enter Quoted Rate & Notify Requester")
+                        q_vendor  = st.text_input(
+                            "Vendor Name",
+                            value=re_vsel if re_vsel != "--- Choose Vendor ---" else "",
+                            key=f"re_qvend_{re_id}"
+                        )
+                        q_rate    = st.number_input(
+                            f"Rate per {re_row['units']} (₹)",
+                            min_value=0.0, step=0.5,
+                            key=f"re_rate_{re_id}"
+                        )
+                        q_remarks = st.text_input(
+                            "Remarks (validity, taxes, delivery etc.)",
+                            key=f"re_rem_{re_id}"
+                        )
+
+                        # Build quote summary message
+                        quote_summary = (
+                            f"B&G Engineering Industries — Rate Quote\n"
+                            f"{'='*28}\n"
+                            f"Item: {re_row['item_name']}\n"
+                            + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
+                            + f"Qty: {re_row['quantity']} {re_row['units']}\n"
+                            f"{'='*28}\n"
+                            f"Vendor: {q_vendor}\n"
+                            f"Rate: ₹{q_rate} per {re_row['units']}\n"
+                            f"Total (approx): ₹{round(q_rate * re_row['quantity'], 2)}\n"
+                            + (f"Remarks: {q_remarks}\n" if q_remarks else "")
+                            + f"{'='*28}\n"
+                            f"Regards,\nSanthoshi,\nB&G Engineering Industries"
+                        )
+
+                        # WhatsApp to requester
+                        req_wa_url = (
+                            f"https://wa.me/{req_phone}?text={urllib.parse.quote(quote_summary)}"
+                            if req_phone else "https://wa.me/"
+                        )
+                        st.markdown(
+                            f'<a href="{req_wa_url}" target="_blank" style="text-decoration:none;">'
+                            f'<div style="background:#25D366; color:white; padding:7px; '
+                            f'border-radius:5px; text-align:center; font-weight:bold; '
+                            f'margin-bottom:5px;">📲 WhatsApp Quote → {requester}</div></a>',
+                            unsafe_allow_html=True
+                        )
+
+                        # Email to requester
+                        req_mail_subj = urllib.parse.quote(
+                            f"Rate Quote — {re_row['item_name']} | B&G Engineering Industries"
+                        )
+                        req_mail_body = urllib.parse.quote(
+                            f"Dear {requester},\n\n"
+                            f"Please find the rate quote for your enquiry:\n\n"
+                            f"Item: {re_row['item_name']}\n"
+                            + (f"Specs: {re_row['specs']}\n" if re_row.get('specs') else "")
+                            + f"Qty: {re_row['quantity']} {re_row['units']}\n\n"
+                            f"Vendor: {q_vendor}\n"
+                            f"Rate: ₹{q_rate} per {re_row['units']}\n"
+                            f"Total (approx): ₹{round(q_rate * re_row['quantity'], 2)}\n"
+                            + (f"Remarks: {q_remarks}\n" if q_remarks else "")
+                            + f"\nRegards,\nSanthoshi\nB&G Engineering Industries"
+                        )
+                        req_mail_url = (
+                            f"mailto:{req_email}"
+                            f"?subject={req_mail_subj}"
+                            f"&body={req_mail_body}"
+                        )
+                        st.markdown(
+                            f'<a href="{req_mail_url}" style="text-decoration:none;">'
+                            f'<div style="background:#007bff; color:white; padding:7px; '
+                            f'border-radius:5px; text-align:center; font-weight:bold; '
+                            f'margin-bottom:5px;">📧 Email Quote → {requester}</div></a>',
+                            unsafe_allow_html=True
+                        )
+
+                        if st.button(
+                            "✅ Save Rate & Mark Quoted",
+                            key=f"re_save_{re_id}",
+                            type="primary",
+                            use_container_width=True
+                        ):
+                            if q_rate <= 0:
+                                st.warning("Please enter a valid rate.")
+                            elif not q_vendor:
+                                st.warning("Please enter vendor name.")
+                            else:
+                                safe_db_write(
+                                    lambda: conn.table("rate_enquiries").update({
+                                        "status":       "Quoted",
+                                        "vendor_name":  q_vendor,
+                                        "quoted_rate":  q_rate,
+                                        "rate_remarks": q_remarks,
+                                        "quoted_at":    datetime.now(IST).isoformat()
+                                    }).eq("id", re_id).execute(),
+                                    success_msg="✅ Rate saved! Send the quote via WhatsApp/Email above.",
+                                    error_prefix="Rate Save Error"
+                                )
+                                st.rerun()
+    else:
+        st.info("✅ No pending rate enquiries.")
 
 # ============================================================
 # TAB 2: STORES GRN
