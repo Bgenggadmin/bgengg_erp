@@ -884,30 +884,58 @@ with main_tabs[1]:
 
                 st.markdown("#### Inspection Check Points")
                 st.caption("W = Witnessed | V = Verified | R = Review | NIL = Not Applicable")
-                checklist_data = [
-                    ("Material Certification — Material Flow Chart",   "100%",           "Material Flow Chart"),
-                    ("Material Certification — Mat Test Certificates", "100%",           "Mat Test Certificates"),
-                    ("Fit-up Exam",                                     "100%",           "Inspection Report"),
-                    ("Dimensions & Visual Exam",                        "100%",           "Inspection Report"),
-                    ("PT of all Welds",                                 "As per QAP/Dwg", "LPI Report"),
-                    ("Hydro Test / Vacuum Test Shell Side",             "100%",           "Hydro Test Report"),
-                    ("Final Inspection before Dispatch",                "100%",           "Inspection Report"),
-                    ("Identification Punching",                         "",               "Punching"),
-                    ("NCR If any",                                      "",               "NC Report"),
+
+                # Session-state key scoped to job so switching jobs resets rows
+                _ck_key = f"qcl_checkpoints_{sel_job}"
+                _default_checkpoints = [
+                    {"checkpoint": "Material Certification — Material Flow Chart",   "extent": "100%",           "format": "Material Flow Chart"},
+                    {"checkpoint": "Material Certification — Mat Test Certificates", "extent": "100%",           "format": "Mat Test Certificates"},
+                    {"checkpoint": "Fit-up Exam",                                    "extent": "100%",           "format": "Inspection Report"},
+                    {"checkpoint": "Dimensions & Visual Exam",                       "extent": "100%",           "format": "Inspection Report"},
+                    {"checkpoint": "PT of all Welds",                                "extent": "As per QAP/Dwg","format": "LPI Report"},
+                    {"checkpoint": "Hydro Test / Vacuum Test Shell Side",            "extent": "100%",           "format": "Hydro Test Report"},
+                    {"checkpoint": "Final Inspection before Dispatch",               "extent": "100%",           "format": "Inspection Report"},
+                    {"checkpoint": "Identification Punching",                        "extent": "",               "format": "Punching"},
+                    {"checkpoint": "NCR If any",                                     "extent": "",               "format": "NC Report"},
                 ]
-                hcols = st.columns([3, 1, 2, 2, 1, 2])
-                for h, col in zip(["Check Point","Extent","Format of Record",
-                                    "Verification","Docs Enclosed","Remarks"], hcols):
-                    col.markdown(f"**{h}**")
+                if _ck_key not in st.session_state:
+                    st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
+
+                # Add / Reset buttons (outside form so they trigger rerun)
+                _ba, _bb, _ = st.columns([1, 1, 6])
+                if _ba.button("+ Add Row", key="qcl_add_row"):
+                    st.session_state[_ck_key].append(
+                        {"checkpoint": "", "extent": "100%", "format": "Inspection Report"})
+                    st.rerun()
+                if _bb.button("Reset Defaults", key="qcl_reset"):
+                    st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
+                    st.rerun()
+
+                # Column headers
+                hcols = st.columns([4, 2, 2, 2, 2, 2, 1])
+                for _h, _col in zip(["Check Point","Extent","Format",
+                                      "Verification","Docs","Remarks","Del"], hcols):
+                    _col.markdown(f"**{_h}**")
 
                 check_results = []
-                for i, (cp, ext, fmt) in enumerate(checklist_data):
-                    gc = st.columns([3, 1, 2, 2, 1, 2])
-                    gc[0].caption(cp); gc[1].caption(ext); gc[2].caption(fmt)
-                    verif  = gc[3].selectbox("", ["W","V","R","NIL","P"], key=f"qcl_v_{i}", label_visibility="collapsed")
-                    docs   = gc[4].selectbox("", ["Yes","No","NA"],       key=f"qcl_d_{i}", label_visibility="collapsed")
-                    remark = gc[5].text_input("",                          key=f"qcl_r_{i}", label_visibility="collapsed")
-                    check_results.append((verif, docs, remark))
+                _del_idx = None
+                for i, row in enumerate(st.session_state[_ck_key]):
+                    gc = st.columns([4, 2, 2, 2, 2, 2, 1])
+                    cp  = gc[0].text_input("", value=row.get("checkpoint",""), key=f"qcl_cp_{i}", label_visibility="collapsed")
+                    ext = gc[1].text_input("", value=row.get("extent",""),     key=f"qcl_ex_{i}", label_visibility="collapsed")
+                    fmt = gc[2].text_input("", value=row.get("format",""),     key=f"qcl_fm_{i}", label_visibility="collapsed")
+                    verif  = gc[3].selectbox("", ["W","V","R","NIL","P"], key=f"qcl_v_{i}",  label_visibility="collapsed")
+                    docs   = gc[4].selectbox("", ["Yes","No","NA"],       key=f"qcl_d_{i}",  label_visibility="collapsed")
+                    remark = gc[5].text_input("",                          key=f"qcl_r_{i}",  label_visibility="collapsed")
+                    if gc[6].button("🗑", key=f"qcl_del_{i}"):
+                        _del_idx = i
+                    check_results.append({"checkpoint": cp, "extent": ext, "format": fmt,
+                                          "verification": verif, "docs": docs, "remarks": remark})
+
+                # Delete row outside inner loop to avoid index shift
+                if _del_idx is not None:
+                    st.session_state[_ck_key].pop(_del_idx)
+                    st.rerun()
 
                 if e_type == "Reactor":
                     st.markdown("#### Reactor Specific")
@@ -919,6 +947,12 @@ with main_tabs[1]:
                 tech_notes = st.text_area("Technical Notes / Deviations")
 
                 if st.form_submit_button("Save Quality Check List", use_container_width=True):
+                    # Build named status fields from dynamic rows (match by checkpoint name)
+                    def _get_verif(name_fragment):
+                        for r in check_results:
+                            if name_fragment.lower() in r["checkpoint"].lower():
+                                return r["verification"]
+                        return check_results[0]["verification"] if check_results else "W"
                     payload = {
                         "job_no":          sel_job,
                         "client_name":     proj_get(proj, 'client_name'),
@@ -929,14 +963,15 @@ with main_tabs[1]:
                         "qap_no":          qap_n,
                         "equipment_id_no": e_id,
                         "qty":             qty_val,
-                        "mat_cert_status": check_results[0][0],
-                        "fit_up_status":   check_results[2][0],
-                        "visual_status":   check_results[3][0],
-                        "pt_weld_status":  check_results[4][0],
-                        "hydro_status":    check_results[5][0],
-                        "final_status":    check_results[6][0],
-                        "punching_status": check_results[7][0],
-                        "ncr_status":      check_results[8][0],
+                        "mat_cert_status": _get_verif("flow chart"),
+                        "fit_up_status":   _get_verif("fit-up"),
+                        "visual_status":   _get_verif("visual"),
+                        "pt_weld_status":  _get_verif("pt of all"),
+                        "hydro_status":    _get_verif("hydro"),
+                        "final_status":    _get_verif("final insp"),
+                        "punching_status": _get_verif("punching"),
+                        "ncr_status":      _get_verif("ncr"),
+                        "checklist_data":  check_results,   # full dynamic rows as JSONB
                         "technical_notes": tech_notes,
                         "inspected_by":    insp_by,
                         "inspection_date": str(ins_date),
@@ -945,6 +980,9 @@ with main_tabs[1]:
                         lambda: conn.table("quality_check_list").insert(payload).execute(),
                         success_msg=f"Quality Check List for {sel_job} saved!"
                     )
+                    # Clear session rows after successful save
+                    if _ck_key in st.session_state:
+                        del st.session_state[_ck_key]
                     st.cache_data.clear()
 
 # ============================================================
@@ -1751,7 +1789,7 @@ with main_tabs[13]:
 
     if config_mode == "Inspection Parameters":
         report_cat = st.selectbox("Select List to Configure",
-                                   ["Dimensional Descriptions","MOC List","Technical Checklist"])
+                                   ["Dimensional Descriptions","MOC List","Technical Checklist","Inspection Checkpoints"])
         try:
             conf_res = conn.table("quality_config").select("*").eq("category", report_cat).execute()
             df_conf  = pd.DataFrame(conf_res.data) if conf_res.data else \
