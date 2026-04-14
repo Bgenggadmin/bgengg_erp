@@ -188,7 +188,7 @@ with main_tabs[0]:
                     st.session_state.rev_data = None
                     st.rerun()
 
-    # ── PART B: DRAFT LIST ───────────────────────────────────
+   # ── PART B: DRAFT LIST ───────────────────────────────────
     if st.session_state.indent_cart:
         st.markdown(f"### 🛒 Current Draft List ({len(st.session_state.indent_cart)}/20)")
         for idx, item in enumerate(st.session_state.indent_cart):
@@ -198,6 +198,10 @@ with main_tabs[0]:
                     f"**{item['item_name']}** | "
                     f"{item['quantity']} {item['units']} | {item['job_no']}"
                 )
+                if item.get('specs'):
+                    d1.caption(f"📐 Specs: {item['specs']}")
+                if item.get('special_notes'):
+                    d1.caption(f"📝 Notes: {item['special_notes']}")
                 if d2.button("🗑️", key=f"del_draft_{idx}"):
                     st.session_state.indent_cart.pop(idx)
                     st.rerun()
@@ -215,92 +219,123 @@ with main_tabs[0]:
                 st.rerun()
             except Exception as e:
                 st.error(f"Submission Error: {e}")
-
     st.divider()
 
     # ── PART C: HISTORY, TRIGGER & EDIT/REVISE ───────────────
     st.subheader("🔍 Tracking & Adjustments")
 
-    fc1, fc2 = st.columns(2)
-    search_j   = fc1.selectbox("Filter by Job",    ["ALL"] + get_jobs())
-    search_sta = fc2.selectbox("Filter by Status", ["ALL", "Triggered", "Ordered", "Received", "Rejected"])
+    fc1, fc2, fc3 = st.columns(3)
+search_j   = fc1.selectbox("Filter by Job",    ["ALL"] + get_jobs())
+search_sta = fc2.selectbox("Filter by Status", 
+    ["ALL", "Triggered", "Editing", "Ordered", "Partial", "Received", "Rejected"])
+show_all   = fc3.toggle("👥 Show All Users", value=False)
 
-    # FIX [Quick Win]: Filter by raised_by for relevance; keep limit=50
-    try:
-        hist_query = conn.table("purchase_orders").select("*") \
-            .eq("triggered_by", raised_by) \
-            .order("created_at", desc=True).limit(50).execute()
-        hist_data = hist_query.data or []
-    except Exception as e:
-        st.error(f"History load error: {e}")
-        hist_data = []
+try:
+    hist_q = conn.table("purchase_orders").select("*") \
+        .order("created_at", desc=True).limit(200)
+    
+    if not show_all:
+        hist_q = hist_q.eq("triggered_by", raised_by)
+    
+    hist_data = hist_q.execute().data or []
+except Exception as e:
+    st.error(f"History load error: {e}")
+    hist_data = []
 
-    if hist_data:
-        df_h = pd.DataFrame(hist_data)
-        if search_j   != "ALL": df_h = df_h[df_h['job_no'].str.contains(search_j, na=False)]
-        if search_sta != "ALL": df_h = df_h[df_h['status'] == search_sta]
+   if hist_data:
+    df_h = pd.DataFrame(hist_data)
+    if search_j   != "ALL": df_h = df_h[df_h['job_no'].str.contains(search_j, na=False)]
+    if search_sta != "ALL": df_h = df_h[df_h['status'] == search_sta]
 
-        if df_h.empty:
-            st.info("No records match this filter.")
-        else:
-            for _, h_row in df_h.iterrows():
-                row_id = h_row['id']
-                status = h_row['status']
-                is_urg = h_row.get('is_urgent', False)
-
-                with st.container(border=True):
-                    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
-                    urg_icon = "🚨" if is_urg else "📦"
-                    col1.write(f"**{urg_icon} {h_row['item_name']}** | Status: `{status}`")
-                    col1.caption(f"Job: {h_row['job_no']} | Qty: {h_row['quantity']} {h_row['units']}")
-
-                    # Rejected — show reason + revise
-                    if status == "Rejected":
-                        col1.error(f"Reason: {h_row.get('reject_note', 'No details')}")
-                        if col2.button("📝 REVISE", key=f"rev_{row_id}", use_container_width=True):
-                            st.session_state.rev_data = h_row
-                            st.rerun()
-
-                    # Triggered — edit / urgent / delete
-                    if status == "Triggered":
-                        # FIX [Warning]: Mark as "Editing" instead of immediate delete
-                        # Record is only removed when new form is submitted successfully
-                        if col2.button("✏️ EDIT", key=f"edit_{row_id}", use_container_width=True):
-                            safe_db_write(
-                                lambda: conn.table("purchase_orders")
-                                    .update({"status": "Editing"})
-                                    .eq("id", row_id).execute(),
-                                error_prefix="Edit flag error"
-                            )
-                            st.session_state.rev_data = dict(h_row)
-                            st.session_state.rev_data['_edit_id'] = row_id
-                            st.rerun()
-
-                        if not is_urg:
-                            if col3.button("🚨", key=f"trig_{row_id}", help="Mark Urgent"):
-                                safe_db_write(
-                                    lambda: conn.table("purchase_orders")
-                                        .update({"is_urgent": True})
-                                        .eq("id", row_id).execute(),
-                                    error_prefix="Urgent flag error"
-                                )
-                                st.rerun()
-                        else:
-                            col3.info("Priority")
-
-                        if col4.button("🗑️", key=f"del_db_{row_id}", help="Delete"):
-                            safe_db_write(
-                                lambda: conn.table("purchase_orders")
-                                    .delete().eq("id", row_id).execute(),
-                                error_prefix="Delete error"
-                            )
-                            st.rerun()
-
-                    # Active / received — read only
-                    if status in ["Ordered", "Received"]:
-                        col2.write("✅ Active")
+    if df_h.empty:
+        st.info("No records match this filter.")
     else:
-        st.info("No indent history found.")
+        if show_all:
+            st.caption(f"Showing all users — {len(df_h)} record(s) found")
+        else:
+            st.caption(f"Showing indents raised by: **{raised_by}** — {len(df_h)} record(s)")
+
+        for _, h_row in df_h.iterrows():
+            row_id = h_row['id']
+            status = h_row['status']
+            is_urg = h_row.get('is_urgent', False)
+
+            with st.container(border=True):
+                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                urg_icon = "🚨" if is_urg else "📦"
+                col1.write(f"**{urg_icon} {h_row['item_name']}** | Status: `{status}`")
+                col1.caption(
+                    f"Job: {h_row['job_no']} | Qty: {h_row['quantity']} {h_row['units']}"
+                    + (f" | 👤 {h_row['triggered_by']}" if show_all else "")
+                )
+                if h_row.get('specs'):
+                    col1.caption(f"📐 Specs: {h_row['specs']}")
+                if h_row.get('special_notes'):
+                    col1.caption(f"📝 Notes: {h_row['special_notes']}")
+
+                # Rejected
+                if status == "Rejected":
+                    col1.error(f"Reason: {h_row.get('reject_note', 'No details')}")
+                    if col2.button("📝 REVISE", key=f"rev_{row_id}", use_container_width=True):
+                        st.session_state.rev_data = h_row
+                        st.rerun()
+
+                # Triggered
+                if status == "Triggered":
+                    if col2.button("✏️ EDIT", key=f"edit_{row_id}", use_container_width=True):
+                        safe_db_write(
+                            lambda: conn.table("purchase_orders")
+                                .update({"status": "Editing"})
+                                .eq("id", row_id).execute(),
+                            error_prefix="Edit flag error"
+                        )
+                        st.session_state.rev_data = dict(h_row)
+                        st.session_state.rev_data['_edit_id'] = row_id
+                        st.rerun()
+
+                    if not is_urg:
+                        if col3.button("🚨", key=f"trig_{row_id}", help="Mark Urgent"):
+                            safe_db_write(
+                                lambda: conn.table("purchase_orders")
+                                    .update({"is_urgent": True})
+                                    .eq("id", row_id).execute(),
+                                error_prefix="Urgent flag error"
+                            )
+                            st.rerun()
+                    else:
+                        col3.info("Priority")
+
+                    if col4.button("🗑️", key=f"del_db_{row_id}", help="Delete"):
+                        safe_db_write(
+                            lambda: conn.table("purchase_orders")
+                                .delete().eq("id", row_id).execute(),
+                            error_prefix="Delete error"
+                        )
+                        st.rerun()
+
+                # Editing — resume edit option
+                if status == "Editing":
+                    col1.warning("⚠️ Edit in progress")
+                    if col2.button("▶️ RESUME", key=f"res_{row_id}", use_container_width=True):
+                        st.session_state.rev_data = dict(h_row)
+                        st.session_state.rev_data['_edit_id'] = row_id
+                        st.rerun()
+                    if col3.button("↩️ RESET", key=f"rst_{row_id}", 
+                                   help="Reset to Triggered", use_container_width=True):
+                        safe_db_write(
+                            lambda: conn.table("purchase_orders")
+                                .update({"status": "Triggered"})
+                                .eq("id", row_id).execute(),
+                            success_msg="Reset to Triggered",
+                            error_prefix="Reset error"
+                        )
+                        st.rerun()
+
+                # Active / received — read only
+                if status in ["Ordered", "Received", "Partial"]:
+                    col2.write("✅ Active")
+else:
+    st.info("No indent history found.")
 
 # ============================================================
 # TAB 1: PURCHASE CONSOLE  (Indent → Material Group → Items)
