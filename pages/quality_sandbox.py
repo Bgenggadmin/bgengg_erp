@@ -992,18 +992,24 @@ with main_tabs[2]:
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
             job_header(proj)
-            with st.form("qap_form"):
+            with st.form("qap_form", clear_on_submit=False):
                 st.markdown("#### QAP Header")
                 h1, h2, h3 = st.columns(3)
-                qap_no     = h1.text_input("QAP Document No.", value=f"BGEI/2025-26/{sel_job}")
-                # Pre-fill from last saved record
-                _qap_last = ""
+                _qap_prev = {}
                 try:
-                    _r = conn.table("nozzle_flow_charts").select("equipment_name")                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
-                    if _r.data: _qap_last = _r.data[0].get("equipment_name","")
+                    _r = conn.table("nozzle_flow_charts").select("*")\
+                        .eq("job_no",sel_job).order("created_at",desc=True).execute()
+                    for _rec in (_r.data or []):
+                        if str(_rec.get("nozzle_mark","")).startswith("BGEI"):
+                            _qap_prev = _rec; break
                 except Exception: pass
-                equip_name = h2.text_input("Equipment Name", value=_qap_last)
-                prep_by    = h3.selectbox("Prepared By", inspectors, key="qap_prep")
+                qap_no     = h1.text_input("QAP Document No.",
+                               value=_qap_prev.get("nozzle_mark", f"BGEI/2025-26/{sel_job}"))
+                equip_name = h2.text_input("Equipment Name",
+                               value=_qap_prev.get("equipment_name",""))
+                _qv = _qap_prev.get("verified_by","")
+                prep_by    = h3.selectbox("Prepared By", inspectors, key="qap_prep",
+                               index=inspectors.index(_qv) if _qv in inspectors else 0)
                 h1.text_input("Drawing No.")
                 h2.text_input("Client Name", value=proj_get(proj, 'client_name'))
                 h3.text_input("PO No & Date",
@@ -1059,7 +1065,7 @@ with main_tabs[2]:
                         "QA": st.column_config.SelectboxColumn("QA", options=["W","R","P","H",""], width="small"),
                         "BG": st.column_config.SelectboxColumn("B&G", options=["W","R","P","H",""], width="small"),
                     })
-                note_qap = st.text_area("Notes / Legend")
+                note_qap = st.text_area("Notes / Legend", value=_qap_prev.get("remarks",""))
                 if st.form_submit_button("Save QAP", use_container_width=True):
                     payload = {
                         "job_no":            sel_job,
@@ -1195,9 +1201,18 @@ with main_tabs[4]:
             ]), num_rows="dynamic", use_container_width=True, hide_index=True,
                key=f"nfc_pipe_{sel_job}", column_config=nfc_col_cfg)
 
-            with st.form("nfc_form", clear_on_submit=True):
-                nfc_verifier = st.selectbox("Inspected By", inspectors, key="nfc_verifier")
-                nfc_remarks  = st.text_area("Orientation / Fit-up Remarks")
+            with st.form("nfc_form", clear_on_submit=False):
+                _nfc_pv, _nfc_pr = "", ""
+                try:
+                    _r2 = conn.table("nozzle_flow_charts").select("verified_by,remarks,nozzle_mark")\
+                        .eq("job_no",sel_job).order("created_at",desc=True).execute()
+                    for _rec in (_r2.data or []):
+                        if not str(_rec.get("nozzle_mark","")).startswith("BGEI"):
+                            _nfc_pv = _rec.get("verified_by",""); _nfc_pr = _rec.get("remarks",""); break
+                except Exception: pass
+                nfc_verifier = st.selectbox("Inspected By", inspectors, key="nfc_verifier",
+                                index=inspectors.index(_nfc_pv) if _nfc_pv in inspectors else 0)
+                nfc_remarks  = st.text_area("Orientation / Fit-up Remarks", value=_nfc_pr)
                 if st.form_submit_button("Save Nozzle Flow Chart"):
                     payload = {
                         "job_no":            sel_job,
@@ -1331,7 +1346,7 @@ with main_tabs[6]:
             except Exception:
                 pass
 
-            with st.form("hydro_form", clear_on_submit=True):
+            with st.form("hydro_form", clear_on_submit=False):
                 st.markdown("#### Report References")
                 r1, r2, r3 = st.columns(3)
                 report_no_h = r1.text_input("Test Report No.",    value=f"BG/QA/HTR-{sel_job}")
@@ -1348,20 +1363,30 @@ with main_tabs[6]:
 
                 st.markdown("#### Test Parameters")
                 p1, p2, p3 = st.columns(3)
-                t_pressure = p1.text_input("Test Pressure (Kg/cm2)",   placeholder="e.g. 1.0")
-                d_pressure = p2.text_input("Design Pressure (Kg/cm2)", placeholder="e.g. 0.5")
-                h_time     = p3.text_input("Holding Duration",          placeholder="e.g. 1 Hrs.")
+                _hp = {}
+                try:
+                    _hr = conn.table("hydro_test_reports").select("*")\
+                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                    if _hr.data: _hp = _hr.data[0]
+                except Exception: pass
+                t_pressure = p1.text_input("Test Pressure (Kg/cm2)",   value=_hp.get("test_pressure",""))
+                d_pressure = p2.text_input("Design Pressure (Kg/cm2)", value=_hp.get("design_pressure",""))
+                h_time     = p3.text_input("Holding Duration",          value=_hp.get("holding_time",""))
                 p4, p5, p6 = st.columns(3)
-                medium = p4.selectbox("Test Medium",
-                    ["Potable Water","WATER","Hydraulic Oil","Compressed Air","Nitrogen"])
-                g_nos  = p5.text_input("Pressure Gauge ID(s)", placeholder="BG/QC/PG-01")
+                _mo = ["Potable Water","WATER","Hydraulic Oil","Compressed Air","Nitrogen"]
+                _mp = _hp.get("test_medium","Potable Water")
+                medium = p4.selectbox("Test Medium", _mo, index=_mo.index(_mp) if _mp in _mo else 0)
+                g_nos  = p5.text_input("Pressure Gauge ID(s)", value=_hp.get("gauge_nos",""))
                 p6.text_input("Temperature", value="ATMP.")
-                h_remarks = st.text_area("Observations", value="No leakages found during the test period.")
+                h_remarks = st.text_area("Observations",
+                              value=_hp.get("inspection_notes","No leakages found during the test period."))
 
                 st.markdown("#### Authorization")
                 w1, w2, w3 = st.columns(3)
-                insp_h = w1.selectbox("Executive (QA)", inspectors, key="hydro_insp")
-                wit_h  = w2.text_input("Customer / TPI Witness")
+                _hpi = _hp.get("inspected_by","")
+                insp_h = w1.selectbox("Executive (QA)", inspectors, key="hydro_insp",
+                           index=inspectors.index(_hpi) if _hpi in inspectors else 0)
+                wit_h  = w2.text_input("Customer / TPI Witness", value=_hp.get("witnessed_by",""))
                 w3.text_input("Production I/C")
 
                 if st.form_submit_button("Save Hydro Test Report", use_container_width=True):
@@ -1488,22 +1513,35 @@ with main_tabs[8]:
                 r2.text_input("GA Drg. No.", placeholder="e.g. 3050101710")
                 r3.text_input("MOC", value="SS304")
 
-            with st.form("fir_form", clear_on_submit=True):
+            with st.form("fir_form", clear_on_submit=False):
                 st.markdown("#### Quantity & Clearance")
                 q1, q2, q3 = st.columns(3)
-                ord_qty = q1.text_input("Ordered Qty",       value="1 No.")
-                off_qty = q2.text_input("Offered for Insp.", value="1 No.")
-                acc_qty = q3.text_input("Accepted Qty",      value="1 No.")
+                _fp = {}
+                try:
+                    _fr = conn.table("final_inspection_reports").select("*")\
+                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                    if _fr.data: _fp = _fr.data[0]
+                except Exception: pass
+                ord_qty = q1.text_input("Ordered Qty",       value=_fp.get("ordered_qty","1 No."))
+                off_qty = q2.text_input("Offered for Insp.", value=_fp.get("offered_qty","1 No."))
+                acc_qty = q3.text_input("Accepted Qty",      value=_fp.get("accepted_qty","1 No."))
 
                 st.markdown("#### Final Verdict & Authorization")
                 fv1, fv2 = st.columns(2)
-                fir_status    = fv1.selectbox("Inspection Result", ["Accepted","Rejected","Rework Required"])
-                fir_inspector = fv2.selectbox("Quality Inspector", inspectors, key="fir_insp")
-                fir_witness   = fv1.text_input("Customer / TPI Representative")
+                _fso = ["Accepted","Rejected","Rework Required"]
+                _fsp = _fp.get("inspection_status","Accepted")
+                fir_status    = fv1.selectbox("Inspection Result", _fso,
+                                  index=_fso.index(_fsp) if _fsp in _fso else 0)
+                _fpi = _fp.get("inspected_by","")
+                fir_inspector = fv2.selectbox("Quality Inspector", inspectors, key="fir_insp",
+                                  index=inspectors.index(_fpi) if _fpi in inspectors else 0)
+                fir_witness   = fv1.text_input("Customer / TPI Representative",
+                                  value=_fp.get("witnessed_by",""))
                 fv2.text_input("Production I/C")
                 fir_remarks   = st.text_area("Final Observations / Notes",
-                    value="Notes:\n1. Entries marked with * are for Customer representative.\n"
-                          "2. Please quote FIR No. & date in all correspondences.")
+                    value=_fp.get("remarks",
+                        "Notes:\n1. Entries marked with * are for Customer representative.\n"
+                        "2. Please quote FIR No. & date in all correspondences."))
 
                 if st.form_submit_button("Finalize & Save FIR", use_container_width=True):
                     payload = {
@@ -1550,7 +1588,7 @@ with main_tabs[9]:
             except Exception:
                 pass
 
-            with st.form("gc_form", clear_on_submit=True):
+            with st.form("gc_form", clear_on_submit=False):
                 g1, g2, g3 = st.columns(3)
                 _gc_last_equip, _gc_last_drg, _gc_last_eno = "", "", ""
                 try:
@@ -1566,25 +1604,36 @@ with main_tabs[9]:
                 gc_equip    = g1.text_input("Equipment Description", value=_gc_last_equip)
                 gc_drg      = g2.text_input("DRG. No.", value=_gc_last_drg)
                 gc_equip_no = g3.text_input("Equipment No.", value=_gc_last_eno)
-                gc_fir_no   = g1.text_input("FIR No.",       value=f"QA/FIR/{sel_job}")
+                _gp = {}
+                try:
+                    _gr = conn.table("guarantee_certificates").select("*")\
+                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                    if _gr.data: _gp = _gr.data[0]
+                except Exception: pass
+                _fref = _gp.get("invoice_ref","")
+                _gcfd = _fref.split(" | INV: ")[0].replace("FIR: ","") if _fref else f"QA/FIR/{sel_job}"
+                _gcid = _fref.split(" | INV: ")[1] if " | INV: " in _fref else ""
+                gc_fir_no   = g1.text_input("FIR No.", value=_gcfd)
                 g2.date_input("Date of Issue", value=get_now_ist().date())
-                inv_ref     = g3.text_input("Invoice / Dispatch Ref No.")
+                inv_ref     = g3.text_input("Invoice / Dispatch Ref No.", value=_gcid)
 
+                _dg = (
+                    "B&G Engineering Industries guarantee the above equipment for 12 months "
+                    "from the date of supply against any manufacturing defectives. "
+                    "In this duration any defectives found the same will be rectified or "
+                    "replaced if necessary.\n\nGuarantee will NOT apply for:\n"
+                    "1. Any mishandling of equipment.\n"
+                    "2. Using equipment beyond specified operating conditions.\n"
+                    "3. Any Misalignment of equipment in plant.\n"
+                    "4. Corrosion and erosion.\n5. Repairs by unauthorised persons."
+                )
                 g_period = st.text_area("Guarantee Terms", height=180,
-                    value=(
-                        "B&G Engineering Industries guarantee the above equipment for 12 months "
-                        "from the date of supply against any manufacturing defectives. "
-                        "In this duration any defectives found the same will be rectified or "
-                        "replaced if necessary.\n\n"
-                        "Guarantee will NOT apply for:\n"
-                        "1. Any mishandling of equipment.\n"
-                        "2. Using equipment beyond specified operating conditions.\n"
-                        "3. Any Misalignment of equipment in plant.\n"
-                        "4. Corrosion and erosion.\n"
-                        "5. Repairs by unauthorised persons."
-                    ))
-                certifier  = st.selectbox("Authorised Signatory", inspectors, key="gc_certifier")
-                gc_remarks = st.text_area("Additional Terms / Remarks")
+                    value=_gp.get("guarantee_period", _dg))
+                _gc_pc = _gp.get("certified_by","")
+                certifier  = st.selectbox("Authorised Signatory", inspectors, key="gc_certifier",
+                               index=inspectors.index(_gc_pc) if _gc_pc in inspectors else 0)
+                gc_remarks = st.text_area("Additional Terms / Remarks",
+                               value=_gp.get("remarks",""))
 
                 if st.form_submit_button("Generate & Save Guarantee Certificate", use_container_width=True):
                     payload = {
