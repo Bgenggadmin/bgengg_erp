@@ -52,6 +52,31 @@ def proj_get(proj, key, default='N/A'):
     except (KeyError, IndexError):
         return default
 
+
+def clean_rows(rows: list) -> list:
+    """
+    Strip NaN/inf floats from data_editor rows before JSON serialisation.
+    Supabase rejects NaN with "Out of range float values are not JSON compliant".
+    """
+    import math
+    result = []
+    for row in rows:
+        cleaned = {}
+        for k, v in row.items():
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                cleaned[k] = None
+            elif k in ('Sl', 'Sl_No', 'QTY') and v is not None:
+                try:    cleaned[k] = int(v)
+                except: cleaned[k] = v
+            else:
+                cleaned[k] = v
+        # drop phantom empty rows
+        non_empty = [vv for kk, vv in cleaned.items()
+                     if kk not in ('Sl', 'Sl_No') and vv not in (None, '', 'None')]
+        if non_empty:
+            result.append(cleaned)
+    return result
+
 # ============================================================
 # 3. PHOTO COMPRESSION — 60 KB MAX, PASSPORT SIZE (400x500 px)
 # ============================================================
@@ -1072,7 +1097,7 @@ with main_tabs[3]:
                 verifier = st.selectbox("Verified By (QC)", inspectors, key="mfc_verifier")
                 mfc_rem  = st.text_area("Observations / Traceability Notes")
                 if st.form_submit_button("Save Material Flow Chart", use_container_width=True):
-                    final_rows = [{**r, "Sl": i+1} for i, r in enumerate(mfc_grid.to_dict('records'))]
+                    final_rows = clean_rows([{**r, "Sl": i+1} for i, r in enumerate(mfc_grid.to_dict('records'))])
                     payload = {
                         "job_no":            sel_job,
                         "item_name":         item_desc,
@@ -1222,7 +1247,7 @@ with main_tabs[5]:
             f3.text_input("Customer Representative")
 
             if st.button("Save DIR Report", type="primary", use_container_width=True):
-                final_rows = [{**r, "Sl_No": i+1} for i, r in enumerate(dim_grid.to_dict('records'))]
+                final_rows = clean_rows([{**r, "Sl_No": i+1} for i, r in enumerate(dim_grid.to_dict('records'))])
                 payload = {
                     "job_no":          sel_job,
                     "drawing_no":      drg_no_dir,
