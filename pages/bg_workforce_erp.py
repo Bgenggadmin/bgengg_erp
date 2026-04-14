@@ -222,8 +222,9 @@ with tabs[0]:
     if st.button("🔓 Logout / Switch User"):
         st.session_state["authenticated_user"] = None
         st.session_state["admin_authenticated"] = False
-        st.session_state.pop("promise_confirmed", None)   # FIX: was never cleared on logout
+        st.session_state.pop("promise_confirmed", None)
         st.session_state.pop("snooze_until", None)
+        st.session_state.pop("short_shift_ack", None)
         st.cache_data.clear()
         st.rerun()
 
@@ -521,16 +522,16 @@ with tabs[0]:
                     st.rerun()
             else:
                 if not log_data.get('punch_out'):
-                    # ── Live short-shift warning ──────────────────────────
+                    # ── Live short-shift calculation ──────────────────────
                     REQUIRED_MINS = 510  # 8h 30m
                     punch_in_live = pd.to_datetime(log_data.get('punch_in')).tz_convert(IST) \
                         if log_data.get('punch_in') else None
                     elapsed_mins  = int((get_now_ist() - punch_in_live).total_seconds() // 60) \
                         if punch_in_live else 0
-                    short_shift   = elapsed_mins < REQUIRED_MINS
+                    short_shift = elapsed_mins < REQUIRED_MINS
 
                     if short_shift and punch_in_live:
-                        still_needed  = REQUIRED_MINS - elapsed_mins
+                        still_needed = REQUIRED_MINS - elapsed_mins
                         st.warning(
                             f"⏳ Only **{elapsed_mins // 60}h {elapsed_mins % 60}m** logged. "
                             f"Full shift needs **8h 30m** — {still_needed // 60}h {still_needed % 60}m remaining."
@@ -539,25 +540,45 @@ with tabs[0]:
                     st.markdown("**Productivity Rating**")
                     work_sat = st.feedback("stars", key="prod_stars_fb")
 
-                    # If shift is short, require an explicit acknowledgement before allowing punch-out
-                    allow_punchout = True
+                    # FIX: Persist checkbox acknowledgement in session_state so it
+                    # survives the rerun that happens when the checkbox is ticked.
+                    # Previously the checkbox reset to False on every rerun, making
+                    # the button permanently disabled for short shifts.
                     if short_shift:
-                        allow_punchout = st.checkbox(
-                            "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
-                            key="short_shift_ack"
-                        )
+                        if not st.session_state.get("short_shift_ack"):
+                            st.checkbox(
+                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
+                                key="short_shift_ack"
+                            )
+                        else:
+                            st.checkbox(
+                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
+                                key="short_shift_ack",
+                                value=True
+                            )
+                        allow_punchout = bool(st.session_state.get("short_shift_ack", False))
+                    else:
+                        allow_punchout = True
+
+                    # FIX: Capture all closure variables explicitly to avoid
+                    # stale reference bugs in the lambda
+                    rec_id     = log_data['id']
+                    is_short   = short_shift
 
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary",
                                  disabled=not allow_punchout):
                         safe_work_sat = work_sat if work_sat is not None else 0
                         safe_db_write(
-                            lambda: conn.table("attendance_logs").update({
-                                "punch_out": get_now_ist().isoformat(),
-                                "work_satisfaction": safe_work_sat,
-                                "short_shift": short_shift,  # flag for admin reports
-                            }).eq("id", log_data['id']).execute(),
+                            lambda rid=rec_id, ss=is_short, ws=safe_work_sat:
+                                conn.table("attendance_logs").update({
+                                    "punch_out": get_now_ist().isoformat(),
+                                    "work_satisfaction": ws,
+                                    "short_shift": ss,
+                                }).eq("id", rid).execute(),
                             error_prefix="Punch Out Error"
                         )
+                        # Clear short shift ack so it doesn't bleed into next session
+                        st.session_state.pop("short_shift_ack", None)
                         st.cache_data.clear()
                         st.rerun()
                 else:
