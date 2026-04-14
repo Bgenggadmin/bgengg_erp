@@ -232,7 +232,12 @@ def generate_master_data_book(job_no, project_info, df_plan):
         ("Client",         _pdf_safe(str(proj_get(project_info, 'client_name')))),
         ("PO Reference",   _pdf_safe(str(proj_get(project_info, 'po_no')))),
         ("PO Date",        fmt_date(proj_get(project_info, 'po_date', ''))),
-        ("Equipment Type", _pdf_safe(str(proj_get(project_info, 'equipment_type')))),
+        ("Equipment",      _pdf_safe(str(
+            next((r.get("equipment_name","") for r in
+                  (conn.table("quality_check_list").select("item_name")
+                   .eq("job_no",job_no).order("created_at",desc=True).limit(1).execute().data or [{}])),
+                 proj_get(project_info,"equipment_type",""))
+        ))),
         ("Report Date",    datetime.now().strftime('%d-%m-%Y')),
     ]
     for i, (k, v) in enumerate(cover_rows):
@@ -671,11 +676,10 @@ def get_proj(df_anchor, job_no):
 
 def job_header(proj):
     with st.container(border=True):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         c1.write(f"**Client:** {proj_get(proj, 'client_name')}")
         c2.write(f"**PO No:** {proj_get(proj, 'po_no')}")
         c3.write(f"**PO Date:** {fmt_date(proj_get(proj, 'po_date', ''))}")
-        c4.write(f"**Equipment:** {proj_get(proj, 'equipment_type')}")
 
 # ============================================================
 # 7. INITIALISE
@@ -855,7 +859,6 @@ with main_tabs[1]:
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
             job_header(proj)
-            e_type = proj_get(proj, 'equipment_type', 'Storage Tank')
             try:
                 existing = conn.table("quality_check_list").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(5).execute()
@@ -936,12 +939,6 @@ with main_tabs[1]:
                 st.session_state[_ck_key].pop(_del_idx)
                 st.rerun()
 
-            if e_type == "Reactor":
-                st.markdown("#### Reactor Specific")
-                _r1, _r2 = st.columns(2)
-                _r1.text_input("Agitator Run Test", value="NA", key="qcl_agit")
-                _r2.text_input("Jacket Hydro Test",  value="NA", key="qcl_jack")
-
             # ── Authorization + Save (only these need to be in a form) ──
             st.markdown("#### Authorization")
             with st.form("qcl_form", clear_on_submit=False):
@@ -999,7 +996,13 @@ with main_tabs[2]:
                 st.markdown("#### QAP Header")
                 h1, h2, h3 = st.columns(3)
                 qap_no     = h1.text_input("QAP Document No.", value=f"BGEI/2025-26/{sel_job}")
-                equip_name = h2.text_input("Equipment Name")
+                # Pre-fill from last saved record
+                _qap_last = ""
+                try:
+                    _r = conn.table("nozzle_flow_charts").select("equipment_name")                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                    if _r.data: _qap_last = _r.data[0].get("equipment_name","")
+                except Exception: pass
+                equip_name = h2.text_input("Equipment Name", value=_qap_last)
                 prep_by    = h3.selectbox("Prepared By", inspectors, key="qap_prep")
                 h1.text_input("Drawing No.")
                 h2.text_input("Client Name", value=proj_get(proj, 'client_name'))
@@ -1156,8 +1159,15 @@ with main_tabs[4]:
         if proj is not None:
             job_header(proj)
             c1, c2 = st.columns(2)
-            equip_name_nfc = c1.text_input("Equipment Name", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
-            dwg_no_nfc     = c2.text_input("DWG No.",        placeholder="e.g. 3050101710")
+            _nfc_last_equip, _nfc_last_dwg = "", ""
+            try:
+                _r = conn.table("nozzle_flow_charts").select("equipment_name,nozzle_mark")                    .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                if _r.data:
+                    _nfc_last_equip = _r.data[0].get("equipment_name","")
+                    _nfc_last_dwg   = _r.data[0].get("nozzle_mark","")
+            except Exception: pass
+            equip_name_nfc = c1.text_input("Equipment Name", value=_nfc_last_equip)
+            dwg_no_nfc     = c2.text_input("DWG No.", value=_nfc_last_dwg)
             nfc_col_cfg = {
                 "Nozzle_No":      st.column_config.TextColumn("Nozzle No",      width="small"),
                 "Description":    st.column_config.TextColumn("Description",     width="large"),
@@ -1327,7 +1337,12 @@ with main_tabs[6]:
                 report_no_h = r1.text_input("Test Report No.",    value=f"BG/QA/HTR-{sel_job}")
                 r2.text_input("FIR No.",                           value=f"BG/QA/FIR-{sel_job}")
                 r3.text_input("Reference Document",                value="ASME SEC VIII DIVI.1 UG-99")
-                e_name_h    = r1.text_input("Equipment Description", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
+                _hydro_last = ""
+                try:
+                    _r = conn.table("hydro_test_reports").select("equipment_name")                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                    if _r.data: _hydro_last = _r.data[0].get("equipment_name","")
+                except Exception: pass
+                e_name_h = r1.text_input("Equipment Description", value=_hydro_last)
                 r2.text_input("Equipment No.",                     placeholder="e.g. 1500")
                 r3.text_input("Drawing No.",                       placeholder="e.g. 3050101710")
 
@@ -1462,7 +1477,12 @@ with main_tabs[8]:
                 r2.date_input("Date", value=get_now_ist().date())
                 r1.write(f"**Customer:** {proj_get(proj,'client_name')}")
                 r1.write(f"**PO No & Date:** {proj_get(proj,'po_no')} & {fmt_date(proj_get(proj,'po_date',''))}")
-                fir_equip = r2.text_input("Equipment", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
+                _fir_last = ""
+                try:
+                    _r = conn.table("final_inspection_reports").select("equipment_name")                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                    if _r.data: _fir_last = _r.data[0].get("equipment_name","")
+                except Exception: pass
+                fir_equip = r2.text_input("Equipment", value=_fir_last)
                 r3.selectbox("Type", ["VERTICAL","HORIZONTAL","OTHER"])
                 fir_iwo   = r1.text_input("IWO No. / Equipment No.", placeholder="e.g. 1500")
                 r2.text_input("GA Drg. No.", placeholder="e.g. 3050101710")
@@ -1532,10 +1552,20 @@ with main_tabs[9]:
 
             with st.form("gc_form", clear_on_submit=True):
                 g1, g2, g3 = st.columns(3)
-                gc_equip    = g1.text_input("Equipment Description",
-                                             value=proj_get(proj,'project_description','30KL SS304 OIL HOLDING TANK'))
-                gc_drg      = g2.text_input("DRG. No.",      placeholder="e.g. 3050101710")
-                gc_equip_no = g3.text_input("Equipment No.", placeholder="e.g. 1500")
+                _gc_last_equip, _gc_last_drg, _gc_last_eno = "", "", ""
+                try:
+                    _r = conn.table("guarantee_certificates").select("equipment_name,serial_no")                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                    if _r.data:
+                        _raw = _r.data[0].get("equipment_name","")
+                        if " | DRG: " in _raw:
+                            _gc_last_equip, _gc_last_drg = _raw.split(" | DRG: ", 1)
+                        else:
+                            _gc_last_equip = _raw
+                        _gc_last_eno = _r.data[0].get("serial_no","")
+                except Exception: pass
+                gc_equip    = g1.text_input("Equipment Description", value=_gc_last_equip)
+                gc_drg      = g2.text_input("DRG. No.", value=_gc_last_drg)
+                gc_equip_no = g3.text_input("Equipment No.", value=_gc_last_eno)
                 gc_fir_no   = g1.text_input("FIR No.",       value=f"QA/FIR/{sel_job}")
                 g2.date_input("Date of Issue", value=get_now_ist().date())
                 inv_ref     = g3.text_input("Invoice / Dispatch Ref No.")
