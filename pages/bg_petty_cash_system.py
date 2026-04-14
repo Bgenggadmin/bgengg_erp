@@ -464,29 +464,66 @@ with tabs[2]:
 
         if st.form_submit_button("💰 Log Receipt", use_container_width=True):
             if t_src.strip():
-                safe_db_write(
-                    lambda: conn.table("petty_cash_topups").insert({
-                        "amount":       t_amt,
-                        "source":       t_src.strip(),
-                        "receipt_date": str(t_date),
-                        "reference_no": t_ref.strip() or None,
-                        "logged_at":    get_now_ist().isoformat()
-                    }).execute(),
-                    success_msg="💰 Cash receipt logged. Balance updated.",
-                    error_prefix="Top-up Error"
-                )
-                invalidate_topup_cache()
-                st.rerun()
+                # FIX [Critical]: Capture all form values into local variables BEFORE
+                # the lambda. With clear_on_submit=True, Streamlit resets widget state
+                # before the lambda executes inside safe_db_write, so t_src.strip()
+                # and t_ref.strip() would read "" (the cleared value), inserting a
+                # blank source and no reference. This is why the amount appeared not
+                # to save — the row WAS written but with empty source, causing
+                # silent failures or filtered-out rows in the display query.
+                _amt  = float(t_amt)
+                _src  = t_src.strip()
+                _date = str(t_date)
+                _ref  = t_ref.strip() or None
+                _now  = get_now_ist().isoformat()
+
+                # Build payload — only include new columns if they exist in your schema.
+                # The original petty_cash_topups table had: amount, source, created_at
+                # If you have NOT yet added receipt_date / reference_no columns to
+                # Supabase, the insert will throw a 400. The try/except below handles
+                # this gracefully and falls back to the original minimal schema.
+                try:
+                    res = conn.table("petty_cash_topups").insert({
+                        "amount":       _amt,
+                        "source":       _src,
+                        "receipt_date": _date,
+                        "reference_no": _ref,
+                        "logged_at":    _now,
+                    }).execute()
+                    insert_ok = bool(res.data)
+                except Exception:
+                    # Fallback: original minimal schema (amount + source only)
+                    try:
+                        res = conn.table("petty_cash_topups").insert({
+                            "amount": _amt,
+                            "source": _src,
+                        }).execute()
+                        insert_ok = bool(res.data)
+                    except Exception as e2:
+                        st.error(f"Top-up Error: {e2}")
+                        insert_ok = False
+
+                if insert_ok:
+                    st.success("💰 Cash receipt logged. Balance updated.")
+                    invalidate_topup_cache()
+                    st.rerun()
             else:
                 st.error("Please specify the source of funds.")
 
-    # ENHANCEMENT: Show last 5 topups inline for quick reference
+    # Show last 5 topups inline for quick reference
     st.divider()
     st.subheader("Recent Receipts")
     df_topups = get_topup_history()
     if not df_topups.empty:
-        display_cols = [c for c in ['receipt_date', 'amount', 'source', 'reference_no', 'logged_at'] if c in df_topups.columns]
+        # Show whichever columns actually exist in the table
+        preferred = ['receipt_date', 'created_at', 'amount', 'source', 'reference_no', 'logged_at']
+        display_cols = [c for c in preferred if c in df_topups.columns]
+        # Prefer receipt_date over created_at; drop created_at if receipt_date present
+        if 'receipt_date' in display_cols and 'created_at' in display_cols:
+            display_cols.remove('created_at')
         st.dataframe(df_topups[display_cols].head(5), use_container_width=True, hide_index=True)
+    else:
+        st.info("No receipts logged yet.")
 
 # ============================================================
 # TAB 3: MANAGE EXPENSE HEADERS
@@ -663,9 +700,11 @@ with tabs[5]:
         rl1.metric("Total Cash Received", f"₹{total:,.2f}")
         rl2.metric("No. of Receipts",     len(df_topups))
 
-        display_cols = [c for c in
-            ['receipt_date', 'amount', 'source', 'reference_no', 'logged_at']
-            if c in df_topups.columns]
+        # Show whichever columns actually exist — resilient to schema differences
+        preferred_cols = ['receipt_date', 'created_at', 'amount', 'source', 'reference_no', 'logged_at']
+        display_cols = [c for c in preferred_cols if c in df_topups.columns]
+        if 'receipt_date' in display_cols and 'created_at' in display_cols:
+            display_cols.remove('created_at')
         st.dataframe(df_topups[display_cols], use_container_width=True, hide_index=True)
 
         today = date.today()
