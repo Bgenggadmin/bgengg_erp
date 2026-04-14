@@ -473,7 +473,7 @@ with main_tabs[1]:
                                 f"{'='*28}\n"
                                 f"{item_lines}\n"
                                 f"{'='*28}\n"
-                                f"Please share your best quote.\nRegards, Santhoshi, B&G Engineering Industries"
+                                f"Please share your best quote.\nRegards,\nSanthoshi,\nB&G Engineering Industries"
                             )
                             wa_base = f"https://wa.me/{v_phone}" if v_phone else "https://wa.me/"
                             wa_url  = f"{wa_base}?text={urllib.parse.quote(wa_msg)}"
@@ -494,7 +494,7 @@ with main_tabs[1]:
                                 f"(Indent #{indent_no}):\n"
                                 f"{item_lines}\n\n"
                                 f"Kindly share your best quote at the earliest.\n\n"
-                                f"Regards,\nB&G Engineering"
+                                f"Regards,\nSanthoshi\nB&G Engineering Industries"
                             )
                             mail_url = (
                                 f"mailto:{v_email}"
