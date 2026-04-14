@@ -463,7 +463,6 @@ with main_tabs[1]:
                                 item_lines += (
                                     f"\n{ii+1}. {row['item_name']}"
                                     f" | Qty: {row['quantity']} {row.get('units','Nos')}"
-                                    f" | Job: {row['job_no']}"
                                     + (f" | Specs: {row['specs']}" if row.get('specs') else "")
                                 )
 
