@@ -1003,17 +1003,18 @@ with main_tabs[2]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
+            _qap_prev = {}
+            try:
+                _r = conn.table("nozzle_flow_charts").select("*")\
+                    .eq("job_no",sel_job).order("created_at",desc=True).execute()
+                for _rec in (_r.data or []):
+                    if str(_rec.get("nozzle_mark","")).startswith("BGEI"):
+                        _qap_prev = _rec; break
+            except Exception: pass
+            job_header(proj, last_saved=_qap_prev.get("created_at") if _qap_prev else None)
             with st.form("qap_form", clear_on_submit=False):
                 st.markdown("#### QAP Header")
                 h1, h2, h3 = st.columns(3)
-                _qap_prev = {}
-                try:
-                    _r = conn.table("nozzle_flow_charts").select("*")\
-                        .eq("job_no",sel_job).order("created_at",desc=True).execute()
-                    for _rec in (_r.data or []):
-                        if str(_rec.get("nozzle_mark","")).startswith("BGEI"):
-                            _qap_prev = _rec; break
-                except Exception: pass
                 qap_no     = h1.text_input("QAP Document No.",
                                value=_qap_prev.get("nozzle_mark", f"BGEI/2025-26/{sel_job}"))
                 equip_name = h2.text_input("Equipment Name",
@@ -1176,16 +1177,20 @@ with main_tabs[4]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            c1, c2 = st.columns(2)
-            _nfc_last_equip, _nfc_last_dwg = "", ""
+            _nfc_prev = {}
             try:
-                _r = conn.table("nozzle_flow_charts").select("equipment_name,nozzle_mark")                    .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
-                if _r.data:
-                    _nfc_last_equip = _r.data[0].get("equipment_name","")
-                    _nfc_last_dwg   = _r.data[0].get("nozzle_mark","")
+                _nr = conn.table("nozzle_flow_charts").select("*")\
+                    .eq("job_no",sel_job).order("created_at",desc=True).execute()
+                for _rec in (_nr.data or []):
+                    if not str(_rec.get("nozzle_mark","")).startswith("BGEI"):
+                        _nfc_prev = _rec; break
             except Exception: pass
-            equip_name_nfc = c1.text_input("Equipment Name", value=_nfc_last_equip)
-            dwg_no_nfc     = c2.text_input("DWG No.", value=_nfc_last_dwg)
+            job_header(proj, last_saved=_nfc_prev.get("created_at") if _nfc_prev else None)
+            c1, c2 = st.columns(2)
+            equip_name_nfc = c1.text_input("Equipment Name",
+                               value=_nfc_prev.get("equipment_name",""))
+            dwg_no_nfc     = c2.text_input("DWG No.",
+                               value=_nfc_prev.get("nozzle_mark",""))
             nfc_col_cfg = {
                 "Nozzle_No":      st.column_config.TextColumn("Nozzle No",      width="small"),
                 "Description":    st.column_config.TextColumn("Description",     width="large"),
@@ -1195,36 +1200,38 @@ with main_tabs[4]:
                 "Test_Report_No": st.column_config.TextColumn("Test Report No.", width="medium"),
                 "Heat_No":        st.column_config.TextColumn("Heat No.",        width="medium"),
             }
+            _nfc_td = _nfc_prev.get("traceability_data", {}) if _nfc_prev else {}
+            _def_fl = [
+                {"Nozzle_No":"N1","Description":"DRAIN","QTY":1,"Size_NB":"40NB","MOC":"SS304","Test_Report_No":"1846912","Heat_No":"40308B20"},
+                {"Nozzle_No":"N2","Description":"OIL OUTLET","QTY":1,"Size_NB":"50NB","MOC":"SS304","Test_Report_No":"1846912","Heat_No":"40308B20"},
+                {"Nozzle_No":"N3","Description":"OIL INLET","QTY":1,"Size_NB":"80X50NB","MOC":"SS304","Test_Report_No":"1846912","Heat_No":"40308B20"},
+                {"Nozzle_No":"N6","Description":"MANHOLE","QTY":1,"Size_NB":"450NB","MOC":"SS304","Test_Report_No":"1846912","Heat_No":"40308B20"},
+                {"Nozzle_No":"N17","Description":"OVER FLOW","QTY":1,"Size_NB":"100NB","MOC":"SS304","Test_Report_No":"1846912","Heat_No":"40308B20"},
+            ]
+            _def_pi = [
+                {"Nozzle_No":"N1","Description":"DRAIN","QTY":1,"Size_NB":"40NB","MOC":"SS304","Test_Report_No":"WYYK8937","Heat_No":"K972180"},
+                {"Nozzle_No":"N2","Description":"OIL OUTLET","QTY":1,"Size_NB":"50NB","MOC":"SS304","Test_Report_No":"WYYK8735","Heat_No":"F936215"},
+                {"Nozzle_No":"N17","Description":"OVER FLOW","QTY":1,"Size_NB":"100NB","MOC":"SS304","Test_Report_No":"","Heat_No":""},
+            ]
+            _fl_data = _nfc_td.get("flanges", _def_fl) if isinstance(_nfc_td, dict) else _def_fl
+            _pi_data = _nfc_td.get("pipes",   _def_pi) if isinstance(_nfc_td, dict) else _def_pi
+
             st.markdown("#### Flanges Traceability")
-            flange_grid = st.data_editor(pd.DataFrame([
-                {"Nozzle_No": "N1",  "Description": "DRAIN",      "QTY": 1, "Size_NB": "40NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N2",  "Description": "OIL OUTLET", "QTY": 1, "Size_NB": "50NB",    "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N3",  "Description": "OIL INLET",  "QTY": 1, "Size_NB": "80X50NB", "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N6",  "Description": "MANHOLE",    "QTY": 1, "Size_NB": "450NB",   "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-                {"Nozzle_No": "N17", "Description": "OVER FLOW",  "QTY": 1, "Size_NB": "100NB",   "MOC": "SS304", "Test_Report_No": "1846912", "Heat_No": "40308B20"},
-            ]), num_rows="dynamic", use_container_width=True, hide_index=True,
-               key=f"nfc_flange_{sel_job}", column_config=nfc_col_cfg)
+            flange_grid = st.data_editor(pd.DataFrame(_fl_data),
+                num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=f"nfc_flange_{sel_job}", column_config=nfc_col_cfg)
 
             st.markdown("#### Pipes Traceability")
-            pipe_grid = st.data_editor(pd.DataFrame([
-                {"Nozzle_No": "N1",  "Description": "DRAIN",     "QTY": 1, "Size_NB": "40NB",  "MOC": "SS304", "Test_Report_No": "WYYK8937", "Heat_No": "K972180"},
-                {"Nozzle_No": "N2",  "Description": "OIL OUTLET","QTY": 1, "Size_NB": "50NB",  "MOC": "SS304", "Test_Report_No": "WYYK8735", "Heat_No": "F936215"},
-                {"Nozzle_No": "N17", "Description": "OVER FLOW", "QTY": 1, "Size_NB": "100NB", "MOC": "SS304", "Test_Report_No": "",         "Heat_No": ""},
-            ]), num_rows="dynamic", use_container_width=True, hide_index=True,
-               key=f"nfc_pipe_{sel_job}", column_config=nfc_col_cfg)
+            pipe_grid = st.data_editor(pd.DataFrame(_pi_data),
+                num_rows="dynamic", use_container_width=True, hide_index=True,
+                key=f"nfc_pipe_{sel_job}", column_config=nfc_col_cfg)
 
             with st.form("nfc_form", clear_on_submit=False):
-                _nfc_pv, _nfc_pr = "", ""
-                try:
-                    _r2 = conn.table("nozzle_flow_charts").select("verified_by,remarks,nozzle_mark")\
-                        .eq("job_no",sel_job).order("created_at",desc=True).execute()
-                    for _rec in (_r2.data or []):
-                        if not str(_rec.get("nozzle_mark","")).startswith("BGEI"):
-                            _nfc_pv = _rec.get("verified_by",""); _nfc_pr = _rec.get("remarks",""); break
-                except Exception: pass
+                _nfc_pv = _nfc_prev.get("verified_by","")
                 nfc_verifier = st.selectbox("Inspected By", inspectors, key="nfc_verifier",
                                 index=inspectors.index(_nfc_pv) if _nfc_pv in inspectors else 0)
-                nfc_remarks  = st.text_area("Orientation / Fit-up Remarks", value=_nfc_pr)
+                nfc_remarks  = st.text_area("Orientation / Fit-up Remarks",
+                                value=_nfc_prev.get("remarks",""))
                 if st.form_submit_button("Save Nozzle Flow Chart"):
                     payload = {
                         "job_no":            sel_job,
@@ -1503,32 +1510,32 @@ with main_tabs[8]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
+            # Pre-load last FIR record — single DB call
+            _fp = {}
+            try:
+                _fr = conn.table("final_inspection_reports").select("*")\
+                    .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                if _fr.data: _fp = _fr.data[0]
+            except Exception: pass
+            job_header(proj, last_saved=_fp.get("created_at") if _fp else None)
             with st.container(border=True):
                 r1, r2, r3 = st.columns(3)
-                fir_no    = r1.text_input("FIR No.", value=f"FIR/{sel_job}")
+                fir_no    = r1.text_input("FIR No.",
+                               value=_fp.get("tag_no", f"FIR/{sel_job}"))
                 r2.date_input("Date", value=get_now_ist().date())
                 r1.write(f"**Customer:** {proj_get(proj,'client_name')}")
                 r1.write(f"**PO No & Date:** {proj_get(proj,'po_no')} & {fmt_date(proj_get(proj,'po_date',''))}")
-                _fir_last = ""
-                try:
-                    _r = conn.table("final_inspection_reports").select("equipment_name")                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
-                    if _r.data: _fir_last = _r.data[0].get("equipment_name","")
-                except Exception: pass
-                fir_equip = r2.text_input("Equipment", value=_fir_last)
+                fir_equip = r2.text_input("Equipment",
+                               value=_fp.get("equipment_name",""))
                 r3.selectbox("Type", ["VERTICAL","HORIZONTAL","OTHER"])
-                fir_iwo   = r1.text_input("IWO No. / Equipment No.", placeholder="e.g. 1500")
-                r2.text_input("GA Drg. No.", placeholder="e.g. 3050101710")
+                fir_iwo   = r1.text_input("IWO No. / Equipment No.",
+                               value=_fp.get("tag_no",""))
+                r2.text_input("GA Drg. No.")
                 r3.text_input("MOC", value="SS304")
 
             with st.form("fir_form", clear_on_submit=False):
                 st.markdown("#### Quantity & Clearance")
                 q1, q2, q3 = st.columns(3)
-                _fp = {}
-                try:
-                    _fr = conn.table("final_inspection_reports").select("*")\
-                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
-                    if _fr.data: _fp = _fr.data[0]
-                except Exception: pass
                 ord_qty = q1.text_input("Ordered Qty",       value=_fp.get("ordered_qty","1 No."))
                 off_qty = q2.text_input("Offered for Insp.", value=_fp.get("offered_qty","1 No."))
                 acc_qty = q3.text_input("Accepted Qty",      value=_fp.get("accepted_qty","1 No."))
