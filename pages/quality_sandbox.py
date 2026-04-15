@@ -1101,7 +1101,6 @@ with main_tabs[3]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj, last_saved=_mfc_prev.get("created_at") if _mfc_prev else None)
             # Pre-load last MFC record
             _mfc_prev = {}
             try:
@@ -1109,6 +1108,7 @@ with main_tabs[3]:
                     .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
                 if _mr.data: _mfc_prev = _mr.data[0]
             except Exception: pass
+            job_header(proj, last_saved=_mfc_prev.get("created_at") if _mfc_prev else None)
 
             c1, c2 = st.columns(2)
             item_desc = c1.text_input("Equipment Description",
@@ -1580,19 +1580,19 @@ with main_tabs[9]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj, last_saved=_gp.get("created_at") if _gp else None)
+            # Pre-load last GC record
+            _gp_hdr = {}
             try:
-                ex_gc = conn.table("guarantee_certificates").select("*") \
+                _gpr = conn.table("guarantee_certificates").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute()
-                if ex_gc.data:
-                    with st.expander("Existing Guarantee Certificate"):
-                        g = ex_gc.data[0]
-                        st.write(f"**Equipment:** {g.get('equipment_name')}")
-                        st.write(f"**Serial No:** {g.get('serial_no')}")
-                        st.write(f"**Certified By:** {g.get('certified_by')}")
-                        st.write(f"**Date:** {fmt_date(g.get('created_at'))}")
-            except Exception:
-                pass
+                if _gpr.data: _gp_hdr = _gpr.data[0]
+            except Exception: pass
+            job_header(proj, last_saved=_gp_hdr.get("created_at") if _gp_hdr else None)
+            if _gp_hdr:
+                with st.expander("Last saved Guarantee Certificate"):
+                    st.write(f"**Equipment:** {_gp_hdr.get('equipment_name','')}")
+                    st.write(f"**Certified By:** {_gp_hdr.get('certified_by','')}")
+                    st.write(f"**Date:** {fmt_date(_gp_hdr.get('created_at',''))}")
 
             with st.form("gc_form", clear_on_submit=False):
                 g1, g2, g3 = st.columns(3)
@@ -1610,12 +1610,7 @@ with main_tabs[9]:
                 gc_equip    = g1.text_input("Equipment Description", value=_gc_last_equip)
                 gc_drg      = g2.text_input("DRG. No.", value=_gc_last_drg)
                 gc_equip_no = g3.text_input("Equipment No.", value=_gc_last_eno)
-                _gp = {}
-                try:
-                    _gr = conn.table("guarantee_certificates").select("*")\
-                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
-                    if _gr.data: _gp = _gr.data[0]
-                except Exception: pass
+                _gp = _gp_hdr  # reuse pre-loaded record
                 _fref = _gp.get("invoice_ref","")
                 _gcfd = _fref.split(" | INV: ")[0].replace("FIR: ","") if _fref else f"QA/FIR/{sel_job}"
                 _gcid = _fref.split(" | INV: ")[1] if " | INV: " in _fref else ""
