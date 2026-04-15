@@ -911,9 +911,16 @@ with main_tabs[1]:
                 {"checkpoint": "NCR If any",                                     "extent": "",                "format": "NC Report"},
             ]
             if _ck_key not in st.session_state:
-                # Load from last saved DB record first
                 _saved_checks = _qcl_prev.get("checklist_data") if _qcl_prev else None
                 if _saved_checks and isinstance(_saved_checks, list) and len(_saved_checks) > 0:
+                    # Ensure verification/docs have valid option strings
+                    _v_valid = {"W","V","R","NIL","P"}
+                    _d_valid = {"Yes","No","NA"}
+                    for _row in _saved_checks:
+                        if _row.get("verification") not in _v_valid:
+                            _row["verification"] = "W"
+                        if _row.get("docs") not in _d_valid:
+                            _row["docs"] = "Yes"
                     st.session_state[_ck_key] = _saved_checks
                 else:
                     st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
@@ -941,9 +948,18 @@ with main_tabs[1]:
                 cp     = gc[0].text_input("", value=row.get("checkpoint",""), key=f"qcl_cp_{i}", label_visibility="collapsed")
                 ext    = gc[1].text_input("", value=row.get("extent",""),     key=f"qcl_ex_{i}", label_visibility="collapsed")
                 fmt    = gc[2].text_input("", value=row.get("format",""),     key=f"qcl_fm_{i}", label_visibility="collapsed")
-                verif  = gc[3].selectbox("", ["W","V","R","NIL","P"],         key=f"qcl_v_{i}",  label_visibility="collapsed")
-                docs   = gc[4].selectbox("", ["Yes","No","NA"],               key=f"qcl_d_{i}",  label_visibility="collapsed")
-                remark = gc[5].text_input("",                                  key=f"qcl_r_{i}",  label_visibility="collapsed")
+                _v_opts = ["W","V","R","NIL","P"]
+                _d_opts = ["Yes","No","NA"]
+                _sv = row.get("verification","W")
+                _sd = row.get("docs","Yes")
+                verif  = gc[3].selectbox("", _v_opts, key=f"qcl_v_{i}",
+                           index=_v_opts.index(_sv) if _sv in _v_opts else 0,
+                           label_visibility="collapsed")
+                docs   = gc[4].selectbox("", _d_opts, key=f"qcl_d_{i}",
+                           index=_d_opts.index(_sd) if _sd in _d_opts else 0,
+                           label_visibility="collapsed")
+                remark = gc[5].text_input("", value=row.get("remarks",""),
+                           key=f"qcl_r_{i}", label_visibility="collapsed")
                 if gc[6].button("🗑", key=f"qcl_del_{i}"):
                     _del_idx = i
                 check_results.append({"checkpoint": cp, "extent": ext, "format": fmt,
@@ -1074,7 +1090,12 @@ with main_tabs[2]:
                 if _qap_grid_key not in st.session_state:
                     _saved_td = _qap_prev.get("traceability_data")
                     if _saved_td and isinstance(_saved_td, list) and len(_saved_td) > 0:
-                        st.session_state[_qap_grid_key] = pd.DataFrame(_saved_td)
+                        _qap_df = pd.DataFrame(_saved_td)
+                        # Ensure SelectboxColumn cols have valid string values
+                        for _col, _def in [("Classification","Major"),("QA","W"),("BG","W")]:
+                            if _col in _qap_df.columns:
+                                _qap_df[_col] = _qap_df[_col].fillna(_def).astype(str)
+                        st.session_state[_qap_grid_key] = _qap_df
                     else:
                         st.session_state[_qap_grid_key] = qap_template
                 qap_grid = st.data_editor(st.session_state[_qap_grid_key], num_rows="dynamic",
@@ -1149,7 +1170,12 @@ with main_tabs[3]:
             mfc_key = f"mfc_grid_{sel_job}"
             if mfc_key not in st.session_state:
                 if _mfc_prev.get("traceability_data"):
-                    st.session_state[mfc_key] = pd.DataFrame(_mfc_prev["traceability_data"])
+                    _mfc_df = pd.DataFrame(_mfc_prev["traceability_data"])
+                    # Fill NaN in string cols to prevent display issues
+                    for _col in ["Description","Size","MOC","Test_Report_No","Heat_No"]:
+                        if _col in _mfc_df.columns:
+                            _mfc_df[_col] = _mfc_df[_col].fillna("").astype(str)
+                    st.session_state[mfc_key] = _mfc_df
                 else:
                     st.session_state[mfc_key] = mfc_template
             mfc_grid = st.data_editor(st.session_state[mfc_key], num_rows="dynamic",
@@ -1235,12 +1261,18 @@ with main_tabs[4]:
             ]
             _nfc_fl_key = f"nfc_flange_data_{sel_job}"
             _nfc_pi_key = f"nfc_pipe_data_{sel_job}"
+            def _clean_nfc_df(rows):
+                df = pd.DataFrame(rows)
+                for _c in ["Nozzle_No","Description","Size_NB","MOC","Test_Report_No","Heat_No"]:
+                    if _c in df.columns:
+                        df[_c] = df[_c].fillna("").astype(str)
+                return df
             if _nfc_fl_key not in st.session_state:
                 _fl_saved = _nfc_td.get("flanges") if isinstance(_nfc_td, dict) else None
-                st.session_state[_nfc_fl_key] = pd.DataFrame(_fl_saved if _fl_saved else _def_fl)
+                st.session_state[_nfc_fl_key] = _clean_nfc_df(_fl_saved if _fl_saved else _def_fl)
             if _nfc_pi_key not in st.session_state:
                 _pi_saved = _nfc_td.get("pipes") if isinstance(_nfc_td, dict) else None
-                st.session_state[_nfc_pi_key] = pd.DataFrame(_pi_saved if _pi_saved else _def_pi)
+                st.session_state[_nfc_pi_key] = _clean_nfc_df(_pi_saved if _pi_saved else _def_pi)
 
             st.markdown("#### Flanges Traceability")
             flange_grid = st.data_editor(st.session_state[_nfc_fl_key],
@@ -1319,7 +1351,12 @@ with main_tabs[5]:
             if dir_key not in st.session_state:
                 try:
                     if _dir_prev.get("dim_grid_data") and len(_dir_prev["dim_grid_data"]) > 0:
-                        st.session_state[dir_key] = pd.DataFrame(_dir_prev["dim_grid_data"])
+                        _dir_df = pd.DataFrame(_dir_prev["dim_grid_data"])
+                        # Ensure SelectboxColumn cols have valid strings
+                        for _col in ["Description","MOC"]:
+                            if _col in _dir_df.columns:
+                                _dir_df[_col] = _dir_df[_col].fillna("").astype(str)
+                        st.session_state[dir_key] = _dir_df
                     else:
                         st.session_state[dir_key] = pd.DataFrame([
                             {"Sl_No": 1,  "Description": "Shell",                "Specified_Dimension": "ID2750X5100HX8THK",   "Measured_Dimension": "ID2750X5100HX8THK",   "MOC": "SS304"},
