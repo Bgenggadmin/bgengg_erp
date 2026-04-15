@@ -629,7 +629,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
 # ============================================================
 # 6. DATA LOADERS
 # ============================================================
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=60)
 def get_quality_context():
     plan_res = conn.table("job_planning").select("*").execute()
     df_plan  = pd.DataFrame(plan_res.data or [])
@@ -674,12 +674,16 @@ def get_proj(df_anchor, job_no):
     match = df_anchor[df_anchor['job_no'].astype(str) == str(job_no)]
     return match.iloc[0] if not match.empty else None
 
-def job_header(proj):
+def job_header(proj, last_saved=None, record_count=None):
     with st.container(border=True):
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
         c1.write(f"**Client:** {proj_get(proj, 'client_name')}")
         c2.write(f"**PO No:** {proj_get(proj, 'po_no')}")
         c3.write(f"**PO Date:** {fmt_date(proj_get(proj, 'po_date', ''))}")
+        if last_saved:
+            c4.success(f"Last saved: {fmt_date(last_saved)}")
+        elif record_count is not None:
+            c4.info(f"{record_count} record(s) saved")
 
 # ============================================================
 # 7. INITIALISE
@@ -858,31 +862,36 @@ with main_tabs[1]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj)
+            _qcl_prev = {}
             try:
                 existing = conn.table("quality_check_list").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(5).execute()
                 if existing.data:
-                    with st.expander(f"{len(existing.data)} existing record(s)"):
-                        df_ex     = pd.DataFrame(existing.data)
-                        cols_show = [c for c in ['inspection_date','item_name','drawing_no',
-                                                  'mat_cert_status','fit_up_status','visual_status',
-                                                  'pt_weld_status','hydro_status','final_status',
-                                                  'punching_status','ncr_status','inspected_by']
-                                     if c in df_ex.columns]
-                        st.dataframe(df_ex[cols_show], use_container_width=True, hide_index=True)
-            except Exception:
-                pass
+                    _qcl_prev = existing.data[0]
+            except Exception: pass
+            job_header(proj, last_saved=_qcl_prev.get("created_at") if _qcl_prev else None)
+            if existing.data:
+                with st.expander(f"{len(existing.data)} saved record(s) — click to review"):
+                    df_ex     = pd.DataFrame(existing.data)
+                    cols_show = [c for c in ['inspection_date','item_name','drawing_no',
+                                              'mat_cert_status','fit_up_status','inspected_by']
+                                 if c in df_ex.columns]
+                    st.dataframe(df_ex[cols_show], use_container_width=True, hide_index=True)
 
             # ── Equipment Details (outside form so checkpoint buttons work) ──
             st.markdown("#### Equipment Details")
             r1, r2, r3 = st.columns(3)
-            item_n   = r1.text_input("Name of Item / Description", value="30KL SS304 OIL HOLDING TANK", key="qcl_item")
-            drg_n    = r2.text_input("Drawing Number",             value="3050101710",                  key="qcl_drg")
-            qap_n    = r3.text_input("QAP Reference No.",          value="BGEI/2025-26/1500",           key="qcl_qap")
+            item_n   = r1.text_input("Name of Item / Description",
+                          value=_qcl_prev.get("item_name","30KL SS304 OIL HOLDING TANK"), key="qcl_item")
+            drg_n    = r2.text_input("Drawing Number",
+                          value=_qcl_prev.get("drawing_no","3050101710"), key="qcl_drg")
+            qap_n    = r3.text_input("QAP Reference No.",
+                          value=_qcl_prev.get("qap_no","BGEI/2025-26/1500"), key="qcl_qap")
             r4, r5, r6 = st.columns(3)
-            e_id     = r4.text_input("Equipment ID No.",  key="qcl_eid")
-            qty_val  = r5.text_input("Quantity", value="1 No.", key="qcl_qty")
+            e_id     = r4.text_input("Equipment ID No.",
+                          value=_qcl_prev.get("equipment_id_no",""), key="qcl_eid")
+            qty_val  = r5.text_input("Quantity",
+                          value=_qcl_prev.get("qty","1 No."), key="qcl_qty")
             ins_date = r6.date_input("Inspection Date", value=get_now_ist().date(), key="qcl_date")
 
             # ── Inspection Check Points ──────────────────────────────────
@@ -942,8 +951,11 @@ with main_tabs[1]:
             # ── Authorization + Save (only these need to be in a form) ──
             st.markdown("#### Authorization")
             with st.form("qcl_form", clear_on_submit=False):
-                insp_by    = st.selectbox("Quality Inspector", inspectors, key="qcl_insp")
-                tech_notes = st.text_area("Technical Notes / Deviations")
+                _qcl_pi = _qcl_prev.get("inspected_by","")
+                insp_by    = st.selectbox("Quality Inspector", inspectors, key="qcl_insp",
+                               index=inspectors.index(_qcl_pi) if _qcl_pi in inspectors else 0)
+                tech_notes = st.text_area("Technical Notes / Deviations",
+                               value=_qcl_prev.get("technical_notes",""))
 
                 if st.form_submit_button("Save Quality Check List", use_container_width=True):
                     def _get_verif(name_fragment):
@@ -991,7 +1003,6 @@ with main_tabs[2]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj)
             with st.form("qap_form", clear_on_submit=False):
                 st.markdown("#### QAP Header")
                 h1, h2, h3 = st.columns(3)
@@ -1090,23 +1101,20 @@ with main_tabs[3]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj)
+            job_header(proj, last_saved=_mfc_prev.get("created_at") if _mfc_prev else None)
+            # Pre-load last MFC record
+            _mfc_prev = {}
             try:
-                existing_mfc = conn.table("material_flow_charts").select("*") \
-                    .eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute()
-                if existing_mfc.data:
-                    with st.expander("Load last saved record"):
-                        rec = existing_mfc.data[0]
-                        st.caption(f"Saved: {fmt_date(rec.get('created_at'))} | By: {rec.get('verified_by')}")
-                        if rec.get('traceability_data'):
-                            st.dataframe(pd.DataFrame(rec['traceability_data']),
-                                         use_container_width=True, hide_index=True)
-            except Exception:
-                pass
+                _mr = conn.table("material_flow_charts").select("*")\
+                    .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                if _mr.data: _mfc_prev = _mr.data[0]
+            except Exception: pass
 
             c1, c2 = st.columns(2)
-            item_desc = c1.text_input("Equipment Description", placeholder="e.g. 30KL SS304 OIL HOLDING TANK")
-            total_qty = c2.text_input("Quantity",              placeholder="e.g. 1 No.")
+            item_desc = c1.text_input("Equipment Description",
+                          value=_mfc_prev.get("item_name",""))
+            total_qty = c2.text_input("Quantity",
+                          value=_mfc_prev.get("qty",""))
 
             st.markdown("#### Material Identification Matrix")
             mfc_template = pd.DataFrame([
@@ -1122,7 +1130,10 @@ with main_tabs[3]:
             ])
             mfc_key = f"mfc_grid_{sel_job}"
             if mfc_key not in st.session_state:
-                st.session_state[mfc_key] = mfc_template
+                if _mfc_prev.get("traceability_data"):
+                    st.session_state[mfc_key] = pd.DataFrame(_mfc_prev["traceability_data"])
+                else:
+                    st.session_state[mfc_key] = mfc_template
             mfc_grid = st.data_editor(st.session_state[mfc_key], num_rows="dynamic",
                 use_container_width=True, hide_index=True, key=f"mfc_editor_{sel_job}",
                 column_config={
@@ -1135,8 +1146,11 @@ with main_tabs[3]:
                 })
 
             with st.form("mfc_form", clear_on_submit=False):
-                verifier = st.selectbox("Verified By (QC)", inspectors, key="mfc_verifier")
-                mfc_rem  = st.text_area("Observations / Traceability Notes")
+                _mv = _mfc_prev.get("verified_by","")
+                verifier = st.selectbox("Verified By (QC)", inspectors, key="mfc_verifier",
+                             index=inspectors.index(_mv) if _mv in inspectors else 0)
+                mfc_rem  = st.text_area("Observations / Traceability Notes",
+                             value=_mfc_prev.get("remarks",""))
                 if st.form_submit_button("Save Material Flow Chart", use_container_width=True):
                     final_rows = clean_rows([{**r, "Sl": i+1} for i, r in enumerate(mfc_grid.to_dict('records'))])
                     payload = {
@@ -1152,7 +1166,6 @@ with main_tabs[3]:
                         lambda: conn.table("material_flow_charts").insert(payload).execute(),
                         success_msg=f"Material Flow Chart for {sel_job} saved!"
                     )
-                    if ok: st.balloons()
 
 # ============================================================
 # TAB 4: NOZZLE FLOW CHART
@@ -1163,7 +1176,6 @@ with main_tabs[4]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj)
             c1, c2 = st.columns(2)
             _nfc_last_equip, _nfc_last_dwg = "", ""
             try:
@@ -1228,7 +1240,6 @@ with main_tabs[4]:
                         lambda: conn.table("nozzle_flow_charts").insert(payload).execute(),
                         success_msg=f"Nozzle Flow Chart for {sel_job} saved!"
                     )
-                    if ok: st.balloons()
 
 # ============================================================
 # TAB 5: DIMENSIONAL INSPECTION REPORT
@@ -1239,11 +1250,26 @@ with main_tabs[5]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
+            # Pre-load last DIR record
+            _dir_prev = {}
+            try:
+                _dr = conn.table("dimensional_reports").select("*")\
+                    .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                if _dr.data: _dir_prev = _dr.data[0]
+            except Exception: pass
+
+            job_header(proj, last_saved=_dir_prev.get("created_at") if _dir_prev else None)
             with st.container(border=True):
                 c1, c2, c3 = st.columns(3)
                 c1.write(f"**Customer:** {proj_get(proj,'client_name')}")
-                drg_no_dir  = c2.text_input("Drawing No.", value="3050101710", key="dir_drg")
-                report_date = c3.date_input("Date", value=get_now_ist().date(), key="dir_date")
+                drg_no_dir  = c2.text_input("Drawing No.",
+                               value=_dir_prev.get("drawing_no","3050101710"), key="dir_drg")
+                _dir_date = get_now_ist().date()
+                try:
+                    if _dir_prev.get("inspection_date"):
+                        _dir_date = pd.to_datetime(_dir_prev["inspection_date"]).date()
+                except Exception: pass
+                report_date = c3.date_input("Date", value=_dir_date, key="dir_date")
             st.caption(f"Report No: **BG/QA/DIR-{sel_job}**")
 
             options_desc = get_config("Dimensional Descriptions") or \
@@ -1255,12 +1281,8 @@ with main_tabs[5]:
             dir_key = f"dir_data_{sel_job}"
             if dir_key not in st.session_state:
                 try:
-                    existing_dir = conn.table("dimensional_reports").select("*") \
-                        .eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute()
-                    if existing_dir.data:
-                        rec = existing_dir.data[0]
-                        st.session_state[dir_key] = pd.DataFrame(rec.get('dim_grid_data', []))
-                        st.info(f"Loaded record from {fmt_date(rec['created_at'])}")
+                    if _dir_prev.get("dim_grid_data"):
+                        st.session_state[dir_key] = pd.DataFrame(_dir_prev["dim_grid_data"])
                     else:
                         st.session_state[dir_key] = pd.DataFrame([
                             {"Sl_No": 1,  "Description": "Shell",                "Specified_Dimension": "ID2750X5100HX8THK",   "Measured_Dimension": "ID2750X5100HX8THK",   "MOC": "SS304"},
@@ -1299,7 +1321,9 @@ with main_tabs[5]:
             acc4 = acc_cols[3].text_input("Deviation accepted reason")
 
             f1, f2, f3 = st.columns(3)
-            dir_insp = f1.selectbox("Executive (QA)", inspectors, key="dir_insp")
+            _dpi = _dir_prev.get("inspected_by","")
+            dir_insp = f1.selectbox("Executive (QA)", inspectors, key="dir_insp",
+                         index=inspectors.index(_dpi) if _dpi in inspectors else 0)
             f2.text_input("TPI Name")
             f3.text_input("Customer Representative")
 
@@ -1332,19 +1356,14 @@ with main_tabs[6]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj)
+            # Pre-load last hydro record for this job
+            _hp = {}
             try:
-                ex_hydro = conn.table("hydro_test_reports").select("*") \
-                    .eq("job_no", sel_job).order("created_at", desc=True).limit(3).execute()
-                if ex_hydro.data:
-                    with st.expander(f"{len(ex_hydro.data)} existing hydro report(s)"):
-                        df_ex     = pd.DataFrame(ex_hydro.data)
-                        cols_show = [c for c in ['created_at','equipment_name','test_pressure',
-                                                  'holding_time','test_medium','inspected_by']
-                                     if c in df_ex.columns]
-                        st.dataframe(df_ex[cols_show], use_container_width=True, hide_index=True)
-            except Exception:
-                pass
+                _hr = conn.table("hydro_test_reports").select("*")\
+                    .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                if _hr.data: _hp = _hr.data[0]
+            except Exception: pass
+            job_header(proj, last_saved=_hp.get("created_at") if _hp else None)
 
             with st.form("hydro_form", clear_on_submit=False):
                 st.markdown("#### Report References")
@@ -1352,23 +1371,12 @@ with main_tabs[6]:
                 report_no_h = r1.text_input("Test Report No.",    value=f"BG/QA/HTR-{sel_job}")
                 r2.text_input("FIR No.",                           value=f"BG/QA/FIR-{sel_job}")
                 r3.text_input("Reference Document",                value="ASME SEC VIII DIVI.1 UG-99")
-                _hydro_last = ""
-                try:
-                    _r = conn.table("hydro_test_reports").select("equipment_name")                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
-                    if _r.data: _hydro_last = _r.data[0].get("equipment_name","")
-                except Exception: pass
-                e_name_h = r1.text_input("Equipment Description", value=_hydro_last)
+                e_name_h = r1.text_input("Equipment Description", value=_hp.get("equipment_name",""))
                 r2.text_input("Equipment No.",                     placeholder="e.g. 1500")
                 r3.text_input("Drawing No.",                       placeholder="e.g. 3050101710")
 
                 st.markdown("#### Test Parameters")
                 p1, p2, p3 = st.columns(3)
-                _hp = {}
-                try:
-                    _hr = conn.table("hydro_test_reports").select("*")\
-                        .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
-                    if _hr.data: _hp = _hr.data[0]
-                except Exception: pass
                 t_pressure = p1.text_input("Test Pressure (Kg/cm2)",   value=_hp.get("test_pressure",""))
                 d_pressure = p2.text_input("Design Pressure (Kg/cm2)", value=_hp.get("design_pressure",""))
                 h_time     = p3.text_input("Holding Duration",          value=_hp.get("holding_time",""))
@@ -1408,7 +1416,6 @@ with main_tabs[6]:
                         success_msg=f"Hydro Test Report {report_no_h} saved!"
                     )
                     if ok:
-                        st.balloons()
                         st.cache_data.clear()
 
 # ============================================================
@@ -1562,7 +1569,6 @@ with main_tabs[8]:
                         success_msg=f"FIR {fir_no} for {sel_job} saved!"
                     )
                     if ok:
-                        st.balloons()
                         st.cache_data.clear()
 
 # ============================================================
@@ -1574,7 +1580,7 @@ with main_tabs[9]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj)
+            job_header(proj, last_saved=_gp.get("created_at") if _gp else None)
             try:
                 ex_gc = conn.table("guarantee_certificates").select("*") \
                     .eq("job_no", sel_job).order("created_at", desc=True).limit(1).execute()
@@ -1651,7 +1657,6 @@ with main_tabs[9]:
                         success_msg=f"Guarantee Certificate for {sel_job} saved!"
                     )
                     if ok:
-                        st.balloons()
                         st.cache_data.clear()
 
 # ============================================================
@@ -1714,7 +1719,6 @@ with main_tabs[10]:
                         success_msg="Customer Feedback recorded!"
                     )
                     if ok:
-                        st.balloons()
                         st.cache_data.clear()
 
 # ============================================================
