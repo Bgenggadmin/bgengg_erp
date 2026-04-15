@@ -986,7 +986,7 @@ with main_tabs[1]:
                         "final_status":    _get_verif("final insp"),
                         "punching_status": _get_verif("punching"),
                         "ncr_status":      _get_verif("ncr"),
-                        "checklist_data":  check_results,
+                        "checklist_data":  clean_rows(check_results) if check_results else [],
                         "technical_notes": tech_notes,
                         "inspected_by":    insp_by,
                         "inspection_date": str(ins_date),
@@ -1097,7 +1097,7 @@ with main_tabs[2]:
                         "job_no":            sel_job,
                         "equipment_name":    equip_name,
                         "nozzle_mark":       qap_no,
-                        "traceability_data": qap_grid.to_dict('records'),
+                        "traceability_data": clean_rows(qap_grid.to_dict('records')),
                         "verified_by":       prep_by,
                         "remarks":           note_qap,
                         "created_at":        get_now_ist().isoformat()
@@ -1263,8 +1263,8 @@ with main_tabs[4]:
                         "job_no":            sel_job,
                         "equipment_name":    equip_name_nfc,
                         "nozzle_mark":       dwg_no_nfc,
-                        "traceability_data": {"flanges": flange_grid.to_dict('records'),
-                                              "pipes":   pipe_grid.to_dict('records')},
+                        "traceability_data": {"flanges": clean_rows(flange_grid.to_dict('records')),
+                                              "pipes":   clean_rows(pipe_grid.to_dict('records'))},
                         "verified_by":       nfc_verifier,
                         "remarks":           nfc_remarks,
                         "created_at":        get_now_ist().isoformat()
@@ -1352,10 +1352,14 @@ with main_tabs[5]:
 
             st.markdown("#### Acceptance Status")
             acc_cols = st.columns(4)
-            acc1 = acc_cols[0].checkbox("Part accepted.")
-            acc2 = acc_cols[1].checkbox("To be reworked.")
-            acc3 = acc_cols[2].checkbox("Rejected (NCR enclosed)")
-            acc4 = acc_cols[3].text_input("Deviation accepted reason")
+            acc1 = acc_cols[0].checkbox("Part accepted.",
+                      value=bool(_dir_prev.get("part_accepted", False)))
+            acc2 = acc_cols[1].checkbox("To be reworked.",
+                      value=bool(_dir_prev.get("to_be_reworked", False)))
+            acc3 = acc_cols[2].checkbox("Rejected (NCR enclosed)",
+                      value=bool(_dir_prev.get("rejected", False)))
+            acc4 = acc_cols[3].text_input("Deviation accepted reason",
+                      value=str(_dir_prev.get("deviation_reason","") or ""))
 
             f1, f2, f3 = st.columns(3)
             _dpi = _dir_prev.get("inspected_by","")
@@ -1372,8 +1376,10 @@ with main_tabs[5]:
                     "inspection_date": str(report_date),
                     "dim_grid_data":   final_rows,
                     "inspected_by":    dir_insp,
-                    "remarks":         str({"part_accepted": acc1, "to_be_reworked": acc2,
-                                            "rejected": acc3, "deviation_reason": acc4}),
+                    "part_accepted":   bool(acc1),
+                    "to_be_reworked":  bool(acc2),
+                    "rejected":        bool(acc3),
+                    "deviation_reason": str(acc4) if acc4 else "",
                     "created_at":      get_now_ist().isoformat()
                 }
                 ok = safe_write(
