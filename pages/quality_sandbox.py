@@ -911,7 +911,12 @@ with main_tabs[1]:
                 {"checkpoint": "NCR If any",                                     "extent": "",                "format": "NC Report"},
             ]
             if _ck_key not in st.session_state:
-                st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
+                # Load from last saved DB record first
+                _saved_checks = _qcl_prev.get("checklist_data") if _qcl_prev else None
+                if _saved_checks and isinstance(_saved_checks, list) and len(_saved_checks) > 0:
+                    st.session_state[_ck_key] = _saved_checks
+                else:
+                    st.session_state[_ck_key] = [dict(r) for r in _default_checkpoints]
 
             # Add / Reset / Delete buttons — must be OUTSIDE any form
             _ba, _bb, _ = st.columns([1, 1, 6])
@@ -990,9 +995,10 @@ with main_tabs[1]:
                         lambda: conn.table("quality_check_list").insert(payload).execute(),
                         success_msg=f"Quality Check List for {sel_job} saved!"
                     )
-                    if ok and _ck_key in st.session_state:
-                        del st.session_state[_ck_key]
-                    st.cache_data.clear()
+                    if ok:
+                        # Update session state with what was just saved
+                        st.session_state[_ck_key] = check_results
+                        st.cache_data.clear()
 
 # ============================================================
 # TAB 2: QAP
@@ -1063,8 +1069,16 @@ with main_tabs[2]:
                      "Quantum": "100%", "Ref_Document": "As per Dwg.",
                      "Formats_Records": "Release note", "QA": "W", "BG": "W"},
                 ])
-                qap_grid = st.data_editor(qap_template, num_rows="dynamic",
-                    use_container_width=True, hide_index=True, key="qap_grid",
+                # Load saved grid rows; fallback to template
+                _qap_grid_key = f"qap_grid_{sel_job}"
+                if _qap_grid_key not in st.session_state:
+                    _saved_td = _qap_prev.get("traceability_data")
+                    if _saved_td and isinstance(_saved_td, list) and len(_saved_td) > 0:
+                        st.session_state[_qap_grid_key] = pd.DataFrame(_saved_td)
+                    else:
+                        st.session_state[_qap_grid_key] = qap_template
+                qap_grid = st.data_editor(st.session_state[_qap_grid_key], num_rows="dynamic",
+                    use_container_width=True, hide_index=True, key=f"qap_editor_{sel_job}",
                     column_config={
                         "Sl": st.column_config.NumberColumn("Sl", width="small", disabled=True),
                         "Activity": st.column_config.TextColumn("Activity Description", width="large"),
@@ -1088,10 +1102,13 @@ with main_tabs[2]:
                         "remarks":           note_qap,
                         "created_at":        get_now_ist().isoformat()
                     }
-                    safe_write(
+                    _qok = safe_write(
                         lambda: conn.table("nozzle_flow_charts").insert(payload).execute(),
                         success_msg=f"QAP for {sel_job} saved!"
                     )
+                    if _qok:
+                        st.session_state[_qap_grid_key] = pd.DataFrame(qap_grid.to_dict("records"))
+                        st.cache_data.clear()
 
 # ============================================================
 # TAB 3: MATERIAL FLOW CHART
@@ -1167,6 +1184,9 @@ with main_tabs[3]:
                         lambda: conn.table("material_flow_charts").insert(payload).execute(),
                         success_msg=f"Material Flow Chart for {sel_job} saved!"
                     )
+                    if ok:
+                        st.session_state[mfc_key] = pd.DataFrame(final_rows)
+                        st.cache_data.clear()
 
 # ============================================================
 # TAB 4: NOZZLE FLOW CHART
@@ -1213,16 +1233,22 @@ with main_tabs[4]:
                 {"Nozzle_No":"N2","Description":"OIL OUTLET","QTY":1,"Size_NB":"50NB","MOC":"SS304","Test_Report_No":"WYYK8735","Heat_No":"F936215"},
                 {"Nozzle_No":"N17","Description":"OVER FLOW","QTY":1,"Size_NB":"100NB","MOC":"SS304","Test_Report_No":"","Heat_No":""},
             ]
-            _fl_data = _nfc_td.get("flanges", _def_fl) if isinstance(_nfc_td, dict) else _def_fl
-            _pi_data = _nfc_td.get("pipes",   _def_pi) if isinstance(_nfc_td, dict) else _def_pi
+            _nfc_fl_key = f"nfc_flange_data_{sel_job}"
+            _nfc_pi_key = f"nfc_pipe_data_{sel_job}"
+            if _nfc_fl_key not in st.session_state:
+                _fl_saved = _nfc_td.get("flanges") if isinstance(_nfc_td, dict) else None
+                st.session_state[_nfc_fl_key] = pd.DataFrame(_fl_saved if _fl_saved else _def_fl)
+            if _nfc_pi_key not in st.session_state:
+                _pi_saved = _nfc_td.get("pipes") if isinstance(_nfc_td, dict) else None
+                st.session_state[_nfc_pi_key] = pd.DataFrame(_pi_saved if _pi_saved else _def_pi)
 
             st.markdown("#### Flanges Traceability")
-            flange_grid = st.data_editor(pd.DataFrame(_fl_data),
+            flange_grid = st.data_editor(st.session_state[_nfc_fl_key],
                 num_rows="dynamic", use_container_width=True, hide_index=True,
                 key=f"nfc_flange_{sel_job}", column_config=nfc_col_cfg)
 
             st.markdown("#### Pipes Traceability")
-            pipe_grid = st.data_editor(pd.DataFrame(_pi_data),
+            pipe_grid = st.data_editor(st.session_state[_nfc_pi_key],
                 num_rows="dynamic", use_container_width=True, hide_index=True,
                 key=f"nfc_pipe_{sel_job}", column_config=nfc_col_cfg)
 
@@ -1247,6 +1273,10 @@ with main_tabs[4]:
                         lambda: conn.table("nozzle_flow_charts").insert(payload).execute(),
                         success_msg=f"Nozzle Flow Chart for {sel_job} saved!"
                     )
+                    if ok:
+                        st.session_state[_nfc_fl_key] = pd.DataFrame(flange_grid.to_dict("records"))
+                        st.session_state[_nfc_pi_key] = pd.DataFrame(pipe_grid.to_dict("records"))
+                        st.cache_data.clear()
 
 # ============================================================
 # TAB 5: DIMENSIONAL INSPECTION REPORT
@@ -1288,7 +1318,7 @@ with main_tabs[5]:
             dir_key = f"dir_data_{sel_job}"
             if dir_key not in st.session_state:
                 try:
-                    if _dir_prev.get("dim_grid_data"):
+                    if _dir_prev.get("dim_grid_data") and len(_dir_prev["dim_grid_data"]) > 0:
                         st.session_state[dir_key] = pd.DataFrame(_dir_prev["dim_grid_data"])
                     else:
                         st.session_state[dir_key] = pd.DataFrame([
