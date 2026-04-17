@@ -225,7 +225,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
     pdf.set_y(105)
     pdf.cell(0, 14, "QUALITY DATA BOOK", align='C', ln=1)
     pdf.set_font("Arial", 'B', 13)
-    pdf.cell(0, 10, "Quality By Design", align='C', ln=1)
+    pdf.cell(0, 10, "PRODUCT BIRTH CERTIFICATE", align='C', ln=1)
     pdf.set_y(150)
     pdf.set_text_color(0, 0, 0)
     cover_rows = [
@@ -603,19 +603,39 @@ def generate_master_data_book(job_no, project_info, df_plan):
     report_buf.seek(0)
     merger = PdfWriter()
     merger.append(PdfReader(report_buf))
-    for _cert_type in ["Material Test Certificate (MTC)", "Calibration Certificate"]:
-        try:
-            _cert_res = conn.table("project_certificates").select("file_url, file_name") \
-                .eq("job_no", job_no).eq("cert_type", _cert_type).execute()
-            for doc in (_cert_res.data or []):
-                try:
-                    r = requests.get(doc['file_url'], timeout=15)
-                    if r.status_code == 200:
-                        merger.append(PdfReader(io.BytesIO(r.content)))
-                except Exception:
+    # Append ALL uploaded documents from vault (PDFs only, in priority order)
+    _append_order = [
+        "Material Test Certificate (MTC)",
+        "Calibration Certificate",
+        "NDT Report",
+        "As Built Drawing",
+        "Guarantee Certificate",
+        "Final Inspection Report",
+        "Other",
+    ]
+    try:
+        _all_docs = conn.table("project_certificates").select("file_url, file_name, cert_type") \
+            .eq("job_no", job_no).execute()
+        # Sort by priority order
+        _docs_sorted = sorted(
+            _all_docs.data or [],
+            key=lambda d: _append_order.index(d.get("cert_type","Other"))
+                          if d.get("cert_type") in _append_order else 99
+        )
+        for doc in _docs_sorted:
+            # Only append PDF files
+            if not doc.get("file_url","").lower().endswith((".pdf",)):
+                _fname = doc.get("file_name","").lower()
+                if not _fname.endswith(".pdf"):
                     continue
-        except Exception:
-            pass
+            try:
+                r = requests.get(doc["file_url"], timeout=15)
+                if r.status_code == 200:
+                    merger.append(PdfReader(io.BytesIO(r.content)))
+            except Exception:
+                continue
+    except Exception:
+        pass
 
     for p in [logo_path, stamp_path]:
         if p:
