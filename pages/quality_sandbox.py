@@ -178,8 +178,9 @@ def generate_master_data_book(job_no, project_info, df_plan):
                 pass
         pdf.set_font("Arial", 'B', 10)
         pdf.set_text_color(255, 255, 255)
-        pdf.set_xy(MARGIN, 9)
-        pdf.cell(PAGE_W - 60, 10, "B&G ENGINEERING INDUSTRIES", align='L', ln=0)
+        # Start company name after logo (logo is ~20mm wide from x=11)
+        pdf.set_xy(32, 9)
+        pdf.cell(PAGE_W - 82, 10, "B&G ENGINEERING INDUSTRIES", align='L', ln=0)
         pdf.cell(60, 10, f"JOB: {_pdf_safe(str(job_no))}", align='R', ln=1)
         pdf.set_text_color(0, 51, 102)
         pdf.set_font("Arial", 'B', 11)
@@ -597,23 +598,24 @@ def generate_master_data_book(job_no, project_info, df_plan):
             pdf.line(MARGIN, pdf.get_y(), MARGIN + PAGE_W, pdf.get_y())
             pdf.ln(4)
 
-    # STITCH + APPEND MTCs
+    # STITCH + APPEND MTCs and Calibration Certificates
     report_buf = io.BytesIO(bytes(pdf.output()))
     report_buf.seek(0)
     merger = PdfWriter()
     merger.append(PdfReader(report_buf))
-    try:
-        mtc_res = conn.table("project_certificates").select("file_url, file_name") \
-            .eq("job_no", job_no).eq("cert_type", "Material Test Certificate (MTC)").execute()
-        for doc in (mtc_res.data or []):
-            try:
-                r = requests.get(doc['file_url'], timeout=15)
-                if r.status_code == 200:
-                    merger.append(PdfReader(io.BytesIO(r.content)))
-            except Exception:
-                continue
-    except Exception:
-        pass
+    for _cert_type in ["Material Test Certificate (MTC)", "Calibration Certificate"]:
+        try:
+            _cert_res = conn.table("project_certificates").select("file_url, file_name") \
+                .eq("job_no", job_no).eq("cert_type", _cert_type).execute()
+            for doc in (_cert_res.data or []):
+                try:
+                    r = requests.get(doc['file_url'], timeout=15)
+                    if r.status_code == 200:
+                        merger.append(PdfReader(io.BytesIO(r.content)))
+                except Exception:
+                    continue
+        except Exception:
+            pass
 
     for p in [logo_path, stamp_path]:
         if p:
@@ -707,7 +709,7 @@ main_tabs = st.tabs([
     "Material Flow Chart", "Nozzle Flow Chart", "Dimensional Report",
     "Hydro Test", "Calibration", "Final Inspection",
     "Guarantee Certificate", "Customer Feedback",
-    "Document Vault", "Master Data Book", "Config",
+    "Trial Run", "Document Vault", "Master Data Book", "Config",
 ])
 
 # ============================================================
@@ -1044,7 +1046,7 @@ with main_tabs[2]:
                 _qv = _qap_prev.get("verified_by","")
                 prep_by    = h3.selectbox("Prepared By", inspectors, key="qap_prep",
                                index=inspectors.index(_qv) if _qv in inspectors else 0)
-                h1.text_input("Drawing No.")
+                drg_no_qap = h1.text_input("Drawing No.", value=_qap_prev.get("drawing_no",""))
                 h2.text_input("Client Name", value=proj_get(proj, 'client_name'))
                 h3.text_input("PO No & Date",
                               value=f"{proj_get(proj,'po_no')} & {fmt_date(proj_get(proj,'po_date',''))}")
@@ -1118,6 +1120,7 @@ with main_tabs[2]:
                         "job_no":            sel_job,
                         "equipment_name":    equip_name,
                         "nozzle_mark":       qap_no,
+                        "drawing_no":        drg_no_qap,
                         "traceability_data": clean_rows(qap_grid.to_dict('records')),
                         "verified_by":       prep_by,
                         "remarks":           note_qap,
@@ -1381,10 +1384,10 @@ with main_tabs[5]:
                 hide_index=True, key=f"dir_editor_{sel_job}",
                 column_config={
                     "Sl_No":               st.column_config.NumberColumn("Sl", width="small", disabled=True),
-                    "Description":         st.column_config.SelectboxColumn("Description", options=options_desc, width="large"),
+                    "Description":         st.column_config.TextColumn("Description", width="large"),
                     "Specified_Dimension": st.column_config.TextColumn("Specified Dimension", width="large"),
                     "Measured_Dimension":  st.column_config.TextColumn("Measured Dimension",  width="large"),
-                    "MOC":                 st.column_config.SelectboxColumn("MOC", options=options_moc, width="small"),
+                    "MOC":                 st.column_config.TextColumn("MOC", width="small"),
                 })
 
             st.markdown("#### Acceptance Status")
@@ -1448,24 +1451,27 @@ with main_tabs[6]:
             with st.form("hydro_form", clear_on_submit=False):
                 st.markdown("#### Report References")
                 r1, r2, r3 = st.columns(3)
-                report_no_h = r1.text_input("Test Report No.",    value=f"BG/QA/HTR-{sel_job}")
+                report_no_h = r1.text_input("Test Report No.",    value=_hp.get("report_no", f"BG/QA/HTR-{sel_job}"))
                 r2.text_input("FIR No.",                           value=f"BG/QA/FIR-{sel_job}")
                 r3.text_input("Reference Document",                value="ASME SEC VIII DIVI.1 UG-99")
-                e_name_h = r1.text_input("Equipment Description", value=_hp.get("equipment_name",""))
-                r2.text_input("Equipment No.",                     placeholder="e.g. 1500")
-                r3.text_input("Drawing No.",                       placeholder="e.g. 3050101710")
+                e_name_h   = r1.text_input("Equipment Description", value=_hp.get("equipment_name",""))
+                equip_no_h = r2.text_input("Equipment No.",          value=_hp.get("equip_no",""))
+                drg_no_h   = r3.text_input("Drawing No.",            value=_hp.get("drawing_no",""))
 
                 st.markdown("#### Test Parameters")
                 p1, p2, p3 = st.columns(3)
-                t_pressure = p1.text_input("Test Pressure (Kg/cm2)",   value=_hp.get("test_pressure",""))
-                d_pressure = p2.text_input("Design Pressure (Kg/cm2)", value=_hp.get("design_pressure",""))
-                h_time     = p3.text_input("Holding Duration",          value=_hp.get("holding_time",""))
+                t_pressure    = p1.text_input("Test Pressure (Kg/cm2)",         value=_hp.get("test_pressure",""))
+                d_pressure    = p2.text_input("Design Pressure (Kg/cm2)",        value=_hp.get("design_pressure",""))
+                h_time        = p3.text_input("Holding Duration",                value=_hp.get("holding_time",""))
+                p1b, p2b, p3b = st.columns(3)
+                shell_pressure  = p1b.text_input("Shell Side Test Pressure (Kg/cm2)",  value=_hp.get("shell_pressure",""))
+                jacket_pressure = p2b.text_input("Jacket Side Test Pressure (Kg/cm2)", value=_hp.get("jacket_pressure",""))
+                p3b.text_input("Temperature", value="ATMP.")
                 p4, p5, p6 = st.columns(3)
                 _mo = ["Potable Water","WATER","Hydraulic Oil","Compressed Air","Nitrogen"]
                 _mp = _hp.get("test_medium","Potable Water")
                 medium = p4.selectbox("Test Medium", _mo, index=_mo.index(_mp) if _mp in _mo else 0)
                 g_nos  = p5.text_input("Pressure Gauge ID(s)", value=_hp.get("gauge_nos",""))
-                p6.text_input("Temperature", value="ATMP.")
                 h_remarks = st.text_area("Observations",
                               value=_hp.get("inspection_notes","No leakages found during the test period."))
 
@@ -1481,8 +1487,13 @@ with main_tabs[6]:
                     payload = {
                         "job_no":           sel_job,
                         "equipment_name":   e_name_h,
+                        "equip_no":         equip_no_h,
+                        "drawing_no":       drg_no_h,
+                        "report_no":        report_no_h,
                         "test_pressure":    t_pressure,
                         "design_pressure":  d_pressure,
+                        "shell_pressure":   shell_pressure,
+                        "jacket_pressure":  jacket_pressure,
                         "holding_time":     h_time,
                         "test_medium":      medium,
                         "gauge_nos":        g_nos,
@@ -1508,21 +1519,38 @@ with main_tabs[7]:
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
             job_header(proj)
-            with st.form("cal_form", clear_on_submit=True):
+            # Pre-load last calibration record
+            _cal_prev = {}
+            try:
+                _cr = conn.table("quality_inspection_logs").select("*")\
+                    .eq("job_no",sel_job).eq("quality_status","Calibrated")\
+                    .order("created_at",desc=True).limit(1).execute()
+                if _cr.data: _cal_prev = _cr.data[0]
+            except Exception: pass
+            job_header(proj, last_saved=_cal_prev.get("created_at") if _cal_prev else None)
+            with st.form("cal_form", clear_on_submit=False):
                 st.markdown("#### Calibration Details")
                 c1, c2, c3 = st.columns(3)
-                cal_report_no = c1.text_input("Report No.",   placeholder="e.g. SCS/PG/3500")
-                instrument    = c2.text_input("Instrument",   placeholder="e.g. Pressure Gauge")
-                make          = c3.text_input("Make",         placeholder="e.g. Baumer")
-                sr_no         = c1.text_input("Sr. No.",      placeholder="e.g. R303.59-03787")
-                range_val     = c2.text_input("Range",        placeholder="e.g. 0 to 7 kg/cm2")
+                cal_report_no = c1.text_input("Report No.",   value=_cal_prev.get("gauge_id",""))
+                instrument    = c2.text_input("Instrument",   value=_cal_prev.get("moc_type",""))
+                make          = c3.text_input("Make",         value=_cal_prev.get("specified_val",""))
+                sr_no         = c1.text_input("Sr. No.",      value=_cal_prev.get("measured_val",""))
+                range_val     = c2.text_input("Range",        value=_cal_prev.get("gauge_cal_due",""))
                 least_count   = c3.text_input("Least Count",  placeholder="e.g. 0.1 kg/cm2")
                 c4, c5 = st.columns(2)
                 c4.date_input("Date of Calibration", value=get_now_ist().date())
-                cal_due_date = c5.date_input("Calibration Due Date")
+                _cal_due = get_now_ist().date()
+                try:
+                    if _cal_prev.get("gauge_cal_due"):
+                        _cal_due = pd.to_datetime(_cal_prev["gauge_cal_due"]).date()
+                except Exception: pass
+                cal_due_date = c5.date_input("Calibration Due Date", value=_cal_due)
+                _prev_notes = _cal_prev.get("quality_notes","")
+                _prev_rem = _prev_notes.split(" | ")[-1] if " | " in _prev_notes else _prev_notes
                 cal_remarks  = st.text_area("Calibration Remarks",
-                    value="The Instrument is Satisfactory with respect to the Specified limits.")
-                cal_by = st.text_input("Calibrated By")
+                    value=_prev_rem or "The Instrument is Satisfactory with respect to the Specified limits.")
+                _prev_cal_by = _cal_prev.get("inspector_name","")
+                cal_by = st.text_input("Calibrated By", value=_prev_cal_by)
                 st.markdown("#### Upload Certificate (PDF / Image)")
                 cal_file = st.file_uploader("Upload scanned certificate",
                                             type=['pdf','jpg','png'], key="cal_upload")
@@ -1797,9 +1825,120 @@ with main_tabs[10]:
                         st.cache_data.clear()
 
 # ============================================================
-# TAB 11: DOCUMENT VAULT
+# TAB 11: TRIAL RUN REPORT
 # ============================================================
 with main_tabs[11]:
+    st.subheader("Trial Run Report")
+    sel_job = st.selectbox("Select Job", ["-- Select --"] + job_list, key="tr_job")
+    if sel_job != "-- Select --":
+        proj = get_proj(df_anchor, sel_job)
+        if proj is not None:
+            # Pre-load last trial run record
+            _tr_prev = {}
+            try:
+                _trr = conn.table("trial_run_reports").select("*")\
+                    .eq("job_no",sel_job).order("created_at",desc=True).limit(1).execute()
+                if _trr.data: _tr_prev = _trr.data[0]
+            except Exception: pass
+            job_header(proj, last_saved=_tr_prev.get("created_at") if _tr_prev else None)
+
+            # Header fields
+            with st.container(border=True):
+                h1, h2, h3 = st.columns(3)
+                tr_report_no  = h1.text_input("Test Report No.",
+                                  value=_tr_prev.get("report_no", f"BG/QA/TRR/{sel_job}"))
+                tr_equip      = h2.text_input("Equipment",
+                                  value=_tr_prev.get("equipment_name",""))
+                tr_drg        = h3.text_input("Drawing No.",
+                                  value=_tr_prev.get("drawing_no",""))
+                h4, h5, h6 = st.columns(3)
+                tr_motor_sr   = h4.text_input("Motor Serial No.",
+                                  value=_tr_prev.get("motor_serial_no",""))
+                tr_gearbox_sr = h5.text_input("Gearbox Serial No.",
+                                  value=_tr_prev.get("gearbox_serial_no",""))
+                tr_date       = h6.date_input("Test Date",
+                                  value=get_now_ist().date())
+
+            st.markdown("#### Trial Run Data")
+            _tr_grid_key = f"tr_grid_{sel_job}"
+            _tr_default = pd.DataFrame([
+                {"Description": "Trial run with load",    "Current_R": "", "Current_Y": "", "Current_B": "",
+                 "Duration": "1 Hour", "RPM_Actual": "", "RPM_Dwg": "", "Noise_dba": "",
+                 "Medium": "WATER", "Run_out_mm": ""},
+                {"Description": "Trial run with No load", "Current_R": "", "Current_Y": "", "Current_B": "",
+                 "Duration": "1 Hour", "RPM_Actual": "", "RPM_Dwg": "", "Noise_dba": "",
+                 "Medium": "——", "Run_out_mm": ""},
+            ])
+            if _tr_grid_key not in st.session_state:
+                _tr_saved = _tr_prev.get("trial_data")
+                if _tr_saved and isinstance(_tr_saved, list) and len(_tr_saved) > 0:
+                    _tr_df = pd.DataFrame(_tr_saved)
+                    for _c in _tr_df.columns:
+                        _tr_df[_c] = _tr_df[_c].fillna("").astype(str)
+                    st.session_state[_tr_grid_key] = _tr_df
+                else:
+                    st.session_state[_tr_grid_key] = _tr_default
+
+            tr_grid = st.data_editor(
+                st.session_state[_tr_grid_key], num_rows="dynamic",
+                use_container_width=True, hide_index=True,
+                key=f"tr_editor_{sel_job}",
+                column_config={
+                    "Description":  st.column_config.TextColumn("Description",         width="large"),
+                    "Current_R":    st.column_config.TextColumn("Current R (A)",        width="small"),
+                    "Current_Y":    st.column_config.TextColumn("Current Y (A)",        width="small"),
+                    "Current_B":    st.column_config.TextColumn("Current B (A)",        width="small"),
+                    "Duration":     st.column_config.TextColumn("Duration",             width="small"),
+                    "RPM_Actual":   st.column_config.TextColumn("RPM Actual",           width="small"),
+                    "RPM_Dwg":      st.column_config.TextColumn("RPM As per Dwg",       width="small"),
+                    "Noise_dba":    st.column_config.TextColumn("Noise Level (dBa)",    width="small"),
+                    "Medium":       st.column_config.TextColumn("Medium",               width="small"),
+                    "Run_out_mm":   st.column_config.TextColumn("Run Out (mm)",          width="small"),
+                }
+            )
+
+            with st.form("tr_form", clear_on_submit=False):
+                tr_observation = st.text_area("Observation",
+                    value=_tr_prev.get("observation",
+                          "Found smooth operating without any abnormal sounds during test duration."))
+                st.markdown("#### Authorization")
+                a1, a2, a3, a4 = st.columns(4)
+                a1.text_input("Production", key="tr_prod")
+                _tr_qc = _tr_prev.get("inspected_by","")
+                tr_inspector = a2.selectbox("Quality", inspectors, key="tr_insp",
+                                 index=inspectors.index(_tr_qc) if _tr_qc in inspectors else 0)
+                tr_tpi      = a3.text_input("TPI", value=_tr_prev.get("tpi_name",""))
+                tr_customer = a4.text_input("Customer", value=_tr_prev.get("customer_rep",""))
+
+                if st.form_submit_button("Save Trial Run Report", use_container_width=True):
+                    final_tr = clean_rows(tr_grid.to_dict("records"))
+                    payload = {
+                        "job_no":           sel_job,
+                        "report_no":        tr_report_no,
+                        "equipment_name":   tr_equip,
+                        "drawing_no":       tr_drg,
+                        "motor_serial_no":  tr_motor_sr,
+                        "gearbox_serial_no":tr_gearbox_sr,
+                        "test_date":        str(tr_date),
+                        "trial_data":       final_tr,
+                        "observation":      tr_observation,
+                        "inspected_by":     tr_inspector,
+                        "tpi_name":         tr_tpi,
+                        "customer_rep":     tr_customer,
+                        "created_at":       get_now_ist().isoformat()
+                    }
+                    ok = safe_write(
+                        lambda: conn.table("trial_run_reports").insert(payload).execute(),
+                        success_msg=f"Trial Run Report {tr_report_no} saved!"
+                    )
+                    if ok:
+                        st.session_state[_tr_grid_key] = pd.DataFrame(final_tr)
+                        st.cache_data.clear()
+
+# ============================================================
+# TAB 12: DOCUMENT VAULT
+# ============================================================
+with main_tabs[12]:
     st.subheader("MTC & Document Upload Vault")
     sel_job = st.selectbox("Select Job", ["-- Select --"] + job_list, key="vault_job")
     if sel_job != "-- Select --":
@@ -1860,9 +1999,9 @@ with main_tabs[11]:
                 st.error(f"Vault load error: {e}")
 
 # ============================================================
-# TAB 12: MASTER DATA BOOK
+# TAB 13: MASTER DATA BOOK
 # ============================================================
-with main_tabs[12]:
+with main_tabs[13]:
     st.header("Master Data Book Generator")
     st.info("Compiles all quality documents into a single stamped PDF — the B&G Product Birth Certificate.")
 
@@ -1939,9 +2078,9 @@ with main_tabs[12]:
                             st.error(f"Compilation error: {e}")
 
 # ============================================================
-# TAB 13: CONFIG
+# TAB 14: CONFIG
 # ============================================================
-with main_tabs[13]:
+with main_tabs[14]:
     st.header("Portal Configuration & Master Data")
     config_mode = st.radio("Configure:", ["Inspection Parameters","Staff & Inspectors"], horizontal=True)
 
