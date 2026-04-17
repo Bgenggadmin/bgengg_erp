@@ -9,3 +9,4 @@ requests
 pypdf
 streamlit-drawable-canvas
 xlsxwriter
+python-docx
