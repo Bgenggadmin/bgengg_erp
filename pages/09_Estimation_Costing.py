@@ -490,16 +490,16 @@ with TAB_NEW:
         # ── Anchor QTN pull ──────────────────────────────────────────────────
         if anchor_qtns:
            anc_options = ["— type manually —"] + [
-    f"{a.get('quote_ref','')}  |  {a.get('client_name','')}  |  {a.get('project_description','')}"
-    for a in anchor_qtns
-]
-anc_sel = st.selectbox("🔗 Pull QTN from Anchor Portal", anc_options,
-                       help="Select a quotation number created in Anchor Portal to auto-fill")
-if anc_sel != "— type manually —":
-    chosen = anchor_qtns[anc_options.index(anc_sel) - 1]
-    h["qtn_number"]     = chosen.get("quote_ref", "")
-    h["customer_name"]  = chosen.get("client_name", "")
-    st.success(f"Auto-filled QTN **{h['qtn_number']}** and customer **{h['customer_name']}**")
+                f"{a.get('quote_ref','')}  |  {a.get('client_name','')}  |  {a.get('project_description','')}"
+                for a in anchor_qtns
+            ]
+            anc_sel = st.selectbox("🔗 Pull QTN from Anchor Portal", anc_options,
+                                   help="Select a quotation number created in Anchor Portal to auto-fill")
+            if anc_sel != "— type manually —":
+                chosen = anchor_qtns[anc_options.index(anc_sel) - 1]
+                h["qtn_number"]     = chosen.get("quote_ref", "")
+                h["customer_name"]  = chosen.get("client_name", "")
+                st.success(f"Auto-filled QTN **{h['qtn_number']}** and customer **{h['customer_name']}**")
 
         c1, c2, c3 = st.columns(3)
         h["qtn_number"] = c1.text_input("Quotation Number *", h["qtn_number"])
