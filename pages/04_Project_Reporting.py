@@ -205,8 +205,7 @@ def generate_pdf(logs):
     if logo_path and os.path.exists(logo_path):
         os.unlink(logo_path)
 
-    output = pdf.output(dest='S')
-    return output if isinstance(output, bytes) else bytes(output, encoding='latin-1')
+    return bytes(pdf.output())
 
 
 # ──────────────────────────────────────────────
@@ -412,12 +411,40 @@ with tab2:
     sel_c       = f1.selectbox("Filter Customer", ["All"] + customers)
     report_type = f2.selectbox("📅 Period", ["All Time", "Current Week", "Current Month", "Custom Range"])
 
+    # ── Period date range calculation ──
+    today     = datetime.now().date()
+    date_from = None
+    date_to   = None
+
+    if report_type == "Current Week":
+        date_from = today - timedelta(days=today.weekday())   # Monday of current week
+    elif report_type == "Current Month":
+        date_from = today.replace(day=1)
+    elif report_type == "Custom Range":
+        cr1, cr2  = f3.columns(2)
+        date_from = cr1.date_input("From", value=today - timedelta(days=30))
+        date_to   = cr2.date_input("To",   value=today)
+
+    # ── Build query ──
     query = conn.table("progress_logs").select("*").order("id", desc=True)
     if sel_c != "All":
         query = query.eq("customer", sel_c)
+    if date_from:
+        query = query.gte("created_at", str(date_from))
+    if date_to:
+        query = query.lte("created_at", str(date_to) + "T23:59:59")
 
-    res  = query.execute()
-    data = res.data if res.data else []
+    res = query.execute()
+    raw = res.data if res.data else []
+
+    # ── Deduplicate: keep only the LATEST entry per job_code ──
+    # raw is already ordered by id desc so first occurrence = latest
+    seen = {}
+    for row in raw:
+        jc = row.get("job_code")
+        if jc and jc not in seen:
+            seen[jc] = row
+    data = list(seen.values())
 
     if data:
         if st.button("📥 Prepare PDF for Download", use_container_width=True):
