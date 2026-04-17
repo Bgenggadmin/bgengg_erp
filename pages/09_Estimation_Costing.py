@@ -303,6 +303,8 @@ def load_rm_master():
 @st.cache_data(ttl=300)
 def load_oh_master():
     rows = sb_fetch("est_oh_master", order="oh_type")
+    for r in rows:
+        r["rate"] = float(r["rate"]) if r.get("rate") else 0.0
     return {r["oh_code"]: r for r in rows}
 
 @st.cache_data(ttl=60)
