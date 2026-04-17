@@ -1398,6 +1398,12 @@ with main_tabs[5]:
                 except Exception as e:
                     st.error(f"Load error: {e}")
 
+            # Auto-number Sl_No before rendering so new rows always get correct numbers
+            _dir_df_render = st.session_state.get(dir_key, pd.DataFrame()).copy()
+            if not _dir_df_render.empty:
+                _dir_df_render["Sl_No"] = range(1, len(_dir_df_render) + 1)
+                st.session_state[dir_key] = _dir_df_render
+
             dim_grid = st.data_editor(
                 st.session_state.get(dir_key, pd.DataFrame()),
                 num_rows="dynamic", use_container_width=True,
