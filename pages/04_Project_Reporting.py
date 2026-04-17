@@ -205,7 +205,8 @@ def generate_pdf(logs):
     if logo_path and os.path.exists(logo_path):
         os.unlink(logo_path)
 
-    return bytes(pdf.output(dest='S'), encoding='latin-1')
+    output = pdf.output(dest='S')
+    return output if isinstance(output, bytes) else bytes(output, encoding='latin-1')
 
 
 # ──────────────────────────────────────────────
