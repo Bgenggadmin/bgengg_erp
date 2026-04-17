@@ -1,13 +1,12 @@
 """
-B&G Production Scheduler ERP — v3
-Enhancements over v2:
-  ✅ Worker dropdowns from master_workers table (same as old app)
-  ✅ Clone schedule from any job → enter new start date → auto-schedule (editable before save)
-  ✅ Over/under allotment shown inline on every sub-task card
-  ✅ Inline edit for main task name, description, dates
-  ✅ Inline edit for sub-task name, duration, workers/day, man-hrs
-  ✅ Automatic revision log entry whenever planned dates change
-  ✅ Cascade reschedule: postponing a task shifts all dependent tasks automatically
+B&G Production Scheduler ERP — v4
+Enhancements over v3:
+  ✅ Worker pool per sub-task (multi-worker on same task like rolling, buffing, fitup)
+  ✅ Man-hours counted individually per worker — 3 workers × 2 hrs = 6 mh total, each charged 2 hrs
+  ✅ Live man-hour summary panel on assignment (allotted vs required)
+  ✅ Inline edit/remove of individual workers in a task's pool
+  ✅ Daily log pre-fills hours from that worker's assignment record
+  ✅ All previous: master_workers dropdown, clone+auto-schedule, inline edit, auto-revision, cascade
 """
 
 import streamlit as st
@@ -259,35 +258,42 @@ def manpower_load(asgn_df: pd.DataFrame, pool_df: pd.DataFrame, week: date) -> p
 # ─────────────────────────────────────────────
 # ALLOTMENT STATUS for a single sub-task
 # ─────────────────────────────────────────────
-def allotment_badge(sub_row, asgn_df: pd.DataFrame) -> str:
+def allotment_badge(sub_row, asgn_df: pd.DataFrame):
     """
-    Returns an emoji+text badge showing if this sub-task has enough man-hours allotted.
-    Required = manpower_required × man_hours_per_day × duration_days
-    Allotted  = sum of allocated_hrs_day × duration for all assignments to this sub-task
+    Man-hour accounting rule (pool of workers model):
+      • allocated_hrs_day  = hrs THIS individual worker works per day on this task
+      • Total man-hours    = SUM over workers of (each worker's hrs/day × duration)
+        e.g. 3 workers × 2 hrs/day × 5 days = 30 man-hours total
+        Each worker is charged only their own 2 hrs — NOT 6 hrs.
+
+    Required man-hours = manpower_required × man_hours_per_day × duration_days
+    Allotted man-hours = Σ(each assigned worker's allocated_hrs_day) × duration_days
     """
     sub_id      = int(sub_row["id"])
     req_workers = int(sub_row.get("manpower_required", 1) or 1)
     mh_per_day  = float(sub_row.get("man_hours_per_day", 8) or 8)
     duration    = int(sub_row.get("duration_days", 1) or 1)
+    # Required: e.g. 2 workers × 8 hrs × 5 days = 80 man-hours
     required_mh = req_workers * mh_per_day * duration
 
     if not asgn_df.empty:
-        task_asgn = asgn_df[asgn_df["sub_task_id"] == sub_id]
+        task_asgn        = asgn_df[asgn_df["sub_task_id"] == sub_id].copy()
         allotted_workers = task_asgn["worker_name"].nunique()
-        allotted_mh      = task_asgn["allocated_hrs_day"].sum() * duration
+        # Each row = one worker's hrs/day. Total = Σ(individual hrs) × duration
+        # e.g. worker A: 2 hrs/day, worker B: 2 hrs/day → 4 hrs/day team × 5 days = 20 mh total
+        allotted_mh = task_asgn["allocated_hrs_day"].sum() * duration
     else:
         allotted_workers = 0
         allotted_mh      = 0
 
     if allotted_workers == 0:
         badge = "❌ No allotment"
-    elif allotted_mh >= required_mh:
-        if allotted_mh > required_mh * 1.2:
-            badge = f"⚠️ Over ({allotted_mh:.0f}/{required_mh:.0f}h)"
-        else:
-            badge = f"✅ OK ({allotted_mh:.0f}/{required_mh:.0f}h)"
+    elif allotted_mh > required_mh * 1.2:
+        badge = f"⚠️ Over-allotted ({allotted_mh:.0f}/{required_mh:.0f}h, {allotted_workers}w)"
+    elif allotted_mh >= required_mh * 0.95:
+        badge = f"✅ OK ({allotted_mh:.0f}/{required_mh:.0f}h, {allotted_workers}w)"
     else:
-        badge = f"🔻 Under ({allotted_mh:.0f}/{required_mh:.0f}h)"
+        badge = f"🔻 Under ({allotted_mh:.0f}/{required_mh:.0f}h, {allotted_workers}w)"
 
     return badge, allotted_workers, allotted_mh, required_mh
 
@@ -974,7 +980,8 @@ with tab_manpower:
             st.info(f"{len(un)} underutilised workers — redeploy to overloaded tasks.")
 
         st.dataframe(
-            load_df.rename(columns={"worker_name": "Worker", "allocated_hrs": "Alloc. Hrs/Day",
+            load_df.rename(columns={"worker_name": "Worker",
+                                     "allocated_hrs": "Alloc. Hrs/Day (own)",
                                      "daily_cap_hrs": "Capacity Hrs/Day",
                                      "load_pct": "Load %", "status": "Status"}),
             use_container_width=True, hide_index=True,
@@ -984,34 +991,103 @@ with tab_manpower:
         st.info("No assignments for this week.")
 
     st.divider()
-    st.markdown("#### Assign Worker to Sub Task")
+    st.markdown("#### Assign Worker Pool to Sub Task")
+    st.caption(
+        "Each worker gets their **own** hours/day — the system counts them individually. "
+        "Example: 3 workers × 2 hrs each = 6 man-hours/day total (not 2 hrs shared among 3)."
+    )
+
     a_job = st.selectbox("Job", ["-- Select --"] + all_jobs, key="asgn_job")
     if a_job != "-- Select --":
         a_subs = df_sub[df_sub["job_no"] == a_job] if not df_sub.empty else pd.DataFrame()
         if not a_subs.empty:
-            sub_opts = {int(r["id"]): f"{r['name']} ({r.get('duration_days',1)}d)"
+            sub_opts = {int(r["id"]): f"{r['name']} ({r.get('duration_days', 1)}d, "
+                                       f"needs {r.get('manpower_required', 1)}w × "
+                                       f"{r.get('man_hours_per_day', 8)}h/d)"
                         for _, r in a_subs.iterrows()}
-            with st.form("assign_worker", clear_on_submit=True):
-                a1, a2, a3 = st.columns(3)
-                a_sub    = a1.selectbox("Sub Task", list(sub_opts.keys()),
-                                        format_func=lambda x: sub_opts.get(x, str(x)))
-                # ← workers from master_workers
-                a_worker = a2.selectbox("Worker", all_workers)
-                a_hrs    = a3.number_input("Hrs/Day allotted", min_value=0.5, value=8.0, step=0.5)
-                b1, b2   = st.columns(2)
-                a_week   = b1.date_input("Week Starting", value=week_monday())
-                a_target = b2.text_input("Weekly target / goal")
-                if st.form_submit_button("Assign"):
+
+            a_sub_id = st.selectbox("Sub Task", list(sub_opts.keys()),
+                                    format_func=lambda x: sub_opts.get(x, str(x)),
+                                    key="asgn_sub")
+
+            # Show existing assignments for this sub-task
+            existing_asgn = df_asgn[df_asgn["sub_task_id"] == a_sub_id] \
+                            if not df_asgn.empty else pd.DataFrame()
+
+            if not existing_asgn.empty:
+                st.markdown("**Currently assigned workers:**")
+                for _, ea in existing_asgn.iterrows():
+                    ec1, ec2, ec3 = st.columns([3, 2, 1])
+                    ec1.markdown(
+                        f"👤 **{ea['worker_name']}** — {ea['allocated_hrs_day']} hrs/day  \n"
+                        f"<small>Week of {fmt(safe_date(ea.get('week_start_date')), '%d-%b')} "
+                        f"| {ea.get('target_description', '—')}</small>",
+                        unsafe_allow_html=True,
+                    )
+                    # Inline edit allocated hrs
+                    new_ea_hrs = ec2.number_input(
+                        "Hrs/day", min_value=0.5, value=float(ea["allocated_hrs_day"]),
+                        step=0.5, key=f"ea_hrs_{ea['id']}", label_visibility="collapsed")
+                    if ec2.button("✓", key=f"ea_save_{ea['id']}"):
+                        db_update("task_assignments",
+                                  {"allocated_hrs_day": float(new_ea_hrs)},
+                                  "id", int(ea["id"]))
+                        st.rerun()
+                    if ec3.button("🗑️", key=f"ea_del_{ea['id']}"):
+                        db_delete("task_assignments", "id", int(ea["id"]))
+                        st.rerun()
+
+                # Show live man-hour summary
+                sub_row = a_subs[a_subs["id"] == a_sub_id].iloc[0]
+                duration    = int(sub_row.get("duration_days", 1) or 1)
+                req_workers = int(sub_row.get("manpower_required", 1) or 1)
+                mh_per_day  = float(sub_row.get("man_hours_per_day", 8) or 8)
+                required_mh = req_workers * mh_per_day * duration
+                allotted_mh = existing_asgn["allocated_hrs_day"].sum() * duration
+                team_mh_day = existing_asgn["allocated_hrs_day"].sum()
+
+                st.info(
+                    f"**Team man-hours:** {team_mh_day:.1f} hrs/day × {duration} days = "
+                    f"**{allotted_mh:.0f} hrs total**  \n"
+                    f"Required: {req_workers} workers × {mh_per_day} hrs/day × {duration} days = "
+                    f"**{required_mh:.0f} hrs total**  \n"
+                    f"Each worker is charged **their own hours only** — "
+                    f"not the team total."
+                )
+            else:
+                st.caption("No workers assigned yet.")
+
+            st.markdown("**Add a worker to this task:**")
+            with st.form("assign_worker_pool", clear_on_submit=True):
+                # Exclude already-assigned workers from dropdown
+                assigned_names = existing_asgn["worker_name"].tolist() \
+                                 if not existing_asgn.empty else []
+                available_workers = [w for w in all_workers if w not in assigned_names] \
+                                    or all_workers  # fallback: show all if all assigned
+
+                p1, p2, p3 = st.columns(3)
+                a_worker = p1.selectbox("Worker", available_workers, key="pool_worker")
+                a_hrs    = p2.number_input(
+                    "This worker's hrs/day",
+                    min_value=0.5, value=8.0, step=0.5,
+                    help="Hours THIS worker will work per day on this task. "
+                         "Other workers have their own separate hour allocation.",
+                )
+                a_week   = p3.date_input("Week Starting", value=week_monday())
+                a_target = st.text_input("Target / goal for this worker this week")
+
+                if st.form_submit_button("➕ Add to Pool"):
                     db_insert("task_assignments", {
-                        "sub_task_id":       a_sub,
-                        "job_no":            a_job,
-                        "worker_name":       a_worker,
-                        "allocated_hrs_day": float(a_hrs),
-                        "week_start_date":   str(week_monday(a_week)),
+                        "sub_task_id":        a_sub_id,
+                        "job_no":             a_job,
+                        "worker_name":        a_worker,
+                        "allocated_hrs_day":  float(a_hrs),
+                        "week_start_date":    str(week_monday(a_week)),
                         "target_description": a_target,
-                        "created_at":        NOW_IST(),
+                        "created_at":         NOW_IST(),
                     })
-                    st.success(f"Assigned {a_worker}."); st.rerun()
+                    st.success(f"Added {a_worker} to pool — {a_hrs} hrs/day (their own allocation).")
+                    st.rerun()
         else:
             st.info("No sub tasks in this job.")
 
@@ -1159,8 +1235,23 @@ with tab_logs:
                 # ← workers from master_workers
                 lg_worker = l2.selectbox("Worker", all_workers)
                 lg_date   = l3.date_input("Date", value=TODAY)
+
+                # Pre-fill hours from this worker's assignment for this sub-task
+                if not df_asgn.empty:
+                    prefill = df_asgn[
+                        (df_asgn["sub_task_id"] == lg_sub) &
+                        (df_asgn["worker_name"] == lg_worker)
+                    ]
+                    default_hrs = float(prefill.iloc[0]["allocated_hrs_day"]) \
+                                  if not prefill.empty else 8.0
+                else:
+                    default_hrs = 8.0
+
                 l4, l5, l6 = st.columns(3)
-                lg_hrs  = l4.number_input("Hours", min_value=0.0, step=0.5)
+                lg_hrs  = l4.number_input(
+                    "Hours worked (this worker only)",
+                    min_value=0.0, step=0.5, value=default_hrs,
+                    help="Log only THIS worker's hours. Pool workers are logged separately.")
                 lg_out  = l5.number_input("Output Qty", min_value=0.0, step=0.1)
                 lg_unit = l6.selectbox("Unit", UNITS)
                 lg_note = st.text_input("Remarks")
