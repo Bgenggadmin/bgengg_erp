@@ -225,7 +225,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
     pdf.set_y(105)
     pdf.cell(0, 14, "QUALITY DATA BOOK", align='C', ln=1)
     pdf.set_font("Arial", 'B', 13)
-    pdf.cell(0, 10, "PRODUCT BIRTH CERTIFICATE", align='C', ln=1)
+    pdf.cell(0, 10, "Quality By Design", align='C', ln=1)
     pdf.set_y(150)
     pdf.set_text_color(0, 0, 0)
     cover_rows = [
