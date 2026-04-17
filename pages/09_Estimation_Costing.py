@@ -315,7 +315,7 @@ def load_clients_full():
 @st.cache_data(ttl=60)
 def load_anchor_qtns():
     """Pull quotation numbers from Anchor Portal table."""
-    rows = sb_fetch("anchor_projects", select="qtn_number,project_name,client_name", order="created_at")
+    rows = sb_fetch("anchor_projects", select="quote_ref,project_description,client_name", order="created_at")
     return rows  # list of dicts
 
 # ─────────────────────────────────────────────────────────────────────────────
