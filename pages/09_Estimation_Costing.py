@@ -294,7 +294,10 @@ def generate_docx(est, customer, totals):
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def load_rm_master():
-    rows = sb_fetch("anchor_projects", select="quote_ref,project_description,client_name", order="created_at")
+    rows = sb_fetch("est_rm_master", order="category")
+    for r in rows:
+        r["rate"] = float(r["rate"]) if r.get("rate") else 0.0
+        r["unit_wt_kg_per_m"] = float(r["unit_wt_kg_per_m"]) if r.get("unit_wt_kg_per_m") else None
     return {r["ref_code"]: r for r in rows}
 
 @st.cache_data(ttl=300)
