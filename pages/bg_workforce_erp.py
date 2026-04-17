@@ -507,7 +507,6 @@ with tabs[0]:
 
         ca, cb, cc = st.columns([1.8, 1.5, 2.5])
 
-       # --- ca: Shift Column ---
         with ca:
             st.markdown("### 🏢 Shift")
             if not emp_summ_res:
@@ -523,38 +522,53 @@ with tabs[0]:
                     st.rerun()
             else:
                 if not log_data.get('punch_out'):
-                    # 1. Live short-shift calculation
+                    # ── Live short-shift calculation ──────────────────────
                     REQUIRED_MINS = 510  # 8h 30m
-                    punch_in_live = pd.to_datetime(log_data.get('punch_in')).tz_convert(IST) if log_data.get('punch_in') else None
-                    elapsed_mins = int((get_now_ist() - punch_in_live).total_seconds() // 60) if punch_in_live else 0
+                    punch_in_live = pd.to_datetime(log_data.get('punch_in')).tz_convert(IST) \
+                        if log_data.get('punch_in') else None
+                    elapsed_mins  = int((get_now_ist() - punch_in_live).total_seconds() // 60) \
+                        if punch_in_live else 0
                     short_shift = elapsed_mins < REQUIRED_MINS
 
                     if short_shift and punch_in_live:
                         still_needed = REQUIRED_MINS - elapsed_mins
-                        st.warning(f"⏳ Only **{elapsed_mins // 60}h {elapsed_mins % 60}m** logged. Need **8h 30m**.")
+                        st.warning(
+                            f"⏳ Only **{elapsed_mins // 60}h {elapsed_mins % 60}m** logged. "
+                            f"Full shift needs **8h 30m** — {still_needed // 60}h {still_needed % 60}m remaining."
+                        )
 
                     st.markdown("**Productivity Rating**")
                     work_sat = st.feedback("stars", key="prod_stars_fb")
 
-                    # 2. FIXED: Short Shift Acknowledgement Logic
-                    allow_punchout = True
+                    # FIX: Persist checkbox acknowledgement in session_state so it
+                    # survives the rerun that happens when the checkbox is ticked.
+                    # Previously the checkbox reset to False on every rerun, making
+                    # the button permanently disabled for short shifts.
                     if short_shift:
-                        # We use the 'key' to automatically link the checkbox to st.session_state['short_shift_ack']
-                        st.checkbox(
-                            "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
-                            key="short_shift_ack"
-                        )
-                        allow_punchout = st.session_state.get("short_shift_ack", False)
+                        if not st.session_state.get("short_shift_ack"):
+                            st.checkbox(
+                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
+                                key="short_shift_ack"
+                            )
+                        else:
+                            st.checkbox(
+                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
+                                key="short_shift_ack",
+                                value=True
+                            )
+                        allow_punchout = bool(st.session_state.get("short_shift_ack", False))
+                    else:
+                        allow_punchout = True
 
-                    # 3. FIXED: Explicit Closure Variables for Lambda
-                    rec_id = log_data['id']
-                    is_short = short_shift
+                    # FIX: Capture all closure variables explicitly to avoid
+                    # stale reference bugs in the lambda
+                    rec_id     = log_data['id']
+                    is_short   = short_shift
 
-                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary", disabled=not allow_punchout):
+                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary",
+                                 disabled=not allow_punchout):
                         safe_work_sat = work_sat if work_sat is not None else 0
-                
-                        # We pass rid and ss as default arguments to the lambda to "freeze" their values
-                        ok = safe_db_write(
+                        safe_db_write(
                             lambda rid=rec_id, ss=is_short, ws=safe_work_sat:
                                 conn.table("attendance_logs").update({
                                     "punch_out": get_now_ist().isoformat(),
@@ -563,13 +577,10 @@ with tabs[0]:
                                 }).eq("id", rid).execute(),
                             error_prefix="Punch Out Error"
                         )
-                
-                        if ok:
-                            # Clear session state so it's clean for the next login
-                            st.session_state.pop("short_shift_ack", None)
-                            st.session_state.pop("promise_confirmed", None)
-                            st.cache_data.clear()
-                            st.rerun()
+                        # Clear short shift ack so it doesn't bleed into next session
+                        st.session_state.pop("short_shift_ack", None)
+                        st.cache_data.clear()
+                        st.rerun()
                 else:
                     st.success("Shift Completed")
 
@@ -868,7 +879,6 @@ with tabs[2]:
                     s_color = "orange" if r['status'] == 'Pending' else \
                               "green"  if r['status'] == 'Approved' else "red"
                     col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
-                    # FIX [Critical #1]: Capture r['id'] at loop iteration time, not call time
                     rid = r['id']
                     if r['status'] == 'Pending' and col_c.button("Withdraw", key=f"wd_{rid}"):
                         safe_db_write(
@@ -877,6 +887,9 @@ with tabs[2]:
                         )
                         st.cache_data.clear()
                         st.rerun()
+                    # Show admin remarks if present
+                    if r.get('admin_remarks') and str(r['admin_remarks']).strip():
+                        st.caption(f"💬 HR Remarks: {r['admin_remarks']}")
 
 # ============================================================
 # TAB 3: LEAVE BALANCE
@@ -1303,26 +1316,91 @@ with tabs[4]:
     with admin_tabs[3]:
         pend = get_leave_requests()
         if not pend.empty:
-            to_approve = pend[pend['status'] == 'Pending']
-            if not to_approve.empty:
-                for _, row in to_approve.iterrows():
+
+            # ── Pending requests ───────────────────────────────
+            to_decide = pend[pend['status'] == 'Pending']
+            if not to_decide.empty:
+                st.markdown(f"#### 📬 Pending Requests ({len(to_decide)})")
+                for _, row in to_decide.iterrows():
+                    rid = row['id']
                     with st.container(border=True):
-                        c1, c2, c3 = st.columns([2, 3, 2])
-                        c1.write(f"**{row['employee_name']}**")
-                        c2.write(f"📅 {row['start_date']} to {row['end_date']}")
-                        # FIX [Critical #1]: Capture row['id'] at iteration time, not call time
-                        rid = row['id']
-                        if c3.button("✅ Approve", key=f"ap_{rid}"):
+                        # Row 1 — employee info
+                        i1, i2, i3 = st.columns([2, 3, 3])
+                        i1.markdown(f"**{row['employee_name']}**")
+                        i2.markdown(f"📅 {row['start_date']} → {row['end_date']}")
+                        days = (pd.to_datetime(row['end_date']) -
+                                pd.to_datetime(row['start_date'])).days + 1
+                        i3.caption(f"{days} day(s) · {row.get('leave_type','Casual Leave')}")
+
+                        if row.get('reason'):
+                            st.caption(f"Reason: {row['reason']}")
+
+                        # Row 2 — remarks input + action buttons
+                        # Remarks stored in session state keyed by rid so they
+                        # survive the rerun triggered by button click
+                        remarks_key = f"remarks_{rid}"
+                        st.text_input(
+                            "Admin remarks (optional)",
+                            key=remarks_key,
+                            placeholder="Add a note — visible to employee on their leave tab"
+                        )
+
+                        b1, b2, b3 = st.columns([2, 2, 4])
+                        if b1.button("✅ Approve", key=f"ap_{rid}", type="primary"):
+                            remarks = st.session_state.get(remarks_key, "")
                             safe_db_write(
-                                lambda rid=rid: conn.table("leave_requests")
-                                    .update({"status": "Approved"})
+                                lambda rid=rid, rm=remarks: conn.table("leave_requests")
+                                    .update({"status": "Approved", "admin_remarks": rm})
                                     .eq("id", rid).execute(),
+                                success_msg="✅ Approved.",
                                 error_prefix="Approve Error"
                             )
                             st.cache_data.clear()
                             st.rerun()
+
+                        if b2.button("❌ Reject", key=f"rj_{rid}"):
+                            remarks = st.session_state.get(remarks_key, "")
+                            if not remarks.strip():
+                                b3.warning("Please add a remark before rejecting.")
+                            else:
+                                safe_db_write(
+                                    lambda rid=rid, rm=remarks: conn.table("leave_requests")
+                                        .update({"status": "Rejected", "admin_remarks": rm})
+                                        .eq("id", rid).execute(),
+                                    success_msg="❌ Rejected.",
+                                    error_prefix="Reject Error"
+                                )
+                                st.cache_data.clear()
+                                st.rerun()
             else:
                 st.success("✅ No pending approvals.")
+
+            # ── Decision history ────────────────────────────────
+            decided = pend[pend['status'].isin(['Approved', 'Rejected'])].copy()
+            if not decided.empty:
+                st.divider()
+                st.markdown("#### 📋 Decision History")
+                decided['Days'] = (
+                    pd.to_datetime(decided['end_date']) -
+                    pd.to_datetime(decided['start_date'])
+                ).dt.days + 1
+                decided['Status'] = decided['status'].apply(
+                    lambda s: '✅ Approved' if s == 'Approved' else '❌ Rejected'
+                )
+                display_cols = ['employee_name', 'start_date', 'end_date',
+                                'Days', 'reason', 'Status', 'admin_remarks']
+                # Only show columns that exist
+                display_cols = [c for c in display_cols if c in decided.columns]
+                st.dataframe(
+                    decided[display_cols].rename(columns={
+                        'employee_name': 'Employee',
+                        'start_date': 'From',
+                        'end_date': 'To',
+                        'reason': 'Reason',
+                        'admin_remarks': 'Admin Remarks'
+                    }).sort_values('From', ascending=False),
+                    use_container_width=True, hide_index=True
+                )
         else:
             st.info("No leave requests found.")
 
