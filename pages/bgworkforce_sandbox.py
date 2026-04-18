@@ -1285,7 +1285,7 @@ with tabs[4]:
                     df_v[col] = pd.to_datetime(df_v[col], errors='coerce') \
                         .dt.tz_convert(IST).dt.strftime('%d-%m %I:%M %p')
             df_v = df_v.fillna("None")
-            st.dataframe(df_v, hide_index=True, use_container_width=True)
+            st.dataframe(df_v, hide_index=True, use_container_width=True, column_order=df_v.columns.tolist())
             st.download_button("📥 Export CSV", data=convert_df(df_v),
                                file_name=f"Admin_{l_type}_IST.csv")
         else:
