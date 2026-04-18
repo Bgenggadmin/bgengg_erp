@@ -1269,7 +1269,7 @@ with tabs[4]:
             res = conn.table(tbl_map[l_type]).select("*") \
                 .gte(date_col_map[l_type], str(sr)) \
                 .lte(date_col_map[l_type], str(er)) \
-                .order(date_col_map[l_type], desc=True).execute().data
+                .order("id", desc=True).execute().data
         except Exception as e:
             st.error(f"Log load error: {e}")
             res = []
