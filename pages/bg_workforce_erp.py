@@ -222,9 +222,8 @@ with tabs[0]:
     if st.button("🔓 Logout / Switch User"):
         st.session_state["authenticated_user"] = None
         st.session_state["admin_authenticated"] = False
-        st.session_state.pop("promise_confirmed", None)
+        st.session_state.pop("promise_confirmed", None)   # FIX: was never cleared on logout
         st.session_state.pop("snooze_until", None)
-        st.session_state.pop("short_shift_ack", None)
         st.cache_data.clear()
         st.rerun()
 
@@ -522,16 +521,16 @@ with tabs[0]:
                     st.rerun()
             else:
                 if not log_data.get('punch_out'):
-                    # ── Live short-shift calculation ──────────────────────
+                    # ── Live short-shift warning ──────────────────────────
                     REQUIRED_MINS = 510  # 8h 30m
                     punch_in_live = pd.to_datetime(log_data.get('punch_in')).tz_convert(IST) \
                         if log_data.get('punch_in') else None
                     elapsed_mins  = int((get_now_ist() - punch_in_live).total_seconds() // 60) \
                         if punch_in_live else 0
-                    short_shift = elapsed_mins < REQUIRED_MINS
+                    short_shift   = elapsed_mins < REQUIRED_MINS
 
                     if short_shift and punch_in_live:
-                        still_needed = REQUIRED_MINS - elapsed_mins
+                        still_needed  = REQUIRED_MINS - elapsed_mins
                         st.warning(
                             f"⏳ Only **{elapsed_mins // 60}h {elapsed_mins % 60}m** logged. "
                             f"Full shift needs **8h 30m** — {still_needed // 60}h {still_needed % 60}m remaining."
@@ -540,45 +539,25 @@ with tabs[0]:
                     st.markdown("**Productivity Rating**")
                     work_sat = st.feedback("stars", key="prod_stars_fb")
 
-                    # FIX: Persist checkbox acknowledgement in session_state so it
-                    # survives the rerun that happens when the checkbox is ticked.
-                    # Previously the checkbox reset to False on every rerun, making
-                    # the button permanently disabled for short shifts.
+                    # If shift is short, require an explicit acknowledgement before allowing punch-out
+                    allow_punchout = True
                     if short_shift:
-                        if not st.session_state.get("short_shift_ack"):
-                            st.checkbox(
-                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
-                                key="short_shift_ack"
-                            )
-                        else:
-                            st.checkbox(
-                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
-                                key="short_shift_ack",
-                                value=True
-                            )
-                        allow_punchout = bool(st.session_state.get("short_shift_ack", False))
-                    else:
-                        allow_punchout = True
-
-                    # FIX: Capture all closure variables explicitly to avoid
-                    # stale reference bugs in the lambda
-                    rec_id     = log_data['id']
-                    is_short   = short_shift
+                        allow_punchout = st.checkbox(
+                            "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
+                            key="short_shift_ack"
+                        )
 
                     if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary",
                                  disabled=not allow_punchout):
                         safe_work_sat = work_sat if work_sat is not None else 0
                         safe_db_write(
-                            lambda rid=rec_id, ss=is_short, ws=safe_work_sat:
-                                conn.table("attendance_logs").update({
-                                    "punch_out": get_now_ist().isoformat(),
-                                    "work_satisfaction": ws,
-                                    "short_shift": ss,
-                                }).eq("id", rid).execute(),
+                            lambda: conn.table("attendance_logs").update({
+                                "punch_out": get_now_ist().isoformat(),
+                                "work_satisfaction": safe_work_sat,
+                                "short_shift": short_shift,  # flag for admin reports
+                            }).eq("id", log_data['id']).execute(),
                             error_prefix="Punch Out Error"
                         )
-                        # Clear short shift ack so it doesn't bleed into next session
-                        st.session_state.pop("short_shift_ack", None)
                         st.cache_data.clear()
                         st.rerun()
                 else:
@@ -879,6 +858,7 @@ with tabs[2]:
                     s_color = "orange" if r['status'] == 'Pending' else \
                               "green"  if r['status'] == 'Approved' else "red"
                     col_b.markdown(f"Status: **:{s_color}[{r['status']}]**")
+                    # FIX [Critical #1]: Capture r['id'] at loop iteration time, not call time
                     rid = r['id']
                     if r['status'] == 'Pending' and col_c.button("Withdraw", key=f"wd_{rid}"):
                         safe_db_write(
@@ -887,9 +867,6 @@ with tabs[2]:
                         )
                         st.cache_data.clear()
                         st.rerun()
-                    # Show admin remarks if present
-                    if r.get('admin_remarks') and str(r['admin_remarks']).strip():
-                        st.caption(f"💬 HR Remarks: {r['admin_remarks']}")
 
 # ============================================================
 # TAB 3: LEAVE BALANCE
@@ -1289,9 +1266,11 @@ with tabs[4]:
         date_col_map = {"Attendance": "work_date",  "Work Logs": "work_date",
                         "Movement":   "exit_time",  "Plans":     "plan_date"}
         try:
-            res = conn.table(tbl_map[l_type]).select("*") \
+           res = conn.table(tbl_map[l_type]).select("*") \
                 .gte(date_col_map[l_type], str(sr)) \
-                .lte(date_col_map[l_type], str(er)).execute().data
+                .lte(date_col_map[l_type], str(er)) \
+                .order(date_col_map[l_type], desc=True) \
+                .order("id", desc=True).execute().data
         except Exception as e:
             st.error(f"Log load error: {e}")
             res = []
@@ -1306,7 +1285,7 @@ with tabs[4]:
                     df_v[col] = pd.to_datetime(df_v[col], errors='coerce') \
                         .dt.tz_convert(IST).dt.strftime('%d-%m %I:%M %p')
             df_v = df_v.fillna("None")
-            st.dataframe(df_v, hide_index=True, use_container_width=True)
+            st.dataframe(df_v, hide_index=True, use_container_width=True, column_order=df_v.columns.tolist())
             st.download_button("📥 Export CSV", data=convert_df(df_v),
                                file_name=f"Admin_{l_type}_IST.csv")
         else:
@@ -1316,91 +1295,26 @@ with tabs[4]:
     with admin_tabs[3]:
         pend = get_leave_requests()
         if not pend.empty:
-
-            # ── Pending requests ───────────────────────────────
-            to_decide = pend[pend['status'] == 'Pending']
-            if not to_decide.empty:
-                st.markdown(f"#### 📬 Pending Requests ({len(to_decide)})")
-                for _, row in to_decide.iterrows():
-                    rid = row['id']
+            to_approve = pend[pend['status'] == 'Pending']
+            if not to_approve.empty:
+                for _, row in to_approve.iterrows():
                     with st.container(border=True):
-                        # Row 1 — employee info
-                        i1, i2, i3 = st.columns([2, 3, 3])
-                        i1.markdown(f"**{row['employee_name']}**")
-                        i2.markdown(f"📅 {row['start_date']} → {row['end_date']}")
-                        days = (pd.to_datetime(row['end_date']) -
-                                pd.to_datetime(row['start_date'])).days + 1
-                        i3.caption(f"{days} day(s) · {row.get('leave_type','Casual Leave')}")
-
-                        if row.get('reason'):
-                            st.caption(f"Reason: {row['reason']}")
-
-                        # Row 2 — remarks input + action buttons
-                        # Remarks stored in session state keyed by rid so they
-                        # survive the rerun triggered by button click
-                        remarks_key = f"remarks_{rid}"
-                        st.text_input(
-                            "Admin remarks (optional)",
-                            key=remarks_key,
-                            placeholder="Add a note — visible to employee on their leave tab"
-                        )
-
-                        b1, b2, b3 = st.columns([2, 2, 4])
-                        if b1.button("✅ Approve", key=f"ap_{rid}", type="primary"):
-                            remarks = st.session_state.get(remarks_key, "")
+                        c1, c2, c3 = st.columns([2, 3, 2])
+                        c1.write(f"**{row['employee_name']}**")
+                        c2.write(f"📅 {row['start_date']} to {row['end_date']}")
+                        # FIX [Critical #1]: Capture row['id'] at iteration time, not call time
+                        rid = row['id']
+                        if c3.button("✅ Approve", key=f"ap_{rid}"):
                             safe_db_write(
-                                lambda rid=rid, rm=remarks: conn.table("leave_requests")
-                                    .update({"status": "Approved", "admin_remarks": rm})
+                                lambda rid=rid: conn.table("leave_requests")
+                                    .update({"status": "Approved"})
                                     .eq("id", rid).execute(),
-                                success_msg="✅ Approved.",
                                 error_prefix="Approve Error"
                             )
                             st.cache_data.clear()
                             st.rerun()
-
-                        if b2.button("❌ Reject", key=f"rj_{rid}"):
-                            remarks = st.session_state.get(remarks_key, "")
-                            if not remarks.strip():
-                                b3.warning("Please add a remark before rejecting.")
-                            else:
-                                safe_db_write(
-                                    lambda rid=rid, rm=remarks: conn.table("leave_requests")
-                                        .update({"status": "Rejected", "admin_remarks": rm})
-                                        .eq("id", rid).execute(),
-                                    success_msg="❌ Rejected.",
-                                    error_prefix="Reject Error"
-                                )
-                                st.cache_data.clear()
-                                st.rerun()
             else:
                 st.success("✅ No pending approvals.")
-
-            # ── Decision history ────────────────────────────────
-            decided = pend[pend['status'].isin(['Approved', 'Rejected'])].copy()
-            if not decided.empty:
-                st.divider()
-                st.markdown("#### 📋 Decision History")
-                decided['Days'] = (
-                    pd.to_datetime(decided['end_date']) -
-                    pd.to_datetime(decided['start_date'])
-                ).dt.days + 1
-                decided['Status'] = decided['status'].apply(
-                    lambda s: '✅ Approved' if s == 'Approved' else '❌ Rejected'
-                )
-                display_cols = ['employee_name', 'start_date', 'end_date',
-                                'Days', 'reason', 'Status', 'admin_remarks']
-                # Only show columns that exist
-                display_cols = [c for c in display_cols if c in decided.columns]
-                st.dataframe(
-                    decided[display_cols].rename(columns={
-                        'employee_name': 'Employee',
-                        'start_date': 'From',
-                        'end_date': 'To',
-                        'reason': 'Reason',
-                        'admin_remarks': 'Admin Remarks'
-                    }).sort_values('From', ascending=False),
-                    use_container_width=True, hide_index=True
-                )
         else:
             st.info("No leave requests found.")
 
