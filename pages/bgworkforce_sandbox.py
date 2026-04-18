@@ -1266,9 +1266,10 @@ with tabs[4]:
         date_col_map = {"Attendance": "work_date",  "Work Logs": "work_date",
                         "Movement":   "exit_time",  "Plans":     "plan_date"}
         try:
-            res = conn.table(tbl_map[l_type]).select("*") \
+           res = conn.table(tbl_map[l_type]).select("*") \
                 .gte(date_col_map[l_type], str(sr)) \
                 .lte(date_col_map[l_type], str(er)) \
+                .order(date_col_map[l_type], desc=True) \
                 .order("id", desc=True).execute().data
         except Exception as e:
             st.error(f"Log load error: {e}")
