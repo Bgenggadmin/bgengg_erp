@@ -1076,6 +1076,20 @@ with TAB_NEW:
         eq_info=EQUIPMENT_TYPES.get(h["equipment_type"],{}); lo,hi=eq_info.get("margin_hint",(10,18))
         st.info(f"Suggested margin for **{h['equipment_type']}**: {lo}–{hi}%  |  Labour: **{eq_info.get('labour_norm','Medium')}**")
 
+        # ── QTN + Customer confirm (always visible on this tab) ─────────────
+        with st.container(border=True):
+            st.markdown("**Confirm offer details before saving**")
+            qc1,qc2,qc3=st.columns(3)
+            h["qtn_number"] = qc1.text_input("Quotation Number *", value=h.get("qtn_number",""), placeholder="e.g. B&G/MAITHRI/2026/2922", key="f6_qtn")
+            h["revision"]   = qc2.selectbox("Revision", ["R0","R1","R2","R3","R4","R5"],
+                                              index=["R0","R1","R2","R3","R4","R5"].index(h.get("revision","R0")), key="f6_rev")
+            h["status"]     = qc3.selectbox("Status", ["Draft","Issued","Won","Lost","On Hold"],
+                                              index=["Draft","Issued","Won","Lost","On Hold"].index(h.get("status","Draft")), key="f6_status")
+            if h["qtn_number"]:
+                st.success(f"✅ Ready to save: **{h['qtn_number']}** {h['revision']} — Customer: {h.get('customer_name','(none)')}")
+            else:
+                st.warning("⚠️ Enter Quotation Number above — required before saving.")
+
         s1,s2,s3,s4,s5,s6=st.columns(6)
         h["profit_margin_pct"]=s1.number_input("Profit %",value=float(h["profit_margin_pct"]),min_value=0.0,max_value=60.0,step=0.5)
         h["contingency_pct"]  =s2.number_input("Contingency %",value=float(h["contingency_pct"]),min_value=0.0,max_value=20.0,step=0.5)
@@ -1114,17 +1128,20 @@ with TAB_NEW:
         with right:
             st.markdown("**Margin Health**")
             for label,val,lo_t,hi_t in [
-                ("RM %",       T["rm_pct"],          45,60),
-                ("Fab Svc %",  T["fab_pct"],          15,25),
-                ("OH %",       T["oh_pct"],            8,15),
-                ("Profit %",   T["profit_pct_actual"],12,20),
+                ("RM %",       T["rm_pct"],           45,60),
+                ("Fab Svc %",  T["fab_pct"],           15,25),
+                ("OH %",       T["oh_pct"],             8,15),
+                ("Profit %",   T["profit_pct_actual"], 12,20),
             ]:
                 icon="✅" if lo_t<=val<=hi_t else "⚠️"
                 st.write(f"{icon} **{label}** {val:.1f}%  _(target {lo_t}–{hi_t}%)_")
             for iss in margin_issues(T): st.warning(iss)
             if not margin_issues(T): st.success("All margins healthy!")
             st.markdown("**What-If: Ex-Works at Different Margins**")
-            st.dataframe(pd.DataFrame([{"Margin":f"{m}%","Ex-Works (₹)":f"₹{(T['cbm']*(1+m/100)+T['packing']+T['freight']):,.0f}"} for m in [8,10,12,15,18,20]]),hide_index=True,use_container_width=True)
+            st.dataframe(pd.DataFrame([{
+                "Margin":f"{m}%",
+                "Ex-Works (₹)":f"₹{(T['cbm']*(1+m/100)+T['packing']+T['freight']):,.0f}",
+            } for m in [8,10,12,15,18,20]]),hide_index=True,use_container_width=True)
 
         st.divider()
         k1,k2,k3,k4,k5,k6=st.columns(6)
@@ -1133,32 +1150,36 @@ with TAB_NEW:
         k5.metric("GST",f"₹{T['gst_amt']:,.0f}"); k6.metric("FOR Price",f"₹{T['for_price']:,.0f}")
         st.divider()
 
-        if not h["qtn_number"]: st.error("⚠️ Quotation Number is required. Fill it in Tab 1️⃣ Header.")
-
         b1,b2,b3=st.columns(3)
         if b1.button("💾 Save to Supabase",type="primary",use_container_width=True,disabled=not h["qtn_number"]):
-            row={**{k:h[k] for k in h},
-                 "parts_json":   json.dumps(st.session_state.est_parts),
-                 "pipes_json":   json.dumps(st.session_state.est_pipes),
-                 "flanges_json": json.dumps(st.session_state.est_flanges),
-                 "fab_json":     json.dumps(st.session_state.est_fab),
-                 "bo_json":      json.dumps(st.session_state.est_bo),
-                 "oh_json":      json.dumps(st.session_state.est_oh),
+            # Strip keys Supabase doesn't have columns for
+            skip_keys={"customer_id"}
+            clean_h={k:v for k,v in h.items() if k not in skip_keys and v is not None}
+            row={**clean_h,
+                 "parts_json":     json.dumps(st.session_state.est_parts),
+                 "pipes_json":     json.dumps(st.session_state.est_pipes),
+                 "flanges_json":   json.dumps(st.session_state.est_flanges),
+                 "fab_json":       json.dumps(st.session_state.est_fab),
+                 "bo_json":        json.dumps(st.session_state.est_bo),
+                 "oh_json":        json.dumps(st.session_state.est_oh),
                  "fab_rates_json": json.dumps(st.session_state.fab_rates),
-                 "updated_at":   datetime.now().isoformat()}
+                 "updated_at":     datetime.now().isoformat()}
             if edit_id:
                 ok=sb_update("estimations",row,"id",edit_id); msg=f"Updated {h['qtn_number']}"
             else:
                 row["created_at"]=datetime.now().isoformat()
                 ok=sb_insert("estimations",row); msg=f"Saved {h['qtn_number']}"
-            if ok: st.success(f"✅ {msg}"); st.cache_data.clear(); _reset_form(); st.rerun()
+            if ok:
+                st.success(f"✅ {msg}"); st.cache_data.clear(); _reset_form(); st.rerun()
 
         if b2.button("🔄 Reset / New",use_container_width=True): _reset_form(); st.rerun()
 
         cust_data=next((c for c in clients if c["name"]==h.get("customer_name","")),{})
-        b3.download_button("📄 Download Quotation DOCX",generate_docx(h,cust_data,T,st.session_state.est_fab),
+        b3.download_button("📄 Download Quotation DOCX",
+            generate_docx(h,cust_data,T,st.session_state.est_fab),
             file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",use_container_width=True)
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: SIMILAR EQUIPMENT
