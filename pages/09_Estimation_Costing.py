@@ -736,13 +736,17 @@ with TAB_NEW:
         st.markdown("##### Add / Edit Fabricated Parts")
         st.caption("Select Part Type → only the required dimension inputs appear → click **Add Part** button.")
 
-        edit_pidx    = st.session_state.get("edit_part_idx")
-        editing_part = st.session_state.est_parts[edit_pidx] if (edit_pidx is not None and edit_pidx < len(st.session_state.est_parts)) else None
-
+        edit_pidx = st.session_state.get("edit_part_idx")
+        if edit_pidx is not None and isinstance(edit_pidx, int) and 0 <= edit_pidx < len(st.session_state.est_parts):
+            editing_part = st.session_state.est_parts[edit_pidx]
+        else:
+            editing_part = None
+            st.session_state["edit_part_idx"] = None
+            edit_pidx = None
         with st.container(border=True):
-            if editing_part:
-                st.info(f"Editing row {edit_pidx+1}: **{editing_part.get('name','')}** — update values and click **Update Part**")
-
+            if edit_pidx is not None and editing_part is not None:
+                current_name = st.session_state.est_parts[edit_pidx].get("name","")
+                st.info(f"Editing row {edit_pidx+1}: **{current_name}** — update values and click **Update Part**")
             rc1,rc2,rc3 = st.columns(3)
             pt_keys = list(PART_TYPES.keys())
             def_pt  = editing_part.get("part_type", pt_keys[0]) if editing_part else pt_keys[0]
@@ -821,8 +825,9 @@ with TAB_NEW:
                 c5.write(f"{p.get('qty',1):.1f}")
                 c6.write(f"{p.get('total_wt_kg',0):.1f} kg")
                 c7.write(f"₹{p.get('amount',0):,.0f}")
-                if c8.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name','')}"):
-                    st.session_state.edit_part_idx = idx
+                edit_key = f"ep_{idx}"
+                if c8.button("✏️", key=edit_key, help=f"Edit {p.get('name','')}"):
+                    st.session_state["edit_part_idx"] = idx   # use string key, not attribute
                     st.rerun()
 
             tot_wt  = sum(p.get("total_wt_kg",0) for p in st.session_state.est_parts)
