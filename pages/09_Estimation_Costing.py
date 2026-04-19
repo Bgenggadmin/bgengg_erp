@@ -55,11 +55,15 @@ def sb_update(table, row, match_col, match_val):
         return False
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # GEOMETRY ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 PI = math.pi
 
-DENSITY = {"SS316L": 8000, "SS304": 8000, "MS": 7850, "EN8": 7800, "Ti": 4500, "C22": 8690, "Hastelloy": 8890}
+DENSITY = {
+    "SS316L": 8000, "SS304": 8000, "MS": 7850,
+    "EN8": 7800, "Ti": 4500, "C22": 8690, "Hastelloy": 8890,
+}
 
 def _m(mm):
     return mm / 1000.0
@@ -69,73 +73,202 @@ def geom_cylindrical_shell(id_mm, ht_mm, thk_mm, density=8000, scrap=0.05):
     return area * _m(thk_mm) * density * (1 + scrap)
 
 def geom_dish_end(shell_id_mm, thk_mm, density=8000, scrap=0.15):
-    blank = shell_id_mm * 1.167
-    r = _m(blank) / 2
+    # Blank dia = Shell ID × 1.167 (standard torispherical approximation)
+    blank_dia = shell_id_mm * 1.167
+    r = _m(blank_dia) / 2
     area = 1.09 * PI * r * r
     return area * _m(thk_mm) * density * (1 + scrap)
 
 def geom_annular_plate(od_mm, id_mm, thk_mm, density=8000, scrap=0.05):
-    area = PI / 4.0 * (_m(od_mm)**2 - _m(id_mm)**2)
+    area = (PI / 4.0) * (_m(od_mm) ** 2 - _m(id_mm) ** 2)
     return area * _m(thk_mm) * density * (1 + scrap)
 
 def geom_solid_round(dia_mm, length_mm, density=8000, scrap=0.15):
-    vol = PI / 4.0 * _m(dia_mm)**2 * _m(length_mm)
+    vol = (PI / 4.0) * _m(dia_mm) ** 2 * _m(length_mm)
     return vol * density * (1 + scrap)
 
 def geom_flat_rect(w_mm, h_mm, thk_mm, density=8000, scrap=0.05):
     return _m(w_mm) * _m(h_mm) * _m(thk_mm) * density * (1 + scrap)
 
-def geom_stiffener_ring(shell_id_mm, bar_w_mm, thk_mm, density=8000, scrap=0.05):
-    circ = PI * _m(shell_id_mm)
-    return circ * _m(bar_w_mm) * _m(thk_mm) * density * (1 + scrap)
+def geom_stiffener_ring(shell_id_mm, shell_thk_mm, shell_ht_mm,
+                        pitch_mm, bar_w_mm, bar_thk_mm, density=8000, scrap=0.05):
+    # Stiffeners sit on shell OD, spaced at pitch along shell height
+    # n_rings = shell height / pitch
+    # wt_per_ring = circumference_at_OD × bar_width × bar_thickness × density × (1+scrap)
+    shell_od_mm = shell_id_mm + 2.0 * shell_thk_mm
+    circ_m      = PI * _m(shell_od_mm)
+    n_rings     = _m(shell_ht_mm) / _m(pitch_mm) if pitch_mm > 0 else 0
+    wt_per_ring = circ_m * _m(bar_w_mm) * _m(bar_thk_mm) * density * (1 + scrap)
+    total_wt    = wt_per_ring * n_rings
+    return wt_per_ring, n_rings, total_wt
 
 def geom_cone(large_id_mm, small_id_mm, ht_mm, thk_mm, density=8000, scrap=0.05):
-    R1 = _m(large_id_mm) / 2
-    R2 = _m(small_id_mm) / 2
-    slant = math.sqrt(_m(ht_mm)**2 + (R1 - R2)**2)
-    area = PI * (R1 + R2) * slant
+    R1    = _m(large_id_mm) / 2
+    R2    = _m(small_id_mm) / 2
+    slant = math.sqrt(_m(ht_mm) ** 2 + (R1 - R2) ** 2)
+    area  = PI * (R1 + R2) * slant
     return area * _m(thk_mm) * density * (1 + scrap)
 
 def geom_rect_plate(length_mm, width_mm, thk_mm, density=8000, scrap=0.05):
     return _m(length_mm) * _m(width_mm) * _m(thk_mm) * density * (1 + scrap)
 
-def geom_tube_bundle(tube_od_mm, tube_thk_mm, tube_length_mm, n_tubes, density=8000, scrap=0.05):
-    od = _m(tube_od_mm)
-    thk = _m(tube_thk_mm)
-    mid_r = (od / 2) - (thk / 2)
+def geom_tube_bundle(tube_od_mm, tube_thk_mm, tube_length_mm, n_tubes,
+                     density=8000, scrap=0.05):
+    # Weight of hollow tube wall — mid-wall circumference × thickness × length
+    mid_r    = (_m(tube_od_mm) / 2) - (_m(tube_thk_mm) / 2)
     area_per = PI * 2 * mid_r * _m(tube_length_mm)
-    wt_per = area_per * thk * density
+    wt_per   = area_per * _m(tube_thk_mm) * density
     return wt_per * n_tubes * (1 + scrap)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PART TYPE DEFINITIONS
+# Each entry: fields shown in form + formula key
+# ─────────────────────────────────────────────────────────────────────────────
 PART_TYPES = {
-    "Cylindrical shell":         {"fields": [("id_mm","Shell ID (mm)"),("ht_mm","Height (mm)"),("thk_mm","Thickness (mm)")], "fn": "shell"},
-    "Dish end (torispherical)":  {"fields": [("shell_id_mm","Shell ID (mm)"),("thk_mm","Thickness (mm)")], "fn": "dish"},
-    "Annular plate / flange":    {"fields": [("od_mm","OD (mm)"),("id_mm","ID (mm)"),("thk_mm","Thickness (mm)")], "fn": "annular"},
-    "Solid round (shaft/bush)":  {"fields": [("dia_mm","Diameter (mm)"),("length_mm","Length (mm)")], "fn": "solid"},
-    "Flat rectangle (blade/pad)":{"fields": [("w_mm","Width (mm)"),("h_mm","Height (mm)"),("thk_mm","Thickness (mm)")], "fn": "flat"},
-    "Stiffener ring (flat bar)": {"fields": [("shell_id_mm","Shell ID (mm)"),("bar_w_mm","Bar Width (mm)"),("thk_mm","Thickness (mm)")], "fn": "stiff"},
-    "Cone / reducer":            {"fields": [("large_id_mm","Large ID (mm)"),("small_id_mm","Small ID (mm)"),("ht_mm","Height (mm)"),("thk_mm","Thickness (mm)")], "fn": "cone"},
-    "Rectangular plate":         {"fields": [("length_mm","Length (mm)"),("width_mm","Width (mm)"),("thk_mm","Thickness (mm)")], "fn": "rect"},
-    "Tube bundle":               {"fields": [("tube_od_mm","Tube OD (mm)"),("tube_thk_mm","Tube Thk (mm)"),("tube_length_mm","Tube Length (mm)"),("n_tubes","No. of Tubes")], "fn": "tube"},
+    "Cylindrical shell": {
+        "fields": [
+            ("id_mm",  "Shell ID (mm)"),
+            ("ht_mm",  "Height (mm)"),
+            ("thk_mm", "Thickness (mm)"),
+        ],
+        "fn": "shell",
+    },
+    "Dish end (torispherical)": {
+        "fields": [
+            ("shell_id_mm", "Shell ID (mm)"),
+            ("thk_mm",      "Thickness (mm)"),
+        ],
+        "fn": "dish",
+    },
+    "Annular plate / flange": {
+        "fields": [
+            ("od_mm",  "OD (mm)"),
+            ("id_mm",  "ID (mm)"),
+            ("thk_mm", "Thickness (mm)"),
+        ],
+        "fn": "annular",
+    },
+    "Solid round (shaft / bush)": {
+        "fields": [
+            ("dia_mm",    "Diameter (mm)"),
+            ("length_mm", "Length (mm)"),
+        ],
+        "fn": "solid",
+    },
+    "Flat rectangle (blade / pad / gusset)": {
+        "fields": [
+            ("w_mm",   "Width (mm)"),
+            ("h_mm",   "Height (mm)"),
+            ("thk_mm", "Thickness (mm)"),
+        ],
+        "fn": "flat",
+    },
+    "Stiffener rings (flat bar on shell OD)": {
+        "fields": [
+            ("shell_id_mm",  "Shell ID (mm)"),
+            ("shell_thk_mm", "Shell Thickness (mm)"),
+            ("shell_ht_mm",  "Shell Height (mm)"),
+            ("pitch_mm",     "Pitch (mm)"),
+            ("bar_w_mm",     "Bar Width (mm)"),
+            ("thk_mm",       "Bar Thickness (mm)"),
+        ],
+        "fn": "stiff",
+        "qty_derived": True,  # qty comes from geometry, not user input
+    },
+    "Cone / reducer": {
+        "fields": [
+            ("large_id_mm", "Large ID (mm)"),
+            ("small_id_mm", "Small ID (mm)"),
+            ("ht_mm",       "Height (mm)"),
+            ("thk_mm",      "Thickness (mm)"),
+        ],
+        "fn": "cone",
+    },
+    "Rectangular plate": {
+        "fields": [
+            ("length_mm", "Length (mm)"),
+            ("width_mm",  "Width (mm)"),
+            ("thk_mm",    "Thickness (mm)"),
+        ],
+        "fn": "rect",
+    },
+    "Tube bundle": {
+        "fields": [
+            ("tube_od_mm",     "Tube OD (mm)"),
+            ("tube_thk_mm",    "Tube Thickness (mm)"),
+            ("tube_length_mm", "Tube Length (mm)"),
+            ("n_tubes",        "Number of Tubes"),
+        ],
+        "fn": "tube",
+    },
 }
 
+# ─────────────────────────────────────────────────────────────────────────────
+# UNIFIED WEIGHT CALCULATOR
+# Always returns (wt_per_unit, total_wt, used_qty)
+# For stiffeners, qty is derived from geometry (height / pitch)
+# For all others, qty is the user-entered value
+# ─────────────────────────────────────────────────────────────────────────────
 def calc_weight(fn, dims, density, qty):
-    d = dims
+    d        = dims
+    used_qty = qty
+    wt       = 0.0
     try:
-        if fn == "shell":   wt = geom_cylindrical_shell(d["id_mm"], d["ht_mm"], d["thk_mm"], density)
-        elif fn == "dish":  wt = geom_dish_end(d["shell_id_mm"], d["thk_mm"], density)
-        elif fn == "annular": wt = geom_annular_plate(d["od_mm"], d["id_mm"], d["thk_mm"], density)
-        elif fn == "solid": wt = geom_solid_round(d["dia_mm"], d["length_mm"], density)
-        elif fn == "flat":  wt = geom_flat_rect(d["w_mm"], d["h_mm"], d["thk_mm"], density)
-        elif fn == "stiff": wt = geom_stiffener_ring(d["shell_id_mm"], d["bar_w_mm"], d["thk_mm"], density)
-        elif fn == "cone":  wt = geom_cone(d["large_id_mm"], d["small_id_mm"], d["ht_mm"], d["thk_mm"], density)
-        elif fn == "rect":  wt = geom_rect_plate(d["length_mm"], d["width_mm"], d["thk_mm"], density)
-        elif fn == "tube":  wt = geom_tube_bundle(d["tube_od_mm"], d["tube_thk_mm"], d["tube_length_mm"], d["n_tubes"], density)
-        else: wt = 0.0
+        if fn == "shell":
+            wt = geom_cylindrical_shell(
+                d["id_mm"], d["ht_mm"], d["thk_mm"], density)
+
+        elif fn == "dish":
+            wt = geom_dish_end(
+                d["shell_id_mm"], d["thk_mm"], density)
+
+        elif fn == "annular":
+            wt = geom_annular_plate(
+                d["od_mm"], d["id_mm"], d["thk_mm"], density)
+
+        elif fn == "solid":
+            wt = geom_solid_round(
+                d["dia_mm"], d["length_mm"], density)
+
+        elif fn == "flat":
+            wt = geom_flat_rect(
+                d["w_mm"], d["h_mm"], d["thk_mm"], density)
+
+        elif fn == "stiff":
+            wt, used_qty, total = geom_stiffener_ring(
+                d.get("shell_id_mm",  0),
+                d.get("shell_thk_mm", 0),
+                d.get("shell_ht_mm",  0),
+                d.get("pitch_mm",     100),
+                d.get("bar_w_mm",     0),
+                d.get("thk_mm",       0),
+                density,
+            )
+            # total already computed inside geom_stiffener_ring
+            return round(wt, 3), round(total, 3), round(used_qty, 2)
+
+        elif fn == "cone":
+            wt = geom_cone(
+                d["large_id_mm"], d["small_id_mm"],
+                d["ht_mm"], d["thk_mm"], density)
+
+        elif fn == "rect":
+            wt = geom_rect_plate(
+                d["length_mm"], d["width_mm"], d["thk_mm"], density)
+
+        elif fn == "tube":
+            wt = geom_tube_bundle(
+                d["tube_od_mm"], d["tube_thk_mm"],
+                d["tube_length_mm"], d["n_tubes"], density)
+
+        else:
+            wt = 0.0
+
     except Exception as e:
-        st.warning(f"Weight calc error ({fn}): {e} | dims received: {dims}")
+        st.warning(f"Weight calc error ({fn}): {e} | dims: {dims}")
         wt = 0.0
-    return round(wt, 3), round(wt * qty, 3)
+
+    return round(wt, 3), round(wt * used_qty, 3), used_qty
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EQUIPMENT TYPE TEMPLATES
