@@ -666,50 +666,101 @@ def _build_save_row(h):
         "updated_at":     datetime.now().isoformat(),
     }
 
-def _save_draft(h, edit_id, label=""):
-    """Save current state without resetting form. Used by Save Draft buttons on each tab."""
-    if not h.get("qtn_number"):
-        st.warning("⚠️ Enter a Quotation Number in Tab 1️⃣ before saving.")
-        return
-    # Duplicate check
-    existing = sb_fetch("estimations", select="id", filters={"qtn_number": h["qtn_number"]})
+def _do_save(reset_after=False):
+    """
+    Core save function — always reads from st.session_state directly.
+    Works correctly from any tab because it never relies on widget return values.
+    If reset_after=True, clears the form after saving (used by Save & Close).
+    Returns True if saved successfully.
+    """
+    h = st.session_state.est_hdr
+    edit_id = st.session_state.est_edit_id
+    qtn = h.get("qtn_number", "").strip()
+
+    if not qtn:
+        st.warning("⚠️ Quotation Number is empty. Enter it in Tab 1️⃣ Header first.")
+        return False
+
+    # Duplicate check — only flag if a DIFFERENT record has this QTN
+    existing = sb_fetch("estimations", select="id", filters={"qtn_number": qtn})
     if existing and not edit_id:
-        st.error(f"❌ QTN **{h['qtn_number']}** already exists. Load it from Tab 1️⃣ to edit it.")
-        return
+        st.error(f"❌ QTN **{qtn}** already exists. Load it from the search panel to edit it.")
+        return False
     if existing and edit_id:
-        conflict = any(str(e.get("id")) != str(edit_id) for e in existing)
-        if conflict:
-            st.error(f"❌ QTN **{h['qtn_number']}** belongs to a different estimation.")
-            return
-    row = _build_save_row(h)
+        if any(str(e.get("id")) != str(edit_id) for e in existing):
+            st.error(f"❌ QTN **{qtn}** belongs to a different estimation.")
+            return False
+
+    # Build row — strips customer_id and None values
+    skip = {"customer_id"}
+    clean_h = {k: v for k, v in h.items() if k not in skip and v is not None}
+    row = {
+        **clean_h,
+        "parts_json":     json.dumps(st.session_state.est_parts),
+        "pipes_json":     json.dumps(st.session_state.est_pipes),
+        "flanges_json":   json.dumps(st.session_state.est_flanges),
+        "fab_json":       json.dumps(st.session_state.est_fab),
+        "bo_json":        json.dumps(st.session_state.est_bo),
+        "oh_json":        json.dumps(st.session_state.est_oh),
+        "fab_rates_json": json.dumps(st.session_state.fab_rates),
+        "updated_at":     datetime.now().isoformat(),
+    }
+
     if edit_id:
         ok = sb_update("estimations", row, "id", edit_id)
+        msg = f"Updated {qtn}"
     else:
         row["created_at"] = datetime.now().isoformat()
         ok = sb_insert("estimations", row)
+        msg = f"Saved {qtn}"
         if ok:
-            saved = sb_fetch("estimations", select="id", filters={"qtn_number": h["qtn_number"]})
+            # Capture the new record ID so subsequent saves go to update path
+            saved = sb_fetch("estimations", select="id", filters={"qtn_number": qtn})
             if saved:
                 st.session_state.est_edit_id = saved[0]["id"]
-    if ok:
-        n_parts = len(st.session_state.est_parts)
-        rm_total = sum(p.get("amount", 0) for p in st.session_state.est_parts)
-        st.success(f"✅ Draft saved{' — ' + label if label else ''} | {h['qtn_number']} | {n_parts} parts | RM ₹{rm_total:,.0f}")
-        st.cache_data.clear()
 
-def _save_draft_bar(h, tab_key):
-    """Render a save draft bar at the bottom of a tab."""
+    if ok:
+        n_p = len(st.session_state.est_parts)
+        rm  = sum(p.get("amount", 0) for p in st.session_state.est_parts)
+        fab = sum(f.get("amount", 0) for f in st.session_state.est_fab)
+        st.success(f"✅ {msg}  |  {n_p} parts  |  RM ₹{rm:,.0f}  |  Fab ₹{fab:,.0f}")
+        st.cache_data.clear()
+        if reset_after:
+            _reset_form()
+        return True
+    return False
+
+# Keep _build_save_row for backward compat (used nowhere else now but keep tidy)
+def _build_save_row(h):
+    skip = {"customer_id"}
+    clean = {k: v for k, v in h.items() if k not in skip and v is not None}
+    return {**clean, "parts_json": json.dumps(st.session_state.est_parts),
+            "pipes_json": json.dumps(st.session_state.est_pipes),
+            "flanges_json": json.dumps(st.session_state.est_flanges),
+            "fab_json": json.dumps(st.session_state.est_fab),
+            "bo_json": json.dumps(st.session_state.est_bo),
+            "oh_json": json.dumps(st.session_state.est_oh),
+            "fab_rates_json": json.dumps(st.session_state.fab_rates),
+            "updated_at": datetime.now().isoformat()}
+
+def _save_draft_bar(tab_key):
+    """
+    Save Draft bar — appears at the bottom of every tab.
+    Like Ctrl+S in Excel: saves current state without disturbing the form.
+    Reads everything from session state — never from widget return values.
+    """
+    h = st.session_state.est_hdr
     st.divider()
     sb1, sb2, sb3 = st.columns([4, 1, 1])
-    qtn = h.get("qtn_number", "") or "—"
-    n_p = len(st.session_state.est_parts)
+    qtn  = h.get("qtn_number", "") or "—"
+    n_p  = len(st.session_state.est_parts)
     n_pi = len(st.session_state.est_pipes)
-    n_f = len(st.session_state.est_fab)
-    n_b = len(st.session_state.est_bo)
+    n_f  = len(st.session_state.est_fab)
+    n_b  = len(st.session_state.est_bo)
     sb1.caption(f"💾 **{qtn}**  |  {n_p} parts  |  {n_pi} pipes  |  {n_f} fab lines  |  {n_b} BO items")
     if sb2.button("💾 Save Draft", use_container_width=True, type="primary", key=f"sd_{tab_key}"):
-        _save_draft(h, st.session_state.est_edit_id, label=tab_key)
-    if sb3.button("🔄 Reset", use_container_width=True, key=f"rst_{tab_key}"):
+        _do_save(reset_after=False)
+    if sb3.button("🗑️ Reset / New", use_container_width=True, key=f"rst_{tab_key}"):
         _reset_form()
         st.rerun()
 
@@ -1055,7 +1106,7 @@ with TAB_NEW:
         h["checked_by"]  = c2.selectbox("Checked By",  staff_list, index=cb_idx)
         h["notes"]       = st.text_area("Internal Notes", value=h["notes"], height=70)
 
-        _save_draft_bar(h, "f1")
+        _save_draft_bar("f1")
 
     # ── F2: PLATES & PARTS ─────────────────────────────────────────────────────
     with f2:
@@ -1173,7 +1224,7 @@ with TAB_NEW:
             if st.button("🗑️ Clear All Parts"):
                 st.session_state.est_parts = []; st.session_state["edit_part_idx"] = None; st.rerun()
 
-        _save_draft_bar(h, "f2")
+        _save_draft_bar("f2")
 
     # ── F3: PIPES & FLANGES ────────────────────────────────────────────────────
     with f3:
@@ -1229,7 +1280,7 @@ with TAB_NEW:
             if st.button("🗑️ Clear Flanges"):
                 st.session_state.est_flanges = []; st.rerun()
 
-        _save_draft_bar(h, "f3")
+        _save_draft_bar("f3")
 
     # ── F4: FABRICATION SERVICES ───────────────────────────────────────────────
     with f4:
@@ -1312,7 +1363,7 @@ with TAB_NEW:
                     st.session_state.est_fab.append({"service": ma_svc, "basis": ma_basis, "qty": 1, "uom": ma_uom, "rate": ma_amt, "amount": ma_amt})
                     st.rerun()
 
-        _save_draft_bar(h, "f4")
+        _save_draft_bar("f4")
 
     # ── F5: BOUGHT-OUT & OH ────────────────────────────────────────────────────
     with f5:
@@ -1373,7 +1424,7 @@ with TAB_NEW:
             if st.button("🗑️ Clear OH"):
                 st.session_state.est_oh = []; st.rerun()
 
-        _save_draft_bar(h, "f5")
+        _save_draft_bar("f5")
 
     # ── F6: SUMMARY & SAVE ─────────────────────────────────────────────────────
     with f6:
@@ -1466,26 +1517,8 @@ with TAB_NEW:
         b1, b2, b3 = st.columns(3)
 
         if b1.button("💾 Save & Close", type="primary", use_container_width=True, disabled=not h["qtn_number"]):
-            # Duplicate check
-            existing = sb_fetch("estimations", select="id", filters={"qtn_number": h["qtn_number"]})
-            is_dup = False
-            if existing and not edit_id:
-                is_dup = True
-            elif existing and edit_id:
-                is_dup = any(str(e.get("id")) != str(edit_id) for e in existing)
-            if is_dup:
-                st.error(f"❌ QTN **{h['qtn_number']}** already exists. Use a different number or load that estimation to edit it.")
-            else:
-                row = _build_save_row(h)
-                if edit_id:
-                    ok  = sb_update("estimations", row, "id", edit_id)
-                    msg = f"Updated {h['qtn_number']}"
-                else:
-                    row["created_at"] = datetime.now().isoformat()
-                    ok  = sb_insert("estimations", row)
-                    msg = f"Saved {h['qtn_number']}"
-                if ok:
-                    st.success(f"✅ {msg}"); st.cache_data.clear(); _reset_form(); st.rerun()
+            if _do_save(reset_after=True):
+                st.rerun()
 
         if b2.button("🔄 Reset / New", use_container_width=True):
             _reset_form(); st.rerun()
