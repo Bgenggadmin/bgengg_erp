@@ -70,12 +70,10 @@ PI = math.pi
 def calc_shell_area(dia_mm, ht_mm):
     return PI * (dia_mm / 1000) * (ht_mm / 1000)
 
-def calc_dish_area(dia_mm):
-    # For standard torispherical (crown R = ID, knuckle r = 0.1×ID)
-    # Blank diameter ≈ shell_id × 1.167
+def calc_dish_area(shell_id_mm):
     blank_dia = shell_id_mm * 1.167
     r = (blank_dia / 1000) / 2
-    return PI * r * r * (1 + 0.15)  # +15% scrap already in weight calc
+    return 1.09 * PI * r * r
     
 def calc_plate_weight(area_m2, thk_mm, density=8000, scrap_pct=0.05):
     return area_m2 * (thk_mm / 1000) * density * (1 + scrap_pct)
