@@ -390,21 +390,28 @@ def _kv_table(doc, rows):
             _run(c.paragraphs[0], str(txt), bold=(j == 0), size=9)
             _shd(c, ("D6E4F7" if i % 2 == 0 else "F2F2F2") if j == 0 else ("FFFFFF" if i % 2 == 0 else "EFF5FB"))
 
-def generate_docx(est, customer, totals, fab_services):
+def generate_docx(est, customer, totals, fab_services, show_breakup=False):
+    """
+    Generate customer-facing quotation DOCX.
+    show_breakup=False  →  Clean quote: one price, Ex-Works + GST + FOR only.
+    show_breakup=True   →  Scope-based breakup: groups costs into 4 customer-friendly
+                           scope heads (NOT internal cost breakdown).
+    """
     doc = Document()
     for sec in doc.sections:
         sec.top_margin = Cm(1.8); sec.bottom_margin = Cm(1.8)
         sec.left_margin = Cm(2.0); sec.right_margin = Cm(2.0)
 
+    # ── Helpers ──────────────────────────────────────────────────────────────
     def banner():
         t = doc.add_table(rows=1, cols=1); t.style = "Table Grid"
         c = t.rows[0].cells[0]; _shd(c, "1B3A6B"); c.paragraphs[0].clear()
         p = c.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p.paragraph_format.space_before = Pt(6); p.paragraph_format.space_after = Pt(4)
-        _run(p, f"{BG_NAME}\n", bold=True, size=16, color=(255, 255, 255))
-        _run(p, f"{BG_TAGLINE}\n", size=10, color=(180, 210, 255))
-        _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=12, color=(204, 221, 255))
-        _run(p, est.get("equipment_desc", ""), bold=True, size=10, color=(255, 255, 255))
+        _run(p, f"{BG_NAME}\n", bold=True, size=16, color=(255,255,255))
+        _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
+        _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=12, color=(204,221,255))
+        _run(p, est.get("equipment_desc",""), bold=True, size=10, color=(255,255,255))
 
     def footer_block():
         doc.add_paragraph()
@@ -412,174 +419,264 @@ def generate_docx(est, customer, totals, fab_services):
         c = t.rows[0].cells[0]; _shd(c, "1B3A6B"); c.paragraphs[0].clear()
         p = c.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p.paragraph_format.space_before = Pt(4); p.paragraph_format.space_after = Pt(4)
-        _run(p, f"{BG_NAME}  |  {BG_TAGLINE}\n", bold=True, size=9, color=(255, 255, 255))
-        _run(p, f"{BG_ADDRESS}\n", size=8, color=(180, 210, 255))
-        _run(p, f"Ph: {BG_PHONE}  |  {BG_EMAIL}  |  {BG_WEB}\n", size=8, color=(180, 210, 255))
-        _run(p, f"GSTIN: {BG_GSTIN}  |  PAN: {BG_PAN}", bold=True, size=8, color=(255, 255, 255))
+        _run(p, f"{BG_NAME}  |  {BG_TAGLINE}\n", bold=True, size=9, color=(255,255,255))
+        _run(p, f"{BG_ADDRESS}\n", size=8, color=(180,210,255))
+        _run(p, f"Ph: {BG_PHONE}  |  {BG_EMAIL}  |  {BG_WEB}\n", size=8, color=(180,210,255))
+        _run(p, f"GSTIN: {BG_GSTIN}  |  PAN: {BG_PAN}", bold=True, size=8, color=(255,255,255))
 
     def sec_head(text):
         p = doc.add_paragraph()
         p.paragraph_format.space_before = Pt(10); p.paragraph_format.space_after = Pt(2)
-        _run(p, text, bold=True, size=12, color=(27, 58, 107))
+        _run(p, text, bold=True, size=12, color=(27,58,107))
         pBdr = OxmlElement("w:pBdr"); bot = OxmlElement("w:bottom")
-        bot.set(qn("w:val"), "single"); bot.set(qn("w:sz"), "6")
-        bot.set(qn("w:space"), "1"); bot.set(qn("w:color"), "2E75B6")
+        bot.set(qn("w:val"),"single"); bot.set(qn("w:sz"),"6")
+        bot.set(qn("w:space"),"1"); bot.set(qn("w:color"),"2E75B6")
         pBdr.append(bot); p._p.get_or_add_pPr().append(pBdr)
 
     def body(text):
         p = doc.add_paragraph()
         p.paragraph_format.space_before = Pt(2); p.paragraph_format.space_after = Pt(2)
-        _run(p, text, size=9, color=(68, 68, 68))
+        _run(p, text, size=9, color=(68,68,68))
 
-    fmt = lambda n: f"₹{n:,.0f}"
+    def bullet(text):
+        p = doc.add_paragraph(text, style="List Bullet")
+        for r in p.runs: r.font.size = Pt(9); r.font.name = "Arial"
+
+    def price_table(rows_data):
+        """rows_data: list of (label, value_str, is_highlight)"""
+        t = doc.add_table(rows=0, cols=2); t.style = "Table Grid"
+        for i, (label, value, highlight) in enumerate(rows_data):
+            row = t.add_row()
+            for j, txt in enumerate([label, value]):
+                c = row.cells[j]; c.text = ""
+                _run(c.paragraphs[0], txt, bold=highlight, size=10 if highlight else 9,
+                     color=(255,255,255) if highlight else (26,26,26))
+                _shd(c, "1B3A6B" if highlight else ("F7FBFF" if i%2==0 else "FFFFFF"))
+                if j == 1:
+                    c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    fmt  = lambda n: f"₹{n:,.0f}"
     cust = customer or {}
 
+    # ── SECTION 1: Offer & Customer ───────────────────────────────────────────
     banner(); doc.add_paragraph()
     sec_head("SECTION 1 — OFFER & CUSTOMER DETAILS")
     _kv_table(doc, [
-        ("Offer Reference", est.get("qtn_number", "")), ("Revision", est.get("revision", "R0")),
-        ("Date", date.today().strftime("%d %B %Y")), ("Equipment Type", est.get("equipment_type", "")),
-        ("Prepared By", est.get("prepared_by", "")), ("Checked By", est.get("checked_by", "")),
-        ("", ""),
-        ("Customer Name", cust.get("name", "")), ("Customer Address", cust.get("address", "")),
-        ("Customer GSTIN", cust.get("gstin", "")), ("Contact Person", cust.get("contact_person", "")),
-        ("Phone / Email", f"{cust.get('phone', '') or ''} / {cust.get('email', '') or ''}"),
-        ("", ""),
-        ("Supplier", BG_NAME), ("Supplier Address", BG_ADDRESS),
-        ("Supplier GSTIN", BG_GSTIN), ("Supplier Phone", BG_PHONE),
+        ("Offer Reference",  est.get("qtn_number","")),
+        ("Revision",         est.get("revision","R0")),
+        ("Date",             date.today().strftime("%d %B %Y")),
+        ("Equipment Type",   est.get("equipment_type","")),
+        ("Prepared By",      est.get("prepared_by","")),
+        ("Checked By",       est.get("checked_by","")),
+        ("",""),
+        ("Customer Name",    cust.get("name","")),
+        ("Customer Address", cust.get("address","")),
+        ("Customer GSTIN",   cust.get("gstin","")),
+        ("Contact Person",   cust.get("contact_person","")),
+        ("Phone / Email",    f"{cust.get('phone','') or ''} / {cust.get('email','') or ''}"),
+        ("",""),
+        ("Supplier",         BG_NAME),
+        ("Supplier Address", BG_ADDRESS),
+        ("Supplier GSTIN",   BG_GSTIN),
+        ("Phone",            BG_PHONE),
+        ("Email / Web",      f"{BG_EMAIL}  |  {BG_WEB}"),
     ])
 
+    # ── SECTION 2: Technical ──────────────────────────────────────────────────
     doc.add_paragraph()
     sec_head("SECTION 2 — TECHNICAL DESIGN BASIS")
     _kv_table(doc, [
-        ("Equipment Description", est.get("equipment_desc", "")), ("Tag Number", est.get("tag_number", "")),
-        ("Capacity", f"{est.get('capacity_ltrs', '')} Ltrs"), ("Design Code", est.get("design_code", "ASME Sec VIII Div 1")),
-        ("Design Pressure", est.get("design_pressure", "FV to 4.5 Bar")), ("Design Temperature", est.get("design_temp", "-50 to 250°C")),
-        ("Shell ID", f"{est.get('shell_dia_mm', '')} mm"), ("Shell Height", f"{est.get('shell_ht_mm', '')} mm"),
-        ("Shell Thickness", f"{est.get('shell_thk_mm', '')} mm"), ("Dish Thickness", f"{est.get('dish_thk_mm', '')} mm"),
-        ("Jacket Type", est.get("jacket_type", "")), ("Agitator Type", est.get("agitator_type", "")),
-        ("MOC — Shell / Vessel", est.get("moc_shell", "SS316L")), ("MOC — Jacket", est.get("moc_jacket", "SS304")),
+        ("Equipment Description", est.get("equipment_desc","")),
+        ("Tag Number",            est.get("tag_number","—")),
+        ("Capacity",              f"{est.get('capacity_ltrs','')} Litres"),
+        ("Design Code",           est.get("design_code","ASME Sec VIII Div 1")),
+        ("Design Pressure",       est.get("design_pressure","FV to 4.5 Bar")),
+        ("Design Temperature",    est.get("design_temp","-50°C to 250°C")),
+        ("Shell Internal Dia",    f"{est.get('shell_dia_mm','')} mm"),
+        ("Shell Height (T/T)",    f"{est.get('shell_ht_mm','')} mm"),
+        ("Shell Thickness",       f"{est.get('shell_thk_mm','')} mm"),
+        ("Dish End Thickness",    f"{est.get('dish_thk_mm','')} mm"),
+        ("Jacket / Heating",      est.get("jacket_type","") or "Not applicable"),
+        ("Agitator / Drive",      est.get("agitator_type","") or "Not applicable"),
+        ("MOC — Vessel",          est.get("moc_shell","SS316L")),
+        ("MOC — Jacket",          est.get("moc_jacket","SS304")),
+        ("Surface Finish",        "Internal: Ra ≤ 0.8 μm  |  External: Buffed"),
     ])
 
+    # ── SECTION 3: Scope ──────────────────────────────────────────────────────
     doc.add_paragraph()
     sec_head("SECTION 3 — SCOPE OF SUPPLY")
-    body("Supply of one (1) no. complete fabricated equipment as per technical specifications above, including:")
+    body("Supply of one (1) complete fabricated equipment per the technical basis above:")
     for item in [
-        "Fabricated vessel / equipment as per approved GA drawing",
-        "All nozzles, manholes and connections as per nozzle schedule",
-        "Jacket / limpet coil as specified",
-        "Agitator assembly with gearbox, motor and mechanical seal (where applicable)",
-        "Support structure / lugs / saddles",
-        "Internal finishing and surface treatment as specified",
-        "Name plate with equipment serial number",
+        "Pressure vessel / equipment fabricated as per approved GA drawing",
+        "All nozzles, manholes, handholes and process connections per nozzle schedule",
+        "Jacket / limpet coil / half-pipe with insulation jacket (where applicable)",
+        "Agitator complete with gearbox, motor and mechanical seal (where applicable)",
+        "Support structure — lugs, legs or saddles as applicable",
+        "Internal grinding and buffing to specified Ra surface finish",
+        "Equipment nameplate with tag number and serial number",
     ]:
-        p = doc.add_paragraph(item, style="List Bullet")
-        for r in p.runs:
-            r.font.size = Pt(9); r.font.name = "Arial"
+        bullet(item)
 
+    # ── SECTION 4: Quality ────────────────────────────────────────────────────
     doc.add_paragraph()
-    sec_head("SECTION 4 — MANUFACTURING APPROACH & QUALITY")
-    body("B&G Engineering Industries follows an engineering-led approach — not job-work fabrication. Every project begins with process understanding and ends with a validated, documented, reliable system ready for long-term operation.")
+    sec_head("SECTION 4 — MANUFACTURING & QUALITY ASSURANCE")
+    body("B&G Engineering Industries operates as an engineering-led manufacturer. Every project is built to ASME Section VIII Division 1 requirements with full documentation and traceability.")
     for item in [
-        "Raw material procurement with Material Test Certificates (MTC) and PMI verification",
-        "Heat number traceability maintained throughout fabrication",
-        "Qualified TIG & ARC welders — WPS / PQR followed",
-        "100% visual inspection of critical welds; Dye Penetration (DP) testing as applicable",
-        "Orbital welding for sanitary and tube-sheet joints (where applicable)",
-        "Precision CNC cutting / controlled plate rolling",
-        "Pharma-grade internal grinding and buffing to specified Ra finish",
-        "Hydrostatic / pneumatic / vacuum testing as per ASME and design requirements",
-        "Dimensional inspection against approved GA drawings",
-        "Complete QA documentation dossier supplied with every dispatch",
-        "FAT execution support at works (upon client request)",
-        "Equipment nameplate with serial number for full traceability",
+        "Raw material procurement with original Mill Test Certificates (MTC) — all pressure parts",
+        "100% Positive Material Identification (PMI) verification before cutting",
+        "Heat number and cast number traceability maintained throughout fabrication",
+        "Qualified welders — WPS / PQR compliant, TIG welding for all SS pressure joints",
+        "Precision plasma / laser cutting and CNC-controlled plate rolling",
+        "Pharma-grade internal grinding to Ra ≤ 0.8 μm; external mechanical polishing",
+        "Electropolishing to Ra ≤ 0.4 μm (where specified)",
+        "Dimensional inspection against approved drawings at each stage",
+        "Hydrostatic / pneumatic / vacuum leak test as per ASME Code requirements",
+        "Dye Penetrant (DP) testing on all critical welds",
+        "Complete QA dossier prepared and delivered with equipment",
+        "Factory Acceptance Test (FAT) support at works on request",
     ]:
-        p = doc.add_paragraph(item, style="List Bullet")
-        for r in p.runs:
-            r.font.size = Pt(9); r.font.name = "Arial"
+        bullet(item)
 
+    # ── SECTION 5: Documentation ──────────────────────────────────────────────
     doc.add_paragraph()
     sec_head("SECTION 5 — DOCUMENTATION DELIVERABLES")
+    body("The following documents are included in our scope and delivered with the equipment:")
     for item in [
-        "GA Drawing (approved for fabrication)", "Nozzle orientation drawing",
-        "Material Test Certificates (MTC) for all pressure parts", "PMI test reports",
-        "Weld log and DP / RT test reports", "Dimensional inspection report",
-        "Hydrostatic test certificate", "Surface finish inspection record",
-        "Inspection release note", "Equipment nameplate photograph",
+        "General Arrangement (GA) Drawing — IFC (Issued for Construction) revision",
+        "Nozzle orientation and schedule drawing",
+        "Bill of Materials (BOM)",
+        "Mill Test Certificates (MTC) for all pressure parts",
+        "PMI verification records",
+        "Weld map and weld log",
+        "DP / RT inspection reports",
+        "Dimensional inspection report",
+        "Hydrostatic / leak test certificate",
+        "Surface finish inspection record (Ra measurement)",
+        "Painting / surface treatment record (where applicable)",
+        "Equipment nameplate photograph",
+        "Inspection and Release Note (IRN)",
     ]:
-        p = doc.add_paragraph(item, style="List Bullet")
-        for r in p.runs:
-            r.font.size = Pt(9); r.font.name = "Arial"
+        bullet(item)
 
+    # ── SECTION 6: Commercial ─────────────────────────────────────────────────
     doc.add_paragraph()
-    sec_head("SECTION 6 — COMMERCIAL SUMMARY")
-    if fab_services:
-        body("Fabrication Services Breakdown (geometry-based):")
-        t_fab = doc.add_table(rows=0, cols=4); t_fab.style = "Table Grid"
-        hdr = t_fab.add_row()
-        for j, h_txt in enumerate(["Service", "Basis", "Qty / UOM", "Amount (₹)"]):
-            c = hdr.cells[j]; c.text = ""
-            _run(c.paragraphs[0], h_txt, bold=True, size=8, color=(255, 255, 255))
-            _shd(c, "1B3A6B")
-        for i, fs in enumerate(fab_services):
-            row = t_fab.add_row()
-            vals = [fs.get("service", ""), fs.get("basis", ""), f"{fs.get('qty', '')} {fs.get('uom', '')}", fmt(fs.get("amount", 0))]
-            for j, v in enumerate(vals):
-                c = row.cells[j]; c.text = ""
-                _run(c.paragraphs[0], str(v), size=8)
-                _shd(c, "FFFFFF" if i % 2 == 0 else "EFF5FB")
-                if j == 3:
-                    c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    sec_head("SECTION 6 — COMMERCIAL OFFER")
+
+    if show_breakup:
+        # ── SCOPE-BASED BREAKUP (customer-friendly, not internal cost heads) ──
+        # Groups: (1) Pressure Vessel & Structural, (2) Mechanical Drive & Sealing,
+        #         (3) Surface Treatment, Testing & Inspection, (4) Engineering & Documentation
+        # Percentages are industry-standard allocation of Ex-Works price — not internal costs
+        ex = totals["ex_works"]
+        # Scope head allocations — adjust to reflect actual content
+        vessel_pct  = 0.68   # vessel + jacket + nozzles + structural
+        drive_pct   = 0.18   # motor + gearbox + seal + instrumentation
+        testing_pct = 0.08   # buffing + EP + hydro + DP + inspection
+        engg_pct    = 0.06   # engineering + drawing + documentation + QA dossier
+
+        vessel_amt  = round(ex * vessel_pct,  0)
+        drive_amt   = round(ex * drive_pct,   0)
+        testing_amt = round(ex * testing_pct, 0)
+        engg_amt    = round(ex - vessel_amt - drive_amt - testing_amt, 0)  # balancing
+
+        body("Scope-based price breakup (for your reference):")
         doc.add_paragraph()
-
-    price_rows = [
-        ("Raw Material (Plates, Pipes, Flanges)", fmt(totals["tot_rm"])),
-        ("Fabrication Services (Welding, Grinding, Testing)", fmt(totals["tot_fab"])),
-        ("Bought-Out Items (Drive, Seal, Gearbox etc.)", fmt(totals["tot_bo"])),
-        ("Additional Overheads", fmt(totals["tot_oh"])),
-        ("Engineering & ASME Design", fmt(totals["engg_design"])),
-        ("Contingency", fmt(totals["cont_amt"])),
-        ("Operating Margin", fmt(totals["profit_amt"])),
-        ("Packing & Forwarding", fmt(totals["packing"])),
-        ("Ex-Works Price — Hyderabad", fmt(totals["ex_works"])),
-        (f"GST @ {est.get('gst_pct', 18):.0f}%", fmt(totals["gst_amt"])),
-        ("FINAL FOR PRICE", fmt(totals["for_price"])),
-    ]
-    t_price = doc.add_table(rows=0, cols=2); t_price.style = "Table Grid"
-    for i, (k, v) in enumerate(price_rows):
-        row = t_price.add_row()
-        is_key = k in ("Ex-Works Price — Hyderabad", "FINAL FOR PRICE")
-        for j, txt in enumerate([k, v]):
-            c = row.cells[j]; c.text = ""
-            _run(c.paragraphs[0], txt, bold=is_key, size=9, color=(255, 255, 255) if is_key else (26, 26, 26))
-            _shd(c, "1B3A6B" if is_key else ("FFFFFF" if i % 2 == 0 else "EFF5FB"))
-            if j == 1:
-                c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        scope_rows = [
+            ("A. Pressure Vessel, Jacket, Nozzles & Structural",
+             fmt(vessel_amt), False),
+            ("B. Mechanical Drive, Seal, Gearbox & Motor Assembly",
+             fmt(drive_amt), False),
+            ("C. Surface Finishing, Testing & Third-Party Inspection",
+             fmt(testing_amt), False),
+            ("D. Engineering, Drawings, Documentation & QA Dossier",
+             fmt(engg_amt), False),
+            ("Ex-Works Price — Hyderabad (A+B+C+D)",
+             fmt(totals["ex_works"]), True),
+            (f"GST @ {est.get('gst_pct',18):.0f}%",
+             fmt(totals["gst_amt"]), False),
+            ("FINAL FOR PRICE",
+             fmt(totals["for_price"]), True),
+        ]
+        price_table(scope_rows)
+        doc.add_paragraph()
+        body("Note: The above scope breakup is provided for procurement allocation purposes. "
+             "B&G Engineering supplies the complete equipment as a single integrated scope — "
+             "partial scope orders are not accepted.")
+    else:
+        # ── CLEAN PRICE — single Ex-Works line ───────────────────────────────
+        clean_rows = [
+            ("Equipment Description",
+             est.get("equipment_desc",""), False),
+            ("Quantity",
+             "1 No.", False),
+            ("Ex-Works Price — Hyderabad",
+             fmt(totals["ex_works"]), True),
+            (f"GST @ {est.get('gst_pct',18):.0f}% (if applicable)",
+             fmt(totals["gst_amt"]), False),
+            ("FINAL FOR PRICE (inclusive of GST)",
+             fmt(totals["for_price"]), True),
+        ]
+        price_table(clean_rows)
 
     doc.add_paragraph()
+
+    # ── Commercial terms ──────────────────────────────────────────────────────
     _kv_table(doc, [
-        ("Price Basis", "Ex-Works, Pashamylaram, Hyderabad. Packing included. Freight & insurance excluded."),
-        ("Taxes & Duties", "GST @ applicable rate at time of invoice. Any new statutory levy as applicable."),
-        ("Payment Terms", "40% advance with Purchase Order | 50% against inspection / readiness for dispatch | 10% on delivery & installation."),
-        ("Delivery", "To be confirmed at order — from receipt of clear Purchase Order + advance payment."),
-        ("Offer Validity", "7 days from date of this offer. Subject to availability of raw material at offered rates."),
-        ("Warranty", "12 months from date of supply against manufacturing defects under normal operating conditions."),
-        ("Exclusions", "Civil / structural works, Electrical & Instrumentation, Erection & commissioning, DQ/IQ/OQ/PQ, Freight & insurance, Customs duties (if applicable)."),
+        ("Price Basis",
+         "Ex-Works, Pashamylaram, Hyderabad — 502307. "
+         "Packing in MS crate included. Freight, insurance and unloading at site excluded."),
+        ("GST & Statutory Levies",
+         "GST @ 18% (HSN 8419) as applicable at time of invoicing. "
+         "Any new statutory levy introduced after offer date will be charged additionally."),
+        ("Payment Terms",
+         "40% advance along with Purchase Order  |  "
+         "50% against Pro-forma invoice on readiness for dispatch  |  "
+         "10% on delivery"),
+        ("Delivery Period",
+         "12–16 weeks from date of Purchase Order + advance payment receipt. "
+         "Subject to availability of raw material at time of order."),
+        ("Offer Validity",
+         "This offer is valid for 7 calendar days from the date above. "
+         "Prices are subject to change if raw material rates move by more than 3%."),
+        ("Warranty",
+         "12 months from date of commissioning or 18 months from date of dispatch, "
+         "whichever is earlier. Warranty covers manufacturing defects under normal "
+         "operating conditions as per design basis."),
+        ("Inspection",
+         "Customer may depute inspector for stage inspection and final inspection at our works. "
+         "Third-party inspection (TPI) agency charges, if any, are in customer's scope."),
+        ("Exclusions",
+         "Civil / structural works  |  Electrical & Instrumentation  |  "
+         "Erection & commissioning  |  DQ / IQ / OQ / PQ validation  |  "
+         "Freight & marine insurance  |  Import duties (if applicable)"),
     ])
 
+    # ── SECTION 7: Sign-off ───────────────────────────────────────────────────
     doc.add_paragraph()
-    sec_head("SECTION 7 — SIGN-OFF")
-    t_sign = doc.add_table(rows=2, cols=2); t_sign.style = "Table Grid"
-    for j, lbl in enumerate(["Prepared By", "Checked / Authorised By"]):
+    sec_head("SECTION 7 — ACCEPTANCE & SIGN-OFF")
+    body("We thank you for the opportunity to offer our services and look forward to your valued order. "
+         "Please feel free to contact us for any technical or commercial clarifications.")
+    doc.add_paragraph()
+
+    t_sign = doc.add_table(rows=3, cols=2); t_sign.style = "Table Grid"
+    # Header
+    for j, lbl in enumerate(["For B&G Engineering Industries", "Customer Acceptance"]):
         c = t_sign.rows[0].cells[j]; c.text = ""
-        _run(c.paragraphs[0], lbl, bold=True, size=9); _shd(c, "D6E4F7")
-    for j, name in enumerate([est.get("prepared_by", ""), est.get("checked_by", "")]):
+        _run(c.paragraphs[0], lbl, bold=True, size=9, color=(255,255,255)); _shd(c, "1B3A6B")
+    # Prepared / authorised by
+    for j, name in enumerate([est.get("prepared_by",""), ""]):
         c = t_sign.rows[1].cells[j]; c.text = ""
-        _run(c.paragraphs[0], f"{name}\n{BG_NAME}", size=9)
+        _run(c.paragraphs[0], f"{'Authorised Signatory: ' if j==0 else 'Authorised Signatory: '}{name}", size=9)
+    # Date / stamp row
+    for j, txt in enumerate([f"Date: {date.today().strftime('%d %B %Y')}", "Date & Company Stamp:"]):
+        c = t_sign.rows[2].cells[j]; c.text = ""
+        _run(c.paragraphs[0], txt, size=9, color=(100,100,100))
 
     footer_block()
     buf = io.BytesIO(); doc.save(buf); buf.seek(0)
     return buf
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MASTER LOADERS
@@ -887,12 +984,21 @@ with TAB_LIST:
                 cust_rows = sb_fetch("master_clients", filters={"name": est.get("customer_name", "")})
                 cust_data = cust_rows[0] if cust_rows else {}
                 a3.download_button(
-                    "📄 Download Quotation",
-                    generate_docx(est, cust_data, T, fab_s),
-                    file_name=f"{est.get('qtn_number', 'QTN')}_{est.get('revision', 'R0')}.docx",
+                    "📄 Standard Quote",
+                    generate_docx(est, cust_data, T, fab_s, show_breakup=False),
+                    file_name=f"{est.get('qtn_number','QTN')}_{est.get('revision','R0')}.docx",
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
                     key=f"dl_{est.get('id')}",
+                )
+                a4_dl_col = st.columns(4)[3]
+                a4_dl_col.download_button(
+                    "📋 With Breakup",
+                    generate_docx(est, cust_data, T, fab_s, show_breakup=True),
+                    file_name=f"{est.get('qtn_number','QTN')}_{est.get('revision','R0')}_breakup.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    key=f"dl_bk_{est.get('id')}",
                 )
                 new_status = a4.selectbox(
                     "Status",
@@ -1808,13 +1914,32 @@ with TAB_NEW:
             _reset_form(); st.rerun()
 
         cust_data = next((c for c in clients if c["name"] == h.get("customer_name", "")), {})
-        b3.download_button(
-            "📄 Download Quotation DOCX",
-            generate_docx(h, cust_data, T, st.session_state.est_fab),
-            file_name=f"{h.get('qtn_number', 'QTN')}_{h.get('revision', 'R0')}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-        )
+
+        # ── Download options ──────────────────────────────────────────────────
+        st.divider()
+        st.markdown("**📄 Download Customer Quotation**")
+        dl_col1, dl_col2 = st.columns(2)
+
+        with dl_col1:
+            st.caption("**Standard Quote** — clean single price, professional. Use for most customers.")
+            dl_col1.download_button(
+                "📄 Download Standard Quote",
+                generate_docx(h, cust_data, T, st.session_state.est_fab, show_breakup=False),
+                file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+                type="primary",
+            )
+
+        with dl_col2:
+            st.caption("**With Scope Breakup** — scope-based price heads. Use when customer asks for breakup.")
+            dl_col2.download_button(
+                "📋 Download Quote with Breakup",
+                generate_docx(h, cust_data, T, st.session_state.est_fab, show_breakup=True),
+                file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_breakup.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True,
+            )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: SIMILAR EQUIPMENT
