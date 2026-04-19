@@ -873,8 +873,9 @@ with TAB_LIST:
                 st.markdown("**Actions**")
                 a1, a2, a3, a4 = st.columns(4)
                 if a1.button("✏️ Edit", use_container_width=True, type="primary"):
-                    _load_est_into_form(est)
-                    st.success("Loaded — click ➕ New / Edit tab to continue.")
+                    fresh = sb_fetch("estimations", filters={"id": est["id"]})
+                    _load_est_into_form(fresh[0] if fresh else est)
+                    st.success(f"Loaded — {len(st.session_state.est_parts)} parts. Click ➕ New / Edit tab.")
                 if a2.button("📋 Clone to New", use_container_width=True):
                     _load_est_into_form(est)
                     st.session_state.est_hdr["qtn_number"] = ""
@@ -976,14 +977,18 @@ with TAB_NEW:
 
                 if ld2.button("📂 Load / Edit", use_container_width=True, type="primary", key="f1_load_btn"):
                     if load_sel != "— select to load —":
-                        match = filtered[opts.index(load_sel) - 1]
+                        preview = filtered[opts.index(load_sel) - 1]
+                        fresh = sb_fetch("estimations", filters={"id": preview["id"]})
+                        match = fresh[0] if fresh else preview
                         _load_est_into_form(match)
-                        st.success(f"✅ Loaded **{match.get('qtn_number', '')}** — all tabs populated.")
+                        st.success(f"✅ Loaded **{match.get('qtn_number','')}** — {len(st.session_state.est_parts)} parts, {len(st.session_state.est_pipes)} pipes, {len(st.session_state.est_fab)} fab lines.")
                         st.rerun()
 
                 if ld3.button("📋 Clone", use_container_width=True, key="f1_clone_btn"):
                     if load_sel != "— select to load —":
-                        match = filtered[opts.index(load_sel) - 1]
+                        preview = filtered[opts.index(load_sel) - 1]
+                        fresh = sb_fetch("estimations", filters={"id": preview["id"]})
+                        match = fresh[0] if fresh else preview
                         _load_est_into_form(match)
                         st.session_state.est_hdr["qtn_number"] = ""
                         st.session_state.est_hdr["revision"]   = "R0"
