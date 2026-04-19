@@ -1179,7 +1179,7 @@ with TAB_NEW:
             cancel_btn = btn_c2.button("✖ Cancel", use_container_width=True) if editing_part else False
 
             if cancel_btn:
-                st.session_state["edit_part_idx"] = None; st.rerun()
+                st.session_state["edit_part_idx"] = None
 
             if add_btn:
                 density  = DENSITY.get(p_material, 8000)
@@ -1202,7 +1202,7 @@ with TAB_NEW:
                 else:
                     st.session_state.est_parts.append(new_part)
                     st.success(f"✅ Added: {p_name}  |  {total_wt:.2f} kg  |  ₹{total_wt * rate:,.0f}")
-                st.rerun()
+                st.session_state["edit_part_idx"] = None
 
         if st.session_state.est_parts:
             st.markdown("---")
@@ -1215,7 +1215,7 @@ with TAB_NEW:
                 c6.write(f"{p.get('total_wt_kg', 0):.1f} kg")
                 c7.write(f"₹{p.get('amount', 0):,.0f}")
                 if c8.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name', '')}"):
-                    st.session_state["edit_part_idx"] = idx; st.rerun()
+                    st.session_state["edit_part_idx"] = idx
 
             tot_wt  = sum(p.get("total_wt_kg", 0) for p in st.session_state.est_parts)
             tot_amt = sum(p.get("amount", 0) for p in st.session_state.est_parts)
@@ -1225,9 +1225,9 @@ with TAB_NEW:
             del_idx = dc1.number_input("Row to delete", min_value=1, max_value=len(st.session_state.est_parts), value=1, step=1)
             if dc2.button("🗑️ Delete Row", use_container_width=True):
                 st.session_state.est_parts.pop(int(del_idx) - 1)
-                st.session_state["edit_part_idx"] = None; st.rerun()
+                st.session_state["edit_part_idx"] = None
             if st.button("🗑️ Clear All Parts"):
-                st.session_state.est_parts = []; st.session_state["edit_part_idx"] = None; st.rerun()
+                st.session_state.est_parts = []; st.session_state["edit_part_idx"] = None
 
         _save_draft_bar("f2")
 
@@ -1250,7 +1250,6 @@ with TAB_NEW:
                 wpm  = rm.get("unit_wt_kg_per_m") or 0
                 wt   = wpm * pp_len * 1.05 * pp_qty
                 st.session_state.est_pipes.append(dict(name=pp_name, item_code=pp_code, length_m=pp_len, qty=pp_qty, wt_per_m=wpm, total_wt_kg=round(wt, 3), rate=rate, amount=round(wt * rate, 2)))
-                st.rerun()
 
         if st.session_state.est_pipes:
             df = pd.DataFrame(st.session_state.est_pipes)[["name", "item_code", "length_m", "qty", "total_wt_kg", "rate", "amount"]]
@@ -1259,7 +1258,7 @@ with TAB_NEW:
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.success(f"Total Pipes: ₹{sum(p['amount'] for p in st.session_state.est_pipes):,.0f}")
             if st.button("🗑️ Clear Pipes"):
-                st.session_state.est_pipes = []; st.rerun()
+                st.session_state.est_pipes = []
 
         st.divider()
         st.markdown("##### Flanges & Fittings")
@@ -1274,7 +1273,6 @@ with TAB_NEW:
                 rate = fl_rate if fl_rate > 0 else rm.get("rate", 0)
                 wt   = ((rm.get("unit_wt_kg_per_m") or 0) * 1.15) * fl_qty
                 st.session_state.est_flanges.append(dict(name=fl_name, item_code=fl_code, qty=fl_qty, total_wt_kg=round(wt, 3), rate=rate, amount=round(wt * rate, 2)))
-                st.rerun()
 
         if st.session_state.est_flanges:
             df = pd.DataFrame(st.session_state.est_flanges)[["name", "item_code", "qty", "total_wt_kg", "rate", "amount"]]
@@ -1283,7 +1281,7 @@ with TAB_NEW:
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.success(f"Total Flanges: ₹{sum(p['amount'] for p in st.session_state.est_flanges):,.0f}")
             if st.button("🗑️ Clear Flanges"):
-                st.session_state.est_flanges = []; st.rerun()
+                st.session_state.est_flanges = []
 
         _save_draft_bar("f3")
 
@@ -1335,11 +1333,10 @@ with TAB_NEW:
             if dia > 0 and ht > 0:
                 st.session_state.est_fab = auto_fab_services(h, fr, st.session_state.est_parts)
                 st.success(f"✅ Generated {len(st.session_state.est_fab)} line items  |  Total: ₹{sum(f['amount'] for f in st.session_state.est_fab):,.0f}")
-                st.rerun()
             else:
                 st.error("Enter Shell ID and Shell Height in Tab 1️⃣ first.")
         if col_clear.button("🗑️ Clear Fabrication", use_container_width=True):
-            st.session_state.est_fab = []; st.rerun()
+            st.session_state.est_fab = []
 
         if st.session_state.est_fab:
             st.markdown("---")
@@ -1354,7 +1351,7 @@ with TAB_NEW:
                 st.session_state.est_fab[idx]["amount"] = new_amt
                 fab_total += new_amt
                 if fc5.button("🗑️", key=f"fab_del_{idx}", help="Remove"):
-                    st.session_state.est_fab.pop(idx); st.rerun()
+                    st.session_state.est_fab.pop(idx)
             st.success(f"**Total Fabrication Services: ₹{fab_total:,.0f}**")
 
             st.markdown("**➕ Add custom line**")
@@ -1366,7 +1363,6 @@ with TAB_NEW:
                 ma_amt   = ma4.number_input("Amount ₹", value=0.0,  key="ma_amt")
                 if st.button("➕ Add Line", type="primary"):
                     st.session_state.est_fab.append({"service": ma_svc, "basis": ma_basis, "qty": 1, "uom": ma_uom, "rate": ma_amt, "amount": ma_amt})
-                    st.rerun()
 
         _save_draft_bar("f4")
 
@@ -1387,7 +1383,6 @@ with TAB_NEW:
                 rm   = rm_master.get(bo_code, {})
                 rate = bo_rate if bo_rate > 0 else rm.get("rate", 0)
                 st.session_state.est_bo.append(dict(name=bo_desc or rm.get("description", ""), item_code=bo_code, qty=bo_qty, rate=rate, amount=round(rate * bo_qty, 2), group=bo_group))
-                st.rerun()
 
         if st.session_state.est_bo:
             df = pd.DataFrame(st.session_state.est_bo)[["name", "item_code", "qty", "rate", "amount", "group"]]
@@ -1396,7 +1391,7 @@ with TAB_NEW:
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.success(f"Total Bought-Out: ₹{sum(b['amount'] for b in st.session_state.est_bo):,.0f}")
             if st.button("🗑️ Clear BO"):
-                st.session_state.est_bo = []; st.rerun()
+                st.session_state.est_bo = []
 
         st.divider()
         st.markdown("##### Additional Overheads  _(any cost not covered above)_")
@@ -1418,7 +1413,6 @@ with TAB_NEW:
                 else:
                     amount = rate * oh_qty
                 st.session_state.est_oh.append(dict(oh_code=oh_sel, description=desc, oh_type=oh_inf.get("oh_type", ""), uom=uom, qty=oh_qty, rate=rate, amount=round(amount, 2)))
-                st.rerun()
 
         if st.session_state.est_oh:
             df = pd.DataFrame(st.session_state.est_oh)[["description", "oh_type", "uom", "qty", "rate", "amount"]]
@@ -1427,7 +1421,7 @@ with TAB_NEW:
             st.dataframe(df, use_container_width=True, hide_index=True)
             st.success(f"Total OH: ₹{sum(o['amount'] for o in st.session_state.est_oh):,.0f}")
             if st.button("🗑️ Clear OH"):
-                st.session_state.est_oh = []; st.rerun()
+                st.session_state.est_oh = []
 
         _save_draft_bar("f5")
 
