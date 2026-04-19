@@ -67,19 +67,41 @@ def sb_update(table, row: dict, match_col: str, match_val):
 # ─────────────────────────────────────────────────────────────────────────────
 PI = math.pi
 
-def calc_shell_area(dia_mm, ht_mm):
-    return PI * (dia_mm / 1000) * (ht_mm / 1000)
+def _to_m(mm): return mm / 1000
 
-def calc_dish_area(shell_id_mm):
-    blank_dia = shell_id_mm * 1.167
-    r = (blank_dia / 1000) / 2
-    return 1.09 * PI * r * r
-    
-def calc_plate_weight(area_m2, thk_mm, density=8000, scrap_pct=0.05):
-    return area_m2 * (thk_mm / 1000) * density * (1 + scrap_pct)
+def calc_cylindrical_shell(id_mm, ht_mm, thk_mm, density=8000, scrap=0.05):
+    area = PI * _to_m(id_mm) * _to_m(ht_mm)
+    return area * _to_m(thk_mm) * density * (1 + scrap)
 
-def calc_dish_weight(dia_mm, thk_mm, density=8000, scrap_pct=0.15):
-    return calc_dish_area(dia_mm) * (thk_mm / 1000) * density * (1 + scrap_pct)
+def calc_dish_end(shell_id_mm, thk_mm, density=8000, scrap=0.15):
+    blank = shell_id_mm * 1.167
+    r = _to_m(blank) / 2
+    area = 1.09 * PI * r * r
+    return area * _to_m(thk_mm) * density * (1 + scrap)
+
+def calc_annular_plate(od_mm, id_mm, thk_mm, density=8000, scrap=0.05):
+    area = PI / 4 * (_to_m(od_mm)**2 - _to_m(id_mm)**2)
+    return area * _to_m(thk_mm) * density * (1 + scrap)
+
+def calc_solid_round(dia_mm, length_mm, density=8000, scrap=0.15):
+    vol = PI / 4 * _to_m(dia_mm)**2 * _to_m(length_mm)
+    return vol * density * (1 + scrap)
+
+def calc_flat_rect(w_mm, h_mm, thk_mm, density=8000, scrap=0.05):
+    return _to_m(w_mm) * _to_m(h_mm) * _to_m(thk_mm) * density * (1 + scrap)
+
+def calc_stiffener_ring(shell_id_mm, bar_w_mm, thk_mm, density=8000, scrap=0.05):
+    circumference = PI * _to_m(shell_id_mm)
+    return circumference * _to_m(bar_w_mm) * _to_m(thk_mm) * density * (1 + scrap)
+
+def calc_cone(large_id_mm, small_id_mm, ht_mm, thk_mm, density=8000, scrap=0.05):
+    R1 = _to_m(large_id_mm) / 2
+    R2 = _to_m(small_id_mm) / 2
+    slant = math.sqrt(_to_m(ht_mm)**2 + (R1 - R2)**2)
+    area = PI * (R1 + R2) * slant
+    return area * _to_m(thk_mm) * density * (1 + scrap)
+
+DENSITY = {"SS316L": 8000, "SS304": 8000, "MS": 7850, "EN8": 7800, "Ti": 4500}
 
 def calc_shell_volume_ltrs(dia_mm, ht_mm):
     r = (dia_mm / 1000) / 2
@@ -572,49 +594,95 @@ with TAB_NEW:
 
     # ── F2: PLATES & PARTS ────────────────────────────────────────────────────
     with f2:
-        st.markdown("#### Plates & Fabricated Parts")
-        st.caption("Shell, dishes, jacket, stiffeners, agitator, lugs, manhole, etc.")
+    st.markdown("#### Plates & Fabricated Parts")
 
-        with st.form("form_parts", clear_on_submit=True):
-            c1,c2,c3 = st.columns(3)
-            p_name  = c1.text_input("Part Name", placeholder="Main Shell")
-            p_group = c2.selectbox("Group", ["SHELL","DISH_ENDS","JACKET","INS_JACKET","AGITATOR",
-                                              "BAFFLES","LUGS","STIFFNERS","MANHOLE","RM_MISC","BODY_FL"])
-            p_code  = c3.selectbox("RM Code", plate_rm or ["—"])
+    PART_TYPES = {
+        "Cylindrical shell":     {"inputs": ["id_mm","ht_mm","thk_mm"], "formula": "shell"},
+        "Dish end (tori)":       {"inputs": ["shell_id_mm","thk_mm"],   "formula": "dish"},
+        "Annular plate / flange":{"inputs": ["od_mm","id_mm","thk_mm"], "formula": "annular"},
+        "Solid round (shaft)":   {"inputs": ["dia_mm","length_mm"],     "formula": "solid_round"},
+        "Flat rectangle (blade/pad/gusset)":{"inputs":["w_mm","h_mm","thk_mm"],"formula":"flat_rect"},
+        "Stiffener ring (flat bar)":{"inputs":["shell_id_mm","bar_w_mm","thk_mm"],"formula":"stiffener"},
+        "Cone / reducer":        {"inputs": ["large_id_mm","small_id_mm","ht_mm","thk_mm"],"formula":"cone"},
+    }
 
-            c1,c2,c3,c4,c5 = st.columns(5)
-            p_dia   = c1.number_input("Dia (mm)",    value=0.0, min_value=0.0)
-            p_ht    = c2.number_input("Ht/Len (mm)", value=0.0, min_value=0.0)
-            p_thk   = c3.number_input("Thk (mm)",    value=0.0, min_value=0.0)
-            p_qty   = c4.number_input("Qty",          value=1.0, min_value=0.0)
-            p_scrap = c5.number_input("Scrap %",      value=5.0, min_value=0.0, max_value=50.0)
+    LABELS = {
+        "id_mm":"Shell ID (mm)", "shell_id_mm":"Shell ID (mm)",
+        "ht_mm":"Height (mm)", "thk_mm":"Thickness (mm)",
+        "od_mm":"OD (mm)", "id_mm":"ID (mm)",
+        "dia_mm":"Diameter (mm)", "length_mm":"Length (mm)",
+        "w_mm":"Width (mm)", "h_mm":"Height (mm)",
+        "bar_w_mm":"Bar Width (mm)",
+        "large_id_mm":"Large ID (mm)", "small_id_mm":"Small ID (mm)",
+    }
 
-            p_rate_ov = st.number_input("Rate Override ₹/kg  (0 = use master)", value=0.0, min_value=0.0)
-            p_is_dish = st.checkbox("Is Dish/End (torispherical area formula)")
+    with st.form("form_parts", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        p_name     = c1.text_input("Part Name", placeholder="e.g. Main Shell")
+        p_type     = c2.selectbox("Part Type", list(PART_TYPES.keys()))
+        p_group    = c3.selectbox("Group", ["SHELL","DISH_ENDS","JACKET","INS_JACKET",
+                                            "AGITATOR","BAFFLES","LUGS","STIFFNERS",
+                                            "MANHOLE","RM_MISC","BODY_FL"])
 
-            if st.form_submit_button("➕ Add Part"):
-                rm  = rm_master.get(p_code, {})
-                rate = p_rate_ov if p_rate_ov > 0 else (rm.get("rate") or 0)
-                wt   = calc_dish_weight(p_dia, p_thk, 8000, p_scrap/100) if p_is_dish \
-                       else calc_plate_weight(calc_shell_area(p_dia, p_ht), p_thk, 8000, p_scrap/100)
-                total_wt = wt * p_qty
-                st.session_state.est_parts.append(dict(
-                    name=p_name, group=p_group, item_code=p_code,
-                    dia_mm=p_dia, ht_mm=p_ht, thk_mm=p_thk, qty=p_qty,
-                    scrap_pct=p_scrap, net_wt_kg=round(wt,3),
-                    total_wt_kg=round(total_wt,3), rate=rate,
-                    amount=round(total_wt*rate,2), is_dish=p_is_dish
-                ))
-                st.rerun()
+        p_material = st.selectbox("Material", ["SS316L","SS304","MS","EN8","Ti"])
+        plate_rm   = [k for k,v in rm_master.items() if v.get("category")=="RM"]
+        p_code     = st.selectbox("RM Code (for rate)", plate_rm or ["—"])
+        p_rate_ov  = st.number_input("Rate Override ₹/kg (0 = use master)", value=0.0, min_value=0.0)
+        p_qty      = st.number_input("Qty", value=1.0, min_value=0.0)
 
-        if st.session_state.est_parts:
-            df = pd.DataFrame(st.session_state.est_parts)[
-                ["name","group","dia_mm","ht_mm","thk_mm","qty","total_wt_kg","rate","amount"]]
-            df.columns = ["Part","Group","Dia","Ht","Thk","Qty","Wt(kg)","Rate","Amount(₹)"]
-            df["Amount(₹)"] = df["Amount(₹)"].map(lambda x: f"₹{x:,.0f}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.success(f"**Total Plates & Parts: ₹{sum(p['amount'] for p in st.session_state.est_parts):,.0f}**")
-            if st.button("🗑️ Clear All Parts"): st.session_state.est_parts=[]; st.rerun()
+        # Dynamic dimension inputs based on part type
+        dims = {}
+        needed = PART_TYPES[p_type]["inputs"]
+        cols = st.columns(len(needed))
+        for i, field in enumerate(needed):
+            dims[field] = cols[i].number_input(LABELS.get(field, field), value=0.0, min_value=0.0)
+
+        if st.form_submit_button("➕ Add Part"):
+            density = DENSITY.get(p_material, 8000)
+            formula = PART_TYPES[p_type]["formula"]
+            rm      = rm_master.get(p_code, {})
+            rate    = p_rate_ov if p_rate_ov > 0 else rm.get("rate", 0)
+
+            if formula == "shell":
+                wt = calc_cylindrical_shell(dims["id_mm"], dims["ht_mm"], dims["thk_mm"], density)
+            elif formula == "dish":
+                wt = calc_dish_end(dims["shell_id_mm"], dims["thk_mm"], density)
+            elif formula == "annular":
+                wt = calc_annular_plate(dims["od_mm"], dims["id_mm"], dims["thk_mm"], density)
+            elif formula == "solid_round":
+                wt = calc_solid_round(dims["dia_mm"], dims["length_mm"], density)
+            elif formula == "flat_rect":
+                wt = calc_flat_rect(dims["w_mm"], dims["h_mm"], dims["thk_mm"], density)
+            elif formula == "stiffener":
+                wt = calc_stiffener_ring(dims["shell_id_mm"], dims["bar_w_mm"], dims["thk_mm"], density)
+            elif formula == "cone":
+                wt = calc_cone(dims["large_id_mm"], dims["small_id_mm"], dims["ht_mm"], dims["thk_mm"], density)
+            else:
+                wt = 0.0
+
+            total_wt = wt * p_qty
+            st.session_state.est_parts.append(dict(
+                name=p_name, part_type=p_type, group=p_group,
+                material=p_material, item_code=p_code,
+                dims=dims, qty=p_qty, net_wt_kg=round(wt, 3),
+                total_wt_kg=round(total_wt, 3),
+                rate=rate, amount=round(total_wt * rate, 2)
+            ))
+            st.rerun()
+
+    if st.session_state.est_parts:
+        df = pd.DataFrame([{
+            "Part": p["name"], "Type": p["part_type"], "Group": p["group"],
+            "Material": p["material"], "Qty": p["qty"],
+            "Wt/unit (kg)": f"{p['net_wt_kg']:.2f}",
+            "Total Wt (kg)": f"{p['total_wt_kg']:.2f}",
+            "Rate": p["rate"], "Amount (₹)": f"₹{p['amount']:,.0f}"
+        } for p in st.session_state.est_parts])
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        tot = sum(p["amount"] for p in st.session_state.est_parts)
+        st.success(f"**Total Plates & Parts: ₹{tot:,.0f}**")
+        if st.button("🗑️ Clear All Parts"):
+            st.session_state.est_parts = []; st.rerun()
 
     # ── F3: PIPES & FLANGES ───────────────────────────────────────────────────
     with f3:
