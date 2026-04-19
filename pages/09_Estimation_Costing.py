@@ -122,8 +122,8 @@ PART_TYPES = {
 def calc_weight(fn, dims, density, qty):
     d = dims
     try:
-        if fn == "shell":  wt = geom_cylindrical_shell(d["id_mm"], d["ht_mm"], d["thk_mm"], density)
-        elif fn == "dish": wt = geom_dish_end(d["shell_id_mm"], d["thk_mm"], density)
+        if fn == "shell":   wt = geom_cylindrical_shell(d["id_mm"], d["ht_mm"], d["thk_mm"], density)
+        elif fn == "dish":  wt = geom_dish_end(d["shell_id_mm"], d["thk_mm"], density)
         elif fn == "annular": wt = geom_annular_plate(d["od_mm"], d["id_mm"], d["thk_mm"], density)
         elif fn == "solid": wt = geom_solid_round(d["dia_mm"], d["length_mm"], density)
         elif fn == "flat":  wt = geom_flat_rect(d["w_mm"], d["h_mm"], d["thk_mm"], density)
@@ -132,7 +132,8 @@ def calc_weight(fn, dims, density, qty):
         elif fn == "rect":  wt = geom_rect_plate(d["length_mm"], d["width_mm"], d["thk_mm"], density)
         elif fn == "tube":  wt = geom_tube_bundle(d["tube_od_mm"], d["tube_thk_mm"], d["tube_length_mm"], d["n_tubes"], density)
         else: wt = 0.0
-    except Exception:
+    except Exception as e:
+        st.warning(f"Weight calc error ({fn}): {e} | dims received: {dims}")
         wt = 0.0
     return round(wt, 3), round(wt * qty, 3)
 
