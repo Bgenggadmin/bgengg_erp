@@ -702,19 +702,13 @@ with TAB_LIST:
 # ══════════════════════════════════════════════════════════════════════════════
 with TAB_NEW:
     edit_id=st.session_state.est_edit_id
-    st.subheader(f"✏️ Editing: {st.session_state.est_hdr.get('qtn_number','...')}" if edit_id else "➕ New Estimation")
-
-    # Resume saved estimation
-    if not edit_id:
-        with st.container(border=True):
-            st.markdown("**📂 Resume a saved estimation**")
-            all_qtns=[e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
-            rc1,rc2=st.columns([4,1])
-            resume_sel=rc1.selectbox("Select QTN to resume",["— start fresh —"]+all_qtns,key="resume_sel")
-            if rc2.button("📂 Load",use_container_width=True,type="primary"):
-                if resume_sel!="— start fresh —":
-                    match=next((e for e in load_all_estimations() if e.get("qtn_number")==resume_sel),None)
-                    if match: _load_est_into_form(match); st.success(f"Loaded **{resume_sel}** — continue from where you left off."); st.rerun()
+    _qtn_hdr = st.session_state.est_hdr.get("qtn_number","")
+    if edit_id:
+        st.subheader(f"u270fufe0f Editing: {_qtn_hdr}")
+    elif _qtn_hdr:
+        st.subheader(f"U0001f4dd Working on: {_qtn_hdr}")
+    else:
+        st.subheader("u2795 New Estimation")
 
     rm_master  =load_rm_master(); oh_master=load_oh_master()
     clients    =load_clients_full(); anchor_qtns=load_anchor_qtns()
@@ -731,6 +725,74 @@ with TAB_NEW:
 
     # ── F1: HEADER ─────────────────────────────────────────────────────────────
     with f1:
+        # ── LOAD / RESUME PANEL ────────────────────────────────────────────────
+        all_est_list = load_all_estimations()
+        all_est_list_valid = [e for e in all_est_list if e.get("qtn_number")]
+
+        with st.container(border=True):
+            # Status bar — what is currently loaded
+            if edit_id:
+                st.success(f"✏️ **Editing:** {st.session_state.est_hdr.get('qtn_number','')}  |  {st.session_state.est_hdr.get('customer_name','')}  |  {len(st.session_state.est_parts)} parts loaded")
+            elif st.session_state.est_hdr.get("qtn_number"):
+                st.info(f"📝 **Working on new:** {st.session_state.est_hdr.get('qtn_number','')}  |  {st.session_state.est_hdr.get('customer_name','')}  |  {len(st.session_state.est_parts)} parts")
+            else:
+                st.warning("📄 **New estimation** — fill details below or load a saved quotation to continue working on it.")
+
+            st.markdown("**🔍 Search & Load a Saved Estimation**")
+
+            # Search / filter row
+            sf1, sf2, sf3, sf4 = st.columns(4)
+            srch_qtn  = sf1.text_input("Search QTN",        placeholder="e.g. B&G/MAITHRI",  key="srch_qtn")
+            srch_cust = sf2.text_input("Search Customer",    placeholder="e.g. Neuland",      key="srch_cust")
+            srch_eq   = sf3.selectbox("Equipment Type",      ["All"] + EQUIPMENT_NAMES,       key="srch_eq")
+            srch_stat = sf4.selectbox("Status",              ["All","Draft","Issued","Won","Lost","On Hold"], key="srch_stat")
+
+            # Filter results
+            filtered = all_est_list_valid
+            if srch_qtn:   filtered = [e for e in filtered if srch_qtn.lower()   in (e.get("qtn_number","") or "").lower()]
+            if srch_cust:  filtered = [e for e in filtered if srch_cust.lower()  in (e.get("customer_name","") or "").lower()]
+            if srch_eq  != "All": filtered = [e for e in filtered if e.get("equipment_type") == srch_eq]
+            if srch_stat != "All": filtered = [e for e in filtered if e.get("status") == srch_stat]
+
+            if filtered:
+                # Build display options
+                def _opt_label(e):
+                    si = {"Draft":"🟡","Issued":"🔵","Won":"🟢","Lost":"🔴","On Hold":"⚪"}.get(e.get("status",""),"🟡")
+                    return f"{si} {e.get('qtn_number','')}  |  {e.get('customer_name','—')}  |  {e.get('equipment_desc','—')}  |  {e.get('capacity_ltrs','')}L  |  {e.get('status','')}"
+
+                opts = ["— select to load —"] + [_opt_label(e) for e in filtered]
+                ld1, ld2, ld3 = st.columns([5, 1, 1])
+                load_sel = ld1.selectbox("Select estimation", opts, key="f1_load_sel", label_visibility="collapsed")
+
+                if ld2.button("📂 Load / Edit", use_container_width=True, type="primary", key="f1_load_btn"):
+                    if load_sel != "— select to load —":
+                        idx = opts.index(load_sel) - 1
+                        match = filtered[idx]
+                        _load_est_into_form(match)
+                        st.success(f"✅ Loaded **{match.get('qtn_number','')}** — all tabs populated. Edit any field and save.")
+                        st.rerun()
+
+                if ld3.button("📋 Clone", use_container_width=True, key="f1_clone_btn"):
+                    if load_sel != "— select to load —":
+                        idx = opts.index(load_sel) - 1
+                        match = filtered[idx]
+                        _load_est_into_form(match)
+                        st.session_state.est_hdr["qtn_number"] = ""
+                        st.session_state.est_hdr["revision"]   = "R0"
+                        st.session_state.est_hdr["status"]     = "Draft"
+                        st.session_state.est_hdr["notes"]      = f"Cloned from {match.get('qtn_number','')}"
+                        st.session_state.est_edit_id           = None
+                        st.success(f"📋 Cloned from **{match.get('qtn_number','')}** — enter new QTN number below and save.")
+                        st.rerun()
+            else:
+                st.caption("No saved estimations match the filter above. Fill the form below to create a new one.")
+
+            if st.button("🗑️ Clear form / Start fresh", key="f1_clear_btn"):
+                _reset_form(); st.rerun()
+
+        st.divider()
+        # ── END LOAD PANEL ─────────────────────────────────────────────────────
+
         st.markdown("##### Equipment Type")
         prev_type=h.get("equipment_type",EQUIPMENT_NAMES[0])
         if prev_type not in EQUIPMENT_NAMES: prev_type=EQUIPMENT_NAMES[0]
@@ -814,41 +876,20 @@ with TAB_NEW:
         h["checked_by"]=c2.selectbox("Checked By",staff_list,index=cb_idx)
         h["notes"]=st.text_area("Internal Notes",value=h["notes"],height=70)
         st.caption("✅ Done here? Go to **2️⃣ Plates & Parts** tab.")
-        
+
     # ── F2: PLATES & PARTS ─────────────────────────────────────────────────────
     with f2:
-        # ── RESUME / LOAD EXISTING QTN INTO PARTS ──────────────────────────
-        if not st.session_state.est_parts and st.session_state.get("edit_part_idx") is None:
-            with st.container(border=True):
-                st.markdown("**📂 No parts yet — resume a saved estimation or start fresh**")
-                all_qtns = [e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
-                rc1, rc2 = st.columns([4,1])
-                resume_sel = rc1.selectbox(
-                    "Select saved QTN to load all parts, pipes, flanges, BO, OH",
-                    ["— start fresh —"] + all_qtns,
-                    key="f2_resume_sel",
-                )
-                if rc2.button("📂 Load", use_container_width=True, type="primary", key="f2_resume_btn"):
-                    if resume_sel != "— start fresh —":
-                        match = next((e for e in load_all_estimations() if e.get("qtn_number") == resume_sel), None)
-                        if match:
-                            _load_est_into_form(match)
-                            st.success(f"✅ Loaded **{resume_sel}** — all parts, pipes, flanges, fabrication, BO and OH restored.")
-                            st.rerun()
-        elif st.session_state.est_parts:
-            with st.container(border=True):
-                bc1, bc2, bc3 = st.columns([4, 2, 1])
-                bc1.markdown(f"**Currently working on:** {st.session_state.est_hdr.get('qtn_number','New') or 'New Estimation'}  |  {len(st.session_state.est_parts)} parts  |  ₹{sum(p.get('amount',0) for p in st.session_state.est_parts):,.0f}")
-                all_qtns = [e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
-                switch_sel = bc2.selectbox("Switch to different QTN", ["— keep current —"] + all_qtns, key="f2_switch_sel", label_visibility="collapsed")
-                if bc3.button("🔄 Switch", use_container_width=True, key="f2_switch_btn"):
-                    if switch_sel != "— keep current —":
-                        match = next((e for e in load_all_estimations() if e.get("qtn_number") == switch_sel), None)
-                        if match:
-                            _load_est_into_form(match)
-                            st.success(f"✅ Switched to **{switch_sel}**")
-                            st.rerun()
-        # ───────────────────────────────────────────────────────────────────
+        # Current estimation banner
+        if st.session_state.est_hdr.get("qtn_number") or st.session_state.est_parts:
+            bc1, bc2 = st.columns([5, 1])
+            qtn_display = st.session_state.est_hdr.get("qtn_number","New") or "New"
+            bc1.markdown(f"**{qtn_display}** — {st.session_state.est_hdr.get('customer_name','no customer')}  |  {len(st.session_state.est_parts)} parts  |  ₹{sum(p.get('amount',0) for p in st.session_state.est_parts):,.0f}")
+            if bc2.button("⬅ Load different", key="f2_goto_load", use_container_width=True):
+                st.info("Go to Tab **1️⃣ Header** → use the Search & Load panel at the top to switch estimation.")
+        else:
+            st.info("No estimation loaded. Go to **1️⃣ Header** tab → Search & Load panel to resume a saved estimation, or fill the header and start adding parts below.")
+
+        st.divider()
         st.markdown("##### Add / Edit Fabricated Parts")
         st.caption("Select Part Type → only the required dimension inputs appear → click **Add Part**.")
 
@@ -1108,20 +1149,6 @@ with TAB_NEW:
         eq_info=EQUIPMENT_TYPES.get(h["equipment_type"],{}); lo,hi=eq_info.get("margin_hint",(10,18))
         st.info(f"Suggested margin for **{h['equipment_type']}**: {lo}–{hi}%  |  Labour: **{eq_info.get('labour_norm','Medium')}**")
 
-        # ── QTN + Customer confirm (always visible on this tab) ─────────────
-        with st.container(border=True):
-            st.markdown("**Confirm offer details before saving**")
-            qc1,qc2,qc3=st.columns(3)
-            h["qtn_number"] = qc1.text_input("Quotation Number *", value=h.get("qtn_number",""), placeholder="e.g. B&G/MAITHRI/2026/2922", key="f6_qtn")
-            h["revision"]   = qc2.selectbox("Revision", ["R0","R1","R2","R3","R4","R5"],
-                                              index=["R0","R1","R2","R3","R4","R5"].index(h.get("revision","R0")), key="f6_rev")
-            h["status"]     = qc3.selectbox("Status", ["Draft","Issued","Won","Lost","On Hold"],
-                                              index=["Draft","Issued","Won","Lost","On Hold"].index(h.get("status","Draft")), key="f6_status")
-            if h["qtn_number"]:
-                st.success(f"✅ Ready to save: **{h['qtn_number']}** {h['revision']} — Customer: {h.get('customer_name','(none)')}")
-            else:
-                st.warning("⚠️ Enter Quotation Number above — required before saving.")
-
         s1,s2,s3,s4,s5,s6=st.columns(6)
         h["profit_margin_pct"]=s1.number_input("Profit %",value=float(h["profit_margin_pct"]),min_value=0.0,max_value=60.0,step=0.5)
         h["contingency_pct"]  =s2.number_input("Contingency %",value=float(h["contingency_pct"]),min_value=0.0,max_value=20.0,step=0.5)
@@ -1160,20 +1187,17 @@ with TAB_NEW:
         with right:
             st.markdown("**Margin Health**")
             for label,val,lo_t,hi_t in [
-                ("RM %",       T["rm_pct"],           45,60),
-                ("Fab Svc %",  T["fab_pct"],           15,25),
-                ("OH %",       T["oh_pct"],             8,15),
-                ("Profit %",   T["profit_pct_actual"], 12,20),
+                ("RM %",       T["rm_pct"],          45,60),
+                ("Fab Svc %",  T["fab_pct"],          15,25),
+                ("OH %",       T["oh_pct"],            8,15),
+                ("Profit %",   T["profit_pct_actual"],12,20),
             ]:
                 icon="✅" if lo_t<=val<=hi_t else "⚠️"
                 st.write(f"{icon} **{label}** {val:.1f}%  _(target {lo_t}–{hi_t}%)_")
             for iss in margin_issues(T): st.warning(iss)
             if not margin_issues(T): st.success("All margins healthy!")
             st.markdown("**What-If: Ex-Works at Different Margins**")
-            st.dataframe(pd.DataFrame([{
-                "Margin":f"{m}%",
-                "Ex-Works (₹)":f"₹{(T['cbm']*(1+m/100)+T['packing']+T['freight']):,.0f}",
-            } for m in [8,10,12,15,18,20]]),hide_index=True,use_container_width=True)
+            st.dataframe(pd.DataFrame([{"Margin":f"{m}%","Ex-Works (₹)":f"₹{(T['cbm']*(1+m/100)+T['packing']+T['freight']):,.0f}"} for m in [8,10,12,15,18,20]]),hide_index=True,use_container_width=True)
 
         st.divider()
         k1,k2,k3,k4,k5,k6=st.columns(6)
@@ -1182,36 +1206,32 @@ with TAB_NEW:
         k5.metric("GST",f"₹{T['gst_amt']:,.0f}"); k6.metric("FOR Price",f"₹{T['for_price']:,.0f}")
         st.divider()
 
+        if not h["qtn_number"]: st.error("⚠️ Quotation Number is required. Fill it in Tab 1️⃣ Header.")
+
         b1,b2,b3=st.columns(3)
         if b1.button("💾 Save to Supabase",type="primary",use_container_width=True,disabled=not h["qtn_number"]):
-            # Strip keys Supabase doesn't have columns for
-            skip_keys={"customer_id"}
-            clean_h={k:v for k,v in h.items() if k not in skip_keys and v is not None}
-            row={**clean_h,
-                 "parts_json":     json.dumps(st.session_state.est_parts),
-                 "pipes_json":     json.dumps(st.session_state.est_pipes),
-                 "flanges_json":   json.dumps(st.session_state.est_flanges),
-                 "fab_json":       json.dumps(st.session_state.est_fab),
-                 "bo_json":        json.dumps(st.session_state.est_bo),
-                 "oh_json":        json.dumps(st.session_state.est_oh),
+            row={**{k:h[k] for k in h},
+                 "parts_json":   json.dumps(st.session_state.est_parts),
+                 "pipes_json":   json.dumps(st.session_state.est_pipes),
+                 "flanges_json": json.dumps(st.session_state.est_flanges),
+                 "fab_json":     json.dumps(st.session_state.est_fab),
+                 "bo_json":      json.dumps(st.session_state.est_bo),
+                 "oh_json":      json.dumps(st.session_state.est_oh),
                  "fab_rates_json": json.dumps(st.session_state.fab_rates),
-                 "updated_at":     datetime.now().isoformat()}
+                 "updated_at":   datetime.now().isoformat()}
             if edit_id:
                 ok=sb_update("estimations",row,"id",edit_id); msg=f"Updated {h['qtn_number']}"
             else:
                 row["created_at"]=datetime.now().isoformat()
                 ok=sb_insert("estimations",row); msg=f"Saved {h['qtn_number']}"
-            if ok:
-                st.success(f"✅ {msg}"); st.cache_data.clear(); _reset_form(); st.rerun()
+            if ok: st.success(f"✅ {msg}"); st.cache_data.clear(); _reset_form(); st.rerun()
 
         if b2.button("🔄 Reset / New",use_container_width=True): _reset_form(); st.rerun()
 
         cust_data=next((c for c in clients if c["name"]==h.get("customer_name","")),{})
-        b3.download_button("📄 Download Quotation DOCX",
-            generate_docx(h,cust_data,T,st.session_state.est_fab),
+        b3.download_button("📄 Download Quotation DOCX",generate_docx(h,cust_data,T,st.session_state.est_fab),
             file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True)
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: SIMILAR EQUIPMENT
