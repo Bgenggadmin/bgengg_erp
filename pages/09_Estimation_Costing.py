@@ -1124,6 +1124,237 @@ with TAB_NEW:
         else:
             st.info(f"**{qtn_d}** — No parts yet. Load from Tab 1️⃣ or add below.")
 
+
+        # ── CSV UPLOAD / DOWNLOAD ──────────────────────────────────────────────
+        with st.expander("📥 Upload Parts from CSV  |  📤 Download Template", expanded=False):
+            st.markdown("**Download the template, fill it in Excel/Sheets, then upload back.**")
+
+            # ── Template download ────────────────────────────────────────────
+            template_rows = [
+                ["part_name","part_type","group","material","rate_per_kg",
+                 "id_mm","ht_mm","thk_mm",
+                 "shell_id_mm","dish_thk_mm",
+                 "od_mm","id2_mm",
+                 "dia_mm","length_mm",
+                 "w_mm","h_mm",
+                 "shell_thk_mm","shell_ht_mm","pitch_mm","bar_w_mm","bar_thk_mm",
+                 "large_id_mm","small_id_mm",
+                 "width_mm",
+                 "tube_od_mm","tube_thk_mm","tube_length_mm","n_tubes",
+                 "qty"],
+                ["Main Shell","Cylindrical shell","SHELL","SS316L",480,
+                 1300,1500,8,
+                 "","",
+                 "","",
+                 "","",
+                 "","",
+                 "","","","","",
+                 "","",
+                 "",
+                 "","","","",
+                 1],
+                ["Dish Ends","Dish end (torispherical)","DISH_ENDS","SS316L",480,
+                 "","","",
+                 1300,10,
+                 "","",
+                 "","",
+                 "","",
+                 "","","","","",
+                 "","",
+                 "",
+                 "","","","",
+                 2],
+                ["Bottom Shaft","Solid round (shaft / bush)","AGITATOR","SS316L",480,
+                 "","","",
+                 "","",
+                 "","",
+                 85,550,
+                 "","",
+                 "","","","","",
+                 "","",
+                 "",
+                 "","","","",
+                 1],
+                ["Stiffeners","Stiffener rings (flat bar on shell OD)","STIFFNERS","SS304",350,
+                 "","","",
+                 "","",
+                 "","",
+                 "","",
+                 "","",
+                 8,1500,300,50,8,
+                 "","",
+                 "",
+                 "","","","",
+                 1],
+                ["Cone Reducer","Cone / reducer","OTHER","SS316L",480,
+                 "","","",
+                 "","",
+                 "","",
+                 "","",
+                 "","",
+                 "","","","","",
+                 1300,800,
+                 "",
+                 "","","","",
+                 1],
+                ["Base Plate","Flat rectangle (blade / pad / gusset)","FRAME","MS",85,
+                 "","","",
+                 "","",
+                 "","",
+                 "","",
+                 600,400,
+                 "","","","","",
+                 "","",
+                 "10",
+                 "","","","",
+                 4],
+            ]
+            import io as _io
+            csv_buf = _io.StringIO()
+            import csv as _csv
+            writer = _csv.writer(csv_buf)
+            writer.writerows(template_rows)
+            st.download_button(
+                "📤 Download CSV Template",
+                csv_buf.getvalue().encode(),
+                file_name="bgeng_parts_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+            st.markdown("---")
+            st.markdown("**Upload filled CSV:**")
+            st.caption(
+                "Columns used per part type:\n"
+                "- **Cylindrical shell**: id_mm, ht_mm, thk_mm\n"
+                "- **Dish end**: shell_id_mm, dish_thk_mm (mapped to thk_mm)\n"
+                "- **Solid round**: dia_mm, length_mm\n"
+                "- **Flat rectangle**: w_mm, h_mm, thk_mm (or width_mm for rect plate)\n"
+                "- **Stiffener rings**: shell_id_mm, shell_thk_mm, shell_ht_mm, pitch_mm, bar_w_mm, bar_thk_mm\n"
+                "- **Cone / reducer**: large_id_mm, small_id_mm, ht_mm, thk_mm\n"
+                "- **Annular plate**: od_mm, id2_mm (as id_mm), thk_mm\n"
+                "- **Rectangular plate**: length_mm, width_mm, thk_mm\n"
+                "- **Tube bundle**: tube_od_mm, tube_thk_mm, tube_length_mm, n_tubes\n"
+                "Leave unused columns blank. rate_per_kg overrides master rate."
+            )
+
+            uploaded = st.file_uploader("Choose CSV file", type=["csv"], key="parts_csv_upload")
+            if uploaded is not None:
+                import csv as _csv2
+                import io as _io2
+
+                # Map display names to internal fn keys
+                TYPE_MAP = {t.lower(): t for t in PART_TYPES}
+
+                try:
+                    text = uploaded.read().decode("utf-8-sig")
+                    reader = _csv2.DictReader(_io2.StringIO(text))
+                    rows = list(reader)
+
+                    def _f(row, col, default=0.0):
+                        v = row.get(col, "").strip()
+                        try: return float(v) if v else default
+                        except: return default
+
+                    errors = []
+                    imported = []
+                    for i, row in enumerate(rows, 1):
+                        raw_type = row.get("part_type", "").strip()
+                        # Match flexibly
+                        matched_type = None
+                        for k in PART_TYPES:
+                            if raw_type.lower() in k.lower() or k.lower() in raw_type.lower():
+                                matched_type = k
+                                break
+                        if not matched_type:
+                            errors.append(f"Row {i}: Unknown part_type '{raw_type}' — skipped")
+                            continue
+
+                        fn = PART_TYPES[matched_type]["fn"]
+                        material = row.get("material","SS316L").strip() or "SS316L"
+                        density = DENSITY.get(material, 8000)
+                        rate = _f(row, "rate_per_kg", 0.0)
+                        qty = max(1.0, _f(row, "qty", 1.0))
+                        name = row.get("part_name","").strip() or matched_type
+                        group = row.get("group","OTHER").strip() or "OTHER"
+
+                        # Build dims dict based on fn
+                        dims = {}
+                        if fn == "shell":
+                            dims = {"id_mm": _f(row,"id_mm"), "ht_mm": _f(row,"ht_mm"), "thk_mm": _f(row,"thk_mm")}
+                        elif fn == "dish":
+                            dims = {"shell_id_mm": _f(row,"shell_id_mm"), "thk_mm": _f(row,"dish_thk_mm") or _f(row,"thk_mm")}
+                        elif fn == "annular":
+                            dims = {"od_mm": _f(row,"od_mm"), "id_mm": _f(row,"id2_mm") or _f(row,"id_mm"), "thk_mm": _f(row,"thk_mm")}
+                        elif fn == "solid":
+                            dims = {"dia_mm": _f(row,"dia_mm"), "length_mm": _f(row,"length_mm")}
+                        elif fn == "flat":
+                            dims = {"w_mm": _f(row,"w_mm"), "h_mm": _f(row,"h_mm"), "thk_mm": _f(row,"thk_mm")}
+                        elif fn == "stiff":
+                            dims = {
+                                "shell_id_mm": _f(row,"shell_id_mm"),
+                                "shell_thk_mm": _f(row,"shell_thk_mm"),
+                                "shell_ht_mm": _f(row,"shell_ht_mm"),
+                                "pitch_mm": _f(row,"pitch_mm") or 300,
+                                "bar_w_mm": _f(row,"bar_w_mm"),
+                                "thk_mm": _f(row,"bar_thk_mm") or _f(row,"thk_mm"),
+                            }
+                        elif fn == "cone":
+                            dims = {"large_id_mm": _f(row,"large_id_mm"), "small_id_mm": _f(row,"small_id_mm"), "ht_mm": _f(row,"ht_mm"), "thk_mm": _f(row,"thk_mm")}
+                        elif fn == "rect":
+                            dims = {"length_mm": _f(row,"length_mm"), "width_mm": _f(row,"width_mm") or _f(row,"w_mm"), "thk_mm": _f(row,"thk_mm")}
+                        elif fn == "tube":
+                            dims = {"tube_od_mm": _f(row,"tube_od_mm"), "tube_thk_mm": _f(row,"tube_thk_mm"), "tube_length_mm": _f(row,"tube_length_mm"), "n_tubes": _f(row,"n_tubes")}
+
+                        wt, total_wt, used_qty = calc_weight(fn, dims, density, qty)
+                        amount = round(total_wt * rate, 2)
+
+                        imported.append(dict(
+                            name=name, part_type=matched_type, group=group,
+                            material=material, item_code="", dims=dims,
+                            qty=used_qty, net_wt_kg=wt, total_wt_kg=total_wt,
+                            rate=rate, amount=amount,
+                        ))
+
+                    if errors:
+                        for e in errors:
+                            st.warning(e)
+
+                    if imported:
+                        col_imp1, col_imp2, col_imp3 = st.columns(3)
+                        col_imp1.metric("Rows parsed", len(rows))
+                        col_imp2.metric("Parts imported", len(imported))
+                        col_imp3.metric("Total weight (kg)", f"{sum(p['total_wt_kg'] for p in imported):,.1f}")
+
+                        st.dataframe(
+                            pd.DataFrame([{
+                                "Name": p["name"],
+                                "Type": p["part_type"],
+                                "Group": p["group"],
+                                "Material": p["material"],
+                                "Qty": p["qty"],
+                                "Wt (kg)": round(p["total_wt_kg"],1),
+                                "Rate": p["rate"],
+                                "Amount (₹)": f"₹{p['amount']:,.0f}",
+                            } for p in imported]),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
+                        c_add, c_replace = st.columns(2)
+                        if c_add.button("➕ Add to existing parts", type="primary", use_container_width=True, key="csv_add"):
+                            st.session_state.est_parts.extend(imported)
+                            st.success(f"✅ Added {len(imported)} parts from CSV. Total: {len(st.session_state.est_parts)} parts.")
+                        if c_replace.button("🔄 Replace all parts with CSV", use_container_width=True, key="csv_replace"):
+                            st.session_state.est_parts = imported
+                            st.success(f"✅ Replaced with {len(imported)} parts from CSV.")
+                    else:
+                        st.error("No valid parts found in CSV. Check column names match the template.")
+
+                except Exception as ex:
+                    st.error(f"CSV parse error: {ex}")
+
+        st.divider()
         st.markdown("##### Add / Edit Fabricated Parts")
         st.caption("Select Part Type → only the required dimension inputs appear → click Add Part.")
 
