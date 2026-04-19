@@ -902,16 +902,16 @@ with TAB_NEW:
 
         if st.session_state.est_parts:
             df = pd.DataFrame([{
-                "Part": p["name"],
-                "Type": p["part_type"],
-                "Group": p["group"],
-                "Mat": p["material"],
-                "Qty": p["qty"],
-                "Wt/unit": f"{p['net_wt_kg']:.2f}",
-                "Total Wt (kg)": f"{p['total_wt_kg']:.2f}",
-                "Rate": p["rate"],
-                "Amount (₹)": f"₹{p['amount']:,.0f}",
-            } for p in st.session_state.est_parts])
+            "Part": p.get("name", ""),
+            "Type": p.get("part_type", p.get("item_code", "—")),
+            "Group": p.get("group", ""),
+            "Mat": p.get("material", ""),
+            "Qty": p.get("qty", 1),
+            "Wt/unit": f"{p.get('net_wt_kg', 0):.2f}",
+            "Total Wt (kg)": f"{p.get('total_wt_kg', 0):.2f}",
+            "Rate": p.get("rate", 0),
+            "Amount (₹)": f"₹{p.get('amount', 0):,.0f}",
+        } for p in st.session_state.est_parts])
             st.dataframe(df, use_container_width=True, hide_index=True)
             tot = sum(p["amount"] for p in st.session_state.est_parts)
             st.success(f"Total Plates & Parts: ₹{tot:,.0f}")
