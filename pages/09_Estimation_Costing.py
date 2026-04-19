@@ -473,7 +473,11 @@ for key, default in [
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
-
+    # Auto-restore in-progress estimation from session state
+    # (already works — est_hdr, est_parts etc. persist across page navigation)
+    # Add a "resume" feature via QTN lookup:
+    if "resume_qtn" not in st.session_state:
+        st.session_state["resume_qtn"] = ""
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -614,7 +618,21 @@ with TAB_LIST:
 with TAB_NEW:
     edit_id = st.session_state.est_edit_id
     st.subheader(f"✏️ Editing: {st.session_state.est_hdr.get('qtn_number','...')}" if edit_id else "➕ New Estimation")
-
+    # ── RESUME SAVED WORK ──────────────────────────────────────────────────
+    if not edit_id:
+        with st.container(border=True):
+            st.markdown("**📂 Resume a saved estimation**  _(loads all parts, pipes, OH from Supabase)_")
+            all_qtns = [e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
+            rc1, rc2 = st.columns([4, 1])
+            resume_sel = rc1.selectbox("Select QTN to resume", ["— start fresh —"] + all_qtns, key="resume_sel")
+            if rc2.button("📂 Load", use_container_width=True, type="primary"):
+                if resume_sel != "— start fresh —":
+                    all_e = load_all_estimations()
+                    match = next((e for e in all_e if e.get("qtn_number") == resume_sel), None)
+                    if match:
+                        _load_est_into_form(match)
+                        st.success(f"Loaded **{resume_sel}** — continue from where you left off.")
+                        st.rerun()
     rm_master   = load_rm_master()
     oh_master   = load_oh_master()
     clients     = load_clients_full()
@@ -752,20 +770,21 @@ with TAB_NEW:
             def_pt  = editing_part.get("part_type", pt_keys[0]) if editing_part else pt_keys[0]
             if def_pt not in pt_keys:
                 def_pt = pt_keys[0]
-            p_name  = rc1.text_input("Part Name", value=editing_part.get("name","") if editing_part else "", placeholder="e.g. Main Shell", key="pn")
-            p_type  = rc2.selectbox("Part Type", pt_keys, index=pt_keys.index(def_pt), key="pt")
+            ek = f"e{edit_pidx}_" if edit_pidx is not None else "new_"
+            p_name  = rc1.text_input("Part Name", value=editing_part.get("name","") if editing_part else "", placeholder="e.g. Main Shell", key=f"{ek}pn")
+            p_type  = rc2.selectbox("Part Type", pt_keys, index=pt_keys.index(def_pt), key=f"{ek}pt")
             p_group = rc3.selectbox("Group", all_groups,
                                     index=all_groups.index(editing_part.get("group","SHELL")) if editing_part and editing_part.get("group","SHELL") in all_groups else 0,
-                                    key="pg")
+                                    key=f"{ek}pg")
 
             rc4,rc5,rc6 = st.columns(3)
             mat_list  = list(DENSITY.keys())
             def_mat   = editing_part.get("material","SS316L") if editing_part else "SS316L"
-            p_material = rc4.selectbox("Material", mat_list, index=mat_list.index(def_mat) if def_mat in mat_list else 0, key="pm")
+            p_material = rc4.selectbox("Material", mat_list, index=mat_list.index(def_mat) if def_mat in mat_list else 0, key=f"{ek}pm")
             p_code     = rc5.selectbox("RM Code (for rate)", plate_rm or ["—"],
                                        index=plate_rm.index(editing_part.get("item_code","")) if editing_part and editing_part.get("item_code","") in plate_rm else 0,
-                                       key="pc")
-            p_rate_ov  = rc6.number_input("Rate Override ₹/kg  (0 = use master)", value=0.0, min_value=0.0, key="pr")
+                                       key=f"{ek}pc")
+            p_rate_ov  = rc6.number_input("Rate Override ₹/kg  (0 = use master)", value=0.0, min_value=0.0, key=f"{ek}pr")
 
             pt_info    = PART_TYPES[p_type]
             is_derived = pt_info.get("qty_derived", False)
@@ -773,14 +792,14 @@ with TAB_NEW:
                 st.info("Qty is auto-calculated from geometry (shell height ÷ pitch). No manual entry needed.")
                 p_qty = 1.0
             else:
-                p_qty = st.number_input("Qty", value=float(editing_part.get("qty",1)) if editing_part else 1.0, min_value=1.0, step=1.0, key="pq")
+                p_qty = st.number_input("Qty", value=float(editing_part.get("qty",1)) if editing_part else 1.0, min_value=1.0, step=1.0, key=f"{ek}pq")
 
             needed   = pt_info["fields"]
             dim_cols = st.columns(len(needed))
             dims     = {}
             for i,(field,label) in enumerate(needed):
                 def_val = float(editing_part.get("dims",{}).get(field,0.0)) if editing_part else 0.0
-                dims[field] = dim_cols[i].number_input(label, value=def_val, min_value=0.0, step=1.0, key=f"d_{p_type}_{field}")
+                dims[field] = dim_cols[i].number_input(label, value=def_val, min_value=0.0, step=1.0, key=f"{ek}d_{p_type}_{field}")
 
             btn_c1,btn_c2 = st.columns([3,1])
             add_btn    = btn_c1.button("➕ Add Part" if not editing_part else "✅ Update Part", type="primary", use_container_width=True)
