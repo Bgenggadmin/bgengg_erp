@@ -816,7 +816,7 @@ with TAB_NEW:
         st.caption("✅ Done here? Go to **2️⃣ Plates & Parts** tab.")
 
     # ── F2: PLATES & PARTS ─────────────────────────────────────────────────────
-    with f2:
+ 
         with f2:
         # ── RESUME / LOAD EXISTING QTN INTO PARTS ──────────────────────────
         if not st.session_state.est_parts and st.session_state.get("edit_part_idx") is None:
