@@ -817,39 +817,39 @@ with TAB_NEW:
 
     # ── F2: PLATES & PARTS ─────────────────────────────────────────────────────
  
-        with f2:
-        # ── RESUME / LOAD EXISTING QTN INTO PARTS ──────────────────────────
-        if not st.session_state.est_parts and st.session_state.get("edit_part_idx") is None:
-            with st.container(border=True):
-                st.markdown("**📂 No parts yet — resume a saved estimation or start fresh**")
-                all_qtns = [e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
-                rc1, rc2 = st.columns([4,1])
-                resume_sel = rc1.selectbox(
-                    "Select saved QTN to load all parts, pipes, flanges, BO, OH",
-                    ["— start fresh —"] + all_qtns,
-                    key="f2_resume_sel",
-                )
-                if rc2.button("📂 Load", use_container_width=True, type="primary", key="f2_resume_btn"):
-                    if resume_sel != "— start fresh —":
-                        match = next((e for e in load_all_estimations() if e.get("qtn_number") == resume_sel), None)
-                        if match:
-                            _load_est_into_form(match)
-                            st.success(f"✅ Loaded **{resume_sel}** — all parts, pipes, flanges, fabrication, BO and OH restored.")
-                            st.rerun()
-        elif st.session_state.est_parts:
-            # Show a compact "currently working on" banner with option to switch
-            with st.container(border=True):
-                bc1, bc2, bc3 = st.columns([4, 2, 1])
-                bc1.markdown(f"**Currently working on:** {st.session_state.est_hdr.get('qtn_number','New') or 'New Estimation'}  |  {len(st.session_state.est_parts)} parts  |  ₹{sum(p.get('amount',0) for p in st.session_state.est_parts):,.0f}")
-                all_qtns = [e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
-                switch_sel = bc2.selectbox("Switch to different QTN", ["— keep current —"] + all_qtns, key="f2_switch_sel", label_visibility="collapsed")
-                if bc3.button("🔄 Switch", use_container_width=True, key="f2_switch_btn"):
-                    if switch_sel != "— keep current —":
-                        match = next((e for e in load_all_estimations() if e.get("qtn_number") == switch_sel), None)
-                        if match:
-                            _load_est_into_form(match)
-                            st.success(f"✅ Switched to **{switch_sel}**")
-                            st.rerun()
+     with f2:
+     # ── RESUME / LOAD EXISTING QTN INTO PARTS ──────────────────────────
+    if not st.session_state.est_parts and st.session_state.get("edit_part_idx") is None:
+         with st.container(border=True):
+               st.markdown("**📂 No parts yet — resume a saved estimation or start fresh**")
+               all_qtns = [e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
+               rc1, rc2 = st.columns([4,1])
+            resume_sel = rc1.selectbox(
+                "Select saved QTN to load all parts, pipes, flanges, BO, OH",
+                  ["— start fresh —"] + all_qtns,
+                   key="f2_resume_sel",
+             )
+             if rc2.button("📂 Load", use_container_width=True, type="primary", key="f2_resume_btn"):
+                 if resume_sel != "— start fresh —":
+                     match = next((e for e in load_all_estimations() if e.get("qtn_number") == resume_sel), None)
+                    if match:
+                        _load_est_into_form(match)
+                        st.success(f"✅ Loaded **{resume_sel}** — all parts, pipes, flanges, fabrication, BO and OH restored.")
+                           st.rerun()
+      elif st.session_state.est_parts:
+          # Show a compact "currently working on" banner with option to switch
+          with st.container(border=True):
+               bc1, bc2, bc3 = st.columns([4, 2, 1])
+            bc1.markdown(f"**Currently working on:** {st.session_state.est_hdr.get('qtn_number','New') or 'New Estimation'}  |  {len(st.session_state.est_parts)} parts  |  ₹{sum(p.get('amount',0) for p in st.session_state.est_parts):,.0f}")
+               all_qtns = [e.get("qtn_number","") for e in load_all_estimations() if e.get("qtn_number")]
+            switch_sel = bc2.selectbox("Switch to different QTN", ["— keep current —"] + all_qtns, key="f2_switch_sel", label_visibility="collapsed")
+            if bc3.button("🔄 Switch", use_container_width=True, key="f2_switch_btn"):
+                if switch_sel != "— keep current —":
+                    match = next((e for e in load_all_estimations() if e.get("qtn_number") == switch_sel), None)
+                      if match:
+                          _load_est_into_form(match)
+                        st.success(f"✅ Switched to **{switch_sel}**")
+                        st.rerun()
         # ───────────────────────────────────────────────────────────────────
 
         st.markdown("##### Add / Edit Fabricated Parts")
