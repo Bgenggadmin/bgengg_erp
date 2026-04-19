@@ -1125,24 +1125,33 @@ with TAB_NEW:
             st.info(f"**{qtn_d}** — No parts yet. Load from Tab 1️⃣ or add below.")
 
 
-        # ── CSV UPLOAD / DOWNLOAD ──────────────────────────────────────────────
-        with st.expander("📥 Upload Parts from CSV  |  📤 Download Template", expanded=False):
-            st.markdown("**Download the template, fill it in Excel/Sheets, then upload back.**")
+        # ── ESTIMATION AUDIT ───────────────────────────────────────────────────────
+        with st.expander("🔍 Audit Estimation Sheet — Upload CSV to verify weights & amounts", expanded=False):
+            st.markdown("""
+**How to use:**
+1. Export your existing estimation sheet (Excel → Save As CSV)
+2. Make sure it has these columns (column names must match exactly):
+   `part_name, part_type, material, qty, rate_per_kg, claimed_wt_kg, claimed_amount`
+3. Optional dimension columns are used to recalculate weight using B&G formulas
+4. Upload below — the app shows where your sheet matches and where it differs
+""")
 
-            # ── Template download ────────────────────────────────────────────
-            template_rows = [
-                ["part_name","part_type","group","material","rate_per_kg",
+            # ── Audit template download ──────────────────────────────────────
+            import io as _io, csv as _csv
+            audit_template = [
+                ["part_name","part_type","group","material","qty","rate_per_kg",
+                 "claimed_wt_kg","claimed_amount",
                  "id_mm","ht_mm","thk_mm",
                  "shell_id_mm","dish_thk_mm",
-                 "od_mm","id2_mm",
                  "dia_mm","length_mm",
                  "w_mm","h_mm",
+                 "od_mm","id2_mm",
                  "shell_thk_mm","shell_ht_mm","pitch_mm","bar_w_mm","bar_thk_mm",
                  "large_id_mm","small_id_mm",
                  "width_mm",
-                 "tube_od_mm","tube_thk_mm","tube_length_mm","n_tubes",
-                 "qty"],
-                ["Main Shell","Cylindrical shell","SHELL","SS316L",480,
+                 "tube_od_mm","tube_thk_mm","tube_length_mm","n_tubes"],
+                ["Main Shell","Cylindrical shell","SHELL","SS316L",1,480,
+                 411.7,197616,
                  1300,1500,8,
                  "","",
                  "","",
@@ -1151,9 +1160,9 @@ with TAB_NEW:
                  "","","","","",
                  "","",
                  "",
-                 "","","","",
-                 1],
-                ["Dish Ends","Dish end (torispherical)","DISH_ENDS","SS316L",480,
+                 "","","",""],
+                ["Dish Ends","Dish end (torispherical)","DISH_ENDS","SS316L",2,480,
+                 362.5,174000,
                  "","","",
                  1300,10,
                  "","",
@@ -1162,198 +1171,247 @@ with TAB_NEW:
                  "","","","","",
                  "","",
                  "",
-                 "","","","",
-                 2],
-                ["Bottom Shaft","Solid round (shaft / bush)","AGITATOR","SS316L",480,
+                 "","","",""],
+                ["Bottom Shaft","Solid round (shaft / bush)","AGITATOR","SS316L",1,480,
+                 91.4,43872,
                  "","","",
-                 "","",
                  "","",
                  85,550,
                  "","",
+                 "","",
                  "","","","","",
                  "","",
                  "",
-                 "","","","",
-                 1],
-                ["Stiffeners","Stiffener rings (flat bar on shell OD)","STIFFNERS","SS304",350,
-                 "","","",
-                 "","",
-                 "","",
-                 "","",
-                 "","",
-                 8,1500,300,50,8,
-                 "","",
-                 "",
-                 "","","","",
-                 1],
-                ["Cone Reducer","Cone / reducer","OTHER","SS316L",480,
-                 "","","",
-                 "","",
-                 "","",
-                 "","",
-                 "","",
-                 "","","","","",
-                 1300,800,
-                 "",
-                 "","","","",
-                 1],
-                ["Base Plate","Flat rectangle (blade / pad / gusset)","FRAME","MS",85,
-                 "","","",
-                 "","",
-                 "","",
-                 "","",
-                 600,400,
-                 "","","","","",
-                 "","",
-                 "10",
-                 "","","","",
-                 4],
+                 "","","",""],
             ]
-            import io as _io
-            csv_buf = _io.StringIO()
-            import csv as _csv
-            writer = _csv.writer(csv_buf)
-            writer.writerows(template_rows)
+            buf = _io.StringIO()
+            _csv.writer(buf).writerows(audit_template)
             st.download_button(
-                "📤 Download CSV Template",
-                csv_buf.getvalue().encode(),
-                file_name="bgeng_parts_template.csv",
+                "📥 Download Audit Template CSV",
+                buf.getvalue().encode(),
+                file_name="bgeng_audit_template.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
 
             st.markdown("---")
-            st.markdown("**Upload filled CSV:**")
-            st.caption(
-                "Columns used per part type:\n"
-                "- **Cylindrical shell**: id_mm, ht_mm, thk_mm\n"
-                "- **Dish end**: shell_id_mm, dish_thk_mm (mapped to thk_mm)\n"
-                "- **Solid round**: dia_mm, length_mm\n"
-                "- **Flat rectangle**: w_mm, h_mm, thk_mm (or width_mm for rect plate)\n"
-                "- **Stiffener rings**: shell_id_mm, shell_thk_mm, shell_ht_mm, pitch_mm, bar_w_mm, bar_thk_mm\n"
-                "- **Cone / reducer**: large_id_mm, small_id_mm, ht_mm, thk_mm\n"
-                "- **Annular plate**: od_mm, id2_mm (as id_mm), thk_mm\n"
-                "- **Rectangular plate**: length_mm, width_mm, thk_mm\n"
-                "- **Tube bundle**: tube_od_mm, tube_thk_mm, tube_length_mm, n_tubes\n"
-                "Leave unused columns blank. rate_per_kg overrides master rate."
+
+            audit_file = st.file_uploader(
+                "Upload your estimation sheet as CSV",
+                type=["csv"],
+                key="audit_csv_upload",
             )
 
-            uploaded = st.file_uploader("Choose CSV file", type=["csv"], key="parts_csv_upload")
-            if uploaded is not None:
-                import csv as _csv2
-                import io as _io2
+            if audit_file is not None:
+                import io as _io2, csv as _csv2
 
-                # Map display names to internal fn keys
-                TYPE_MAP = {t.lower(): t for t in PART_TYPES}
+                TOLERANCE_PCT = 3.0  # within 3% is considered OK
+
+                def _fv(row, col, default=0.0):
+                    v = str(row.get(col, "")).strip()
+                    try: return float(v) if v else default
+                    except: return default
 
                 try:
-                    text = uploaded.read().decode("utf-8-sig")
+                    text = audit_file.read().decode("utf-8-sig")
                     reader = _csv2.DictReader(_io2.StringIO(text))
                     rows = list(reader)
 
-                    def _f(row, col, default=0.0):
-                        v = row.get(col, "").strip()
-                        try: return float(v) if v else default
-                        except: return default
+                    audit_results = []
+                    total_claimed_wt  = 0.0
+                    total_calc_wt     = 0.0
+                    total_claimed_amt = 0.0
+                    total_calc_amt    = 0.0
 
-                    errors = []
-                    imported = []
                     for i, row in enumerate(rows, 1):
-                        raw_type = row.get("part_type", "").strip()
-                        # Match flexibly
+                        raw_type = str(row.get("part_type","")).strip()
                         matched_type = None
                         for k in PART_TYPES:
-                            if raw_type.lower() in k.lower() or k.lower() in raw_type.lower():
+                            if raw_type.lower() in k.lower() or k.lower().startswith(raw_type.lower()[:8]):
                                 matched_type = k
                                 break
-                        if not matched_type:
-                            errors.append(f"Row {i}: Unknown part_type '{raw_type}' — skipped")
-                            continue
 
-                        fn = PART_TYPES[matched_type]["fn"]
-                        material = row.get("material","SS316L").strip() or "SS316L"
-                        density = DENSITY.get(material, 8000)
-                        rate = _f(row, "rate_per_kg", 0.0)
-                        qty = max(1.0, _f(row, "qty", 1.0))
-                        name = row.get("part_name","").strip() or matched_type
-                        group = row.get("group","OTHER").strip() or "OTHER"
+                        part_name      = str(row.get("part_name","")).strip() or f"Row {i}"
+                        material       = str(row.get("material","SS316L")).strip() or "SS316L"
+                        qty            = max(1.0, _fv(row, "qty", 1.0))
+                        rate           = _fv(row, "rate_per_kg", 0.0)
+                        claimed_wt     = _fv(row, "claimed_wt_kg", 0.0)
+                        claimed_amt    = _fv(row, "claimed_amount", 0.0)
 
-                        # Build dims dict based on fn
-                        dims = {}
-                        if fn == "shell":
-                            dims = {"id_mm": _f(row,"id_mm"), "ht_mm": _f(row,"ht_mm"), "thk_mm": _f(row,"thk_mm")}
-                        elif fn == "dish":
-                            dims = {"shell_id_mm": _f(row,"shell_id_mm"), "thk_mm": _f(row,"dish_thk_mm") or _f(row,"thk_mm")}
-                        elif fn == "annular":
-                            dims = {"od_mm": _f(row,"od_mm"), "id_mm": _f(row,"id2_mm") or _f(row,"id_mm"), "thk_mm": _f(row,"thk_mm")}
-                        elif fn == "solid":
-                            dims = {"dia_mm": _f(row,"dia_mm"), "length_mm": _f(row,"length_mm")}
-                        elif fn == "flat":
-                            dims = {"w_mm": _f(row,"w_mm"), "h_mm": _f(row,"h_mm"), "thk_mm": _f(row,"thk_mm")}
-                        elif fn == "stiff":
-                            dims = {
-                                "shell_id_mm": _f(row,"shell_id_mm"),
-                                "shell_thk_mm": _f(row,"shell_thk_mm"),
-                                "shell_ht_mm": _f(row,"shell_ht_mm"),
-                                "pitch_mm": _f(row,"pitch_mm") or 300,
-                                "bar_w_mm": _f(row,"bar_w_mm"),
-                                "thk_mm": _f(row,"bar_thk_mm") or _f(row,"thk_mm"),
-                            }
-                        elif fn == "cone":
-                            dims = {"large_id_mm": _f(row,"large_id_mm"), "small_id_mm": _f(row,"small_id_mm"), "ht_mm": _f(row,"ht_mm"), "thk_mm": _f(row,"thk_mm")}
-                        elif fn == "rect":
-                            dims = {"length_mm": _f(row,"length_mm"), "width_mm": _f(row,"width_mm") or _f(row,"w_mm"), "thk_mm": _f(row,"thk_mm")}
-                        elif fn == "tube":
-                            dims = {"tube_od_mm": _f(row,"tube_od_mm"), "tube_thk_mm": _f(row,"tube_thk_mm"), "tube_length_mm": _f(row,"tube_length_mm"), "n_tubes": _f(row,"n_tubes")}
+                        calc_wt   = 0.0
+                        calc_amt  = 0.0
+                        wt_status = "⚠️ No dims"
+                        amt_status= "⚠️ No dims"
+                        fn        = None
+                        dims      = {}
 
-                        wt, total_wt, used_qty = calc_weight(fn, dims, density, qty)
-                        amount = round(total_wt * rate, 2)
+                        if matched_type:
+                            fn = PART_TYPES[matched_type]["fn"]
+                            density = DENSITY.get(material, 8000)
 
-                        imported.append(dict(
-                            name=name, part_type=matched_type, group=group,
-                            material=material, item_code="", dims=dims,
-                            qty=used_qty, net_wt_kg=wt, total_wt_kg=total_wt,
-                            rate=rate, amount=amount,
-                        ))
+                            if fn == "shell":
+                                dims = {"id_mm":_fv(row,"id_mm"),"ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
+                            elif fn == "dish":
+                                dims = {"shell_id_mm":_fv(row,"shell_id_mm"),"thk_mm":_fv(row,"dish_thk_mm") or _fv(row,"thk_mm")}
+                            elif fn == "annular":
+                                dims = {"od_mm":_fv(row,"od_mm"),"id_mm":_fv(row,"id2_mm") or _fv(row,"id_mm"),"thk_mm":_fv(row,"thk_mm")}
+                            elif fn == "solid":
+                                dims = {"dia_mm":_fv(row,"dia_mm"),"length_mm":_fv(row,"length_mm")}
+                            elif fn == "flat":
+                                dims = {"w_mm":_fv(row,"w_mm"),"h_mm":_fv(row,"h_mm"),"thk_mm":_fv(row,"thk_mm")}
+                            elif fn == "stiff":
+                                dims = {"shell_id_mm":_fv(row,"shell_id_mm"),"shell_thk_mm":_fv(row,"shell_thk_mm"),
+                                        "shell_ht_mm":_fv(row,"shell_ht_mm"),"pitch_mm":_fv(row,"pitch_mm") or 300,
+                                        "bar_w_mm":_fv(row,"bar_w_mm"),"thk_mm":_fv(row,"bar_thk_mm") or _fv(row,"thk_mm")}
+                            elif fn == "cone":
+                                dims = {"large_id_mm":_fv(row,"large_id_mm"),"small_id_mm":_fv(row,"small_id_mm"),
+                                        "ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
+                            elif fn == "rect":
+                                dims = {"length_mm":_fv(row,"length_mm"),"width_mm":_fv(row,"width_mm") or _fv(row,"w_mm"),"thk_mm":_fv(row,"thk_mm")}
+                            elif fn == "tube":
+                                dims = {"tube_od_mm":_fv(row,"tube_od_mm"),"tube_thk_mm":_fv(row,"tube_thk_mm"),
+                                        "tube_length_mm":_fv(row,"tube_length_mm"),"n_tubes":_fv(row,"n_tubes")}
 
-                    if errors:
-                        for e in errors:
-                            st.warning(e)
+                            has_dims = any(v > 0 for v in dims.values())
+                            if has_dims:
+                                net_wt, calc_wt, used_qty = calc_weight(fn, dims, density, qty)
+                                calc_amt = round(calc_wt * rate, 2)
 
-                    if imported:
-                        col_imp1, col_imp2, col_imp3 = st.columns(3)
-                        col_imp1.metric("Rows parsed", len(rows))
-                        col_imp2.metric("Parts imported", len(imported))
-                        col_imp3.metric("Total weight (kg)", f"{sum(p['total_wt_kg'] for p in imported):,.1f}")
+                                # Weight check
+                                if claimed_wt > 0:
+                                    wt_diff_pct = abs(calc_wt - claimed_wt) / claimed_wt * 100
+                                    if wt_diff_pct <= TOLERANCE_PCT:
+                                        wt_status = f"✅ OK ({wt_diff_pct:.1f}%)"
+                                    elif wt_diff_pct <= 10:
+                                        wt_status = f"🟡 {wt_diff_pct:.1f}% off"
+                                    else:
+                                        wt_status = f"🔴 {wt_diff_pct:.1f}% off"
+                                else:
+                                    wt_status = "— no claim"
 
-                        st.dataframe(
-                            pd.DataFrame([{
-                                "Name": p["name"],
-                                "Type": p["part_type"],
-                                "Group": p["group"],
-                                "Material": p["material"],
-                                "Qty": p["qty"],
-                                "Wt (kg)": round(p["total_wt_kg"],1),
-                                "Rate": p["rate"],
-                                "Amount (₹)": f"₹{p['amount']:,.0f}",
-                            } for p in imported]),
-                            use_container_width=True,
-                            hide_index=True,
-                        )
+                                # Amount check
+                                if claimed_amt > 0 and rate > 0:
+                                    amt_diff_pct = abs(calc_amt - claimed_amt) / claimed_amt * 100
+                                    if amt_diff_pct <= TOLERANCE_PCT:
+                                        amt_status = f"✅ OK ({amt_diff_pct:.1f}%)"
+                                    elif amt_diff_pct <= 10:
+                                        amt_status = f"🟡 {amt_diff_pct:.1f}% off"
+                                    else:
+                                        amt_status = f"🔴 {amt_diff_pct:.1f}% off"
+                                else:
+                                    amt_status = "— no rate/claim"
+                        else:
+                            wt_status = f"⚠️ Unknown type: {raw_type}"
+                            amt_status = "—"
 
-                        c_add, c_replace = st.columns(2)
-                        if c_add.button("➕ Add to existing parts", type="primary", use_container_width=True, key="csv_add"):
-                            st.session_state.est_parts.extend(imported)
-                            st.success(f"✅ Added {len(imported)} parts from CSV. Total: {len(st.session_state.est_parts)} parts.")
-                        if c_replace.button("🔄 Replace all parts with CSV", use_container_width=True, key="csv_replace"):
-                            st.session_state.est_parts = imported
-                            st.success(f"✅ Replaced with {len(imported)} parts from CSV.")
+                        total_claimed_wt  += claimed_wt
+                        total_calc_wt     += calc_wt
+                        total_claimed_amt += claimed_amt
+                        total_calc_amt    += calc_amt
+
+                        audit_results.append({
+                            "Part":           part_name,
+                            "Type":           matched_type or raw_type,
+                            "Mat":            material,
+                            "Qty":            qty,
+                            "Rate":           rate,
+                            "Claimed Wt (kg)":round(claimed_wt,2),
+                            "Calc Wt (kg)":   round(calc_wt,2),
+                            "Wt Check":       wt_status,
+                            "Claimed ₹":      f"₹{claimed_amt:,.0f}",
+                            "Calc ₹":         f"₹{calc_amt:,.0f}",
+                            "Amt Check":      amt_status,
+                        })
+
+                    # ── Summary metrics ──────────────────────────────────────
+                    st.markdown("#### Audit Summary")
+                    am1,am2,am3,am4,am5,am6 = st.columns(6)
+                    am1.metric("Rows audited", len(audit_results))
+
+                    wt_var = total_calc_wt - total_claimed_wt
+                    amt_var = total_calc_amt - total_claimed_amt
+                    am2.metric("Claimed total wt",  f"{total_claimed_wt:,.1f} kg")
+                    am3.metric("Calc total wt",     f"{total_calc_wt:,.1f} kg",
+                               delta=f"{wt_var:+.1f} kg",
+                               delta_color="inverse" if abs(wt_var)>total_claimed_wt*0.05 else "off")
+                    am4.metric("Claimed total ₹",   f"₹{total_claimed_amt:,.0f}")
+                    am5.metric("Calc total ₹",      f"₹{total_calc_amt:,.0f}",
+                               delta=f"₹{amt_var:+,.0f}",
+                               delta_color="inverse" if abs(amt_var)>total_claimed_amt*0.05 else "off")
+
+                    n_red    = sum(1 for r in audit_results if "🔴" in r["Wt Check"] or "🔴" in r["Amt Check"])
+                    n_yellow = sum(1 for r in audit_results if "🟡" in r["Wt Check"] or "🟡" in r["Amt Check"])
+                    n_ok     = sum(1 for r in audit_results if "✅" in r["Wt Check"] and "✅" in r["Amt Check"])
+                    am6.metric("Issues found", f"🔴 {n_red}  🟡 {n_yellow}  ✅ {n_ok}")
+
+                    if n_red > 0:
+                        st.error(f"❌ {n_red} part(s) have errors >10% — review highlighted rows below.")
+                    elif n_yellow > 0:
+                        st.warning(f"⚠️ {n_yellow} part(s) differ 3–10% from formula — acceptable but worth checking.")
                     else:
-                        st.error("No valid parts found in CSV. Check column names match the template.")
+                        st.success("✅ All parts within tolerance. Estimation sheet looks correct.")
+
+                    # ── Detail table ─────────────────────────────────────────
+                    st.markdown("#### Part-by-Part Audit")
+                    df_audit = pd.DataFrame(audit_results)
+                    st.dataframe(df_audit, use_container_width=True, hide_index=True)
+
+                    # ── Export audit report ──────────────────────────────────
+                    csv_out = _io2.StringIO()
+                    df_audit.to_csv(csv_out, index=False)
+                    st.download_button(
+                        "📤 Download Audit Report CSV",
+                        csv_out.getvalue().encode(),
+                        file_name=f"bgeng_audit_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+
+                    # ── Import audited parts ─────────────────────────────────
+                    st.markdown("---")
+                    st.markdown("**Import audited parts into current estimation?**")
+                    imp1, imp2 = st.columns(2)
+                    # Rebuild importable parts from audit rows
+                    importable = []
+                    for i2, row in enumerate(rows):
+                        raw_type = str(row.get("part_type","")).strip()
+                        matched_type = None
+                        for k in PART_TYPES:
+                            if raw_type.lower() in k.lower() or k.lower().startswith(raw_type.lower()[:8]):
+                                matched_type = k; break
+                        if not matched_type: continue
+                        fn2 = PART_TYPES[matched_type]["fn"]
+                        material2 = str(row.get("material","SS316L")).strip() or "SS316L"
+                        density2  = DENSITY.get(material2,8000)
+                        qty2      = max(1.0,_fv(row,"qty",1.0))
+                        rate2     = _fv(row,"rate_per_kg",0.0)
+                        dims2 = {}
+                        if fn2=="shell": dims2={"id_mm":_fv(row,"id_mm"),"ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
+                        elif fn2=="dish": dims2={"shell_id_mm":_fv(row,"shell_id_mm"),"thk_mm":_fv(row,"dish_thk_mm") or _fv(row,"thk_mm")}
+                        elif fn2=="solid": dims2={"dia_mm":_fv(row,"dia_mm"),"length_mm":_fv(row,"length_mm")}
+                        elif fn2=="flat": dims2={"w_mm":_fv(row,"w_mm"),"h_mm":_fv(row,"h_mm"),"thk_mm":_fv(row,"thk_mm")}
+                        elif fn2=="stiff": dims2={"shell_id_mm":_fv(row,"shell_id_mm"),"shell_thk_mm":_fv(row,"shell_thk_mm"),"shell_ht_mm":_fv(row,"shell_ht_mm"),"pitch_mm":_fv(row,"pitch_mm") or 300,"bar_w_mm":_fv(row,"bar_w_mm"),"thk_mm":_fv(row,"bar_thk_mm") or _fv(row,"thk_mm")}
+                        elif fn2=="cone": dims2={"large_id_mm":_fv(row,"large_id_mm"),"small_id_mm":_fv(row,"small_id_mm"),"ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
+                        elif fn2=="rect": dims2={"length_mm":_fv(row,"length_mm"),"width_mm":_fv(row,"width_mm") or _fv(row,"w_mm"),"thk_mm":_fv(row,"thk_mm")}
+                        elif fn2=="tube": dims2={"tube_od_mm":_fv(row,"tube_od_mm"),"tube_thk_mm":_fv(row,"tube_thk_mm"),"tube_length_mm":_fv(row,"tube_length_mm"),"n_tubes":_fv(row,"n_tubes")}
+                        elif fn2=="annular": dims2={"od_mm":_fv(row,"od_mm"),"id_mm":_fv(row,"id2_mm") or _fv(row,"id_mm"),"thk_mm":_fv(row,"thk_mm")}
+                        nwt,twt,uqty = calc_weight(fn2,dims2,density2,qty2)
+                        importable.append(dict(name=str(row.get("part_name","")).strip() or matched_type,
+                            part_type=matched_type,group=str(row.get("group","OTHER")).strip() or "OTHER",
+                            material=material2,item_code="",dims=dims2,qty=uqty,
+                            net_wt_kg=nwt,total_wt_kg=twt,rate=rate2,amount=round(twt*rate2,2)))
+                    if importable:
+                        if imp1.button("➕ Add audited parts to estimation", type="primary", use_container_width=True, key="audit_add"):
+                            st.session_state.est_parts.extend(importable)
+                            st.success(f"✅ Added {len(importable)} parts from audit sheet.")
+                        if imp2.button("🔄 Replace all parts with audited", use_container_width=True, key="audit_replace"):
+                            st.session_state.est_parts = importable
+                            st.success(f"✅ Replaced with {len(importable)} audited parts.")
 
                 except Exception as ex:
-                    st.error(f"CSV parse error: {ex}")
+                    st.error(f"CSV parse error: {ex}. Check column names match the template.")
 
+        st.divider()
         st.divider()
         st.markdown("##### Add / Edit Fabricated Parts")
         st.caption("Select Part Type → only the required dimension inputs appear → click Add Part.")
@@ -1662,19 +1720,15 @@ with TAB_NEW:
         lo, hi  = eq_info.get("margin_hint", (10, 18))
         st.info(f"Suggested margin for **{h['equipment_type']}**: {lo}–{hi}%  |  Labour: **{eq_info.get('labour_norm', 'Medium')}**")
 
-        # QTN confirm on this tab too
-        with st.container(border=True):
-            st.markdown("**Confirm offer details**")
-            qc1, qc2, qc3 = st.columns(3)
-            h["qtn_number"] = qc1.text_input("Quotation Number *", value=h.get("qtn_number", ""), placeholder="e.g. B&G/MAITHRI/2026/2922", key="f6_qtn")
-            h["revision"]   = qc2.selectbox("Revision", ["R0", "R1", "R2", "R3", "R4", "R5"],
-                                              index=["R0", "R1", "R2", "R3", "R4", "R5"].index(h.get("revision", "R0")), key="f6_rev")
-            h["status"]     = qc3.selectbox("Status", ["Draft", "Issued", "Won", "Lost", "On Hold"],
-                                              index=["Draft", "Issued", "Won", "Lost", "On Hold"].index(h.get("status", "Draft")), key="f6_status")
-            if h["qtn_number"]:
-                st.success(f"✅ Ready to save: **{h['qtn_number']}** {h['revision']} — {h.get('customer_name', 'no customer')}")
-            else:
-                st.warning("⚠️ Enter Quotation Number above before saving.")
+        # Current estimation info bar — read only, set in Tab 1
+        qtn_now = h.get("qtn_number","") or ""
+        cust_now = h.get("customer_name","") or "no customer"
+        rev_now  = h.get("revision","R0")
+        stat_now = h.get("status","Draft")
+        if qtn_now:
+            st.success(f"💾 **{qtn_now}** {rev_now} — {cust_now}  |  Status: {stat_now}  |  {len(st.session_state.est_parts)} parts  |  {len(st.session_state.est_fab)} fab lines")
+        else:
+            st.warning("⚠️ No Quotation Number set — go to Tab 1️⃣ Header and enter a QTN number before saving.")
 
         s1, s2, s3, s4, s5, s6 = st.columns(6)
         h["profit_margin_pct"] = s1.number_input("Profit %",      value=float(h["profit_margin_pct"]), min_value=0.0, max_value=60.0, step=0.5)
