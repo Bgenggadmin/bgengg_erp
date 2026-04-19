@@ -878,8 +878,7 @@ with TAB_NEW:
             p_material = c1.selectbox("Material", list(DENSITY.keys()))
             p_code     = c2.selectbox("RM Code (for rate)", plate_rm or ["—"])
             p_rate_ov  = c3.number_input("Rate Override ₹/kg (0=master)", value=0.0, min_value=0.0)
-            p_qty      = st.number_input("Qty", value=1.0, min_value=0.0)
-
+            p_qty = st.number_input("Qty", value=1.0, min_value=1.0, step=1.0)
             needed = PART_TYPES[p_type]["fields"]
             cols = st.columns(len(needed))
             dims = {}
