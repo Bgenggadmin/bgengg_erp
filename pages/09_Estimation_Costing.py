@@ -696,6 +696,425 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ESTIMATION FACT SHEET — XLSX
+# Internal engineer document. Shows dimensions, formulas used, weights, rates.
+# Used to cross-check against Excel estimation sheet.
+# ─────────────────────────────────────────────────────────────────────────────
+def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
+                              bo_items, oh_items, fab_rates, totals):
+    import openpyxl
+    from openpyxl.styles import (Font, PatternFill, Alignment, Border, Side,
+                                  numbers as xl_numbers)
+    from openpyxl.utils import get_column_letter
+    import io as _io
+
+    wb = openpyxl.Workbook()
+
+    # ── Styles ────────────────────────────────────────────────────────────────
+    DARK_BLUE  = "1B3A6B"
+    MID_BLUE   = "2E75B6"
+    LIGHT_BLUE = "D6E4F7"
+    ALT_ROW    = "EFF5FB"
+    GREEN_BG   = "E2EFDA"
+    AMBER_BG   = "FFF2CC"
+    RED_BG     = "FFE0E0"
+    WHITE      = "FFFFFF"
+
+    def hdr_style(cell, bg=DARK_BLUE, fg="FFFFFF", sz=10, bold=True):
+        cell.font      = Font(name="Arial", bold=bold, size=sz, color=fg)
+        cell.fill      = PatternFill("solid", fgColor=bg)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"),  bottom=Side(style="thin"),
+        )
+
+    def data_style(cell, bg=WHITE, bold=False, align="left", sz=9, color="000000"):
+        cell.font      = Font(name="Arial", size=sz, bold=bold, color=color)
+        cell.fill      = PatternFill("solid", fgColor=bg)
+        cell.alignment = Alignment(horizontal=align, vertical="center")
+        cell.border    = Border(
+            left=Side(style="hair"), right=Side(style="hair"),
+            top=Side(style="hair"),  bottom=Side(style="hair"),
+        )
+
+    def section_title(ws, row, text, ncols=10):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=ncols)
+        c = ws.cell(row=row, column=1, value=text)
+        hdr_style(c, bg=MID_BLUE, sz=11)
+        ws.row_dimensions[row].height = 20
+
+    def kv_row(ws, row, label, value, bg=WHITE):
+        lc = ws.cell(row=row, column=1, value=label)
+        vc = ws.cell(row=row, column=2, value=value)
+        data_style(lc, bg=LIGHT_BLUE, bold=True)
+        data_style(vc, bg=bg)
+        ws.row_dimensions[row].height = 15
+
+    fmt_inr = '#,##0.00'
+    fmt_kg  = '#,##0.000'
+    fmt_pct = '0.00%'
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 1 — COVER / SUMMARY
+    # ══════════════════════════════════════════════════════════════════════════
+    ws1 = wb.active; ws1.title = "Summary"
+    ws1.column_dimensions["A"].width = 30
+    ws1.column_dimensions["B"].width = 40
+
+    r = 1
+    ws1.merge_cells(start_row=r, start_column=1, end_row=r, end_column=8)
+    c = ws1.cell(row=r, column=1, value="B&G ENGINEERING INDUSTRIES — ESTIMATION FACT SHEET")
+    hdr_style(c, sz=14); ws1.row_dimensions[r].height = 28; r += 1
+
+    ws1.merge_cells(start_row=r, start_column=1, end_row=r, end_column=8)
+    c = ws1.cell(row=r, column=1, value="INTERNAL DOCUMENT — NOT FOR CUSTOMER DISTRIBUTION")
+    hdr_style(c, bg=RED_BG, fg="CC0000", sz=9, bold=True); r += 2
+
+    section_title(ws1, r, "OFFER DETAILS", 8); r += 1
+    for label, value in [
+        ("Quotation Number",  est.get("qtn_number","")),
+        ("Revision",          est.get("revision","R0")),
+        ("Date",              date.today().strftime("%d-%b-%Y")),
+        ("Customer",          est.get("customer_name","")),
+        ("Equipment Type",    est.get("equipment_type","")),
+        ("Description",       est.get("equipment_desc","")),
+        ("Tag Number",        est.get("tag_number","")),
+        ("Status",            est.get("status","Draft")),
+        ("Prepared By",       est.get("prepared_by","")),
+        ("Checked By",        est.get("checked_by","")),
+    ]:
+        kv_row(ws1, r, label, value); r += 1
+
+    r += 1
+    section_title(ws1, r, "EQUIPMENT PARAMETERS", 8); r += 1
+    for label, value in [
+        ("Shell ID (mm)",        est.get("shell_dia_mm","")),
+        ("Shell Height (mm)",    est.get("shell_ht_mm","")),
+        ("Shell Thickness (mm)", est.get("shell_thk_mm","")),
+        ("Dish Thickness (mm)",  est.get("dish_thk_mm","")),
+        ("Capacity (Ltrs)",      est.get("capacity_ltrs","")),
+        ("MOC — Shell",          est.get("moc_shell","SS316L")),
+        ("MOC — Jacket",         est.get("moc_jacket","SS304")),
+        ("Jacket Type",          est.get("jacket_type","")),
+        ("Agitator Type",        est.get("agitator_type","")),
+        ("Design Code",          est.get("design_code","ASME Sec VIII Div 1")),
+        ("Design Pressure",      est.get("design_pressure","")),
+        ("Design Temperature",   est.get("design_temp","")),
+    ]:
+        kv_row(ws1, r, label, value); r += 1
+
+    r += 1
+    section_title(ws1, r, "COST SUMMARY", 8); r += 1
+    summary_rows = [
+        ("Plates & Parts (RM)",            totals["tot_plates"],   WHITE),
+        ("Pipes (RM)",                      totals["tot_pipes"],    WHITE),
+        ("Flanges (RM)",                    totals["tot_flanges"],  WHITE),
+        ("▶ Total Raw Material",            totals["tot_rm"],       LIGHT_BLUE),
+        ("Fabrication Services",            totals["tot_fab"],      WHITE),
+        ("Bought-Out Items",                totals["tot_bo"],       WHITE),
+        ("Additional Overheads",            totals["tot_oh"],       WHITE),
+        ("Engineering & ASME Design",       totals["engg_design"],  WHITE),
+        ("▶ Total Manufacturing Cost",      totals["tot_mfg"],      LIGHT_BLUE),
+        ("Contingency",                     totals["cont_amt"],     WHITE),
+        ("Profit / Margin",                 totals["profit_amt"],   WHITE),
+        ("Packing",                         totals["packing"],      WHITE),
+        ("Freight",                         totals["freight"],      WHITE),
+        ("▶ Ex-Works Price",               totals["ex_works"],     GREEN_BG),
+        ("GST",                             totals["gst_amt"],      WHITE),
+        ("▶ FOR Price",                    totals["for_price"],    GREEN_BG),
+    ]
+    for label, value, bg in summary_rows:
+        lc = ws1.cell(row=r, column=1, value=label)
+        vc = ws1.cell(row=r, column=2, value=value)
+        bold = "▶" in label
+        data_style(lc, bg=LIGHT_BLUE if bold else WHITE, bold=bold)
+        data_style(vc, bg=bg, bold=bold, align="right")
+        vc.number_format = fmt_inr; r += 1
+
+    r += 1
+    section_title(ws1, r, "MARGIN ANALYSIS", 8); r += 1
+    safe = totals["ex_works"] if totals["ex_works"] else 1
+    for label, val in [
+        ("RM %",      totals["tot_rm"]/safe*100),
+        ("Fab Svc %", totals["tot_fab"]/safe*100),
+        ("OH %",      totals["tot_oh"]/safe*100),
+        ("Profit %",  totals["profit_amt"]/safe*100),
+    ]:
+        lc = ws1.cell(row=r, column=1, value=label)
+        vc = ws1.cell(row=r, column=2, value=round(val,2))
+        data_style(lc, bg=LIGHT_BLUE, bold=True)
+        data_style(vc, bg=AMBER_BG if (val<8 or val>60) else WHITE, align="right")
+        vc.number_format = "0.00"; r += 1
+        vc.value = str(round(val,2)) + "%"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 2 — PLATES & PARTS with FORMULAS
+    # ══════════════════════════════════════════════════════════════════════════
+    ws2 = wb.create_sheet("Plates & Parts")
+    headers = [
+        "Part Name","Group","Part Type","Material","Density\n(kg/m³)",
+        "Formula Used","Key Dimensions","Qty","Net Wt/Unit\n(kg)",
+        "Total Wt\n(kg)","Rate\n(₹/kg)","Amount\n(₹)","Scrap %"
+    ]
+    col_widths = [20,14,22,10,10,38,36,6,12,12,10,14,8]
+    for i,(h_txt,w) in enumerate(zip(headers,col_widths),1):
+        c = ws2.cell(row=1, column=i, value=h_txt)
+        hdr_style(c, sz=9)
+        ws2.column_dimensions[get_column_letter(i)].width = w
+    ws2.row_dimensions[1].height = 32
+
+    # Formula descriptions per part type
+    FORMULA_DESC = {
+        "shell":   "π × ID × Ht × Thk × ρ × (1+scrap)",
+        "dish":    "1.09 × π × (ID×1.167/2)² × Thk × ρ × (1+scrap)",
+        "annular": "(π/4) × (OD²−ID²) × Thk × ρ × (1+scrap)",
+        "solid":   "(π/4) × D² × L × ρ × (1+scrap)",
+        "flat":    "W × H × Thk × ρ × (1+scrap)",
+        "stiff":   "π × (ID+2×ShThk) × BarW × BarThk × ρ × (1+scrap) × (ShHt/Pitch)",
+        "cone":    "π × (R1+R2) × slant × Thk × ρ × (1+scrap)",
+        "rect":    "L × W × Thk × ρ × (1+scrap)",
+        "tube":    "π × (OD−Thk) × Thk × TubeL × ρ × N × (1+scrap)",
+    }
+    SCRAP_PCT = {
+        "shell":"5%","dish":"15%","annular":"5%","solid":"15%",
+        "flat":"5%","stiff":"5%","cone":"5%","rect":"5%","tube":"5%",
+    }
+
+    def dims_str(fn, dims):
+        d = dims or {}
+        if fn=="shell":  return f"ID={d.get('id_mm','')} Ht={d.get('ht_mm','')} Thk={d.get('thk_mm','')} mm"
+        if fn=="dish":   return f"ShID={d.get('shell_id_mm','')} Thk={d.get('thk_mm','')} mm"
+        if fn=="annular":return f"OD={d.get('od_mm','')} ID={d.get('id_mm','')} Thk={d.get('thk_mm','')} mm"
+        if fn=="solid":  return f"D={d.get('dia_mm','')} L={d.get('length_mm','')} mm"
+        if fn=="flat":   return f"W={d.get('w_mm','')} H={d.get('h_mm','')} Thk={d.get('thk_mm','')} mm"
+        if fn=="stiff":  return (f"ShID={d.get('shell_id_mm','')} ShThk={d.get('shell_thk_mm','')} "
+                                  f"ShHt={d.get('shell_ht_mm','')} Pitch={d.get('pitch_mm','')} "
+                                  f"BarW={d.get('bar_w_mm','')} BarThk={d.get('thk_mm','')} mm")
+        if fn=="cone":   return f"LgID={d.get('large_id_mm','')} SmID={d.get('small_id_mm','')} Ht={d.get('ht_mm','')} Thk={d.get('thk_mm','')} mm"
+        if fn=="rect":   return f"L={d.get('length_mm','')} W={d.get('width_mm','')} Thk={d.get('thk_mm','')} mm"
+        if fn=="tube":   return f"OD={d.get('tube_od_mm','')} Thk={d.get('tube_thk_mm','')} L={d.get('tube_length_mm','')} N={d.get('n_tubes','')} mm"
+        return str(dims)
+
+    row_n = 2
+    tot_wt = 0; tot_amt = 0
+    for i, p in enumerate(parts):
+        fn = PART_TYPES.get(p.get("part_type",""),{}).get("fn","")
+        bg = WHITE if i%2==0 else ALT_ROW
+        vals = [
+            p.get("name",""),
+            p.get("group",""),
+            p.get("part_type",""),
+            p.get("material",""),
+            DENSITY.get(p.get("material","SS316L"),8000),
+            FORMULA_DESC.get(fn,"Manual entry"),
+            dims_str(fn, p.get("dims",{})),
+            p.get("qty",1),
+            p.get("net_wt_kg",0),
+            p.get("total_wt_kg",0),
+            p.get("rate",0),
+            p.get("amount",0),
+            SCRAP_PCT.get(fn,"5%"),
+        ]
+        for col, val in enumerate(vals, 1):
+            c = ws2.cell(row=row_n, column=col, value=val)
+            align = "right" if col in (5,8,9,10,11,12) else "left"
+            data_style(c, bg=bg, align=align)
+            if col in (9,10):  c.number_format = fmt_kg
+            if col in (11,12): c.number_format = fmt_inr
+        tot_wt  += p.get("total_wt_kg",0)
+        tot_amt += p.get("amount",0)
+        row_n += 1
+
+    # Total row
+    for col in range(1,14):
+        c = ws2.cell(row=row_n, column=col)
+        if col==1: c.value = "TOTAL"
+        if col==10: c.value = round(tot_wt,3)
+        if col==12: c.value = round(tot_amt,2)
+        hdr_style(c, bg=MID_BLUE, sz=9)
+        if col in (10,): c.number_format = fmt_kg
+        if col in (12,): c.number_format = fmt_inr
+
+    # Freeze header
+    ws2.freeze_panes = "A2"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 3 — PIPES & FLANGES
+    # ══════════════════════════════════════════════════════════════════════════
+    ws3 = wb.create_sheet("Pipes & Flanges")
+    for i, hdr in enumerate(["Description","Item Code","Type","Length(m)","Qty",
+                               "Wt/m (kg/m)","Formula","Total Wt (kg)","Rate (₹/kg)","Amount (₹)"],1):
+        c = ws3.cell(row=1, column=i, value=hdr); hdr_style(c, sz=9)
+    for w, col in zip([22,24,10,10,6,10,32,12,12,14],[1,2,3,4,5,6,7,8,9,10]):
+        ws3.column_dimensions[get_column_letter(col)].width = w
+
+    row_n = 2
+    for i, p in enumerate(pipes + flanges):
+        is_flange = i >= len(pipes)
+        bg = WHITE if i%2==0 else ALT_ROW
+        formula = "Wt/m × Length × 1.05 (5% fitting allowance) × Qty" if not is_flange else "Wt/m × 1.15 (15% allowance) × Qty"
+        vals = [
+            p.get("name",""),
+            p.get("item_code",""),
+            "Flange" if is_flange else "Pipe",
+            p.get("length_m","") if not is_flange else "—",
+            p.get("qty",1),
+            p.get("wt_per_m",0) if not is_flange else p.get("total_wt_kg",0)/max(p.get("qty",1),1),
+            formula,
+            p.get("total_wt_kg",0),
+            p.get("rate",0),
+            p.get("amount",0),
+        ]
+        for col, val in enumerate(vals, 1):
+            c = ws3.cell(row=row_n, column=col, value=val)
+            data_style(c, bg=bg, align="right" if col in (4,5,6,8,9,10) else "left")
+            if col in (8,): c.number_format = fmt_kg
+            if col in (9,10): c.number_format = fmt_inr
+        row_n += 1
+    ws3.freeze_panes = "A2"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 4 — FABRICATION SERVICES
+    # ══════════════════════════════════════════════════════════════════════════
+    ws4 = wb.create_sheet("Fabrication Services")
+    for i, hdr in enumerate(["Service","Basis / Formula","Qty","UOM","Rate","Amount (₹)"],1):
+        c = ws4.cell(row=1, column=i, value=hdr); hdr_style(c, sz=9)
+    for w, col in zip([30,50,10,8,14,16],[1,2,3,4,5,6]):
+        ws4.column_dimensions[get_column_letter(col)].width = w
+
+    row_n = 2
+    for i, fs in enumerate(fab_services):
+        bg = WHITE if i%2==0 else ALT_ROW
+        for col, val in enumerate([
+            fs.get("service",""), fs.get("basis",""),
+            fs.get("qty",""), fs.get("uom",""),
+            fs.get("rate",0), fs.get("amount",0),
+        ], 1):
+            c = ws4.cell(row=row_n, column=col, value=val)
+            data_style(c, bg=bg, align="right" if col in (3,5,6) else "left")
+            if col in (5,6): c.number_format = fmt_inr
+        row_n += 1
+
+    # Rates used
+    row_n += 2
+    ws4.cell(row=row_n, column=1, value="FABRICATION RATES USED")
+    hdr_style(ws4.cell(row=row_n, column=1), bg=MID_BLUE); row_n += 1
+    for key, val in fab_rates.items():
+        lc = ws4.cell(row=row_n, column=1, value=key.replace("_"," ").title())
+        vc = ws4.cell(row=row_n, column=2, value=val)
+        data_style(lc, bg=LIGHT_BLUE, bold=True)
+        data_style(vc, bg=WHITE, align="right")
+        row_n += 1
+    ws4.freeze_panes = "A2"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 5 — BOUGHT-OUT & OVERHEADS
+    # ══════════════════════════════════════════════════════════════════════════
+    ws5 = wb.create_sheet("Bought-Out & OH")
+    for i, hdr in enumerate(["Description","Item Code","Group","Qty","Rate","Amount (₹)"],1):
+        c = ws5.cell(row=1, column=i, value=hdr); hdr_style(c, sz=9)
+    for w, col in zip([28,24,14,8,14,16],[1,2,3,4,5,6]):
+        ws5.column_dimensions[get_column_letter(col)].width = w
+
+    row_n = 2
+    ws5.cell(row=row_n, column=1, value="── Bought-Out Items ──")
+    hdr_style(ws5.cell(row=row_n, column=1), bg=MID_BLUE, sz=9); row_n += 1
+    for i, b in enumerate(bo_items):
+        bg = WHITE if i%2==0 else ALT_ROW
+        for col, val in enumerate([b.get("name",""),b.get("item_code",""),b.get("group",""),b.get("qty",1),b.get("rate",0),b.get("amount",0)],1):
+            c = ws5.cell(row=row_n, column=col, value=val)
+            data_style(c, bg=bg, align="right" if col in (4,5,6) else "left")
+            if col in (5,6): c.number_format = fmt_inr
+        row_n += 1
+
+    row_n += 1
+    ws5.cell(row=row_n, column=1, value="── Additional Overheads ──")
+    hdr_style(ws5.cell(row=row_n, column=1), bg=MID_BLUE, sz=9); row_n += 1
+    for i, o in enumerate(oh_items):
+        bg = WHITE if i%2==0 else ALT_ROW
+        for col, val in enumerate([o.get("description",""),o.get("oh_code",""),o.get("oh_type",""),o.get("qty",1),o.get("rate",0),o.get("amount",0)],1):
+            c = ws5.cell(row=row_n, column=col, value=val)
+            data_style(c, bg=bg, align="right" if col in (4,5,6) else "left")
+            if col in (5,6): c.number_format = fmt_inr
+        row_n += 1
+    ws5.freeze_panes = "A2"
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 6 — FORMULA REFERENCE
+    # ══════════════════════════════════════════════════════════════════════════
+    ws6 = wb.create_sheet("Formula Reference")
+    ws6.column_dimensions["A"].width = 28
+    ws6.column_dimensions["B"].width = 55
+    ws6.column_dimensions["C"].width = 20
+    ws6.column_dimensions["D"].width = 20
+
+    r = 1
+    ws6.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+    c = ws6.cell(row=r, column=1, value="B&G ENGINEERING INDUSTRIES — GEOMETRY FORMULA REFERENCE")
+    hdr_style(c, sz=12); ws6.row_dimensions[r].height = 24; r += 2
+
+    formulas = [
+        ("CYLINDRICAL SHELL",
+         "W = π × ID(m) × Ht(m) × Thk(m) × ρ(kg/m³) × (1 + scrap)",
+         "scrap = 5%", "density per MOC"),
+        ("DISH END (Torispherical)",
+         "Blank dia = ID × 1.167 | Area = 1.09 × π × (blank_dia/2)² | W = Area × Thk(m) × ρ × (1 + scrap)",
+         "scrap = 15%", "Crown radius = ID"),
+        ("ANNULAR PLATE / FLANGE",
+         "W = (π/4) × (OD² − ID²) × Thk(m) × ρ × (1 + scrap)",
+         "scrap = 5%", "All dims in metres"),
+        ("SOLID ROUND (Shaft / Bush)",
+         "W = (π/4) × D(m)² × L(m) × ρ × (1 + scrap)",
+         "scrap = 15%", ""),
+        ("FLAT RECTANGLE (Blade/Pad/Gusset)",
+         "W = W(m) × H(m) × Thk(m) × ρ × (1 + scrap)",
+         "scrap = 5%", ""),
+        ("STIFFENER RINGS (Flat bar on shell OD)",
+         "Shell OD = ID + 2×Thk | Circ = π×OD | N = ShHt/Pitch | Wt/ring = Circ×BarW×BarThk×ρ×(1+scrap) | Total = Wt/ring×N",
+         "scrap = 5%", "N rings = derived qty"),
+        ("CONE / REDUCER",
+         "R1=LargeID/2, R2=SmallID/2 | Slant=√(Ht²+(R1−R2)²) | W=π×(R1+R2)×Slant×Thk×ρ×(1+scrap)",
+         "scrap = 5%", ""),
+        ("RECTANGULAR PLATE",
+         "W = L(m) × W(m) × Thk(m) × ρ × (1 + scrap)",
+         "scrap = 5%", ""),
+        ("TUBE BUNDLE",
+         "Mid_r=(OD−Thk)/2 | Wt/tube=π×2×Mid_r×L×Thk×ρ | Total=Wt/tube×N_tubes×(1+scrap)",
+         "scrap = 5%", ""),
+    ]
+
+    for i, hdr in enumerate(["Part Type","Formula","Notes","Reference"],1):
+        c = ws6.cell(row=r, column=i, value=hdr); hdr_style(c, sz=9)
+    r += 1
+
+    for pt, formula, notes, ref in formulas:
+        bg = WHITE if formulas.index((pt,formula,notes,ref))%2==0 else ALT_ROW
+        for col, val in enumerate([pt, formula, notes, ref], 1):
+            c = ws6.cell(row=r, column=col, value=val)
+            data_style(c, bg=LIGHT_BLUE if col==1 else bg, bold=(col==1))
+            c.alignment = Alignment(wrap_text=True, vertical="top")
+        ws6.row_dimensions[r].height = max(15, formula.count("\n")*14 + 14)
+        r += 1
+
+    r += 2
+    ws6.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+    c = ws6.cell(row=r, column=1, value="MATERIAL DENSITY TABLE (kg/m³)")
+    hdr_style(c, bg=MID_BLUE, sz=10); r += 1
+    for mat, den in DENSITY.items():
+        lc = ws6.cell(row=r, column=1, value=mat)
+        vc = ws6.cell(row=r, column=2, value=den)
+        data_style(lc, bg=LIGHT_BLUE, bold=True)
+        data_style(vc, bg=WHITE, align="right")
+        r += 1
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    buf = _io.BytesIO()
+    wb.save(buf); buf.seek(0)
+    return buf
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MASTER LOADERS
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
@@ -2061,20 +2480,17 @@ with TAB_NEW:
         st.divider()
         st.markdown("**📄 Download Customer Quotation**")
         dl_col1, dl_col2 = st.columns(2)
-
         with dl_col1:
-            st.caption("**Standard Quote** — clean single price, professional. Use for most customers.")
+            st.caption("**Standard Quote** — clean single price. Use for most customers.")
             dl_col1.download_button(
                 "📄 Download Standard Quote",
                 generate_docx(h, cust_data, T, st.session_state.est_fab, show_breakup=False),
                 file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                use_container_width=True,
-                type="primary",
+                use_container_width=True, type="primary",
             )
-
         with dl_col2:
-            st.caption("**With Scope Breakup** — scope-based price heads. Use when customer asks for breakup.")
+            st.caption("**With Scope Breakup** — use when customer asks for breakup.")
             dl_col2.download_button(
                 "📋 Download Quote with Breakup",
                 generate_docx(h, cust_data, T, st.session_state.est_fab, show_breakup=True),
@@ -2082,6 +2498,22 @@ with TAB_NEW:
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )
+
+        st.divider()
+        st.markdown("**📊 Download Internal Estimation Fact Sheet** _(for cross-checking against Excel)_")
+        st.caption("Shows all dimensions, geometry formulas used, weights, rates and cost summary across 6 sheets. Not for customers.")
+        st.download_button(
+            "📊 Download Estimation Fact Sheet (.xlsx)",
+            generate_fact_sheet_xlsx(
+                h, st.session_state.est_parts, st.session_state.est_pipes,
+                st.session_state.est_flanges, st.session_state.est_fab,
+                st.session_state.est_bo, st.session_state.est_oh,
+                st.session_state.fab_rates, T,
+            ),
+            file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_FactSheet.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: QUOTE EDITOR
@@ -2323,25 +2755,34 @@ with TAB_QUOTE:
             float(h.get("gst_pct",18)), float(h.get("engg_design_amt",25000)),
         )
 
-        qe_dl1, qe_dl2, qe_dl3 = st.columns(3)
+        qe_dl1, qe_dl2, qe_dl3, qe_dl4 = st.columns(4)
         qe_dl1.download_button(
-            "📄 Standard Quote (clean price)",
+            "📄 Standard Quote",
             generate_docx(h, _qe_cust, _qe_T, _qe_fab, show_breakup=False),
             file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-            type="primary",
-            key="qe_dl_std",
+            use_container_width=True, type="primary", key="qe_dl_std",
         )
         qe_dl2.download_button(
-            "📋 Quote with Scope Breakup",
+            "📋 With Scope Breakup",
             generate_docx(h, _qe_cust, _qe_T, _qe_fab, show_breakup=True),
             file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_breakup.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-            key="qe_dl_bk",
+            use_container_width=True, key="qe_dl_bk",
         )
-        if qe_dl3.button("💾 Save Draft", use_container_width=True, type="primary", key="qe_save"):
+        qe_dl3.download_button(
+            "📊 Fact Sheet (.xlsx)",
+            generate_fact_sheet_xlsx(
+                h, st.session_state.est_parts, st.session_state.est_pipes,
+                st.session_state.est_flanges, _qe_fab,
+                st.session_state.est_bo, st.session_state.est_oh,
+                st.session_state.fab_rates, _qe_T,
+            ),
+            file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_FactSheet.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True, key="qe_dl_fs",
+        )
+        if qe_dl4.button("💾 Save Draft", use_container_width=True, type="primary", key="qe_save"):
             _do_save(reset_after=False)
 
 
