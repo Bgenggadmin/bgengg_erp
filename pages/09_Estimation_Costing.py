@@ -40,6 +40,28 @@ if "master_data" not in st.session_state:
     st.session_state.master_data = fetch_all_master_data(conn)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LOGO — fetch from Supabase storage bucket once per session
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def _fetch_logo_bytes():
+    """
+    Fetch B&G logo from Supabase storage bucket 'progress-photos'.
+    Returns raw bytes or None if not found.
+    Try common filenames — change LOGO_FILENAME if yours is different.
+    """
+    BUCKET = "progress-photos"
+    LOGO_FILE = "logo.png"
+    try:
+        data = conn.client.storage.from_(BUCKET).download(LOGO_FILE)
+        if data:
+            return data, LOGO_FILE
+    except Exception:
+        pass
+    return None, None
+
+_LOGO_BYTES, _LOGO_FNAME = _fetch_logo_bytes()
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SUPABASE HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 def sb_fetch(table, select="*", order=None, filters=None):
@@ -411,14 +433,41 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
 
     # ── Helpers ──────────────────────────────────────────────────────────────
     def banner():
-        t = doc.add_table(rows=1, cols=1); t.style = "Table Grid"
-        c = t.rows[0].cells[0]; _shd(c, "1B3A6B"); c.paragraphs[0].clear()
-        p = c.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(6); p.paragraph_format.space_after = Pt(4)
-        _run(p, f"{BG_NAME}\n", bold=True, size=16, color=(255,255,255))
-        _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
-        _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=12, color=(204,221,255))
-        _run(p, est.get("equipment_desc",""), bold=True, size=10, color=(255,255,255))
+        # Two-column banner: logo on left, company name + offer title on right
+        if _LOGO_BYTES:
+            t = doc.add_table(rows=1, cols=2); t.style = "Table Grid"
+            # Left cell — logo
+            lc = t.rows[0].cells[0]; _shd(lc, "FFFFFF")
+            lc.width = Cm(4)
+            lc.paragraphs[0].clear()
+            lp = lc.paragraphs[0]; lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            lp.paragraph_format.space_before = Pt(4); lp.paragraph_format.space_after = Pt(4)
+            try:
+                import io as _bio
+                logo_stream = _bio.BytesIO(_LOGO_BYTES)
+                run = lp.add_run()
+                run.add_picture(logo_stream, width=Cm(3.5))
+            except Exception:
+                _run(lp, BG_NAME, bold=True, size=12, color=(27,58,107))
+            # Right cell — text
+            rc = t.rows[0].cells[1]; _shd(rc, "1B3A6B")
+            rc.paragraphs[0].clear()
+            p = rc.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(6); p.paragraph_format.space_after = Pt(4)
+            _run(p, f"{BG_NAME}\n", bold=True, size=14, color=(255,255,255))
+            _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
+            _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=11, color=(204,221,255))
+            _run(p, est.get("equipment_desc",""), bold=True, size=10, color=(255,255,255))
+        else:
+            # No logo — full-width text banner (original)
+            t = doc.add_table(rows=1, cols=1); t.style = "Table Grid"
+            c = t.rows[0].cells[0]; _shd(c, "1B3A6B"); c.paragraphs[0].clear()
+            p = c.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(6); p.paragraph_format.space_after = Pt(4)
+            _run(p, f"{BG_NAME}\n", bold=True, size=16, color=(255,255,255))
+            _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
+            _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=12, color=(204,221,255))
+            _run(p, est.get("equipment_desc",""), bold=True, size=10, color=(255,255,255))
 
     def footer_block():
         doc.add_paragraph()
@@ -1390,6 +1439,10 @@ for key, default in [
 # PAGE HEADER
 # ─────────────────────────────────────────────────────────────────────────────
 st.title("📐 Estimation & Costing")
+if _LOGO_BYTES:
+    st.caption(f"🖼️ Logo loaded from Supabase: `{_LOGO_FNAME}` — will appear in all quotations.")
+else:
+    st.caption("🖼️ No logo found in `progress-photos` bucket. Upload as `logo.png` to include in quotations.")
 _qtn_now = st.session_state.est_hdr.get("qtn_number", "")
 _eid_now  = st.session_state.est_edit_id
 if _eid_now and _qtn_now:
