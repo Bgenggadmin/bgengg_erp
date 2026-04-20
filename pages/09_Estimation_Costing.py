@@ -527,7 +527,7 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
                     tblGrid = _OE3("w:tblGrid"); hdr_tbl._tbl.insert(0, tblGrid)
                 for col_el in tblGrid.findall(_qn3("w:gridCol")):
                     tblGrid.remove(col_el)
-                for w_twips in [int(_Cm3(2.8).twips), int(_Cm3(13.9).twips)]:
+                for w_twips in [int(_Cm3(2.0).twips), int(_Cm3(14.7).twips)]:
                     gc = _OE3("w:gridCol"); gc.set(_qn3("w:w"), str(w_twips)); tblGrid.append(gc)
 
             lhc = hdr_tbl.rows[0].cells[0]
@@ -541,7 +541,7 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             if _LOGO_BYTES:
                 try:
                     run = lhp.add_run()
-                    run.add_picture(_bio2.BytesIO(_LOGO_BYTES), width=Cm(2.5))
+                    run.add_picture(_bio2.BytesIO(_LOGO_BYTES), width=Cm(1.8))
                 except Exception:
                     _run(lhp, "B&G", bold=True, size=10, color=(27,58,107))
 
