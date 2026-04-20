@@ -517,6 +517,19 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
                                         width=Cm(16.7))
             hdr_tbl.style = "Table Grid"
 
+            # Set column widths: logo narrow (2.8cm), text wide (13.9cm)
+            if _LOGO_BYTES and len(hdr_tbl.columns) >= 2:
+                from docx.oxml.ns import qn as _qn3
+                from docx.oxml import OxmlElement as _OE3
+                from docx.shared import Cm as _Cm3
+                tblGrid = hdr_tbl._tbl.find(_qn3("w:tblGrid"))
+                if tblGrid is None:
+                    tblGrid = _OE3("w:tblGrid"); hdr_tbl._tbl.insert(0, tblGrid)
+                for col_el in tblGrid.findall(_qn3("w:gridCol")):
+                    tblGrid.remove(col_el)
+                for w_twips in [int(_Cm3(2.8).twips), int(_Cm3(13.9).twips)]:
+                    gc = _OE3("w:gridCol"); gc.set(_qn3("w:w"), str(w_twips)); tblGrid.append(gc)
+
             lhc = hdr_tbl.rows[0].cells[0]
             _shd(lhc, "FFFFFF" if _LOGO_BYTES else "1B3A6B")
             lhc.paragraphs[0].clear()
@@ -528,7 +541,7 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             if _LOGO_BYTES:
                 try:
                     run = lhp.add_run()
-                    run.add_picture(_bio2.BytesIO(_LOGO_BYTES), width=Cm(3.2))
+                    run.add_picture(_bio2.BytesIO(_LOGO_BYTES), width=Cm(2.5))
                 except Exception:
                     _run(lhp, "B&G", bold=True, size=10, color=(27,58,107))
 
@@ -560,7 +573,7 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
                 pPr.append(pBdr)
 
     def banner():
-        _build_header_banner(None)
+        # Word page header handles ALL pages including page 1 — no body banner needed
         _add_header_to_all_pages()
 
     def footer_block():
