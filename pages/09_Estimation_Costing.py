@@ -516,6 +516,21 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             hdr_tbl = header.add_table(rows=1, cols=2 if _LOGO_BYTES else 1,
                                         width=Cm(16.7))
             hdr_tbl.style = "Table Grid"
+            # Remove all outer table borders so no line shows above the header
+            from docx.oxml.ns import qn as _qn4
+            from docx.oxml import OxmlElement as _OE4
+            tblPr = hdr_tbl._tbl.tblPr
+            if tblPr is None:
+                tblPr = _OE4("w:tblPr"); hdr_tbl._tbl.insert(0, tblPr)
+            tblBdr = _OE4("w:tblBorders")
+            for side in ["top","bottom","left","right","insideH","insideV"]:
+                el = _OE4(f"w:{side}")
+                el.set(_qn4("w:val"), "none")
+                el.set(_qn4("w:sz"), "0")
+                el.set(_qn4("w:space"), "0")
+                el.set(_qn4("w:color"), "auto")
+                tblBdr.append(el)
+            tblPr.append(tblBdr)
 
             # Set column widths: logo narrow (2.8cm), text wide (13.9cm)
             if _LOGO_BYTES and len(hdr_tbl.columns) >= 2:
@@ -527,7 +542,7 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
                     tblGrid = _OE3("w:tblGrid"); hdr_tbl._tbl.insert(0, tblGrid)
                 for col_el in tblGrid.findall(_qn3("w:gridCol")):
                     tblGrid.remove(col_el)
-                for w_twips in [int(_Cm3(2.0).twips), int(_Cm3(14.7).twips)]:
+                for w_twips in [int(_Cm3(2.8).twips), int(_Cm3(13.9).twips)]:
                     gc = _OE3("w:gridCol"); gc.set(_qn3("w:w"), str(w_twips)); tblGrid.append(gc)
 
             lhc = hdr_tbl.rows[0].cells[0]
@@ -541,7 +556,7 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             if _LOGO_BYTES:
                 try:
                     run = lhp.add_run()
-                    run.add_picture(_bio2.BytesIO(_LOGO_BYTES), width=Cm(1.8))
+                    run.add_picture(_bio2.BytesIO(_LOGO_BYTES), width=Cm(2.5))
                 except Exception:
                     _run(lhp, "B&G", bold=True, size=10, color=(27,58,107))
 
@@ -560,16 +575,17 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             _run(rp, f"{BG_EMAIL}  |  {BG_WEB}  |  GSTIN: {BG_GSTIN}",
                  size=8, color=(180,210,255))
 
-            # Add thin bottom border to header
+            # Remove all borders from header paragraphs so no line appears above the table
             for para in header.paragraphs:
                 pPr = para._p.get_or_add_pPr()
                 pBdr = _OE2("w:pBdr")
-                bot  = _OE2("w:bottom")
-                bot.set(_qn2("w:val"),   "single")
-                bot.set(_qn2("w:sz"),    "4")
-                bot.set(_qn2("w:space"), "1")
-                bot.set(_qn2("w:color"), "2E75B6")
-                pBdr.append(bot)
+                for side in ["top","bottom","left","right"]:
+                    el = _OE2(f"w:{side}")
+                    el.set(_qn2("w:val"), "none")
+                    el.set(_qn2("w:sz"), "0")
+                    el.set(_qn2("w:space"), "0")
+                    el.set(_qn2("w:color"), "auto")
+                    pBdr.append(el)
                 pPr.append(pBdr)
 
     def banner():
