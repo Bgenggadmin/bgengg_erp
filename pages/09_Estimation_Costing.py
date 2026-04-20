@@ -500,64 +500,75 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
         ("Agitator / Drive",      est.get("agitator_type","") or "Not applicable"),
         ("MOC — Vessel",          est.get("moc_shell","SS316L")),
         ("MOC — Jacket",          est.get("moc_jacket","SS304")),
-        ("Surface Finish",        "Internal: Ra ≤ 0.8 μm  |  External: Buffed"),
+        ("Surface Finish",        est.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed")),
     ])
+
+    # ── Helper: split text block to bullets ──────────────────────────────────
+    def bullets_from_text(text_block):
+        for line in (text_block or "").split("\n"):
+            line = line.strip()
+            if line:
+                bullet(line)
 
     # ── SECTION 3: Scope ──────────────────────────────────────────────────────
     doc.add_paragraph()
     sec_head("SECTION 3 — SCOPE OF SUPPLY")
     body("Supply of one (1) complete fabricated equipment per the technical basis above:")
-    for item in [
-        "Pressure vessel / equipment fabricated as per approved GA drawing",
-        "All nozzles, manholes, handholes and process connections per nozzle schedule",
-        "Jacket / limpet coil / half-pipe with insulation jacket (where applicable)",
-        "Agitator complete with gearbox, motor and mechanical seal (where applicable)",
-        "Support structure — lugs, legs or saddles as applicable",
-        "Internal grinding and buffing to specified Ra surface finish",
-        "Equipment nameplate with tag number and serial number",
-    ]:
-        bullet(item)
+    bullets_from_text(est.get("scope_items",
+        "Pressure vessel / equipment fabricated as per approved GA drawing\n"
+        "All nozzles, manholes and process connections per nozzle schedule\n"
+        "Jacket / limpet coil as specified\n"
+        "Agitator complete with gearbox, motor and mechanical seal (where applicable)\n"
+        "Support structure — lugs, legs or saddles as applicable\n"
+        "Internal grinding and buffing to specified Ra surface finish\n"
+        "Equipment nameplate with tag number and serial number"
+    ))
+    excl = (est.get("scope_exclusions","") or "").strip()
+    if excl:
+        doc.add_paragraph()
+        body("Not in scope:")
+        bullets_from_text(excl)
 
     # ── SECTION 4: Quality ────────────────────────────────────────────────────
     doc.add_paragraph()
     sec_head("SECTION 4 — MANUFACTURING & QUALITY ASSURANCE")
-    body("B&G Engineering Industries operates as an engineering-led manufacturer. Every project is built to ASME Section VIII Division 1 requirements with full documentation and traceability.")
-    for item in [
-        "Raw material procurement with original Mill Test Certificates (MTC) — all pressure parts",
-        "100% Positive Material Identification (PMI) verification before cutting",
-        "Heat number and cast number traceability maintained throughout fabrication",
-        "Qualified welders — WPS / PQR compliant, TIG welding for all SS pressure joints",
-        "Precision plasma / laser cutting and CNC-controlled plate rolling",
-        "Pharma-grade internal grinding to Ra ≤ 0.8 μm; external mechanical polishing",
-        "Electropolishing to Ra ≤ 0.4 μm (where specified)",
-        "Dimensional inspection against approved drawings at each stage",
-        "Hydrostatic / pneumatic / vacuum leak test as per ASME Code requirements",
-        "Dye Penetrant (DP) testing on all critical welds",
-        "Complete QA dossier prepared and delivered with equipment",
-        "Factory Acceptance Test (FAT) support at works on request",
-    ]:
-        bullet(item)
+    body(est.get("quality_intro",
+        "B&G Engineering Industries operates as an engineering-led manufacturer. "
+        "Every project is built to ASME Section VIII Division 1 requirements "
+        "with full documentation and traceability."
+    ))
+    bullets_from_text(est.get("quality_points",
+        "Raw material procurement with original Mill Test Certificates (MTC) for all pressure parts\n"
+        "100% Positive Material Identification (PMI) verification before cutting\n"
+        "Heat number and cast number traceability maintained throughout fabrication\n"
+        "Qualified welders — WPS / PQR compliant, TIG welding for all SS316L pressure joints\n"
+        "Precision plasma / laser cutting and CNC-controlled plate rolling\n"
+        "Pharma-grade internal grinding to Ra ≤ 0.8 μm and external mechanical buffing\n"
+        "Dimensional inspection against approved GA drawings at each stage\n"
+        "Hydrostatic / pneumatic / vacuum leak test as per ASME Sec VIII Div 1\n"
+        "Dye Penetrant (DP) testing on all critical welds\n"
+        "Complete QA dossier prepared and delivered with equipment\n"
+        "Factory Acceptance Test (FAT) support at works on request"
+    ))
 
     # ── SECTION 5: Documentation ──────────────────────────────────────────────
     doc.add_paragraph()
     sec_head("SECTION 5 — DOCUMENTATION DELIVERABLES")
-    body("The following documents are included in our scope and delivered with the equipment:")
-    for item in [
-        "General Arrangement (GA) Drawing — IFC (Issued for Construction) revision",
-        "Nozzle orientation and schedule drawing",
-        "Bill of Materials (BOM)",
-        "Mill Test Certificates (MTC) for all pressure parts",
-        "PMI verification records",
-        "Weld map and weld log",
-        "DP / RT inspection reports",
-        "Dimensional inspection report",
-        "Hydrostatic / leak test certificate",
-        "Surface finish inspection record (Ra measurement)",
-        "Painting / surface treatment record (where applicable)",
-        "Equipment nameplate photograph",
-        "Inspection and Release Note (IRN)",
-    ]:
-        bullet(item)
+    body("The following documents are included in scope and delivered with the equipment:")
+    bullets_from_text(est.get("doc_deliverables",
+        "General Arrangement (GA) Drawing — IFC revision\n"
+        "Nozzle orientation and schedule drawing\n"
+        "Bill of Materials (BOM)\n"
+        "Mill Test Certificates (MTC) for all pressure parts\n"
+        "PMI verification records\n"
+        "Weld map and weld log\n"
+        "DP / RT inspection reports\n"
+        "Dimensional inspection report\n"
+        "Hydrostatic / leak test certificate\n"
+        "Surface finish inspection record (Ra measurement)\n"
+        "Inspection and Release Note (IRN)\n"
+        "Equipment nameplate photograph"
+    ))
 
     # ── SECTION 6: Commercial ─────────────────────────────────────────────────
     doc.add_paragraph()
@@ -621,36 +632,42 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
 
     doc.add_paragraph()
 
-    # ── Commercial terms ──────────────────────────────────────────────────────
-    _kv_table(doc, [
-        ("Price Basis",
-         "Ex-Works, Pashamylaram, Hyderabad — 502307. "
-         "Packing in MS crate included. Freight, insurance and unloading at site excluded."),
-        ("GST & Statutory Levies",
-         "GST @ 18% (HSN 8419) as applicable at time of invoicing. "
-         "Any new statutory levy introduced after offer date will be charged additionally."),
-        ("Payment Terms",
-         "40% advance along with Purchase Order  |  "
-         "50% against Pro-forma invoice on readiness for dispatch  |  "
-         "10% on delivery"),
-        ("Delivery Period",
-         "12–16 weeks from date of Purchase Order + advance payment receipt. "
-         "Subject to availability of raw material at time of order."),
-        ("Offer Validity",
-         "This offer is valid for 7 calendar days from the date above. "
-         "Prices are subject to change if raw material rates move by more than 3%."),
-        ("Warranty",
-         "12 months from date of commissioning or 18 months from date of dispatch, "
-         "whichever is earlier. Warranty covers manufacturing defects under normal "
-         "operating conditions as per design basis."),
-        ("Inspection",
-         "Customer may depute inspector for stage inspection and final inspection at our works. "
-         "Third-party inspection (TPI) agency charges, if any, are in customer's scope."),
-        ("Exclusions",
-         "Civil / structural works  |  Electrical & Instrumentation  |  "
-         "Erection & commissioning  |  DQ / IQ / OQ / PQ validation  |  "
-         "Freight & marine insurance  |  Import duties (if applicable)"),
-    ])
+    # ── Commercial terms — all editable per estimation ──────────────────────
+    terms_rows = []
+    def _add(label, key, fallback):
+        val = (est.get(key,"") or "").strip() or fallback
+        if val:
+            terms_rows.append((label, val))
+
+    _add("Price Basis",          "price_basis",
+         "Ex-Works, Pashamylaram, Hyderabad — 502307. Packing in MS crate included. Freight, insurance and unloading at site excluded.")
+    _add("GST & Statutory Levies","gst_clause",
+         "GST @ 18% (HSN 8419) as applicable at time of invoicing. Any new statutory levy introduced after offer date will be charged additionally.")
+    _add("Payment Terms",         "payment_terms",
+         "40% advance along with Purchase Order  |  50% against Pro-forma invoice on readiness for dispatch  |  10% on delivery")
+
+    dw = (est.get("delivery_weeks","") or "12–16").strip()
+    dn = (est.get("delivery_note","") or "Subject to availability of raw material at time of order.").strip()
+    terms_rows.append(("Delivery Period", f"{dw} weeks from date of Purchase Order + advance payment. {dn}"))
+
+    _add("Offer Validity",        "offer_validity",
+         "This offer is valid for 7 calendar days from the date above. Prices subject to change if raw material rates move by more than 3%.")
+    _add("Warranty",              "warranty_clause",
+         "12 months from date of commissioning or 18 months from date of dispatch, whichever is earlier.")
+    _add("Inspection Rights",     "inspection_clause",
+         "Customer may depute inspector for stage and final inspection at our works. TPI charges, if any, are in customer scope.")
+
+    excl2 = (est.get("scope_exclusions","") or "").strip()
+    if excl2:
+        excl_inline = "  |  ".join([l.strip() for l in excl2.split("\n") if l.strip()])
+        terms_rows.append(("Not in Scope", excl_inline))
+
+    _kv_table(doc, terms_rows)
+
+    sn = (est.get("special_notes","") or "").strip()
+    if sn:
+        doc.add_paragraph()
+        body(f"Additional Notes: {sn}")
 
     # ── SECTION 7: Sign-off ───────────────────────────────────────────────────
     doc.add_paragraph()
@@ -713,6 +730,7 @@ def load_all_estimations():
 # ─────────────────────────────────────────────────────────────────────────────
 def _blank_hdr():
     return dict(
+        # ── Core fields ───────────────────────────────────────────────────────
         qtn_number="", revision="R0", customer_name="",
         equipment_type=EQUIPMENT_NAMES[0], equipment_desc="", tag_number="",
         capacity_ltrs=2000.0, shell_dia_mm=1300.0, shell_ht_mm=1500.0,
@@ -720,11 +738,79 @@ def _blank_hdr():
         jacket_type="SS304 Half-pipe Jacket with Insulation Jacket",
         agitator_type="Anchor", design_code="ASME Sec VIII Div 1",
         design_pressure="FV to 4.5 Bar", design_temp="-50 to 250°C",
-        moc_shell="SS316L", moc_jacket="SS304", status="Draft",
-        prepared_by="", checked_by="",
+        moc_shell="SS316L", moc_jacket="SS304", surface_finish="Internal: Ra ≤ 0.8 μm  |  External: Buffed",
+        status="Draft", prepared_by="", checked_by="",
         profit_margin_pct=10.0, contingency_pct=0.0,
         packing_amt=5000.0, freight_amt=10000.0,
         gst_pct=18.0, engg_design_amt=25000.0, notes="",
+
+        # ── DOCX customisable sections (editable per estimation) ──────────────
+        # Section 3 — Scope of Supply
+        scope_items=(
+            "Pressure vessel / equipment fabricated as per approved GA drawing\n"
+            "All nozzles, manholes, handholes and process connections per nozzle schedule\n"
+            "Jacket / limpet coil / half-pipe with insulation jacket (where applicable)\n"
+            "Agitator complete with gearbox, motor and mechanical seal (where applicable)\n"
+            "Support structure — lugs, legs or saddles as applicable\n"
+            "Internal grinding and buffing to specified Ra surface finish\n"
+            "Equipment nameplate with tag number and serial number"
+        ),
+        # Section 3 — Exclusions (appended to scope)
+        scope_exclusions=(
+            "Civil / structural works\n"
+            "Electrical & Instrumentation\n"
+            "Erection & commissioning at site\n"
+            "DQ / IQ / OQ / PQ validation\n"
+            "Freight, insurance and unloading at site\n"
+            "Import duties if applicable"
+        ),
+
+        # Section 4 — Quality & Manufacturing
+        quality_intro=(
+            "B&G Engineering Industries operates as an engineering-led manufacturer. "
+            "Every project is built to ASME Section VIII Division 1 requirements "
+            "with full documentation and traceability."
+        ),
+        quality_points=(
+            "Raw material procurement with original Mill Test Certificates (MTC) for all pressure parts\n"
+            "100% Positive Material Identification (PMI) verification before cutting\n"
+            "Heat number and cast number traceability maintained throughout fabrication\n"
+            "Qualified welders — WPS / PQR compliant, TIG welding for all SS316L pressure joints\n"
+            "Precision plasma / laser cutting and CNC-controlled plate rolling\n"
+            "Pharma-grade internal grinding to Ra ≤ 0.8 μm and external mechanical buffing\n"
+            "Dimensional inspection against approved GA drawings at each stage\n"
+            "Hydrostatic / pneumatic / vacuum leak test as per ASME Sec VIII Div 1\n"
+            "Dye Penetrant (DP) testing on all critical welds\n"
+            "Complete QA dossier prepared and delivered with equipment\n"
+            "Factory Acceptance Test (FAT) support at works on request"
+        ),
+
+        # Section 5 — Documentation
+        doc_deliverables=(
+            "General Arrangement (GA) Drawing — IFC revision\n"
+            "Nozzle orientation and schedule drawing\n"
+            "Bill of Materials (BOM)\n"
+            "Mill Test Certificates (MTC) for all pressure parts\n"
+            "PMI verification records\n"
+            "Weld map and weld log\n"
+            "DP / RT inspection reports\n"
+            "Dimensional inspection report\n"
+            "Hydrostatic / leak test certificate\n"
+            "Surface finish inspection record (Ra measurement)\n"
+            "Inspection and Release Note (IRN)\n"
+            "Equipment nameplate photograph"
+        ),
+
+        # Section 6 — Commercial terms
+        price_basis="Ex-Works, Pashamylaram, Hyderabad — 502307. Packing in MS crate included. Freight, insurance and unloading at site excluded.",
+        gst_clause="GST @ 18% (HSN 8419) as applicable at time of invoicing. Any new statutory levy introduced after offer date will be charged additionally.",
+        payment_terms="40% advance along with Purchase Order  |  50% against Pro-forma invoice on readiness for dispatch  |  10% on delivery",
+        delivery_weeks="12–16",
+        delivery_note="Subject to availability of raw material at time of order.",
+        offer_validity="This offer is valid for 7 calendar days from the date above. Prices subject to change if raw material rates move by more than 3%.",
+        warranty_clause="12 months from date of commissioning or 18 months from date of dispatch, whichever is earlier. Covers manufacturing defects under normal operating conditions as per design basis.",
+        inspection_clause="Customer may depute inspector for stage and final inspection at our works. Third-party inspection (TPI) agency charges, if any, are in customer scope.",
+        special_notes="",
     )
 
 def _reset_form():
@@ -888,8 +974,8 @@ elif _qtn_now:
     st.info(f"📝 New estimation in progress: **{_qtn_now}**")
 st.markdown("---")
 
-TAB_LIST, TAB_NEW, TAB_SIMILAR, TAB_MASTERS = st.tabs([
-    "📋 Register", "➕ New / Edit", "🔍 Similar Equipment", "📊 Masters",
+TAB_LIST, TAB_NEW, TAB_QUOTE, TAB_SIMILAR, TAB_MASTERS = st.tabs([
+    "📋 Register", "➕ New / Edit", "✍️ Quote Editor", "🔍 Similar Equipment", "📊 Masters",
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1215,7 +1301,63 @@ with TAB_NEW:
         cb_idx = staff_list.index(h["checked_by"])  if h["checked_by"]  in staff_list else 0
         h["prepared_by"] = c1.selectbox("Prepared By", staff_list, index=pb_idx)
         h["checked_by"]  = c2.selectbox("Checked By",  staff_list, index=cb_idx)
-        h["notes"]       = st.text_area("Internal Notes", value=h["notes"], height=70)
+        h["notes"] = st.text_area("Internal Notes (not printed in quote)", value=h["notes"], height=60)
+        st.divider()
+
+        # ── DOCX CUSTOMISATION ────────────────────────────────────────────────
+        st.markdown("##### 📝 Quotation Content Customisation")
+        st.caption("All sections below print directly into the customer quotation. Edit per client URS / requirements.")
+
+        with st.expander("📦 Section 3 — Scope of Supply & Exclusions", expanded=False):
+            st.markdown("**Scope items** — one per line, prints as bullet list")
+            h["scope_items"] = st.text_area(
+                "Scope items", value=h.get("scope_items",""), height=220,
+                help="One item per line. Each line becomes a bullet point in the quotation.",
+                label_visibility="collapsed",
+            )
+            st.markdown("**Exclusions** — one per line")
+            h["scope_exclusions"] = st.text_area(
+                "Exclusions", value=h.get("scope_exclusions",""), height=150,
+                help="One exclusion per line. Printed under 'Not in Scope' in Section 3.",
+                label_visibility="collapsed",
+            )
+
+        with st.expander("🔬 Section 4 — Manufacturing & Quality", expanded=False):
+            st.markdown("**Opening paragraph**")
+            h["quality_intro"] = st.text_area(
+                "Quality intro", value=h.get("quality_intro",""), height=80,
+                label_visibility="collapsed",
+            )
+            st.markdown("**Quality points** — one per line, prints as bullet list")
+            h["quality_points"] = st.text_area(
+                "Quality points", value=h.get("quality_points",""), height=280,
+                help="One point per line. Add/remove/edit based on equipment type and client URS.",
+                label_visibility="collapsed",
+            )
+            st.caption("💡 Tip — add for ANFD: 'Filter plate flatness inspection per DIN 1685' | for RCVD: 'Vacuum integrity test to -1 bar for 30 min' | for pharma: 'GAMP5 documentation support available on request'")
+
+        with st.expander("📋 Section 5 — Documentation Deliverables", expanded=False):
+            st.markdown("**Document list** — one per line")
+            h["doc_deliverables"] = st.text_area(
+                "Documentation", value=h.get("doc_deliverables",""), height=250,
+                help="One document per line. Add client-specific requirements like ASME data report, 3.1 certs, etc.",
+                label_visibility="collapsed",
+            )
+            st.caption("💡 Tip — add for regulated clients: 'ASME U-stamp data report' | 'EN 10204 3.1 material certs' | 'Radiographic (RT) test report' | 'Positive pressure decay test record'")
+
+        with st.expander("💰 Section 6 — Commercial Terms", expanded=False):
+            h["surface_finish"]    = st.text_input("Surface Finish (shown in Tech Basis)", value=h.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed"))
+            h["price_basis"]       = st.text_area("Price Basis",        value=h.get("price_basis",""),  height=60)
+            h["gst_clause"]        = st.text_area("GST / Taxes Clause", value=h.get("gst_clause",""),   height=60)
+            h["payment_terms"]     = st.text_area("Payment Terms",      value=h.get("payment_terms",""),height=60)
+            c1, c2 = st.columns(2)
+            h["delivery_weeks"]    = c1.text_input("Delivery (weeks)",   value=h.get("delivery_weeks","12–16"))
+            h["delivery_note"]     = c2.text_input("Delivery note",      value=h.get("delivery_note","Subject to availability of raw material at time of order."))
+            h["offer_validity"]    = st.text_area("Offer Validity",      value=h.get("offer_validity",""), height=60)
+            h["warranty_clause"]   = st.text_area("Warranty",            value=h.get("warranty_clause",""),height=60)
+            h["inspection_clause"] = st.text_area("Inspection Rights",   value=h.get("inspection_clause",""),height=60)
+            h["special_notes"]     = st.text_area("Special Notes / Additional Conditions (printed at end of Section 6)", value=h.get("special_notes",""), height=80,
+                help="Use for client-specific conditions: GAMP5, ATEX zone, clean room requirements, etc.")
 
         _save_draft_bar("f1")
 
@@ -1940,6 +2082,268 @@ with TAB_NEW:
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True,
             )
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB: QUOTE EDITOR
+# Full control over every word that goes to the customer.
+# Engineer edits all sections here before downloading.
+# ══════════════════════════════════════════════════════════════════════════════
+with TAB_QUOTE:
+    h  = st.session_state.est_hdr
+    qn = h.get("qtn_number","") or ""
+    cn = h.get("customer_name","") or ""
+
+    if not qn:
+        st.warning("⚠️ No estimation loaded. Go to ➕ New / Edit → Tab 1 and load or create an estimation first.")
+    else:
+        st.subheader(f"✍️ Quote Editor — {qn}  |  {cn}")
+        st.caption("Edit every section below. What you see here is exactly what prints in the customer quotation. Download when ready.")
+
+        # ── helpers ──────────────────────────────────────────────────────────
+        def qe_section(label, icon=""):
+            st.markdown(f"**{icon} {label}**")
+
+        def qe_box(key, default, height=120, help_text=""):
+            """Editable text area that writes back to session state."""
+            val = st.text_area(
+                key, value=h.get(key, default), height=height,
+                label_visibility="collapsed", help=help_text,
+                key=f"qe_{key}",
+            )
+            h[key] = val
+            return val
+
+        # ── SECTION 1 — Offer & Customer (read-only, from header) ────────────
+        with st.expander("📋 Section 1 — Offer & Customer Details", expanded=True):
+            st.caption("Set in Tab 1 Header. Change fields there to update here.")
+            si1, si2, si3 = st.columns(3)
+            si1.markdown(f"**QTN:** {h.get('qtn_number','')}  |  **Rev:** {h.get('revision','R0')}")
+            si2.markdown(f"**Customer:** {h.get('customer_name','')}")
+            si3.markdown(f"**Equipment:** {h.get('equipment_desc','')}")
+            si1.markdown(f"**Prepared By:** {h.get('prepared_by','')}  |  **Checked By:** {h.get('checked_by','')}")
+            si2.markdown(f"**Status:** {h.get('status','Draft')}")
+            si3.markdown(f"**Date:** {date.today().strftime('%d %B %Y')}")
+
+        # ── SECTION 2 — Technical Design Basis ───────────────────────────────
+        with st.expander("🔧 Section 2 — Technical Design Basis", expanded=False):
+            st.caption("Core dimensions come from Tab 1. Edit the surface finish and any additional technical notes here.")
+            t2c1, t2c2 = st.columns(2)
+            h["surface_finish"] = t2c1.text_input(
+                "Surface Finish", value=h.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed"),
+                key="qe_sf",
+            )
+            h["design_code"] = t2c2.text_input(
+                "Design Code", value=h.get("design_code","ASME Sec VIII Div 1"),
+                key="qe_dc",
+            )
+            h["design_pressure"] = t2c1.text_input(
+                "Design Pressure", value=h.get("design_pressure","FV to 4.5 Bar"),
+                key="qe_dp",
+            )
+            h["design_temp"] = t2c2.text_input(
+                "Design Temperature", value=h.get("design_temp","-50 to 250°C"),
+                key="qe_dt",
+            )
+            h["jacket_type"] = t2c1.text_input(
+                "Jacket / Heating", value=h.get("jacket_type",""),
+                key="qe_jt",
+            )
+            h["agitator_type"] = t2c2.text_input(
+                "Agitator / Drive", value=h.get("agitator_type",""),
+                key="qe_at",
+            )
+
+        # ── SECTION 3 — Scope of Supply ───────────────────────────────────────
+        with st.expander("📦 Section 3 — Scope of Supply", expanded=False):
+            qe_section("Scope items — one per line, each becomes a bullet point")
+            default_scope = (
+                "Pressure vessel / equipment fabricated as per approved GA drawing\n"
+                "All nozzles, manholes, handholes and process connections per nozzle schedule\n"
+                "Jacket / limpet coil / half-pipe with insulation jacket (where applicable)\n"
+                "Agitator complete with gearbox, motor and mechanical seal (where applicable)\n"
+                "Support structure — lugs, legs or saddles as applicable\n"
+                "Internal grinding and buffing to specified Ra surface finish\n"
+                "Equipment nameplate with tag number and serial number"
+            )
+            qe_box("scope_items", default_scope, height=200,
+                   help_text="One item per line → becomes a bullet in the quotation")
+
+            qe_section("Exclusions — one per line")
+            default_excl = (
+                "Civil / structural works\n"
+                "Electrical & Instrumentation\n"
+                "Erection & commissioning at site\n"
+                "DQ / IQ / OQ / PQ validation\n"
+                "Freight, insurance and unloading at site\n"
+                "Import duties if applicable"
+            )
+            qe_box("scope_exclusions", default_excl, height=140,
+                   help_text="One exclusion per line")
+
+            st.caption("💡 Add for ANFD: 'Filter plate, filter media and gaskets' | for RCVD: 'Condenser, receiver and vacuum system' | for pharma: 'cGMP compliance documentation'")
+
+        # ── SECTION 4 — Manufacturing & Quality ───────────────────────────────
+        with st.expander("🔬 Section 4 — Manufacturing & Quality Assurance", expanded=False):
+            qe_section("Opening paragraph")
+            default_intro = (
+                "B&G Engineering Industries operates as an engineering-led manufacturer. "
+                "Every project is built to ASME Section VIII Division 1 requirements "
+                "with full documentation and traceability."
+            )
+            qe_box("quality_intro", default_intro, height=80)
+
+            qe_section("Quality points — one per line, each becomes a bullet point")
+            default_qp = (
+                "Raw material procurement with original Mill Test Certificates (MTC) for all pressure parts\n"
+                "100% Positive Material Identification (PMI) verification before cutting\n"
+                "Heat number and cast number traceability maintained throughout fabrication\n"
+                "Qualified welders — WPS / PQR compliant, TIG welding for all SS316L pressure joints\n"
+                "Precision plasma / laser cutting and CNC-controlled plate rolling\n"
+                "Pharma-grade internal grinding to Ra ≤ 0.8 μm and external mechanical buffing\n"
+                "Dimensional inspection against approved GA drawings at each stage\n"
+                "Hydrostatic / pneumatic / vacuum leak test as per ASME Sec VIII Div 1\n"
+                "Dye Penetrant (DP) testing on all critical welds\n"
+                "Complete QA dossier prepared and delivered with equipment\n"
+                "Factory Acceptance Test (FAT) support at works on request"
+            )
+            qe_box("quality_points", default_qp, height=300,
+                   help_text="One point per line. Add/remove based on equipment type and client URS.")
+
+            st.caption(
+                "💡 Equipment-specific points to add:\n"
+                "**ANFD** → Filter plate flatness and surface finish inspection | Filter media compatibility test\n"
+                "**RCVD** → Vacuum integrity test to -1 bar for 30 min minimum | Cone rotation and discharge test\n"
+                "**Condenser** → Tube-to-tubesheet weld DP test | Tube hydraulic test at 1.5x design pressure\n"
+                "**Pharma** → GAMP5 documentation support available | 3.1 material certs per EN 10204\n"
+                "**ATEX** → ATEX zone compliance — electrical items in customer scope | Earth continuity check"
+            )
+
+        # ── SECTION 5 — Documentation ─────────────────────────────────────────
+        with st.expander("📋 Section 5 — Documentation Deliverables", expanded=False):
+            qe_section("Document list — one per line")
+            default_docs = (
+                "General Arrangement (GA) Drawing — IFC revision\n"
+                "Nozzle orientation and schedule drawing\n"
+                "Bill of Materials (BOM)\n"
+                "Mill Test Certificates (MTC) for all pressure parts\n"
+                "PMI verification records\n"
+                "Weld map and weld log\n"
+                "DP / RT inspection reports\n"
+                "Dimensional inspection report\n"
+                "Hydrostatic / leak test certificate\n"
+                "Surface finish inspection record (Ra measurement)\n"
+                "Inspection and Release Note (IRN)\n"
+                "Equipment nameplate photograph"
+            )
+            qe_box("doc_deliverables", default_docs, height=280,
+                   help_text="One document per line. Add client-specific requirements.")
+
+            st.caption(
+                "💡 Add for regulated customers:\n"
+                "ASME U-stamp data report (if U-stamp required) | EN 10204 3.1 material certs | "
+                "Radiographic (RT) test report | Positive pressure decay test record | "
+                "Passivation certificate | Calibration certificates for test instruments"
+            )
+
+        # ── SECTION 6 — Commercial Terms ─────────────────────────────────────
+        with st.expander("💰 Section 6 — Commercial Terms", expanded=False):
+            st.markdown("**Payment Terms**")
+            h["payment_terms"] = st.text_area(
+                "Payment Terms", height=70, label_visibility="collapsed",
+                value=h.get("payment_terms","40% advance along with Purchase Order  |  50% against Pro-forma invoice on readiness for dispatch  |  10% on delivery"),
+                key="qe_pt",
+            )
+            c1, c2 = st.columns(2)
+            h["delivery_weeks"] = c1.text_input(
+                "Delivery (weeks)", value=h.get("delivery_weeks","12–16"), key="qe_dw",
+            )
+            h["delivery_note"] = c2.text_input(
+                "Delivery note", value=h.get("delivery_note","Subject to availability of raw material at time of order."),
+                key="qe_dn",
+            )
+            h["offer_validity"] = st.text_area(
+                "Offer Validity", height=60, label_visibility="collapsed",
+                value=h.get("offer_validity","This offer is valid for 7 calendar days from the date above. Prices subject to change if raw material rates move by more than 3%."),
+                key="qe_ov",
+            )
+            st.markdown("**Warranty**")
+            h["warranty_clause"] = st.text_area(
+                "Warranty", height=80, label_visibility="collapsed",
+                value=h.get("warranty_clause","12 months from date of commissioning or 18 months from date of dispatch, whichever is earlier. Covers manufacturing defects under normal operating conditions as per design basis."),
+                key="qe_wc",
+            )
+            st.markdown("**Inspection Rights**")
+            h["inspection_clause"] = st.text_area(
+                "Inspection", height=70, label_visibility="collapsed",
+                value=h.get("inspection_clause","Customer may depute inspector for stage and final inspection at our works. Third-party inspection (TPI) agency charges, if any, are in customer scope."),
+                key="qe_ic",
+            )
+            st.markdown("**Price Basis**")
+            h["price_basis"] = st.text_area(
+                "Price Basis", height=70, label_visibility="collapsed",
+                value=h.get("price_basis","Ex-Works, Pashamylaram, Hyderabad — 502307. Packing in MS crate included. Freight, insurance and unloading at site excluded."),
+                key="qe_pb",
+            )
+            st.markdown("**GST / Taxes Clause**")
+            h["gst_clause"] = st.text_area(
+                "GST Clause", height=60, label_visibility="collapsed",
+                value=h.get("gst_clause","GST @ 18% (HSN 8419) as applicable at time of invoicing. Any new statutory levy introduced after offer date will be charged additionally."),
+                key="qe_gc",
+            )
+            st.markdown("**Special Notes / Additional Conditions** _(printed at end of commercial section)_")
+            h["special_notes"] = st.text_area(
+                "Special Notes", height=100, label_visibility="collapsed",
+                value=h.get("special_notes",""),
+                help="Add client-specific conditions: GAMP5, ATEX zone, clean room, specific standards, any deviations from URS.",
+                key="qe_sn",
+            )
+
+        st.divider()
+
+        # ── Download buttons ──────────────────────────────────────────────────
+        st.markdown("**📄 Download Final Quotation**")
+        st.caption("Edits above are captured in memory. Save Draft to persist, then download.")
+
+        # Recalculate totals for download
+        _qe_clients  = load_clients_full()
+        _qe_cust     = next((c for c in _qe_clients if c["name"] == h.get("customer_name","")), {})
+        _rm_master_qe = load_rm_master()
+
+        _qe_parts   = st.session_state.est_parts
+        _qe_pipes   = st.session_state.est_pipes
+        _qe_flanges = st.session_state.est_flanges
+        _qe_fab     = st.session_state.est_fab
+        _qe_bo      = st.session_state.est_bo
+        _qe_oh      = st.session_state.est_oh
+
+        _qe_T = calc_totals(
+            _qe_parts, _qe_pipes, _qe_flanges, _qe_fab, _qe_bo, _qe_oh,
+            float(h.get("profit_margin_pct",10)), float(h.get("contingency_pct",0)),
+            float(h.get("packing_amt",5000)), float(h.get("freight_amt",10000)),
+            float(h.get("gst_pct",18)), float(h.get("engg_design_amt",25000)),
+        )
+
+        qe_dl1, qe_dl2, qe_dl3 = st.columns(3)
+        qe_dl1.download_button(
+            "📄 Standard Quote (clean price)",
+            generate_docx(h, _qe_cust, _qe_T, _qe_fab, show_breakup=False),
+            file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            type="primary",
+            key="qe_dl_std",
+        )
+        qe_dl2.download_button(
+            "📋 Quote with Scope Breakup",
+            generate_docx(h, _qe_cust, _qe_T, _qe_fab, show_breakup=True),
+            file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_breakup.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+            key="qe_dl_bk",
+        )
+        if qe_dl3.button("💾 Save Draft", use_container_width=True, type="primary", key="qe_save"):
+            _do_save(reset_after=False)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: SIMILAR EQUIPMENT
