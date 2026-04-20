@@ -2089,14 +2089,14 @@ with TAB_NEW:
 # Engineer edits all sections here before downloading.
 # ══════════════════════════════════════════════════════════════════════════════
 with TAB_QUOTE:
-    h  = st.session_state.est_hdr
-    qn = h.get("qtn_number","") or ""
-    cn = h.get("customer_name","") or ""
+    h    = st.session_state.est_hdr
+    _qno = h.get("qtn_number","") or ""
+    _cno = h.get("customer_name","") or ""
 
-    if not qn:
+    if not _qno:
         st.warning("⚠️ No estimation loaded. Go to ➕ New / Edit → Tab 1 and load or create an estimation first.")
     else:
-        st.subheader(f"✍️ Quote Editor — {qn}  |  {cn}")
+        st.subheader(f"✍️ Quote Editor — {_qno}  |  {_cno}")
         st.caption("Edit every section below. What you see here is exactly what prints in the customer quotation. Download when ready.")
 
         # ── helpers ──────────────────────────────────────────────────────────
