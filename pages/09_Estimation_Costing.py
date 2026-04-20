@@ -432,42 +432,136 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
         sec.left_margin = Cm(2.0); sec.right_margin = Cm(2.0)
 
     # ── Helpers ──────────────────────────────────────────────────────────────
-    def banner():
-        # Two-column banner: logo on left, company name + offer title on right
+    def _build_header_banner(parent_para_or_cell, is_page_header=False):
+        """Build the full-width banner with logo left + text right.
+        Used both for page 1 body and for every-page header."""
+        from docx.oxml.ns import qn as _qn
+        from docx.oxml import OxmlElement as _OE
+        import io as _bio
+
+        # Full-width table: 1 row, 2 cols (logo | text)
+        tbl = doc.add_table(rows=1, cols=2)
+        tbl.style = "Table Grid"
+
+        # Set column widths: logo ~4cm, text rest of page
+        page_width_cm = 16.7  # A4 minus margins
+        logo_w = Cm(3.8) if _LOGO_BYTES else Cm(0)
+        text_w = Cm(page_width_cm) - logo_w
+
+        lc = tbl.rows[0].cells[0]
+        rc = tbl.rows[0].cells[1]
+
+        # ── Logo cell (white background) ──────────────────────────────────────
+        _shd(lc, "FFFFFF")
+        lc.paragraphs[0].clear()
+        lp = lc.paragraphs[0]
+        lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        lp.paragraph_format.space_before = Pt(2)
+        lp.paragraph_format.space_after  = Pt(2)
         if _LOGO_BYTES:
-            t = doc.add_table(rows=1, cols=2); t.style = "Table Grid"
-            # Left cell — logo
-            lc = t.rows[0].cells[0]; _shd(lc, "FFFFFF")
-            lc.width = Cm(4)
-            lc.paragraphs[0].clear()
-            lp = lc.paragraphs[0]; lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            lp.paragraph_format.space_before = Pt(4); lp.paragraph_format.space_after = Pt(4)
             try:
-                import io as _bio
                 logo_stream = _bio.BytesIO(_LOGO_BYTES)
                 run = lp.add_run()
                 run.add_picture(logo_stream, width=Cm(3.5))
             except Exception:
-                _run(lp, BG_NAME, bold=True, size=12, color=(27,58,107))
-            # Right cell — text
-            rc = t.rows[0].cells[1]; _shd(rc, "1B3A6B")
-            rc.paragraphs[0].clear()
-            p = rc.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(6); p.paragraph_format.space_after = Pt(4)
-            _run(p, f"{BG_NAME}\n", bold=True, size=14, color=(255,255,255))
-            _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
-            _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=11, color=(204,221,255))
-            _run(p, est.get("equipment_desc",""), bold=True, size=10, color=(255,255,255))
+                _run(lp, "B&G", bold=True, size=14, color=(27,58,107))
         else:
-            # No logo — full-width text banner (original)
-            t = doc.add_table(rows=1, cols=1); t.style = "Table Grid"
-            c = t.rows[0].cells[0]; _shd(c, "1B3A6B"); c.paragraphs[0].clear()
-            p = c.paragraphs[0]; p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(6); p.paragraph_format.space_after = Pt(4)
-            _run(p, f"{BG_NAME}\n", bold=True, size=16, color=(255,255,255))
-            _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
-            _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=12, color=(204,221,255))
-            _run(p, est.get("equipment_desc",""), bold=True, size=10, color=(255,255,255))
+            # No logo — merge cells, use full width for text
+            lc.merge(rc)
+
+        # ── Text cell (dark blue background) ─────────────────────────────────
+        if _LOGO_BYTES:
+            _shd(rc, "1B3A6B")
+            rc.paragraphs[0].clear()
+            p = rc.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(8)
+            p.paragraph_format.space_after  = Pt(6)
+        else:
+            _shd(lc, "1B3A6B")
+            p = lc.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(8)
+            p.paragraph_format.space_after  = Pt(6)
+
+        _run(p, f"{BG_NAME}\n", bold=True, size=16, color=(255,255,255))
+        _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
+        _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=12, color=(204,221,255))
+        eq_desc = est.get("equipment_desc","")
+        if eq_desc:
+            _run(p, eq_desc, bold=True, size=10, color=(255,255,255))
+
+        return tbl
+
+    def _add_header_to_all_pages():
+        """
+        Insert the banner into the Word header so it repeats on every page.
+        Word headers repeat automatically — we build the same logo+text table there.
+        """
+        import io as _bio2
+        from docx.oxml.ns import qn as _qn2
+        from docx.oxml import OxmlElement as _OE2
+
+        for section in doc.sections:
+            section.different_first_page_header_footer = False
+            header = section.header
+            header.is_linked_to_previous = False
+
+            # Clear existing header content
+            for p in header.paragraphs:
+                p.clear()
+
+            # Add logo+text table into header
+            # We need to add the table into the header's XML directly
+            hdr_tbl = header.add_table(rows=1, cols=2 if _LOGO_BYTES else 1,
+                                        width=Cm(16.7))
+            hdr_tbl.style = "Table Grid"
+
+            lhc = hdr_tbl.rows[0].cells[0]
+            _shd(lhc, "FFFFFF" if _LOGO_BYTES else "1B3A6B")
+            lhc.paragraphs[0].clear()
+            lhp = lhc.paragraphs[0]
+            lhp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            lhp.paragraph_format.space_before = Pt(2)
+            lhp.paragraph_format.space_after  = Pt(2)
+
+            if _LOGO_BYTES:
+                try:
+                    run = lhp.add_run()
+                    run.add_picture(_bio2.BytesIO(_LOGO_BYTES), width=Cm(3.2))
+                except Exception:
+                    _run(lhp, "B&G", bold=True, size=10, color=(27,58,107))
+
+                rhc = hdr_tbl.rows[0].cells[1]
+                _shd(rhc, "1B3A6B")
+                rhc.paragraphs[0].clear()
+                rp = rhc.paragraphs[0]
+            else:
+                rp = lhp
+
+            rp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            rp.paragraph_format.space_before = Pt(4)
+            rp.paragraph_format.space_after  = Pt(2)
+            _run(rp, f"{BG_NAME}  |  {BG_TAGLINE}  |  {BG_PHONE}\n",
+                 bold=True, size=9, color=(255,255,255))
+            _run(rp, f"{BG_EMAIL}  |  {BG_WEB}  |  GSTIN: {BG_GSTIN}",
+                 size=8, color=(180,210,255))
+
+            # Add thin bottom border to header
+            for para in header.paragraphs:
+                pPr = para._p.get_or_add_pPr()
+                pBdr = _OE2("w:pBdr")
+                bot  = _OE2("w:bottom")
+                bot.set(_qn2("w:val"),   "single")
+                bot.set(_qn2("w:sz"),    "4")
+                bot.set(_qn2("w:space"), "1")
+                bot.set(_qn2("w:color"), "2E75B6")
+                pBdr.append(bot)
+                pPr.append(pBdr)
+
+    def banner():
+        _build_header_banner(None)
+        _add_header_to_all_pages()
 
     def footer_block():
         doc.add_paragraph()
