@@ -9,6 +9,13 @@ from docx.shared import Pt, RGBColor, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    OPENPYXL_OK = True
+except ImportError:
+    OPENPYXL_OK = False
 
 st.set_page_config(
     page_title="Estimation & Costing | BGEngg ERP",
@@ -702,10 +709,8 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
                               bo_items, oh_items, fab_rates, totals):
-    import openpyxl
-    from openpyxl.styles import (Font, PatternFill, Alignment, Border, Side,
-                                  numbers as xl_numbers)
-    from openpyxl.utils import get_column_letter
+    if not OPENPYXL_OK:
+        raise ImportError("openpyxl not installed. Add 'openpyxl' to requirements.txt and redeploy.")
     import io as _io
 
     wb = openpyxl.Workbook()
@@ -2502,18 +2507,21 @@ with TAB_NEW:
         st.divider()
         st.markdown("**📊 Download Internal Estimation Fact Sheet** _(for cross-checking against Excel)_")
         st.caption("Shows all dimensions, geometry formulas used, weights, rates and cost summary across 6 sheets. Not for customers.")
-        st.download_button(
-            "📊 Download Estimation Fact Sheet (.xlsx)",
-            generate_fact_sheet_xlsx(
-                h, st.session_state.est_parts, st.session_state.est_pipes,
-                st.session_state.est_flanges, st.session_state.est_fab,
-                st.session_state.est_bo, st.session_state.est_oh,
-                st.session_state.fab_rates, T,
-            ),
-            file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_FactSheet.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+        if OPENPYXL_OK:
+            st.download_button(
+                "📊 Download Estimation Fact Sheet (.xlsx)",
+                generate_fact_sheet_xlsx(
+                    h, st.session_state.est_parts, st.session_state.est_pipes,
+                    st.session_state.est_flanges, st.session_state.est_fab,
+                    st.session_state.est_bo, st.session_state.est_oh,
+                    st.session_state.fab_rates, T,
+                ),
+                file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_FactSheet.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        else:
+            st.warning("📊 Fact Sheet requires **openpyxl**. Add `openpyxl` to requirements.txt and redeploy.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: QUOTE EDITOR
@@ -2770,18 +2778,21 @@ with TAB_QUOTE:
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True, key="qe_dl_bk",
         )
-        qe_dl3.download_button(
-            "📊 Fact Sheet (.xlsx)",
-            generate_fact_sheet_xlsx(
-                h, st.session_state.est_parts, st.session_state.est_pipes,
-                st.session_state.est_flanges, _qe_fab,
-                st.session_state.est_bo, st.session_state.est_oh,
-                st.session_state.fab_rates, _qe_T,
-            ),
-            file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_FactSheet.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True, key="qe_dl_fs",
-        )
+        if OPENPYXL_OK:
+            qe_dl3.download_button(
+                "📊 Fact Sheet (.xlsx)",
+                generate_fact_sheet_xlsx(
+                    h, st.session_state.est_parts, st.session_state.est_pipes,
+                    st.session_state.est_flanges, _qe_fab,
+                    st.session_state.est_bo, st.session_state.est_oh,
+                    st.session_state.fab_rates, _qe_T,
+                ),
+                file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_FactSheet.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True, key="qe_dl_fs",
+            )
+        else:
+            qe_dl3.warning("Add `openpyxl` to requirements.txt")
         if qe_dl4.button("💾 Save Draft", use_container_width=True, type="primary", key="qe_save"):
             _do_save(reset_after=False)
 
