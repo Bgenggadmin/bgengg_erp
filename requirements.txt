@@ -10,3 +10,4 @@ pypdf
 streamlit-drawable-canvas
 xlsxwriter
 python-docx
+openpyxl
