@@ -8,6 +8,21 @@ Optionally links to process design projects via pd_project_id.
 Tables written to:
   offers  (offer_data stored as JSONB)
 """
+# Ensure repo root is on sys.path so sibling modules import correctly
+import sys, os
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+# Ensure repo root is on sys.path so sibling modules import correctly
+import sys, os
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+# Ensure repo root is on sys.path so sibling modules import correctly
+import sys, os
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 from datetime import date

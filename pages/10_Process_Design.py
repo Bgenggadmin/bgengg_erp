@@ -8,6 +8,11 @@ Tables written to:
   pd_projects, pd_stripper_designs, pd_mee_designs,
   pd_atfd_designs, pd_salt_routing, pd_audit_log
 """
+# Ensure repo root is on sys.path so sibling modules import correctly
+import sys, os
+_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 
