@@ -33,7 +33,7 @@ def _password_gate() -> bool:
     st.title("🔒 Offer Generator — Restricted")
     st.caption("Enter team password to access the B&G offer generator.")
     pwd = st.text_input("Password", type="password", key="og_pwd_input")
-    if st.button("Unlock", type="primary"):
+    if st.button("Unlock", type="primary", key="11_Offer_Generator_button_1"):
         if pwd == _TEAM_PASSWORD:
             st.session_state.og_authenticated = True
             st.rerun()
@@ -183,32 +183,32 @@ with tabs[0]:
 
     c1, c2 = st.columns(2)
     with c1:
-        cov["quote_ref"] = st.text_input("Quote Reference", value=cov["quote_ref"])
-        cov["quote_date"] = st.text_input("Quote Date (YYYY-MM-DD)", value=str(cov["quote_date"]))
-        cov["submitted_to"] = st.text_input("Submitted to", value=cov["submitted_to"])
-        cov["location"] = st.text_input("Location", value=cov["location"])
-        cov["capacity_kld"] = st.number_input("Capacity (KLD)", value=int(cov["capacity_kld"]), min_value=1, max_value=5000, step=10)
+        cov["quote_ref"] = st.text_input("Quote Reference", value=cov["quote_ref"], key="11_Offer_Generator_text_input_2")
+        cov["quote_date"] = st.text_input("Quote Date (YYYY-MM-DD)", value=str(cov["quote_date"]), key="11_Offer_Generator_text_input_3")
+        cov["submitted_to"] = st.text_input("Submitted to", value=cov["submitted_to"], key="11_Offer_Generator_text_input_4")
+        cov["location"] = st.text_input("Location", value=cov["location"], key="11_Offer_Generator_text_input_5")
+        cov["capacity_kld"] = st.number_input("Capacity (KLD)", value=int(cov["capacity_kld"]), min_value=1, max_value=5000, step=10, key="11_Offer_Generator_number_input_6")
     with c2:
-        cov["prepared_by"] = st.text_input("Prepared By", value=cov["prepared_by"])
-        cov["contact_details"] = st.text_input("Contact", value=cov["contact_details"])
-        cov["email"] = st.text_input("E-mail", value=cov["email"])
-        cov["kind_attn"] = st.text_input("Kind Attention", value=cov["kind_attn"])
-        cov["discussion_date"] = st.text_input("Discussion Date", value=cov["discussion_date"])
+        cov["prepared_by"] = st.text_input("Prepared By", value=cov["prepared_by"], key="11_Offer_Generator_text_input_7")
+        cov["contact_details"] = st.text_input("Contact", value=cov["contact_details"], key="11_Offer_Generator_text_input_8")
+        cov["email"] = st.text_input("E-mail", value=cov["email"], key="11_Offer_Generator_text_input_9")
+        cov["kind_attn"] = st.text_input("Kind Attention", value=cov["kind_attn"], key="11_Offer_Generator_text_input_10")
+        cov["discussion_date"] = st.text_input("Discussion Date", value=cov["discussion_date"], key="11_Offer_Generator_text_input_11")
 
-    cov["subject"] = st.text_input("Subject Line", value=cov["subject"])
+    cov["subject"] = st.text_input("Subject Line", value=cov["subject"], key="11_Offer_Generator_text_input_12")
 
 
 # ---------- Tab 2: Executive Summary ----------
 with tabs[1]:
     st.subheader("PART I — Executive Summary")
-    d["executive_summary"] = st.text_area("Editable text", value=d["executive_summary"], height=400)
+    d["executive_summary"] = st.text_area("Editable text", value=d["executive_summary"], height=400, key="11_Offer_Generator_text_area_13")
 
 
 # ---------- Tab 3: Process Description ----------
 with tabs[2]:
     st.subheader("PART II — Process Description")
     pd_data = d["process_description"]
-    pd_data["n_effects"] = st.slider("MEE Effects", 2, 7, value=int(pd_data.get("n_effects", 4)))
+    pd_data["n_effects"] = st.slider("MEE Effects", 2, 7, value=int(pd_data.get("n_effects", 4)), key="11_Offer_Generator_slider_14")
     with st.expander("Stripper", expanded=True):
         pd_data["stripper"] = st.text_area("", value=pd_data["stripper"], height=200, key="og_pd_strip")
     with st.expander("MEE"):
@@ -324,7 +324,7 @@ with tabs[8]:
 
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        if st.button("🔨 Generate Offer DOCX", type="primary", use_container_width=True):
+        if st.button("🔨 Generate Offer DOCX", type="primary", use_container_width=True, key="11_Offer_Generator_button_15"):
             with st.spinner("Loading brand assets from Supabase..."):
                 logo_bytes, tagline_bytes, hero_bytes = load_brand_assets()
             if logo_bytes:
@@ -347,13 +347,13 @@ with tabs[8]:
                     st.code(traceback.format_exc())
 
     with col2:
-        if st.button("💾 Save to DB", use_container_width=True):
+        if st.button("💾 Save to DB", use_container_width=True, key="11_Offer_Generator_button_16"):
             offer_id = _save_offer_to_db(d)
             if offer_id:
                 st.success(f"Saved offer #{offer_id}")
 
     with col3:
-        if st.button("🔄 Reset", use_container_width=True):
+        if st.button("🔄 Reset", use_container_width=True, key="11_Offer_Generator_button_17"):
             st.session_state.og_offer_data = default_offer_data()
             st.rerun()
 
@@ -363,8 +363,7 @@ with tabs[8]:
             data=st.session_state.og_generated_docx,
             file_name=f"Quote_{d['cover']['quote_ref'].replace('/', '_')}_{d['cover']['capacity_kld']}KLD.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-        )
+            use_container_width=True, key="11_Offer_Generator_download_button_18")
 
 
 # ---------- Tab 10: Import / Bridge ----------
@@ -379,8 +378,7 @@ with tabs[9]:
                 "📥 Download Template",
                 st.session_state.og_xlsx,
                 "BG_Offer_Form_Template.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="11_Offer_Generator_download_button_19")
 
     with st.expander("🔗 Import from bg_process_design Project", expanded=True):
         pd_projects = _load_pd_projects()

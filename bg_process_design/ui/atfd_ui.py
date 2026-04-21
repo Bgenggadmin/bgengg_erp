@@ -38,34 +38,34 @@ def _render_input_form(client, project):
     with c1:
         st.markdown("**Feed**")
         feed = st.number_input("Feed rate (kg/h)", value=float(default_feed),
-                                min_value=0.0, step=10.0)
+                                min_value=0.0, step=10.0, key="atfd_ui_number_input_1")
         feed_ts = st.number_input("Feed TS (%)", value=float(default_ts * 100),
-                                   min_value=10.0, max_value=70.0, step=1.0) / 100.0
-        feed_temp = st.number_input("Feed temp (°C)", value=55.0, min_value=20.0, max_value=100.0)
+                                   min_value=10.0, max_value=70.0, step=1.0, key="atfd_ui_number_input_2") / 100.0
+        feed_temp = st.number_input("Feed temp (°C)", value=55.0, min_value=20.0, max_value=100.0, key="atfd_ui_number_input_3")
         cp_feed = st.number_input("Sp. heat of feed (kcal/kg.K)", value=0.80,
-                                   min_value=0.1, max_value=1.5, step=0.05)
+                                   min_value=0.1, max_value=1.5, step=0.05, key="atfd_ui_number_input_4")
 
     with c2:
         st.markdown("**Product & Dryer**")
         product_ts = st.number_input("Product TS (%) — target solids", value=90.0,
-                                      min_value=50.0, max_value=99.5, step=1.0) / 100.0
+                                      min_value=50.0, max_value=99.5, step=1.0, key="atfd_ui_number_input_5") / 100.0
         shell_temp = st.number_input("Shell temp (°C)", value=170.0,
-                                      min_value=100.0, max_value=250.0, step=5.0)
+                                      min_value=100.0, max_value=250.0, step=5.0, key="atfd_ui_number_input_6")
         steam_p = st.number_input("Shell steam pressure (bar-a)", value=8.0,
-                                   min_value=1.0, max_value=20.0, step=0.5)
+                                   min_value=1.0, max_value=20.0, step=0.5, key="atfd_ui_number_input_7")
         BPE = st.number_input("Boiling point elevation (°C)", value=10.0,
-                               min_value=0.0, max_value=50.0, step=1.0)
-        U = st.number_input("U dryer (W/m²K)", value=230.0, min_value=100.0, max_value=500.0, step=10.0)
+                               min_value=0.0, max_value=50.0, step=1.0, key="atfd_ui_number_input_8")
+        U = st.number_input("U dryer (W/m²K)", value=230.0, min_value=100.0, max_value=500.0, step=10.0, key="atfd_ui_number_input_9")
 
     with c3:
         st.markdown("**Condenser & Blower**")
-        cw_in = st.number_input("CW in (°C)", value=32.0)
-        cw_out = st.number_input("CW out (°C)", value=38.0)
-        subcool = st.number_input("Subcooling (°C)", value=40.0, min_value=0.0, max_value=60.0)
+        cw_in = st.number_input("CW in (°C)", value=32.0, key="atfd_ui_number_input_10")
+        cw_out = st.number_input("CW out (°C)", value=38.0, key="atfd_ui_number_input_11")
+        subcool = st.number_input("Subcooling (°C)", value=40.0, min_value=0.0, max_value=60.0, key="atfd_ui_number_input_12")
         air_inleak = st.number_input("Air in-leak (% of vapor)", value=20.0,
-                                      min_value=0.0, max_value=50.0, step=5.0) / 100.0
-        blower_dp = st.number_input("Blower ΔP (mmWC)", value=200, min_value=50, max_value=500, step=10)
-        blower_eff = st.number_input("Blower efficiency", value=0.40, min_value=0.2, max_value=0.8, step=0.05)
+                                      min_value=0.0, max_value=50.0, step=5.0, key="atfd_ui_number_input_13") / 100.0
+        blower_dp = st.number_input("Blower ΔP (mmWC)", value=200, min_value=50, max_value=500, step=10, key="atfd_ui_number_input_14")
+        blower_eff = st.number_input("Blower efficiency", value=0.40, min_value=0.2, max_value=0.8, step=0.05, key="atfd_ui_number_input_15")
 
     # Feed characterization widget — auto-prefill from MEE concentrate if available
     from bg_process_design.ui.feed_char_ui import render_feed_char_input
@@ -82,7 +82,7 @@ def _render_input_form(client, project):
         expanded=False
     )
 
-    calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True)
+    calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True, key="atfd_ui_button_16")
 
     if calc_btn:
         inputs = {

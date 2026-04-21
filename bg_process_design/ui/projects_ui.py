@@ -25,7 +25,7 @@ def render(client):
                 "capacity_kld": 100,
                 "created_by": "local",
             }
-        if st.button("Use Local Session Project"):
+        if st.button("Use Local Session Project", key="projects_ui_button_1"):
             st.session_state["active_project"] = st.session_state["local_project"]
             st.rerun()
         return
@@ -44,22 +44,22 @@ def _render_new_project(client):
     with st.form("new_project_form"):
         c1, c2 = st.columns(2)
         with c1:
-            code = st.text_input("Project code *", placeholder="e.g. BG-MSN-2026-001")
-            name = st.text_input("Project name *", placeholder="e.g. 100 KLD ZLD System")
-            buyer = st.text_input("Buyer", placeholder="e.g. MSN Organics")
-            plant = st.text_input("Plant location", placeholder="e.g. Hyderabad")
-            capacity = st.number_input("Capacity (KLD)", value=100, min_value=1, step=10)
+            code = st.text_input("Project code *", placeholder="e.g. BG-MSN-2026-001", key="projects_ui_text_input_2")
+            name = st.text_input("Project name *", placeholder="e.g. 100 KLD ZLD System", key="projects_ui_text_input_3")
+            buyer = st.text_input("Buyer", placeholder="e.g. MSN Organics", key="projects_ui_text_input_4")
+            plant = st.text_input("Plant location", placeholder="e.g. Hyderabad", key="projects_ui_text_input_5")
+            capacity = st.number_input("Capacity (KLD)", value=100, min_value=1, step=10, key="projects_ui_number_input_6")
 
         with c2:
             scheme = st.text_input("Scheme",
-                                    placeholder="e.g. Stripper + 4-MEE + ATFD")
-            designed_by = st.text_input("Designed by")
-            checked_by = st.text_input("Checked by")
-            approved_by = st.text_input("Approved by")
-            design_date = st.date_input("Design date", value=date.today())
-            rev = st.number_input("Revision no.", value=0, min_value=0, step=1)
+                                    placeholder="e.g. Stripper + 4-MEE + ATFD", key="projects_ui_text_input_7")
+            designed_by = st.text_input("Designed by", key="projects_ui_text_input_8")
+            checked_by = st.text_input("Checked by", key="projects_ui_text_input_9")
+            approved_by = st.text_input("Approved by", key="projects_ui_text_input_10")
+            design_date = st.date_input("Design date", value=date.today(), key="projects_ui_date_input_11")
+            rev = st.number_input("Revision no.", value=0, min_value=0, step=1, key="projects_ui_number_input_12")
 
-        notes = st.text_area("Notes (optional)")
+        notes = st.text_area("Notes (optional)", key="projects_ui_text_area_13")
         submitted = st.form_submit_button("Create Project", type="primary",
                                            use_container_width=True)
 
@@ -143,19 +143,19 @@ def _render_edit_form(client, project):
     with st.form(f"edit_{project['id']}"):
         c1, c2 = st.columns(2)
         with c1:
-            name = st.text_input("Project name", value=project.get("project_name", ""))
-            buyer = st.text_input("Buyer", value=project.get("buyer") or "")
-            plant = st.text_input("Plant location", value=project.get("plant_location") or "")
+            name = st.text_input("Project name", value=project.get("project_name", ""), key="projects_ui_text_input_14")
+            buyer = st.text_input("Buyer", value=project.get("buyer") or "", key="projects_ui_text_input_15")
+            plant = st.text_input("Plant location", value=project.get("plant_location") or "", key="projects_ui_text_input_16")
             capacity = st.number_input("Capacity (KLD)",
-                                        value=float(project.get("capacity_kld") or 100))
+                                        value=float(project.get("capacity_kld") or 100), key="projects_ui_number_input_17")
         with c2:
-            scheme = st.text_input("Scheme", value=project.get("scheme") or "")
+            scheme = st.text_input("Scheme", value=project.get("scheme") or "", key="projects_ui_text_input_18")
             status = st.selectbox("Status", options=["draft", "approved", "archived"],
                                    index=["draft", "approved", "archived"].index(
-                                       project.get("status", "draft")))
-            rev = st.number_input("Revision no.", value=int(project.get("revision_no") or 0))
+                                       project.get("status", "draft")), key="projects_ui_selectbox_19")
+            rev = st.number_input("Revision no.", value=int(project.get("revision_no") or 0), key="projects_ui_number_input_20")
 
-        notes = st.text_area("Notes", value=project.get("notes") or "")
+        notes = st.text_area("Notes", value=project.get("notes") or "", key="projects_ui_text_area_21")
         c1, c2 = st.columns(2)
         with c1:
             save = st.form_submit_button("Save changes", type="primary",

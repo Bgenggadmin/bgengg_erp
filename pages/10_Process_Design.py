@@ -33,7 +33,7 @@ def _password_gate() -> bool:
     st.title("🔒 Process Design — Restricted")
     st.caption("Enter team password to access B&G process design tools.")
     pwd = st.text_input("Password", type="password", key="pd_pwd_input")
-    if st.button("Unlock", type="primary"):
+    if st.button("Unlock", type="primary", key="10_Process_Design_button_1"):
         if pwd == _TEAM_PASSWORD:
             st.session_state.pd_authenticated = True
             st.rerun()
@@ -127,11 +127,11 @@ with st.container():
             st.session_state.pd_active_project = sel_proj
 
     with c2:
-        if st.button("➕ New Project", use_container_width=True):
+        if st.button("➕ New Project", use_container_width=True, key="10_Process_Design_button_2"):
             st.session_state.pd_show_new_project = True
 
     with c3:
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("🚪 Logout", use_container_width=True, key="10_Process_Design_button_3"):
             st.session_state.pd_authenticated = False
             st.rerun()
 
@@ -149,8 +149,8 @@ if st.session_state.get("pd_show_new_project"):
             capacity_kld = c2.number_input("Capacity (KLD)", min_value=1, max_value=5000, value=100, step=10)
             scheme = c2.selectbox("Scheme", ["Stripper+MEE+ATFD", "MEE+ATFD", "MEE only", "Stripper only"])
 
-        designed_by = st.text_input("Designed By", value="")
-        notes = st.text_area("Notes", value="")
+        designed_by = st.text_input("Designed By", value="", key="10_Process_Design_text_input_4")
+        notes = st.text_area("Notes", value="", key="10_Process_Design_text_area_5")
 
         col_a, col_b = st.columns(2)
         if col_a.form_submit_button("Create", type="primary"):
@@ -215,7 +215,7 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("Full Project Export")
     st.caption("Export all design data as JSON (for PPT generation, offer bridge, etc.)")
-    if st.button("🔽 Build Full Project JSON", type="primary"):
+    if st.button("🔽 Build Full Project JSON", type="primary", key="10_Process_Design_button_6"):
         try:
             export_data = build_full_project_export(conn, proj["id"])
             import json
@@ -224,8 +224,7 @@ with tabs[4]:
                 label="📥 Download full_project.json",
                 data=json_str,
                 file_name=f"{proj['project_code']}_full_project.json",
-                mime="application/json",
-            )
+                mime="application/json", key="10_Process_Design_download_button_7")
             st.success(f"Export ready: {len(json_str)/1024:.1f} KB")
             with st.expander("Preview"):
                 st.json(export_data)

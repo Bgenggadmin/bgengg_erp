@@ -275,8 +275,7 @@ def _render_full_project_download(client, project):
             type="primary",
             use_container_width=True,
             help="Captures every calculation, equipment sizing, feed characterization, "
-                 "utilities and economics. Attach to Claude and ask: 'Prepare a PPT from this project data.'",
-        )
+                 "utilities and economics. Attach to Claude and ask: 'Prepare a PPT from this project data.'", key="dashboard_ui_download_button_1")
     else:
         st.warning("⚠️ No designs yet. Run Stripper / MEE / ATFD calculations first, "
                     "then come back here to download the full project export.")

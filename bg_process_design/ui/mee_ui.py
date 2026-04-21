@@ -36,24 +36,24 @@ def _render_input_form(client, project):
     with c1:
         st.markdown("**Feed & Concentrate**")
         feed = st.number_input("Feed rate (kg/h)", value=float(default_feed),
-                                min_value=0.0, step=100.0)
-        feed_ts = st.number_input("Feed TS (%)", value=2.2, min_value=0.0, max_value=50.0, step=0.1) / 100.0
+                                min_value=0.0, step=100.0, key="mee_ui_number_input_1")
+        feed_ts = st.number_input("Feed TS (%)", value=2.2, min_value=0.0, max_value=50.0, step=0.1, key="mee_ui_number_input_2") / 100.0
         out_ts = st.number_input("Outlet TS (%) — MEE concentrate", value=43.0,
-                                  min_value=5.0, max_value=70.0, step=1.0) / 100.0
+                                  min_value=5.0, max_value=70.0, step=1.0, key="mee_ui_number_input_3") / 100.0
 
     with c2:
         st.markdown("**Steam Side**")
-        steam_p = st.number_input("Steam pressure (bar-a)", value=3.0, min_value=1.0, max_value=10.0, step=0.1)
-        U_ph = st.number_input("U pre-heater (W/m²K)", value=800, min_value=200, max_value=1500, step=50)
-        cw_in = st.number_input("CW in (°C)", value=32.0)
-        cw_out = st.number_input("CW out (°C)", value=38.0)
+        steam_p = st.number_input("Steam pressure (bar-a)", value=3.0, min_value=1.0, max_value=10.0, step=0.1, key="mee_ui_number_input_4")
+        U_ph = st.number_input("U pre-heater (W/m²K)", value=800, min_value=200, max_value=1500, step=50, key="mee_ui_number_input_5")
+        cw_in = st.number_input("CW in (°C)", value=32.0, key="mee_ui_number_input_6")
+        cw_out = st.number_input("CW out (°C)", value=38.0, key="mee_ui_number_input_7")
 
     with c3:
         st.markdown("**Vapor Integration (from Stripper)**")
         str_vap = st.number_input("Stripper vapor available (kg/h)", value=0.0, min_value=0.0, step=10.0,
-                                   help="Set to 0 if no vapor integration")
-        str_solv = st.number_input("Stripper vapor solvent %", value=45.0, min_value=0.0, max_value=100.0) / 100.0
-        str_water = st.number_input("Stripper vapor water %", value=55.0, min_value=0.0, max_value=100.0) / 100.0
+                                   help="Set to 0 if no vapor integration", key="mee_ui_number_input_8")
+        str_solv = st.number_input("Stripper vapor solvent %", value=45.0, min_value=0.0, max_value=100.0, key="mee_ui_number_input_9") / 100.0
+        str_water = st.number_input("Stripper vapor water %", value=55.0, min_value=0.0, max_value=100.0, key="mee_ui_number_input_10") / 100.0
 
     # ----- Number of Effects (drives dynamic inputs below) -----
     st.markdown("---")
@@ -62,8 +62,7 @@ def _render_input_form(client, project):
         "Number of Effects",
         options=[2, 3, 4, 5, 6, 7],
         value=4,
-        help="Pick the number of MEE effects. Inputs below adjust automatically."
-    )
+        help="Pick the number of MEE effects. Inputs below adjust automatically.", key="mee_ui_select_slider_11")
     n_ph = n_effects + 1  # +1 for PH-C (condenser preheater)
 
     # Auto-generate defaults for N effects
@@ -145,13 +144,13 @@ def _render_input_form(client, project):
     st.markdown("**Economics Inputs**")
     ec1, ec2, ec3 = st.columns(3)
     with ec1:
-        op_h = st.number_input("Operating hours/day", value=20, min_value=1, max_value=24)
-        op_d = st.number_input("Operating days/year", value=300, min_value=1, max_value=365)
+        op_h = st.number_input("Operating hours/day", value=20, min_value=1, max_value=24, key="mee_ui_number_input_12")
+        op_d = st.number_input("Operating days/year", value=300, min_value=1, max_value=365, key="mee_ui_number_input_13")
     with ec2:
-        steam_cost = st.number_input("Steam cost (INR/kg)", value=2.0, min_value=0.1, step=0.5)
-        power_cost = st.number_input("Power cost (INR/kWh)", value=8.0, min_value=0.1, step=0.5)
+        steam_cost = st.number_input("Steam cost (INR/kg)", value=2.0, min_value=0.1, step=0.5, key="mee_ui_number_input_14")
+        power_cost = st.number_input("Power cost (INR/kWh)", value=8.0, min_value=0.1, step=0.5, key="mee_ui_number_input_15")
     with ec3:
-        cw_cost = st.number_input("CW cost (INR/m³)", value=90.0, min_value=0.0, step=10.0)
+        cw_cost = st.number_input("CW cost (INR/m³)", value=90.0, min_value=0.0, step=10.0, key="mee_ui_number_input_16")
 
     # Feed characterization widget — auto-prefill from stripper if available
     from bg_process_design.ui.feed_char_ui import render_feed_char_input
@@ -173,10 +172,9 @@ def _render_input_form(client, project):
         "Auto-calculate BPR per effect from TS concentration",
         value=False,
         help="When on, BPR is calculated via correlation BPR = 0.5+0.5·exp(4·(TS-0.10)) per effect. "
-             "When off, uses the BPR values entered above."
-    )
+             "When off, uses the BPR values entered above.", key="mee_ui_checkbox_17")
 
-    calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True)
+    calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True, key="mee_ui_button_18")
 
     if calc_btn:
         inputs = {

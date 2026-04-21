@@ -25,35 +25,35 @@ def _render_input_form(client, project):
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("**Mass Balance**")
-        feed = st.number_input("Feed rate (kg/h)", value=5000.0, min_value=0.0, step=100.0)
-        solv_frac = st.number_input("Solvent fraction (w/w)", value=0.07, min_value=0.0, max_value=1.0, step=0.01, format="%.3f")
-        solids_frac = st.number_input("Solids fraction (w/w)", value=0.07, min_value=0.0, max_value=1.0, step=0.01, format="%.3f")
-        water_frac = st.number_input("Water fraction (w/w)", value=0.86, min_value=0.0, max_value=1.0, step=0.01, format="%.3f")
-        recov = st.number_input("Solvent recovery (%)", value=98.0, min_value=80.0, max_value=100.0, step=0.5) / 100.0
+        feed = st.number_input("Feed rate (kg/h)", value=5000.0, min_value=0.0, step=100.0, key="stripper_ui_number_input_1")
+        solv_frac = st.number_input("Solvent fraction (w/w)", value=0.07, min_value=0.0, max_value=1.0, step=0.01, format="%.3f", key="stripper_ui_number_input_2")
+        solids_frac = st.number_input("Solids fraction (w/w)", value=0.07, min_value=0.0, max_value=1.0, step=0.01, format="%.3f", key="stripper_ui_number_input_3")
+        water_frac = st.number_input("Water fraction (w/w)", value=0.86, min_value=0.0, max_value=1.0, step=0.01, format="%.3f", key="stripper_ui_number_input_4")
+        recov = st.number_input("Solvent recovery (%)", value=98.0, min_value=80.0, max_value=100.0, step=0.5, key="stripper_ui_number_input_5") / 100.0
 
     with col2:
         st.markdown("**Operating Conditions**")
-        feed_temp = st.number_input("Feed temperature (°C)", value=85.0, min_value=20.0, max_value=150.0)
-        steam_p = st.number_input("Steam pressure (bar-a)", value=3.0, min_value=1.0, max_value=10.0, step=0.1)
-        approach = st.number_input("Approach (°C)", value=35.0, min_value=5.0, max_value=100.0)
-        reflux = st.number_input("Reflux ratio L/D", value=0.25, min_value=0.0, max_value=10.0, step=0.05)
-        sp_solv = st.number_input("Sp. heat solvent (kJ/kg.K)", value=2.14, min_value=0.1, step=0.1)
-        rho_L = st.number_input("Liquid density (kg/m³)", value=900.0, min_value=500.0, max_value=1500.0)
+        feed_temp = st.number_input("Feed temperature (°C)", value=85.0, min_value=20.0, max_value=150.0, key="stripper_ui_number_input_6")
+        steam_p = st.number_input("Steam pressure (bar-a)", value=3.0, min_value=1.0, max_value=10.0, step=0.1, key="stripper_ui_number_input_7")
+        approach = st.number_input("Approach (°C)", value=35.0, min_value=5.0, max_value=100.0, key="stripper_ui_number_input_8")
+        reflux = st.number_input("Reflux ratio L/D", value=0.25, min_value=0.0, max_value=10.0, step=0.05, key="stripper_ui_number_input_9")
+        sp_solv = st.number_input("Sp. heat solvent (kJ/kg.K)", value=2.14, min_value=0.1, step=0.1, key="stripper_ui_number_input_10")
+        rho_L = st.number_input("Liquid density (kg/m³)", value=900.0, min_value=500.0, max_value=1500.0, key="stripper_ui_number_input_11")
 
     with col3:
         st.markdown("**Column Hardware**")
-        n_trays = st.number_input("No. of trays", value=25, min_value=5, max_value=60, step=1)
-        tray_spacing = st.number_input("Tray spacing (m)", value=0.45, min_value=0.2, max_value=1.0, step=0.05)
-        hole_dia = st.number_input("Tray hole dia (mm)", value=6.5, min_value=3.0, max_value=15.0, step=0.5)
-        weir_height = st.number_input("Weir height (mm)", value=50.8, min_value=25.0, max_value=150.0)
-        cw_in = st.number_input("CW in (°C)", value=32.0)
-        cw_out = st.number_input("CW out (°C)", value=37.0)
+        n_trays = st.number_input("No. of trays", value=25, min_value=5, max_value=60, step=1, key="stripper_ui_number_input_12")
+        tray_spacing = st.number_input("Tray spacing (m)", value=0.45, min_value=0.2, max_value=1.0, step=0.05, key="stripper_ui_number_input_13")
+        hole_dia = st.number_input("Tray hole dia (mm)", value=6.5, min_value=3.0, max_value=15.0, step=0.5, key="stripper_ui_number_input_14")
+        weir_height = st.number_input("Weir height (mm)", value=50.8, min_value=25.0, max_value=150.0, key="stripper_ui_number_input_15")
+        cw_in = st.number_input("CW in (°C)", value=32.0, key="stripper_ui_number_input_16")
+        cw_out = st.number_input("CW out (°C)", value=37.0, key="stripper_ui_number_input_17")
 
     st.markdown("**Solvent Mixture** (enter weight fractions — will auto-normalize)")
     solv_options = list_solvent_names()
     default_mix = {"Methanol": 0.60, "Ethanol": 0.10, "Acetone": 0.10, "Toluene": 0.10, "IPA": 0.10}
     selected = st.multiselect("Solvents present", options=solv_options,
-                              default=list(default_mix.keys()))
+                              default=list(default_mix.keys()), key="stripper_ui_multiselect_18")
 
     solvent_mix = {}
     if selected:
@@ -67,15 +67,15 @@ def _render_input_form(client, project):
                 )
 
     st.markdown("**Condenser-2 (Chilled Water)** — optional")
-    use_c2 = st.checkbox("Include Condenser-2 for light solvents", value=False)
+    use_c2 = st.checkbox("Include Condenser-2 for light solvents", value=False, key="stripper_ui_checkbox_19")
     chw_in = 10.0
     chw_out = 15.0
     subcool = 30.0
     if use_c2:
         c1, c2, c3 = st.columns(3)
-        with c1: chw_in = st.number_input("CHW in (°C)", value=10.0)
-        with c2: chw_out = st.number_input("CHW out (°C)", value=15.0)
-        with c3: subcool = st.number_input("Subcooling (°C)", value=30.0)
+        with c1: chw_in = st.number_input("CHW in (°C)", value=10.0, key="stripper_ui_number_input_20")
+        with c2: chw_out = st.number_input("CHW out (°C)", value=15.0, key="stripper_ui_number_input_21")
+        with c3: subcool = st.number_input("Subcooling (°C)", value=30.0, key="stripper_ui_number_input_22")
 
     fraction_sum = solv_frac + solids_frac + water_frac
     if abs(fraction_sum - 1.0) > 0.01:
@@ -89,7 +89,7 @@ def _render_input_form(client, project):
         expanded=False
     )
 
-    calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True)
+    calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True, key="stripper_ui_button_23")
 
     if calc_btn:
         inputs = {
@@ -213,11 +213,11 @@ def _render_results(client, project, r, inputs):
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         design_name = st.text_input("Design name (optional)",
-                                     placeholder="e.g. Rev 0 - Base case")
+                                     placeholder="e.g. Rev 0 - Base case", key="stripper_ui_text_input_24")
     with c2:
         st.write("")
         st.write("")
-        if st.button("💾 Save to DB", type="primary", use_container_width=True):
+        if st.button("💾 Save to DB", type="primary", use_container_width=True, key="stripper_ui_button_25"):
             if not client:
                 st.warning("Supabase not configured — results kept in session only.")
             else:
@@ -243,8 +243,7 @@ def _render_results(client, project, r, inputs):
             file_name=filename,
             mime="application/json",
             use_container_width=True,
-            help="Download design data as JSON. Attach to Claude and ask to prepare a PPT."
-        )
+            help="Download design data as JSON. Attach to Claude and ask to prepare a PPT.", key="stripper_ui_download_button_26")
 
 
 def _render_saved_designs(client, project):
