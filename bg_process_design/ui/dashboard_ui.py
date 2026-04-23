@@ -87,10 +87,10 @@ def _render_linked_summary(client, project):
         st.markdown("**🧪 Stripper**")
         if strip:
             d = strip[0]
-            st.metric("Feed", f"{d.get('feed_kgh') or 0:.0f} kg/h")
-            st.metric("Bottoms → MEE", f"{d.get('bottoms_kgh') or 0:.0f} kg/h")
-            st.metric("Steam", f"{d.get('steam_consumption_kgh') or 0:.0f} kg/h")
-            st.metric("Col Dia", f"{d.get('column_dia_selected_m') or 0:.2f} m")
+            st.metric("Feed", f"{(d.get('results') or {}).get('feed_kgh') or 0:.0f} kg/h")
+            st.metric("Bottoms → MEE", f"{(d.get('results') or {}).get('bottoms_kgh') or 0:.0f} kg/h")
+            st.metric("Steam", f"{(d.get('results') or {}).get('steam_consumption_kgh') or 0:.0f} kg/h")
+            st.metric("Col Dia", f"{(d.get('results') or {}).get('column_dia_selected_m') or 0:.2f} m")
         else:
             st.caption("— No design —")
 
@@ -98,10 +98,10 @@ def _render_linked_summary(client, project):
         st.markdown("**💧 MEE**")
         if mee:
             d = mee[0]
-            st.metric("Feed", f"{d.get('feed_kgh') or 0:.0f} kg/h")
-            st.metric("Concentrate → ATFD", f"{d.get('final_concentrate_kgh') or 0:.0f} kg/h")
-            st.metric("Steam", f"{d.get('steam_consumption_kgh') or 0:.0f} kg/h")
-            st.metric("SE", f"{d.get('steam_economy') or 0:.2f}")
+            st.metric("Feed", f"{(d.get('results') or {}).get('feed_kgh') or 0:.0f} kg/h")
+            st.metric("Concentrate → ATFD", f"{(d.get('results') or {}).get('final_concentrate_kgh') or 0:.0f} kg/h")
+            st.metric("Steam", f"{(d.get('results') or {}).get('steam_consumption_kgh') or 0:.0f} kg/h")
+            st.metric("SE", f"{(d.get('results') or {}).get('steam_economy') or 0:.2f}")
         else:
             st.caption("— No design —")
 
@@ -109,10 +109,10 @@ def _render_linked_summary(client, project):
         st.markdown("**🌡 ATFD**")
         if atfd:
             d = atfd[0]
-            st.metric("Feed", f"{d.get('feed_kgh') or 0:.0f} kg/h")
-            st.metric("Dry Product", f"{d.get('product_kgh') or 0:.1f} kg/h")
-            st.metric("HTA", f"{d.get('hta_selected_m2') or 0} m²")
-            st.metric("Motor", f"{d.get('motor_hp') or 0} HP")
+            st.metric("Feed", f"{(d.get('results') or {}).get('feed_kgh') or 0:.0f} kg/h")
+            st.metric("Dry Product", f"{(d.get('results') or {}).get('product_kgh') or 0:.1f} kg/h")
+            st.metric("HTA", f"{(d.get('results') or {}).get('hta_selected_m2') or 0} m²")
+            st.metric("Motor", f"{(d.get('results') or {}).get('motor_hp') or 0} HP")
         else:
             st.caption("— No design —")
 
@@ -120,10 +120,10 @@ def _render_linked_summary(client, project):
     if strip and mee and atfd:
         st.divider()
         st.markdown("### Mass Balance Check (Stripper → MEE → ATFD)")
-        strip_out = strip[0].get("bottoms_kgh") or 0
-        mee_in = mee[0].get("feed_kgh") or 0
-        mee_out = mee[0].get("final_concentrate_kgh") or 0
-        atfd_in = atfd[0].get("feed_kgh") or 0
+        strip_out = (strip[0].get('results') or {}).get("bottoms_kgh") or 0
+        mee_in = (mee[0].get('results') or {}).get("feed_kgh") or 0
+        mee_out = (mee[0].get('results') or {}).get("final_concentrate_kgh") or 0
+        atfd_in = (atfd[0].get('results') or {}).get("feed_kgh") or 0
 
         cc1, cc2 = st.columns(2)
         with cc1:
@@ -195,20 +195,20 @@ def _render_session_summary():
     with c1:
         if strip:
             st.markdown("**Stripper**")
-            st.metric("Feed", f"{strip.get('feed_kgh', 0):.0f} kg/h")
-            st.metric("Col Dia", f"{strip.get('column_dia_selected_m', 0):.2f} m")
-            st.metric("Steam", f"{strip.get('steam_consumption_kgh', 0):.0f} kg/h")
+            st.metric("Feed", f"{(strip.get('results') or {}).get('feed_kgh', 0):.0f} kg/h")
+            st.metric("Col Dia", f"{(strip.get('results') or {}).get('column_dia_selected_m', 0):.2f} m")
+            st.metric("Steam", f"{(strip.get('results') or {}).get('steam_consumption_kgh', 0):.0f} kg/h")
     with c2:
         if mee:
             st.markdown("**MEE**")
-            st.metric("Feed", f"{mee.get('feed_kgh', 0):.0f} kg/h")
-            st.metric("Evap", f"{mee.get('total_evap_kgh', 0):.0f} kg/h")
-            st.metric("SE", f"{mee.get('steam_economy', 0):.2f}")
+            st.metric("Feed", f"{(mee.get('results') or {}).get('feed_kgh', 0):.0f} kg/h")
+            st.metric("Evap", f"{(mee.get('results') or {}).get('total_evap_kgh', 0):.0f} kg/h")
+            st.metric("SE", f"{(mee.get('results') or {}).get('steam_economy', 0):.2f}")
     with c3:
         if atfd:
             st.markdown("**ATFD**")
-            st.metric("Feed", f"{atfd.get('feed_kgh', 0):.0f} kg/h")
-            st.metric("Product", f"{atfd.get('product_kgh', 0):.1f} kg/h")
+            st.metric("Feed", f"{(atfd.get('results') or {}).get('feed_kgh', 0):.0f} kg/h")
+            st.metric("Product", f"{(atfd.get('results') or {}).get('product_kgh', 0):.1f} kg/h")
             st.metric("HTA", f"{atfd.get('HTA_selected_m2', 0)} m²")
 
 

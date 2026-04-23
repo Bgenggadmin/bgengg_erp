@@ -67,16 +67,16 @@ def _render_new_project(client):
             if not code or not name:
                 st.error("Project code and name are required.")
             else:
+                # Only include fields that exist in the pd_projects schema
                 data = {
-                    "project_code": code, "project_name": name,
-                    "buyer": buyer or None, "plant_location": plant or None,
-                    "capacity_kld": capacity, "scheme": scheme or None,
+                    "project_code": code,
+                    "project_name": name,
+                    "plant_location": plant or None,
+                    "capacity_kld": capacity,
+                    "scheme": scheme or None,
                     "designed_by": designed_by or None,
-                    "checked_by": checked_by or None,
-                    "approved_by": approved_by or None,
-                    "design_date": design_date.isoformat() if design_date else None,
-                    "revision_no": rev, "notes": notes or None,
-                    "created_by": designed_by or "system",
+                    "notes": notes or None,
+                    "status": "active",
                 }
                 created = create_project(client, data)
                 if created:

@@ -392,7 +392,7 @@ def _render_results(client, project, r, inputs):
                 if saved:
                     log_action(client, project["id"], "mee", "create",
                                project.get("created_by", ""), {"design_id": saved["id"]})
-                    st.success(f"✅ Saved. ID: {saved['id'][:8]}…")
+                    st.success(f"✅ Saved. Design ID: {saved.get('id', '?')}")
     with c3:
         st.write("")
         st.write("")
@@ -426,13 +426,13 @@ def _render_saved_designs(client, project):
 
     for d in designs:
         with st.expander(f"📋 {d.get('design_name', 'unnamed')}  "
-                        f"— Evap {d.get('total_evap_kgh', 0):.0f} kg/h, "
-                        f"SE {d.get('steam_economy', 0):.2f}  ({d['created_at'][:10]})"):
+                        f"— Evap {(d.get('results') or {}).get('total_evap_kgh', 0):.0f} kg/h, "
+                        f"SE {(d.get('results') or {}).get('steam_economy', 0):.2f}  ({d['created_at'][:10]})"):
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Feed", f"{d.get('feed_kgh') or 0:.0f} kg/h")
-            c2.metric("Evap", f"{d.get('total_evap_kgh') or 0:.0f} kg/h")
-            c3.metric("Steam", f"{d.get('steam_consumption_kgh') or 0:.0f} kg/h")
-            c4.metric("SE", f"{d.get('steam_economy') or 0:.2f}")
+            c1.metric("Feed", f"{(d.get('results') or {}).get('feed_kgh') or 0:.0f} kg/h")
+            c2.metric("Evap", f"{(d.get('results') or {}).get('total_evap_kgh') or 0:.0f} kg/h")
+            c3.metric("Steam", f"{(d.get('results') or {}).get('steam_consumption_kgh') or 0:.0f} kg/h")
+            c4.metric("SE", f"{(d.get('results') or {}).get('steam_economy') or 0:.2f}")
 
             b1, b2 = st.columns(2)
             with b1:

@@ -227,7 +227,7 @@ def _render_results(client, project, r, inputs):
                 if saved:
                     log_action(client, project["id"], "stripper", "create",
                                project.get("created_by", ""), {"design_id": saved["id"]})
-                    st.success(f"✅ Saved. ID: {saved['id'][:8]}…")
+                    st.success(f"✅ Saved. Design ID: {saved.get('id', '?')}")
     with c3:
         st.write("")
         st.write("")
@@ -259,14 +259,14 @@ def _render_saved_designs(client, project):
 
     for d in designs:
         with st.expander(f"📋 {d.get('design_name', 'unnamed')}  "
-                        f"— Col {d.get('column_dia_selected_m', 0):.2f} m, "
-                        f"Steam {d.get('steam_consumption_kgh', 0):.0f} kg/h  "
+                        f"— Col {(d.get('results') or {}).get('column_dia_selected_m', 0):.2f} m, "
+                        f"Steam {(d.get('results') or {}).get('steam_consumption_kgh', 0):.0f} kg/h  "
                         f"({d['created_at'][:10]})"):
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Column Dia", f"{d.get('column_dia_selected_m') or 0:.2f} m")
-            c2.metric("Trays", d.get("no_of_trays") or 0)
-            c3.metric("Reboiler HTA", f"{d.get('reboiler_hta_selected') or 0:.1f} m²")
-            c4.metric("Steam", f"{d.get('steam_consumption_kgh') or 0:.0f} kg/h")
+            c1.metric("Column Dia", f"{(d.get('results') or {}).get('column_dia_selected_m') or 0:.2f} m")
+            c2.metric("Trays", (d.get('results') or {}).get("no_of_trays") or 0)
+            c3.metric("Reboiler HTA", f"{(d.get('results') or {}).get('reboiler_hta_selected') or 0:.1f} m²")
+            c4.metric("Steam", f"{(d.get('results') or {}).get('steam_consumption_kgh') or 0:.0f} kg/h")
 
             b1, b2 = st.columns(2)
             with b1:
