@@ -111,7 +111,7 @@ def _render_linked_summary(client, project):
             d = atfd[0]
             st.metric("Feed", f"{(d.get('results') or {}).get('feed_kgh') or 0:.0f} kg/h")
             st.metric("Dry Product", f"{(d.get('results') or {}).get('product_kgh') or 0:.1f} kg/h")
-            st.metric("HTA", f"{(d.get('results') or {}).get('hta_selected_m2') or 0} m²")
+            st.metric("HTA", f"{(d.get('results') or {}).get('HTA_selected_m2') or 0} m²")
             st.metric("Motor", f"{(d.get('results') or {}).get('motor_hp') or 0} HP")
         else:
             st.caption("— No design —")

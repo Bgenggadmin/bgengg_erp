@@ -265,7 +265,7 @@ def _render_saved_designs(client, project):
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Column Dia", f"{(d.get('results') or {}).get('column_dia_selected_m') or 0:.2f} m")
             c2.metric("Trays", (d.get('results') or {}).get("no_of_trays") or 0)
-            c3.metric("Reboiler HTA", f"{(d.get('results') or {}).get('reboiler_hta_selected') or 0:.1f} m²")
+            c3.metric("Reboiler HTA", f"{(d.get('results') or {}).get('reboiler_HTA_selected') or 0:.1f} m²")
             c4.metric("Steam", f"{(d.get('results') or {}).get('steam_consumption_kgh') or 0:.0f} kg/h")
 
             b1, b2 = st.columns(2)

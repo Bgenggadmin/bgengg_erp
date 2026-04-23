@@ -263,12 +263,12 @@ def _render_saved_designs(client, project):
 
     for d in designs:
         with st.expander(f"📋 {d.get('design_name', 'unnamed')}  "
-                        f"— HTA {(d.get('results') or {}).get('hta_selected_m2', 0)} m², "
+                        f"— HTA {(d.get('results') or {}).get('HTA_selected_m2', 0)} m², "
                         f"Motor {(d.get('results') or {}).get('motor_hp', 0)} HP  ({d['created_at'][:10]})"):
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Feed", f"{(d.get('results') or {}).get('feed_kgh') or 0:.0f} kg/h")
             c2.metric("Product", f"{(d.get('results') or {}).get('product_kgh') or 0:.1f} kg/h")
-            c3.metric("HTA", f"{(d.get('results') or {}).get('hta_selected_m2') or 0} m²")
+            c3.metric("HTA", f"{(d.get('results') or {}).get('HTA_selected_m2') or 0} m²")
             c4.metric("Steam", f"{(d.get('results') or {}).get('steam_consumption_kgh') or 0:.0f} kg/h")
 
             b1, b2 = st.columns(2)
