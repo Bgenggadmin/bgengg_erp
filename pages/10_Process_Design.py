@@ -67,6 +67,7 @@ from bg_process_design.ui import projects_ui, dashboard_ui
 from bg_process_design.ui import stripper_ui, mee_ui, atfd_ui
 from bg_process_design.utils.export_utils import build_full_project_export
 from bg_process_design.utils.pdf_deck import build_client_deck_pdf
+from bg_process_design.utils.excel_export import build_review_workbook
 
 
 # ---------------------------------------------------------------------
@@ -320,3 +321,77 @@ with tabs[4]:
             use_container_width=True,
         )
     # --- end PDF CLIENT DECK block ---
+
+    # --- REVIEW EXCEL (v6 auto-added) ---
+    st.divider()
+    st.markdown("#### 📊 Design Review Excel")
+    st.caption(
+        "Generate a 5-sheet Excel workbook with all design outputs for manager review. "
+        "Static values only — read-only summary of what has been calculated."
+    )
+
+    # Reuse the same _pdf_data if it was built by the PDF section above;
+    # otherwise build it here.
+    try:
+        _xlsx_source = _pdf_data
+    except NameError:
+        try:
+            _xlsx_source = build_full_project_export(conn, proj["id"])
+        except Exception as _e:
+            _xlsx_source = {}
+            st.warning(f"Could not load project data for Excel: {_e}")
+
+    _has_any_design = bool(
+        (_xlsx_source.get("stripper") or {}).get("results") or
+        (_xlsx_source.get("mee") or {}).get("results") or
+        (_xlsx_source.get("atfd") or {}).get("results")
+    )
+
+    _c_xl_info, _c_xl_btn = st.columns([3, 1])
+    with _c_xl_info:
+        if not _has_any_design:
+            st.warning("No designs saved yet. Save at least one unit design first.")
+        else:
+            st.markdown(
+                "Includes: **Project Summary** • **Stripper** • "
+                "**MEE** • **ATFD** • **Plant-Wide** "
+                "(utilities, pump schedule, feed trace, economics)"
+            )
+
+    with _c_xl_btn:
+        _gen_xlsx = st.button(
+            "📊 Generate Excel",
+            key="pd_export_gen_xlsx_btn",
+            type="primary",
+            disabled=(not _has_any_design),
+            use_container_width=True,
+        )
+
+    if _gen_xlsx:
+        with st.spinner("Building review workbook…"):
+            try:
+                _xlsx_bytes = build_review_workbook(_xlsx_source)
+                st.session_state["pd_export_xlsx_bytes"] = _xlsx_bytes
+                st.session_state["pd_export_xlsx_filename"] = (
+                    f"BG_{proj.get('project_code', 'project')}_Review.xlsx"
+                )
+                st.success(f"✅ Workbook ready ({len(_xlsx_bytes)/1024:.0f} KB, 5 sheets)")
+            except Exception as _e:
+                st.error(f"Excel generation failed: {_e}")
+                import traceback
+                with st.expander("Error details"):
+                    st.code(traceback.format_exc())
+
+    if st.session_state.get("pd_export_xlsx_bytes"):
+        st.download_button(
+            "⬇️ Download Review Excel",
+            data=st.session_state["pd_export_xlsx_bytes"],
+            file_name=st.session_state.get(
+                "pd_export_xlsx_filename", "BG_Review.xlsx"
+            ),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="pd_export_xlsx_download_btn",
+            use_container_width=True,
+        )
+    # --- end REVIEW EXCEL block ---
+
