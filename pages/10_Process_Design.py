@@ -66,6 +66,7 @@ from bg_process_design.db import (
 from bg_process_design.ui import projects_ui, dashboard_ui
 from bg_process_design.ui import stripper_ui, mee_ui, atfd_ui
 from bg_process_design.utils.export_utils import build_full_project_export
+from bg_process_design.utils.pdf_deck import build_client_deck_pdf
 
 
 # ---------------------------------------------------------------------
@@ -238,3 +239,84 @@ with tabs[4]:
             st.error(f"Export failed: {e}")
             import traceback
             st.code(traceback.format_exc())
+
+    # --- PDF CLIENT DECK (v5 auto-added) ---
+    st.divider()
+    st.markdown("#### 📑 Client Presentation Deck")
+    st.caption(
+        "Generate a 10-slide branded PDF presentation from this project's "
+        "saved designs. Ready to share with clients — no external tools needed."
+    )
+
+    # Build export data on demand so the button reflects current DB state
+    try:
+        _pdf_data = build_full_project_export(conn, proj["id"])
+    except Exception as _e:
+        _pdf_data = {}
+        st.warning(f"Could not load project data for PDF: {_e}")
+
+    _has_strip = bool((_pdf_data.get("stripper") or {}).get("results"))
+    _has_mee = bool((_pdf_data.get("mee") or {}).get("results"))
+    _has_atfd = bool((_pdf_data.get("atfd") or {}).get("results"))
+    _stages_saved = sum([_has_strip, _has_mee, _has_atfd])
+
+    _c_info, _c_btn = st.columns([3, 1])
+    with _c_info:
+        _icons = (
+            f"{'✅' if _has_strip else '⚪'} Stripper  "
+            f"{'✅' if _has_mee else '⚪'} MEE  "
+            f"{'✅' if _has_atfd else '⚪'} ATFD"
+        )
+        st.markdown(f"**Designs included:** {_icons}")
+        if _stages_saved == 0:
+            st.warning("No designs saved yet. Save at least one unit design first.")
+
+    with _c_btn:
+        _gen_pdf = st.button(
+            "📑 Generate PDF",
+            key="pd_export_gen_pdf_btn",
+            type="primary",
+            disabled=(_stages_saved == 0),
+            use_container_width=True,
+        )
+
+    if _gen_pdf:
+        with st.spinner("Building PDF deck…"):
+            try:
+                # Try to fetch logo from Supabase (same loader the Offer Generator uses)
+                _logo_bytes = None
+                try:
+                    from bg_offer_generator.utils.assets import load_brand_assets
+                    _logo_bytes, _, _ = load_brand_assets()
+                except Exception:
+                    pass  # fall back to text wordmark
+
+                _designer = (proj.get("designed_by") or "Design Team").upper()
+                _pdf_bytes = build_client_deck_pdf(
+                    _pdf_data,
+                    logo_bytes=_logo_bytes,
+                    prepared_label=f"Prepared by B&G Engineering  •  {_designer}",
+                )
+                st.session_state["pd_export_pdf_bytes"] = _pdf_bytes
+                st.session_state["pd_export_pdf_filename"] = (
+                    f"BG_{proj.get('project_code', 'project')}_ClientDeck.pdf"
+                )
+                st.success(f"✅ Deck ready ({len(_pdf_bytes)/1024:.0f} KB, 10 slides)")
+            except Exception as _e:
+                st.error(f"PDF generation failed: {_e}")
+                import traceback
+                with st.expander("Error details"):
+                    st.code(traceback.format_exc())
+
+    if st.session_state.get("pd_export_pdf_bytes"):
+        st.download_button(
+            "⬇️ Download Client Deck PDF",
+            data=st.session_state["pd_export_pdf_bytes"],
+            file_name=st.session_state.get(
+                "pd_export_pdf_filename", "BG_ClientDeck.pdf"
+            ),
+            mime="application/pdf",
+            key="pd_export_pdf_download_btn",
+            use_container_width=True,
+        )
+    # --- end PDF CLIENT DECK block ---
