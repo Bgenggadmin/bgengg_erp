@@ -284,3 +284,97 @@ PUMP_DEFAULTS = {
     "atfd_cond_pump":          {"head_mlc": 20, "efficiency": 0.55, "density_kgm3": 1000},
     "atfd_cw_pump":            {"head_mlc": 20, "efficiency": 0.70, "density_kgm3": 1000},
 }
+
+
+# ---------------------------------------------------------------------
+# HX SERVICE PRESETS (v7) — tube geometry defaults per HX service type
+# ---------------------------------------------------------------------
+# These are the same hardcoded defaults that were in stripper.py/mee.py/atfd.py
+# previously, just centralised here so they can be overridden per project / per HX
+# from the UI. Each engine module looks up its preset, then applies project-level
+# overrides, then per-HX overrides — see resolve_hx_specs() below.
+
+SERVICE_PRESETS = {
+    "REBOILER":       {"od_mm": 38.1, "thk_mm": 1.65, "length_m": 3.0, "passes": 2, "velocity_ms": 1.5},
+    "CONDENSER_CW":   {"od_mm": 25.4, "thk_mm": 1.65, "length_m": 3.0, "passes": 6, "velocity_ms": 1.8},
+    "CONDENSER_CHW":  {"od_mm": 25.4, "thk_mm": 1.20, "length_m": 3.0, "passes": 4, "velocity_ms": 1.7},
+    "CALANDRIA":      {"od_mm": 50.8, "thk_mm": 2.00, "length_m": 6.0, "passes": 1, "velocity_ms": 1.5},
+    "PREHEATER":      {"od_mm": 25.4, "thk_mm": 1.60, "length_m": 6.0, "passes": 5, "velocity_ms": 1.5},
+    "MEE_CONDENSER":  {"od_mm": 25.4, "thk_mm": 1.60, "length_m": 6.0, "passes": 4, "velocity_ms": 1.55},
+    "ATFD_CONDENSER": {"od_mm": 25.4, "thk_mm": 1.65, "length_m": 3.0, "passes": 6, "velocity_ms": 1.6},
+}
+
+# Standard tube OD values offered in the UI dropdown (mm).
+# 'Custom' means the designer typed a non-standard value.
+STANDARD_TUBE_OD_MM = [19.05, 25.40, 31.75, 38.10, 50.80]
+
+# Standard pass counts offered in the UI dropdown.
+STANDARD_PASS_COUNTS = [1, 2, 4, 6, 8]
+
+
+def resolve_hx_specs(inputs: dict, hx_key: str, service: str) -> dict:
+    """
+    Resolve tube specs for a single HX with this lookup order:
+
+        1. inputs['hx_specs'][hx_key]  — designer's per-HX override (most specific)
+        2. inputs['hx_specs']['_project_default']  — designer's project-wide default
+        3. SERVICE_PRESETS[service]    — hardcoded default for this service type
+
+    Args:
+      inputs: the full inputs dict passed to calc_stripper / calc_mee / calc_atfd.
+      hx_key: stable identifier for this HX (e.g. 'reboiler', 'condenser1',
+              'condenser2', 'calandria_1', 'calandria_2', 'preheater_1',
+              'mee_condenser', 'atfd_condenser').
+      service: SERVICE_PRESETS key — chooses the safe default ('REBOILER',
+               'CONDENSER_CW', 'CALANDRIA', 'PREHEATER', etc.)
+
+    Returns dict with keys:  od_mm, thk_mm, length_m, passes, velocity_ms
+    """
+    # Start with the service-level preset
+    base = dict(SERVICE_PRESETS.get(service, SERVICE_PRESETS["CONDENSER_CW"]))
+
+    hx_specs_in = inputs.get("hx_specs") or {}
+
+    # Apply project-wide override (if present)
+    proj_default = hx_specs_in.get("_project_default") or {}
+    for k, v in proj_default.items():
+        if v is not None:
+            base[k] = v
+
+    # Apply per-HX override (if present)
+    per_hx = hx_specs_in.get(hx_key) or {}
+    for k, v in per_hx.items():
+        if v is not None:
+            base[k] = v
+
+    return base
+
+
+def build_default_hx_specs() -> dict:
+    """
+    Build a default hx_specs dict (all HX types pre-populated with their
+    service presets). Useful for initialising the UI for a new project.
+
+    Returns the full nested structure that will be stored in inputs['hx_specs'].
+    """
+    return {
+        "_project_default": {},  # empty = use service presets
+        # Stripper HX
+        "reboiler":       dict(SERVICE_PRESETS["REBOILER"]),
+        "condenser1":     dict(SERVICE_PRESETS["CONDENSER_CW"]),
+        "condenser2":     dict(SERVICE_PRESETS["CONDENSER_CHW"]),
+        # MEE HX (per-effect)
+        "calandria_1":    dict(SERVICE_PRESETS["CALANDRIA"]),
+        "calandria_2":    dict(SERVICE_PRESETS["CALANDRIA"]),
+        "calandria_3":    dict(SERVICE_PRESETS["CALANDRIA"]),
+        "calandria_4":    dict(SERVICE_PRESETS["CALANDRIA"]),
+        "preheater_1":    dict(SERVICE_PRESETS["PREHEATER"]),
+        "preheater_2":    dict(SERVICE_PRESETS["PREHEATER"]),
+        "preheater_3":    dict(SERVICE_PRESETS["PREHEATER"]),
+        "preheater_4":    dict(SERVICE_PRESETS["PREHEATER"]),
+        "preheater_c":    dict(SERVICE_PRESETS["PREHEATER"]),
+        "mee_condenser":  dict(SERVICE_PRESETS["MEE_CONDENSER"]),
+        # ATFD HX
+        "atfd_condenser": dict(SERVICE_PRESETS["ATFD_CONDENSER"]),
+    }
+

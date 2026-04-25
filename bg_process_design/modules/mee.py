@@ -76,7 +76,18 @@ def calc_mee(inputs: dict) -> dict:
     U_cal = inputs.get("U_calandria", default_U)
     if len(U_cal) < n_effects:
         U_cal = _extend_list(U_cal, n_effects, default_U)
-    U_ph = inputs.get("U_preheater", 800)
+    # v7: U_preheater can now be a list-of-N (one per PH-1..PH-C) or scalar (legacy).
+    # Number of PHs = n_effects + 1 (last one is PH-C condenser preheater)
+    _Uph_in = inputs.get("U_preheater", 800)
+    if isinstance(_Uph_in, (int, float)):
+        # Legacy scalar — apply to all PHs
+        U_ph_list = [float(_Uph_in)] * (n_effects + 1)
+    else:
+        U_ph_list = list(_Uph_in)
+        if len(U_ph_list) < n_effects + 1:
+            # Pad with last value (or 800 if empty)
+            pad_val = U_ph_list[-1] if U_ph_list else 800.0
+            U_ph_list = _extend_list(U_ph_list, n_effects + 1, pad_val)
 
     # Pre-heaters: one per effect + PH-C (condenser preheater) = n_effects + 1 PHs
     n_ph = n_effects + 1
@@ -170,7 +181,9 @@ def calc_mee(inputs: dict) -> dict:
         lt_vap_ph = latent_heat_at_temp(shell_T_ph)
         Q_ph = F * cp_hot * (feed_out_ph - feed_in_ph)
         LMTD_ph = _lmtd(shell_T_ph, shell_T_ph, feed_in_ph, feed_out_ph)
-        HTA_ph = (Q_ph * 1.163) / (U_ph * LMTD_ph) if LMTD_ph > 0 else 0
+        # v7: per-PH U from list (was scalar in v6)
+        U_ph_i = U_ph_list[i] if i < len(U_ph_list) else U_ph_list[-1]
+        HTA_ph = (Q_ph * 1.163) / (U_ph_i * LMTD_ph) if LMTD_ph > 0 else 0
         vapor_consumed = Q_ph / lt_vap_ph if lt_vap_ph > 0 else 0
 
         preheaters.append({
@@ -179,6 +192,7 @@ def calc_mee(inputs: dict) -> dict:
             "feed_inlet_c": feed_in_ph,
             "feed_outlet_c": feed_out_ph,
             "approach_c": 10.0,
+            "U_preheater": U_ph_i,
             "Q_kcalh": Q_ph,
             "lmtd_c": LMTD_ph,
             "HTA_calc_m2": HTA_ph,
@@ -268,7 +282,7 @@ def calc_mee(inputs: dict) -> dict:
             break
 
     # ----- VLS & Tube sizing per effect (after heat balance converges) -----
-    from bg_process_design.utils.equipment_sizing import size_vls, size_tube_bundle
+    from bg_process_design.utils.equipment_sizing import size_vls, size_tube_bundle, resolve_hx_specs
     from bg_process_design.utils.steam_table import vapor_density_at_temp
 
     for i, eff in enumerate(effects):
@@ -285,26 +299,30 @@ def calc_mee(inputs: dict) -> dict:
             l_over_d_ratio=2.5,
         )
 
-        # Calandria tubes: 2" × 2.0 mm tubes, 6 m length for MEE (standard for B&G)
-        # RCP flow typical = 20x evap rate, velocity 1.5 m/s
+        # Calandria tubes — v7: per-effect specs from inputs['hx_specs']['calandria_<n>']
+        cal_specs = resolve_hx_specs(inputs, f"calandria_{i+1}", "CALANDRIA")
         rcp_flow_m3h = eff["evap_kgh"] * 20.0 / rho_L
         eff["calandria_tubes"] = size_tube_bundle(
             hta_selected_m2=eff["HTA_selected_m2"],
-            tube_od_mm=50.8, tube_thk_mm=2.0,
-            tube_length_m=6.0, n_passes=1,  # Falling-film or FC: single pass
-            target_velocity_ms=1.5,
+            tube_od_mm=cal_specs["od_mm"], tube_thk_mm=cal_specs["thk_mm"],
+            tube_length_m=cal_specs["length_m"], n_passes=cal_specs["passes"],
+            target_velocity_ms=cal_specs["velocity_ms"],
             fluid_flow_m3h=rcp_flow_m3h,
         )
         eff["rcp_flow_m3h"] = rcp_flow_m3h
         eff["liquid_density_kgm3"] = rho_L
 
-    # Pre-heater tube geometry
+    # Pre-heater tube geometry — v7: per-PH specs from inputs['hx_specs']['preheater_<n>']
+    # PH-1..PH-4 use keys 'preheater_1'..'preheater_4', PH-C uses 'preheater_c'
+    ph_keys = ["preheater_1", "preheater_2", "preheater_3", "preheater_4", "preheater_c"]
     for i, ph in enumerate(preheaters):
+        ph_key = ph_keys[i] if i < len(ph_keys) else "preheater_c"
+        ph_specs = resolve_hx_specs(inputs, ph_key, "PREHEATER")
         ph["tubes"] = size_tube_bundle(
             hta_selected_m2=ph["HTA_selected_m2"],
-            tube_od_mm=25.4, tube_thk_mm=1.6,
-            tube_length_m=6.0, n_passes=5,  # Per Excel PH design
-            target_velocity_ms=1.5,
+            tube_od_mm=ph_specs["od_mm"], tube_thk_mm=ph_specs["thk_mm"],
+            tube_length_m=ph_specs["length_m"], n_passes=ph_specs["passes"],
+            target_velocity_ms=ph_specs["velocity_ms"],
             fluid_flow_m3h=F / 1050.0,  # feed flow
         )
 
@@ -323,15 +341,19 @@ def calc_mee(inputs: dict) -> dict:
     Q_latent_c = last_evap_avail * lt_cond
     Q_cond_total = Q_sensible_c + Q_latent_c
     LMTD_c = _lmtd(condenser_T, condenser_T - subcool, cw_in, cw_out)
-    U_cond = 600
+    # v7: U_cond exposed as input (was hardcoded 600)
+    U_cond = inputs.get("U_cond_mee", 600)
     HTA_cond = (Q_cond_total * 1.163) / (U_cond * LMTD_c) if LMTD_c > 0 else 0
     HTA_cond_sel = math.ceil(HTA_cond / 5) * 5
     cw_flow_m3h = Q_cond_total / (1000 * (cw_out - cw_in)) if (cw_out - cw_in) > 0 else 0
 
-    # Condenser tube geometry
+    # Condenser tube geometry — v7: from inputs['hx_specs']['mee_condenser']
+    mc_specs = resolve_hx_specs(inputs, "mee_condenser", "MEE_CONDENSER")
     condenser_tubes = size_tube_bundle(
-        hta_selected_m2=HTA_cond_sel, tube_od_mm=25.4, tube_thk_mm=1.6,
-        tube_length_m=6.0, n_passes=4, target_velocity_ms=1.55,
+        hta_selected_m2=HTA_cond_sel,
+        tube_od_mm=mc_specs["od_mm"], tube_thk_mm=mc_specs["thk_mm"],
+        tube_length_m=mc_specs["length_m"], n_passes=mc_specs["passes"],
+        target_velocity_ms=mc_specs["velocity_ms"],
         fluid_flow_m3h=cw_flow_m3h,
     )
 

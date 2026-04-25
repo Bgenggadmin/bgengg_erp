@@ -174,6 +174,10 @@ def _render_input_form(client, project):
         help="When on, BPR is calculated via correlation BPR = 0.5+0.5·exp(4·(TS-0.10)) per effect. "
              "When off, uses the BPR values entered above.", key="mee_ui_checkbox_17")
 
+    # v7: HX tube geometry & U-values (overrides U_list and U_ph above)
+    from bg_process_design.ui.hx_inputs import render_mee_hx_inputs
+    hx_inputs = render_mee_hx_inputs(n_effects=n_effects)
+
     calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True, key="mee_ui_button_18")
 
     if calc_btn:
@@ -196,6 +200,8 @@ def _render_input_form(client, project):
             "feed_characterization": feed_char,
             "auto_bpr_from_ts": auto_bpr,
         }
+        # v7: HX widget values take priority (overrides U_calandria/U_preheater above)
+        inputs.update(hx_inputs)
         try:
             results = calc_mee(inputs)
             st.session_state["mee_results"] = results

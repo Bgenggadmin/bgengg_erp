@@ -89,6 +89,10 @@ def _render_input_form(client, project):
         expanded=False
     )
 
+    # v7: HX tube geometry & U-values
+    from bg_process_design.ui.hx_inputs import render_stripper_hx_inputs
+    hx_inputs = render_stripper_hx_inputs()
+
     calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True, key="stripper_ui_button_23")
 
     if calc_btn:
@@ -103,6 +107,8 @@ def _render_input_form(client, project):
             "subcooling_c": subcool,
             "feed_characterization": feed_char,
         }
+        # v7: merge HX specs and U-values into inputs
+        inputs.update(hx_inputs)
         try:
             results = calc_stripper(inputs)
             st.session_state["stripper_results"] = results

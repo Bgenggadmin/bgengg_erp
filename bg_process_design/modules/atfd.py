@@ -111,7 +111,8 @@ def calc_atfd(inputs: dict) -> dict:
 
     cond_vap_temp = 100
     LMTD_c = _lmtd(cond_vap_temp, cond_vap_temp - subcool, cw_in, cw_out)
-    U_c = 500
+    # v7: U_cond exposed as input (was hardcoded 500)
+    U_c = inputs.get("U_cond_atfd", 500)
     HTA_cond_calc = (Q_cond_total * 1.163) / (U_c * LMTD_c) if LMTD_c > 0 else 0
     HTA_cond_sel = math.ceil(HTA_cond_calc / 5) * 5
 
@@ -130,11 +131,15 @@ def calc_atfd(inputs: dict) -> dict:
     blower_motor_hp = math.ceil(blower_power_kw * 1.341 * 1.5)  # 50% margin
 
     # --- Condenser tube geometry & Pumps ---
-    from bg_process_design.utils.equipment_sizing import size_tube_bundle, size_pump, PUMP_DEFAULTS
+    from bg_process_design.utils.equipment_sizing import size_tube_bundle, size_pump, PUMP_DEFAULTS, resolve_hx_specs
 
+    # v7: ATFD condenser tube specs from inputs['hx_specs']['atfd_condenser']
+    ac_specs = resolve_hx_specs(inputs, "atfd_condenser", "ATFD_CONDENSER")
     cond_tubes = size_tube_bundle(
-        hta_selected_m2=HTA_cond_sel, tube_od_mm=25.4, tube_thk_mm=1.65,
-        tube_length_m=3.0, n_passes=6, target_velocity_ms=1.6,
+        hta_selected_m2=HTA_cond_sel,
+        tube_od_mm=ac_specs["od_mm"], tube_thk_mm=ac_specs["thk_mm"],
+        tube_length_m=ac_specs["length_m"], n_passes=ac_specs["passes"],
+        target_velocity_ms=ac_specs["velocity_ms"],
         fluid_flow_m3h=cw_flow,
     )
 

@@ -150,7 +150,7 @@ def calc_stripper(inputs: dict) -> dict:
     steam_consumption = Q_reb_total / lt_heat_shell
 
     LMTD_reb = _lmtd(reboiler_shell_T, reboiler_shell_T, reboiler_inlet_T, reboiler_outlet_T)
-    U_reb = 700  # W/m2.K for FC reboiler
+    U_reb = inputs.get("U_reboiler", 700)  # W/m2.K for FC reboiler (v7: was hardcoded)
     HTA_reb = (Q_reb_total * 1.163) / (U_reb * LMTD_reb)  # kcal->W: *1.163
     HTA_reb_sel = math.ceil(HTA_reb / 2) * 2
 
@@ -160,7 +160,7 @@ def calc_stripper(inputs: dict) -> dict:
     Q_cond_water = distillate_water * latent_heat_at_temp(T_top)
     Q_cond1 = Q_cond_solv + Q_cond_water
     LMTD_c1 = _lmtd(T_top, T_top, cw_in, cw_out)
-    U_c1 = 200
+    U_c1 = inputs.get("U_cond1", 200)  # v7: was hardcoded
     HTA_c1 = (Q_cond1 * 1.163) / (U_c1 * LMTD_c1)
     HTA_c1_sel = math.ceil(HTA_c1 / 5) * 5
 
@@ -174,7 +174,7 @@ def calc_stripper(inputs: dict) -> dict:
     if inputs.get("use_condenser2", False):
         condenser2_load = distillate_solvent * 0.1 * lt_heat_solv  # Trap 10%
         LMTD_c2 = _lmtd(T_top, T_top - subcool, chw_in, chw_out)
-        U_c2 = 150
+        U_c2 = inputs.get("U_cond2", 150)  # v7: was hardcoded
         Q_cond2 = condenser2_load
         HTA_c2 = (Q_cond2 * 1.163) / (U_c2 * LMTD_c2)
         HTA_c2_sel = math.ceil(HTA_c2 / 2) * 2
@@ -221,24 +221,33 @@ def calc_stripper(inputs: dict) -> dict:
     total_power = sum(p["brake_power_kw"] for p in pumps.values())
 
     # --- Tube Bundle Geometry ---
-    # Reboiler: 1-1/2" × 1.65 mm tubes, 3m length, 2 passes (typical for FC reboiler)
+    # v7: tube specs resolved from inputs['hx_specs'] with fallback to SERVICE_PRESETS
+    from bg_process_design.utils.equipment_sizing import resolve_hx_specs
+
+    reb_specs = resolve_hx_specs(inputs, "reboiler", "REBOILER")
     reboiler_tubes = size_tube_bundle(
-        hta_selected_m2=HTA_reb_sel, tube_od_mm=38.1, tube_thk_mm=1.65,
-        tube_length_m=3.0, n_passes=2, target_velocity_ms=1.5,
+        hta_selected_m2=HTA_reb_sel,
+        tube_od_mm=reb_specs["od_mm"], tube_thk_mm=reb_specs["thk_mm"],
+        tube_length_m=reb_specs["length_m"], n_passes=reb_specs["passes"],
+        target_velocity_ms=reb_specs["velocity_ms"],
         fluid_flow_m3h=rcp_flow * 0.85,  # ~85% of RCP flow through tubes
     )
-    # Condenser-1: 1" × 1.65 mm tubes, 3m, 6 passes (typical for vertical condenser)
+    c1_specs = resolve_hx_specs(inputs, "condenser1", "CONDENSER_CW")
     cond1_tubes = size_tube_bundle(
-        hta_selected_m2=HTA_c1_sel, tube_od_mm=25.4, tube_thk_mm=1.65,
-        tube_length_m=3.0, n_passes=6, target_velocity_ms=1.8,
+        hta_selected_m2=HTA_c1_sel,
+        tube_od_mm=c1_specs["od_mm"], tube_thk_mm=c1_specs["thk_mm"],
+        tube_length_m=c1_specs["length_m"], n_passes=c1_specs["passes"],
+        target_velocity_ms=c1_specs["velocity_ms"],
         fluid_flow_m3h=cw_flow_m3h,
     )
-    # Condenser-2 tubes (if used)
     cond2_tubes = None
     if inputs.get("use_condenser2", False):
+        c2_specs = resolve_hx_specs(inputs, "condenser2", "CONDENSER_CHW")
         cond2_tubes = size_tube_bundle(
-            hta_selected_m2=HTA_c2_sel, tube_od_mm=25.4, tube_thk_mm=1.20,
-            tube_length_m=3.0, n_passes=4, target_velocity_ms=1.7,
+            hta_selected_m2=HTA_c2_sel,
+            tube_od_mm=c2_specs["od_mm"], tube_thk_mm=c2_specs["thk_mm"],
+            tube_length_m=c2_specs["length_m"], n_passes=c2_specs["passes"],
+            target_velocity_ms=c2_specs["velocity_ms"],
             fluid_flow_m3h=chw_flow_m3h,
         )
 

@@ -82,6 +82,10 @@ def _render_input_form(client, project):
         expanded=False
     )
 
+    # v7: HX tube geometry & U-values
+    from bg_process_design.ui.hx_inputs import render_atfd_hx_inputs
+    hx_inputs = render_atfd_hx_inputs()
+
     calc_btn = st.button("▶ Calculate", type="primary", use_container_width=True, key="atfd_ui_button_16")
 
     if calc_btn:
@@ -95,6 +99,8 @@ def _render_input_form(client, project):
             "blower_efficiency": blower_eff,
             "feed_characterization": feed_char,
         }
+        # v7: merge HX specs and U_cond_atfd
+        inputs.update(hx_inputs)
         try:
             results = calc_atfd(inputs)
             st.session_state["atfd_results"] = results
