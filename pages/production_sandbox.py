@@ -1,23 +1,30 @@
 """
-B&G Production Scheduler ERP — v6 (Audit + Fixes)
+B&G Production Scheduler ERP — v7 (Single Source of Truth)
+ARCHITECTURE CHANGE: Work Slips no longer have a separate "Generate" form.
+Slips are auto-derived from `task_assignments` joined with `sub_tasks`.
+The supervisor's job is just to allocate workers to tasks (Manpower tab) —
+the Work Slips tab shows pending slips ready to issue with one click.
+This eliminates the dual-input bug class (allocation vs. slip generation
+disagreeing about who has which task).
+
+Data flow:
+    sub_tasks (dates)  ┐
+                       ├──► auto-derived candidate slips ──► [Issue] ──► weekly_slips snapshot
+    task_assignments   ┘                                                  (frozen for audit)
+
 All bugs fixed:
-  ✅ Slips: period/date/workers/tasks ALL outside form — no branching inside st.form
-  ✅ Slips: gen_tasks options reset when job changes (key includes job)
-  ✅ Slips: card_key sanitised — no spaces in widget keys
-  ✅ Slips: build_slip_text uses stored target_days, not hardcoded +5 days
-  ✅ Slips: acknowledged filter handles None from Supabase correctly
-  ✅ Daily log: hours prefill moved outside form (inside form = stale values)
-  ✅ Type safety: sub_task_id cast to int everywhere for consistent comparison
+  ✅ Slips: Work Slips tab is now a derived view of task_assignments + sub_tasks
+           with one-click Issue. No more dual-input data entry. (v7)
+  ✅ Slips: Acknowledgement preserved on the snapshot weekly_slips row. (v7)
+  ✅ Slips: STRICT MODE — only assigned workers get the task on a slip
+  ✅ Slips: assignments are filtered by overlap with the slip's period
+  ✅ Slips: per-card 🗑️ delete + bulk delete of filtered slips
+  ✅ Manpower load: uses real sub_task date windows, not just stored week
+  ✅ Manpower: per-worker drill-down shows which tasks make up the load
   ✅ Tabs: Schedule/Gantt no longer halt the script when no job is selected
            (replaced st.stop() with if/else so later tabs still render)
-  ✅ Slips: STRICT MODE — only assigned workers get the task; unassigned tasks
-           are reported back, never put on every slip
-  ✅ Slips: assignments are filtered by overlap with the slip's period — old
-           assignments from previous weeks no longer pollute new slips
-  ✅ Manpower load: AUDIT FIX — uses real sub_task date windows, not just
-           assignment row's stored week_start_date
-  ✅ Manpower: per-worker drill-down shows which tasks make up the load
-  ✅ Slips: per-card 🗑️ delete button + bulk delete of filtered slips
+  ✅ Daily log: hours prefill moved outside form
+  ✅ Type safety: sub_task_id cast to int everywhere
   ✅ All previous fixes retained
 """
 
@@ -1169,233 +1176,209 @@ with tab_slips:
                                key=f"dlslip_{card_key}")
 
     # ════════════════════════
-    # SECTION A — GENERATE
+    # SECTION A — PENDING ISSUANCE  (auto-derived from task_assignments)
     # ════════════════════════
-    with st.expander("➕ Generate New Slip", expanded=False):
+    st.markdown("#### 📋 Pending Issuance")
+    st.caption(
+        "Slips are auto-derived from task assignments (set in the **Manpower** tab). "
+        "Pick a period, review the cards, and click **📋 Issue** to record the slip "
+        "and mark it ready to print."
+    )
 
-        # ALL widgets outside form — no branching, no stale values
-        gg1, gg2, gg3 = st.columns(3)
-        gen_job    = gg1.selectbox("Job", ["-- Select --"] + all_jobs, key="gen_job")
-        gen_period = gg2.selectbox("Slip period",
-                                   ["Weekly (Mon–Sat)", "Daily", "Monthly", "Custom range"],
-                                   key="gen_period")
-        gen_by     = gg3.text_input("Issued by (supervisor)", key="gen_by")
+    pi1, pi2, pi3, pi4 = st.columns([2, 2, 2, 2])
+    pi_period = pi1.selectbox(
+        "Period type",
+        ["Weekly (Mon–Sat)", "Daily", "Custom range"],
+        key="pi_period",
+    )
+    if pi_period == "Daily":
+        pi_from = pi2.date_input("Date", value=TODAY, key="pi_date")
+        pi_to   = pi_from
+    elif pi_period == "Custom range":
+        cr      = pi2.date_input("From – To",
+                                  value=[TODAY, TODAY + timedelta(days=6)],
+                                  key="pi_custom")
+        pi_from = cr[0] if len(cr) > 0 else TODAY
+        pi_to   = cr[1] if len(cr) > 1 else TODAY
+    else:  # Weekly
+        raw_w   = pi2.date_input("Week starting", value=week_monday(), key="pi_week")
+        pi_from = week_monday(raw_w)
+        pi_to   = pi_from + timedelta(days=5)
 
-        # FIX 1: date inputs outside form, unique key per period type
-        gd1, gd2 = st.columns(2)
-        if gen_period == "Daily":
-            gen_date_from = gd1.date_input("Date", value=TODAY, key="gen_date_daily")
-            gen_date_to   = gen_date_from
-            gen_days      = 1
-            period_str    = fmt(gen_date_from, "%d-%b-%Y")
-            week_key      = str(gen_date_from)
-        elif gen_period == "Monthly":
-            gen_date_from = gd1.date_input("Month start", value=TODAY.replace(day=1), key="gen_date_monthly")
-            next_m        = (gen_date_from.replace(day=28) + timedelta(days=4)).replace(day=1)
-            gen_date_to   = next_m - timedelta(days=1)
-            gen_days      = (gen_date_to - gen_date_from).days + 1
-            period_str    = gen_date_from.strftime("%b %Y")
-            week_key      = str(gen_date_from)
-            gd2.caption(f"Month end: {fmt(gen_date_to)}  ({gen_days} days)")
-        elif gen_period == "Custom range":
-            dr            = gd1.date_input("From – To", value=[TODAY, TODAY + timedelta(days=6)],
-                                           key="gen_date_custom")
-            gen_date_from = dr[0] if len(dr) > 0 else TODAY
-            gen_date_to   = dr[1] if len(dr) > 1 else TODAY
-            gen_days      = (gen_date_to - gen_date_from).days + 1
-            period_str    = f"{fmt(gen_date_from,'%d-%b')} – {fmt(gen_date_to,'%d-%b-%Y')}"
-            week_key      = str(gen_date_from)
-            gd2.caption(f"{gen_days} day(s)")
-        else:  # Weekly
-            raw_week      = gd1.date_input("Week starting", value=week_monday(), key="gen_date_weekly")
-            gen_date_from = week_monday(raw_week)
-            gen_date_to   = gen_date_from + timedelta(days=5)
-            gen_days      = 6
-            period_str    = f"{fmt(gen_date_from,'%d-%b')} – {fmt(gen_date_to,'%d-%b-%Y')}"
-            week_key      = str(gen_date_from)
-            gd2.caption(f"Mon–Sat: {period_str}")
+    pi_job_filter    = pi3.selectbox("Job", ["All Jobs"] + all_jobs, key="pi_job")
+    pi_worker_filter = pi4.selectbox("Worker", ["All Workers"] + all_workers, key="pi_worker")
+    pi_issued_by     = st.text_input("Issued by (supervisor)", key="pi_issued_by")
 
-        # FIX 8: task options key includes job so it resets when job changes
-        if gen_job != "-- Select --":
-            gen_subs     = df_sub[df_sub["job_no"] == gen_job] if not df_sub.empty else pd.DataFrame()
-            sub_opts_gen = {int(r["id"]): f"{r['name']} ({r.get('duration_days',1)}d)"
-                            for _, r in gen_subs.iterrows()}
-        else:
-            sub_opts_gen = {}
+    pi_days = (pi_to - pi_from).days + 1
+    period_str_pi = (
+        fmt(pi_from, "%d-%b-%Y") if pi_from == pi_to
+        else f"{fmt(pi_from, '%d-%b')} – {fmt(pi_to, '%d-%b-%Y')}"
+    )
+    week_key_pi = str(pi_from)
 
-        # FIX 2: gen_tasks_sel outside form — not cleared on form submit
-        # FIX 8: key includes gen_job so widget resets on job change
-        gen_tasks_sel = st.multiselect(
-            "Tasks to include in slip",
-            options=list(sub_opts_gen.keys()),
-            format_func=lambda x: sub_opts_gen.get(x, str(x)),
-            key=f"gen_tasks_{gen_job}",          # ← includes job in key
-            disabled=(gen_job == "-- Select --"),
-            placeholder="Select a job first…" if gen_job == "-- Select --" else "Pick tasks…",
+    # Build sub_task_id -> task info lookup
+    sub_info = {}
+    if not df_sub.empty:
+        for _, sr in df_sub.iterrows():
+            sid = int(sr["id"]) if pd.notna(sr["id"]) else None
+            if sid is None: continue
+            sub_info[sid] = {
+                "name": str(sr.get("name", "")),
+                "job_no": str(sr.get("job_no", "")),
+                "planned_start": safe_date(sr.get("planned_start")),
+                "planned_end":   safe_date(sr.get("planned_end")),
+                "notes": str(sr.get("notes", "") or ""),
+            }
+
+    # Aggregate active assignments by (worker, job) for the selected period.
+    # An assignment is considered active in the period if either:
+    #   (a) its stored week_start_date's 7-day window overlaps [pi_from, pi_to], OR
+    #   (b) the underlying sub_task's planned_start..planned_end overlaps [pi_from, pi_to]
+    pending_buckets = {}   # (worker, job) -> list of task dicts
+    if not df_asgn.empty:
+        for _, ar in df_asgn.iterrows():
+            sid = int(ar["sub_task_id"]) if pd.notna(ar["sub_task_id"]) else None
+            if sid is None: continue
+            wname = str(ar["worker_name"])
+            jno   = str(ar["job_no"])
+
+            if pi_job_filter    != "All Jobs"    and jno   != pi_job_filter:    continue
+            if pi_worker_filter != "All Workers" and wname != pi_worker_filter: continue
+
+            asgn_wsd = safe_date(ar.get("week_start_date"))
+            in_period = False
+            if asgn_wsd is not None:
+                if asgn_wsd <= pi_to and (asgn_wsd + timedelta(days=6)) >= pi_from:
+                    in_period = True
+            si = sub_info.get(sid)
+            if not in_period and si and si["planned_start"] and si["planned_end"]:
+                if si["planned_start"] <= pi_to and si["planned_end"] >= pi_from:
+                    in_period = True
+            if not in_period:
+                continue
+
+            task_name = si["name"] if si else f"(sub_task {sid})"
+            ps  = si["planned_start"] if si else None
+            pe  = si["planned_end"]   if si else None
+            note = si["notes"] if si else ""
+
+            bucket = pending_buckets.setdefault((wname, jno), [])
+            bucket.append({
+                "sub_task_id": sid,
+                "task_name": task_name,
+                "target_hrs": float(ar["allocated_hrs_day"]),
+                "target_days": pi_days,
+                "target_desc": str(ar.get("target_description") or ""),
+                "notes": note,
+                "planned_start": ps,
+                "planned_end":   pe,
+                "asgn_id": int(ar["id"]),
+            })
+
+    # Detect whether each (worker, job, period) already has a slip on record
+    issued_keys = set()
+    if not df_slips.empty:
+        for _, sl in df_slips.iterrows():
+            sl_wsd = safe_date(sl.get("week_start_date"))
+            if sl_wsd is None: continue
+            # match if slip's week_start_date equals our period start
+            if sl_wsd == pi_from:
+                issued_keys.add((str(sl["worker_name"]), str(sl["job_no"])))
+
+    if not pending_buckets:
+        st.info(
+            "No pending assignments for this period. "
+            "Either nothing is assigned, or all assignments fall outside "
+            f"**{period_str_pi}**. Assign workers in the Manpower tab first."
         )
+    else:
+        not_yet_issued = {k: v for k, v in pending_buckets.items() if k not in issued_keys}
+        already_issued = {k: v for k, v in pending_buckets.items() if k in issued_keys}
 
-        # FIX 2: workers outside form too
-        gen_workers_sel = st.multiselect(
-            "Worker(s) — one slip per worker",
-            options=all_workers,
-            key="gen_workers",
-        )
+        if not_yet_issued:
+            st.markdown(f"**{len(not_yet_issued)} pending — not yet issued for {period_str_pi}:**")
 
-        # Form contains ONLY the submit button
-        with st.form("gen_slip_form", clear_on_submit=False):
-            submitted = st.form_submit_button("🖨️ Generate Slips", type="primary",
-                                              use_container_width=True)
-            if submitted:
-                errors = []
-                if gen_job == "-- Select --": errors.append("Select a job.")
-                if not gen_tasks_sel:         errors.append("Select at least one task.")
-                if not gen_workers_sel:       errors.append("Select at least one worker.")
-                if errors:
-                    for e in errors: st.error(e)
-                else:
-                    # STRICT MODE: a task only goes on a worker's slip if THAT worker
-                    # is assigned to that task AND the assignment is active for the
-                    # slip's period (i.e. either the assignment's stored week matches
-                    # the slip's week, OR the assignment's week falls within the slip's
-                    # date range, OR the underlying sub_task's planned window overlaps
-                    # the slip's period).
-                    #
-                    # Tasks with no qualifying assignments are collected separately
-                    # and reported back to the supervisor — they never end up on a
-                    # slip. This prevents stale assignments from earlier weeks from
-                    # polluting current slips.
-                    count = 0
-                    unassigned_task_names = []
-                    skipped_pairs = []
+            # Bulk-issue button
+            if st.button(
+                f"📋 Issue all {len(not_yet_issued)} pending slip(s)",
+                type="primary", key="pi_bulk_issue",
+                help="One slip per (worker, job) is recorded. Snapshot is taken now; later changes "
+                     "to assignments don't alter issued slips."
+            ):
+                created = 0
+                for (wname, jno), tasks in not_yet_issued.items():
+                    items = [{
+                        "sub_task_id": t["sub_task_id"],
+                        "task_name": t["task_name"],
+                        "target_hrs": t["target_hrs"],
+                        "target_days": t["target_days"],
+                        "target_desc": t["target_desc"],
+                        "notes": t["notes"],
+                    } for t in tasks]
+                    db_insert("weekly_slips", {
+                        "worker_name": wname, "job_no": jno,
+                        "week_start_date": week_key_pi,
+                        "slip_data": json.dumps(items),
+                        "generated_by": pi_issued_by, "acknowledged": False,
+                        "created_at": NOW_IST(),
+                    })
+                    created += 1
+                st.success(f"✅ Issued {created} slip(s) for {period_str_pi}.")
+                st.rerun()
 
-                    # Slip period boundaries (already computed above):
-                    #   gen_date_from, gen_date_to
-                    period_from = gen_date_from
-                    period_to   = gen_date_to
-
-                    # Build sub_task_id -> list of {worker_name, hrs/day, target_desc}
-                    # filtered to assignments active during this slip's period.
-                    asgn_by_task = {}
-                    if not df_asgn.empty:
-                        for _, ar in df_asgn.iterrows():
-                            tid_a = int(ar["sub_task_id"]) if pd.notna(ar["sub_task_id"]) else None
-                            if tid_a is None:
-                                continue
-
-                            # Only include assignments whose stored week_start_date
-                            # falls within the slip's period (or is the same week).
-                            asgn_wsd = safe_date(ar.get("week_start_date"))
-                            include = False
-                            if asgn_wsd is not None:
-                                asgn_week_end = asgn_wsd + timedelta(days=6)
-                                # overlap check between [asgn_wsd, asgn_week_end]
-                                # and [period_from, period_to]
-                                if asgn_wsd <= period_to and asgn_week_end >= period_from:
-                                    include = True
-
-                            # Fallback: if assignment has no usable date but the
-                            # underlying sub_task overlaps the slip period, include.
-                            if not include:
-                                sub_row_local = df_sub[df_sub["id"] == tid_a]
-                                if not sub_row_local.empty:
-                                    sps = safe_date(sub_row_local.iloc[0].get("planned_start"))
-                                    spe = safe_date(sub_row_local.iloc[0].get("planned_end"))
-                                    if (sps and spe and
-                                            sps <= period_to and spe >= period_from and
-                                            asgn_wsd is None):
-                                        include = True
-
-                            if include:
-                                asgn_by_task.setdefault(tid_a, []).append(ar)
-
-                    # First pass: unassigned tasks (no qualifying assignment in window)
-                    for tid in gen_tasks_sel:
-                        tid_int = int(tid)
-                        sr = df_sub[df_sub["id"] == tid_int]
-                        if sr.empty:
-                            continue
-                        sr = sr.iloc[0]
-                        if tid_int not in asgn_by_task:
-                            unassigned_task_names.append(str(sr["name"]))
-
-                    # Second pass: build slips per worker
-                    for gw in gen_workers_sel:
-                        items = []
-                        for tid in gen_tasks_sel:
-                            tid_int = int(tid)
-                            sr = df_sub[df_sub["id"] == tid_int]
-                            if sr.empty:
-                                continue
-                            sr = sr.iloc[0]
-
-                            assigns_for_task = asgn_by_task.get(tid_int, [])
-                            if not assigns_for_task:
-                                continue
-
-                            worker_assign = next((a for a in assigns_for_task
-                                                  if a["worker_name"] == gw), None)
-                            if worker_assign is None:
-                                skipped_pairs.append((gw, str(sr["name"])))
-                                continue
-
-                            t_hrs  = float(worker_assign["allocated_hrs_day"])
-                            t_desc = str(worker_assign.get("target_description") or "")
-                            items.append({
-                                "sub_task_id": tid_int, "task_name": str(sr["name"]),
-                                "target_hrs": t_hrs, "target_days": gen_days,
-                                "notes": str(sr.get("notes", "") or ""), "target_desc": t_desc,
-                            })
-
-                        if not items:
-                            continue
+            # Per-card preview
+            for (wname, jno), tasks in sorted(not_yet_issued.items()):
+                with st.container(border=True):
+                    hc1, hc2 = st.columns([5, 1])
+                    total_hrs_day = sum(t["target_hrs"] for t in tasks)
+                    hc1.markdown(
+                        f"**{wname}** &nbsp;·&nbsp; `{jno}` &nbsp;·&nbsp; "
+                        f"{len(tasks)} task(s) &nbsp;·&nbsp; "
+                        f"**{total_hrs_day:.1f} hrs/day** total  \n"
+                        f"<small>{period_str_pi}</small>",
+                        unsafe_allow_html=True,
+                    )
+                    issue_key = f"pi_issue_{wname}_{jno}".replace(" ", "_")
+                    if hc2.button("📋 Issue", key=issue_key, use_container_width=True):
+                        items = [{
+                            "sub_task_id": t["sub_task_id"],
+                            "task_name": t["task_name"],
+                            "target_hrs": t["target_hrs"],
+                            "target_days": t["target_days"],
+                            "target_desc": t["target_desc"],
+                            "notes": t["notes"],
+                        } for t in tasks]
                         db_insert("weekly_slips", {
-                            "worker_name": gw, "job_no": gen_job,
-                            "week_start_date": week_key,
+                            "worker_name": wname, "job_no": jno,
+                            "week_start_date": week_key_pi,
                             "slip_data": json.dumps(items),
-                            "generated_by": gen_by, "acknowledged": False,
+                            "generated_by": pi_issued_by, "acknowledged": False,
                             "created_at": NOW_IST(),
                         })
-                        count += 1
-
-                    # Report results
-                    workers_with_slips = []
-                    for gw in gen_workers_sel:
-                        for tid in gen_tasks_sel:
-                            tid_int = int(tid)
-                            if any(a["worker_name"] == gw
-                                   for a in asgn_by_task.get(tid_int, [])):
-                                workers_with_slips.append(gw)
-                                break
-
-                    if count:
-                        st.success(
-                            f"✅ Generated {count} slip(s) for: "
-                            f"{', '.join(workers_with_slips)}  \n"
-                            f"Period: {period_str}"
-                        )
-
-                    if unassigned_task_names:
-                        st.warning(
-                            "⚠️ The following selected task(s) have no worker "
-                            "assignments and were NOT added to any slip. Assign "
-                            "workers in the Manpower tab first:  \n• "
-                            + "  \n• ".join(sorted(set(unassigned_task_names)))
-                        )
-
-                    workers_without_slips = [gw for gw in gen_workers_sel
-                                             if gw not in workers_with_slips]
-                    if workers_without_slips:
-                        st.info(
-                            "ℹ️ No slip generated for: "
-                            + ", ".join(workers_without_slips)
-                            + " — none of the selected tasks were assigned to them."
-                        )
-
-                    if count == 0 and not unassigned_task_names and not workers_without_slips:
-                        st.warning("No slips generated — please check task assignments.")
-
-                    if count:
+                        st.toast(f"Issued slip for {wname}")
                         st.rerun()
+
+                    rows = [{
+                        "Task": t["task_name"],
+                        "Window": (f"{fmt(t['planned_start'], '%d-%b')} → "
+                                   f"{fmt(t['planned_end'], '%d-%b')}"
+                                   if t["planned_start"] and t["planned_end"] else "—"),
+                        "Hrs/Day": t["target_hrs"],
+                        "Days": t["target_days"],
+                        "Total Hrs": f"{t['target_hrs']*t['target_days']:.0f}",
+                        "Goal": t["target_desc"] or "—",
+                    } for t in tasks]
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        if already_issued:
+            with st.expander(
+                f"✅ {len(already_issued)} (worker, job) pair(s) already have a slip "
+                f"for {period_str_pi}",
+                expanded=False,
+            ):
+                for (wname, jno), _ in sorted(already_issued.items()):
+                    st.caption(f"• **{wname}** · `{jno}` — already issued; see View section below.")
+
 
     st.divider()
 
