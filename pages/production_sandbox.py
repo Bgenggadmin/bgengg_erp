@@ -1117,15 +1117,23 @@ with tab_slips:
                     for gw in gen_workers_sel:
                         items = []
                         for tid in gen_tasks_sel:
-                            # FIX 7: cast tid to same type as df column for safe comparison
                             tid_int = int(tid)
                             sr = df_sub[df_sub["id"] == tid_int]
                             if sr.empty: continue
                             sr = sr.iloc[0]
-                            ar = df_asgn[
-                                (df_asgn["sub_task_id"] == tid_int) &
-                                (df_asgn["worker_name"] == gw)
-                            ] if not df_asgn.empty else pd.DataFrame()
+
+                            # KEY FIX: only include this task if worker is assigned to it
+                            # (or if no assignments exist at all for this task — fallback mode)
+                            if not df_asgn.empty:
+                                task_asgn = df_asgn[df_asgn["sub_task_id"] == tid_int]
+                                worker_asgn = task_asgn[task_asgn["worker_name"] == gw]
+                                # If task has assignments but this worker isn't one — skip
+                                if not task_asgn.empty and worker_asgn.empty:
+                                    continue
+                                ar = worker_asgn
+                            else:
+                                ar = pd.DataFrame()
+
                             t_hrs  = float(ar.iloc[0]["allocated_hrs_day"]) \
                                      if not ar.empty else float(sr.get("man_hours_per_day", 8) or 8)
                             t_desc = str(ar.iloc[0]["target_description"] or "") if not ar.empty else ""
