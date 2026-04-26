@@ -1,12 +1,14 @@
 """
-B&G Production Scheduler ERP — v4
-Enhancements over v3:
-  ✅ Worker pool per sub-task (multi-worker on same task like rolling, buffing, fitup)
-  ✅ Man-hours counted individually per worker — 3 workers × 2 hrs = 6 mh total, each charged 2 hrs
-  ✅ Live man-hour summary panel on assignment (allotted vs required)
-  ✅ Inline edit/remove of individual workers in a task's pool
-  ✅ Daily log pre-fills hours from that worker's assignment record
-  ✅ All previous: master_workers dropdown, clone+auto-schedule, inline edit, auto-revision, cascade
+B&G Production Scheduler ERP — v5 (Full Audit)
+All bugs fixed:
+  ✅ Slips: period/date/workers/tasks ALL outside form — no branching inside st.form
+  ✅ Slips: gen_tasks options reset when job changes (key includes job)
+  ✅ Slips: card_key sanitised — no spaces in widget keys
+  ✅ Slips: build_slip_text uses stored target_days, not hardcoded +5 days
+  ✅ Slips: acknowledged filter handles None from Supabase correctly
+  ✅ Daily log: hours prefill moved outside form (inside form = stale values)
+  ✅ Type safety: sub_task_id cast to int everywhere for consistent comparison
+  ✅ All previous fixes retained
 """
 
 import streamlit as st
@@ -79,22 +81,17 @@ def db_delete(table, col, val):
 
 def log_revision(job_no, sub_task_id, old_start, old_end,
                  new_start, new_end, reason, revised_by, existing_revs_df):
-    """Insert a revision record and return the new revision number."""
     rev_no = len(existing_revs_df[existing_revs_df["sub_task_id"] == sub_task_id]) + 1 \
              if not existing_revs_df.empty else 1
     impact = (new_end - old_end).days if old_end and new_end else 0
     db_insert("schedule_revisions", {
-        "job_no":       job_no,
-        "sub_task_id":  sub_task_id,
-        "revision_no":  rev_no,
-        "reason":       reason,
-        "revised_by":   revised_by or "System",
-        "old_start":    str(old_start) if old_start else None,
-        "old_end":      str(old_end)   if old_end   else None,
-        "new_start":    str(new_start),
-        "new_end":      str(new_end),
-        "impact_days":  impact,
-        "created_at":   NOW_IST(),
+        "job_no": job_no, "sub_task_id": sub_task_id,
+        "revision_no": rev_no, "reason": reason,
+        "revised_by": revised_by or "System",
+        "old_start": str(old_start) if old_start else None,
+        "old_end":   str(old_end)   if old_end   else None,
+        "new_start": str(new_start), "new_end": str(new_end),
+        "impact_days": impact, "created_at": NOW_IST(),
     })
     return rev_no
 
@@ -121,7 +118,7 @@ if "master" not in st.session_state or not st.session_state.master.get("workers"
     st.session_state.master = _load_master()
 
 master      = st.session_state.master
-all_workers = sorted(list(set(master.get("workers", []))))   # ← from master_workers
+all_workers = sorted(list(set(master.get("workers", []))))
 all_staff   = master.get("staff", [])
 
 
@@ -152,6 +149,12 @@ def load_data():
 
 (df_proj, df_main, df_sub, df_asgn,
  df_rev, df_pool, df_logs, df_slips) = load_data()
+
+# FIX: cast sub_task_id to int everywhere for consistent comparison
+if not df_asgn.empty and "sub_task_id" in df_asgn.columns:
+    df_asgn["sub_task_id"] = df_asgn["sub_task_id"].astype("Int64")
+if not df_sub.empty and "id" in df_sub.columns:
+    df_sub["id"] = df_sub["id"].astype("Int64")
 
 all_jobs = sorted(df_proj["job_no"].astype(str).unique().tolist()) if not df_proj.empty else []
 
@@ -202,21 +205,13 @@ def compute_cpm(sub_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────
-# AUTO-SCHEDULE (clone logic)
+# AUTO-SCHEDULE
 # ─────────────────────────────────────────────
 def auto_schedule_from(source_subs: pd.DataFrame, new_start: date) -> pd.DataFrame:
-    """
-    Given a set of sub_tasks from a template job, compute new planned_start / planned_end
-    starting from new_start, respecting sub_order sequence and duration_days.
-    Returns a DataFrame with new planned_start / planned_end columns (as date objects).
-    """
     if source_subs.empty:
         return source_subs
-
     df = source_subs.copy().sort_values("sub_order").reset_index(drop=True)
     df["duration_days"] = pd.to_numeric(df["duration_days"], errors="coerce").fillna(1).astype(int)
-
-    # Simple sequential scheduling: each task starts after the previous one ends
     cursor = new_start
     new_starts, new_ends = [], []
     for _, row in df.iterrows():
@@ -224,7 +219,6 @@ def auto_schedule_from(source_subs: pd.DataFrame, new_start: date) -> pd.DataFra
         new_starts.append(cursor)
         new_ends.append(cursor + timedelta(days=dur - 1))
         cursor = cursor + timedelta(days=dur)
-
     df["planned_start"] = new_starts
     df["planned_end"]   = new_ends
     return df
@@ -256,32 +250,19 @@ def manpower_load(asgn_df: pd.DataFrame, pool_df: pd.DataFrame, week: date) -> p
 
 
 # ─────────────────────────────────────────────
-# ALLOTMENT STATUS for a single sub-task
+# ALLOTMENT BADGE
 # ─────────────────────────────────────────────
 def allotment_badge(sub_row, asgn_df: pd.DataFrame):
-    """
-    Man-hour accounting rule (pool of workers model):
-      • allocated_hrs_day  = hrs THIS individual worker works per day on this task
-      • Total man-hours    = SUM over workers of (each worker's hrs/day × duration)
-        e.g. 3 workers × 2 hrs/day × 5 days = 30 man-hours total
-        Each worker is charged only their own 2 hrs — NOT 6 hrs.
-
-    Required man-hours = manpower_required × man_hours_per_day × duration_days
-    Allotted man-hours = Σ(each assigned worker's allocated_hrs_day) × duration_days
-    """
     sub_id      = int(sub_row["id"])
     req_workers = int(sub_row.get("manpower_required", 1) or 1)
     mh_per_day  = float(sub_row.get("man_hours_per_day", 8) or 8)
     duration    = int(sub_row.get("duration_days", 1) or 1)
-    # Required: e.g. 2 workers × 8 hrs × 5 days = 80 man-hours
     required_mh = req_workers * mh_per_day * duration
 
     if not asgn_df.empty:
         task_asgn        = asgn_df[asgn_df["sub_task_id"] == sub_id].copy()
         allotted_workers = task_asgn["worker_name"].nunique()
-        # Each row = one worker's hrs/day. Total = Σ(individual hrs) × duration
-        # e.g. worker A: 2 hrs/day, worker B: 2 hrs/day → 4 hrs/day team × 5 days = 20 mh total
-        allotted_mh = task_asgn["allocated_hrs_day"].sum() * duration
+        allotted_mh      = task_asgn["allocated_hrs_day"].sum() * duration
     else:
         allotted_workers = 0
         allotted_mh      = 0
@@ -289,7 +270,7 @@ def allotment_badge(sub_row, asgn_df: pd.DataFrame):
     if allotted_workers == 0:
         badge = "❌ No allotment"
     elif allotted_mh > required_mh * 1.2:
-        badge = f"⚠️ Over-allotted ({allotted_mh:.0f}/{required_mh:.0f}h, {allotted_workers}w)"
+        badge = f"⚠️ Over ({allotted_mh:.0f}/{required_mh:.0f}h, {allotted_workers}w)"
     elif allotted_mh >= required_mh * 0.95:
         badge = f"✅ OK ({allotted_mh:.0f}/{required_mh:.0f}h, {allotted_workers}w)"
     else:
@@ -326,10 +307,6 @@ def get_alerts(sub_df: pd.DataFrame) -> list[dict]:
 def cascade_reschedule(changed_sub_id: int, new_end: date,
                        all_subs_df: pd.DataFrame, job_no: str,
                        reason: str, revised_by: str, rev_df: pd.DataFrame):
-    """
-    When a sub-task end date is pushed out, shift all sub-tasks that depend on it
-    (directly or transitively) by the same delta. Logs a revision for each shifted task.
-    """
     if all_subs_df.empty:
         return
 
@@ -343,50 +320,40 @@ def cascade_reschedule(changed_sub_id: int, new_end: date,
         except Exception:
             return []
 
-    # Build dependency map: sub_task_id → list of sub_task_ids that depend on it
     dependents = {}
     for _, row in all_subs_df.iterrows():
         for dep_id in parse_deps(row.get("depends_on")):
             dependents.setdefault(dep_id, []).append(int(row["id"]))
 
-    # BFS from changed_sub_id
     changed_row = all_subs_df[all_subs_df["id"] == changed_sub_id]
     if changed_row.empty:
         return
     old_end = safe_date(changed_row.iloc[0].get("planned_end"))
     if not old_end or new_end <= old_end:
-        return  # no cascade needed
+        return
 
-    delta = (new_end - old_end).days
+    delta   = (new_end - old_end).days
     visited = set()
-    queue = dependents.get(changed_sub_id, [])[:]
+    queue   = dependents.get(changed_sub_id, [])[:]
 
     while queue:
         dep_id = queue.pop(0)
         if dep_id in visited:
             continue
         visited.add(dep_id)
-
         dep_row = all_subs_df[all_subs_df["id"] == dep_id]
         if dep_row.empty:
             continue
-        dr = dep_row.iloc[0]
+        dr    = dep_row.iloc[0]
         old_s = safe_date(dr.get("planned_start"))
         old_e = safe_date(dr.get("planned_end"))
         if not old_s or not old_e:
             continue
-
         new_s = old_s + timedelta(days=delta)
         new_e = old_e + timedelta(days=delta)
-
-        db_update("sub_tasks", {
-            "planned_start": str(new_s),
-            "planned_end":   str(new_e),
-        }, "id", dep_id)
-
+        db_update("sub_tasks", {"planned_start": str(new_s), "planned_end": str(new_e)}, "id", dep_id)
         log_revision(job_no, dep_id, old_s, old_e, new_s, new_e,
                      f"[Auto-cascade] {reason}", revised_by, rev_df)
-
         queue += dependents.get(dep_id, [])
 
 
@@ -396,12 +363,12 @@ def cascade_reschedule(changed_sub_id: int, new_end: date,
 (tab_schedule, tab_gantt, tab_manpower,
  tab_slips, tab_logs, tab_analytics, tab_master) = st.tabs([
     "🏗️ Schedule", "📅 Gantt", "👥 Manpower",
-    "📋 Weekly Slips", "📝 Daily Logs", "📊 Analytics", "⚙️ Master",
+    "📋 Work Slips", "📝 Daily Logs", "📊 Analytics", "⚙️ Master",
 ])
 
 
 # ══════════════════════════════════════════════
-# TAB 1 — SCHEDULE (WBS Tree)
+# TAB 1 — SCHEDULE
 # ══════════════════════════════════════════════
 with tab_schedule:
     st.subheader("🏗️ Work Breakdown Schedule")
@@ -417,7 +384,6 @@ with tab_schedule:
         st.info("Select a job to manage its schedule.")
         st.stop()
 
-    # Project header
     pr = df_proj[df_proj["job_no"] == job]
     if not pr.empty:
         p = pr.iloc[0]
@@ -435,7 +401,6 @@ with tab_schedule:
 
     st.divider()
 
-    # ── WBS data for this job ──
     job_main = df_main[df_main["job_no"] == job].sort_values("task_order") \
                if not df_main.empty else pd.DataFrame()
     job_sub  = df_sub[df_sub["job_no"] == job].sort_values("sub_order") \
@@ -443,9 +408,7 @@ with tab_schedule:
     if not job_sub.empty:
         job_sub = compute_cpm(job_sub)
 
-    # ─────────────────────────────────────────
-    # CLONE SCHEDULE FROM ANOTHER JOB
-    # ─────────────────────────────────────────
+    # ── Clone ──────────────────────────────────
     if job_main.empty:
         st.warning("⚠️ No schedule found for this job.")
         with st.expander("🔁 Clone Schedule from Another Job", expanded=True):
@@ -462,39 +425,29 @@ with tab_schedule:
                     st.info("Source job has no schedule to clone.")
                 else:
                     new_start = st.date_input("New Project Start Date", value=TODAY, key="clone_start")
-
-                    # Auto-schedule preview
                     preview_rows = []
                     cursor = new_start
                     for _, sm in src_main.iterrows():
-                        sm_id    = int(sm["id"])
-                        sm_subs  = src_sub[src_sub["main_task_id"] == sm_id]
+                        sm_id      = int(sm["id"])
+                        sm_subs    = src_sub[src_sub["main_task_id"] == sm_id]
                         sched_subs = auto_schedule_from(sm_subs, cursor)
                         for _, ss in sched_subs.iterrows():
                             preview_rows.append({
-                                "Main Task":    sm["name"],
-                                "Sub Task":     ss["name"],
+                                "Main Task": sm["name"], "Sub Task": ss["name"],
                                 "Duration (d)": int(ss.get("duration_days", 1)),
-                                "Start":        ss["planned_start"],
-                                "End":          ss["planned_end"],
-                                "Workers/day":  int(ss.get("manpower_required", 1)),
+                                "Start": ss["planned_start"], "End": ss["planned_end"],
+                                "Workers/day": int(ss.get("manpower_required", 1)),
                             })
                         if not sched_subs.empty:
                             last_end = sched_subs["planned_end"].max()
-                            if isinstance(last_end, date):
-                                cursor = last_end + timedelta(days=1)
-                            else:
-                                cursor = pd.to_datetime(last_end).date() + timedelta(days=1)
+                            cursor = (last_end if isinstance(last_end, date)
+                                      else pd.to_datetime(last_end).date()) + timedelta(days=1)
 
                     if preview_rows:
                         st.markdown("#### 📋 Preview — Edit before saving")
                         prev_df = pd.DataFrame(preview_rows)
-
-                        # Editable preview using st.data_editor
-                        edited = st.data_editor(
-                            prev_df,
-                            use_container_width=True,
-                            num_rows="fixed",
+                        edited  = st.data_editor(
+                            prev_df, use_container_width=True, num_rows="fixed",
                             column_config={
                                 "Start": st.column_config.DateColumn("Start", format="DD-MMM-YYYY"),
                                 "End":   st.column_config.DateColumn("End",   format="DD-MMM-YYYY"),
@@ -503,60 +456,39 @@ with tab_schedule:
                             },
                             key="clone_editor",
                         )
-
                         if st.button("🚀 Save Cloned Schedule", type="primary"):
-                            saved_mts = {}
                             for _, sm in src_main.sort_values("task_order").iterrows():
-                                # Create main task
-                                sm_rows = edited[edited["Main Task"] == sm["name"]]
+                                sm_rows  = edited[edited["Main Task"] == sm["name"]]
                                 mt_start = sm_rows["Start"].min() if not sm_rows.empty else TODAY
                                 mt_end   = sm_rows["End"].max()   if not sm_rows.empty else TODAY
                                 new_mt   = db_insert("main_tasks", {
-                                    "job_no":       job,
-                                    "name":         sm["name"],
-                                    "description":  sm.get("description", ""),
-                                    "task_order":   int(sm.get("task_order", 1)),
-                                    "planned_start": str(mt_start),
-                                    "planned_end":   str(mt_end),
-                                    "status":       "Pending",
-                                    "created_at":   NOW_IST(),
+                                    "job_no": job, "name": sm["name"],
+                                    "description": sm.get("description", ""),
+                                    "task_order": int(sm.get("task_order", 1)),
+                                    "planned_start": str(mt_start), "planned_end": str(mt_end),
+                                    "status": "Pending", "created_at": NOW_IST(),
                                 })
                                 new_mt_id = new_mt[0]["id"]
-                                saved_mts[int(sm["id"])] = new_mt_id
-
-                                # Create sub tasks for this main task
-                                sm_subs = src_sub[src_sub["main_task_id"] == int(sm["id"])]
+                                sm_subs   = src_sub[src_sub["main_task_id"] == int(sm["id"])]
                                 for _, ss in sm_subs.sort_values("sub_order").iterrows():
-                                    edit_row = edited[
-                                        (edited["Main Task"] == sm["name"]) &
-                                        (edited["Sub Task"]  == ss["name"])
-                                    ]
-                                    if not edit_row.empty:
-                                        er = edit_row.iloc[0]
-                                        ps = er["Start"] if isinstance(er["Start"], date) else pd.to_datetime(er["Start"]).date()
-                                        pe = er["End"]   if isinstance(er["End"],   date) else pd.to_datetime(er["End"]).date()
-                                        dur = int(er["Duration (d)"])
-                                        mp  = int(er["Workers/day"])
+                                    er = edited[(edited["Main Task"] == sm["name"]) &
+                                                (edited["Sub Task"]  == ss["name"])]
+                                    if not er.empty:
+                                        er  = er.iloc[0]
+                                        ps  = er["Start"] if isinstance(er["Start"], date) else pd.to_datetime(er["Start"]).date()
+                                        pe  = er["End"]   if isinstance(er["End"],   date) else pd.to_datetime(er["End"]).date()
+                                        dur = int(er["Duration (d)"]); mp = int(er["Workers/day"])
                                     else:
                                         ps, pe, dur, mp = TODAY, TODAY, 1, 1
-
                                     db_insert("sub_tasks", {
-                                        "main_task_id":      new_mt_id,
-                                        "job_no":            job,
-                                        "name":              ss["name"],
-                                        "description":       ss.get("description", ""),
-                                        "sub_order":         int(ss.get("sub_order", 1)),
-                                        "duration_days":     dur,
-                                        "planned_start":     str(ps),
-                                        "planned_end":       str(pe),
+                                        "main_task_id": new_mt_id, "job_no": job,
+                                        "name": ss["name"], "sub_order": int(ss.get("sub_order", 1)),
+                                        "duration_days": dur, "planned_start": str(ps), "planned_end": str(pe),
                                         "manpower_required": mp,
                                         "man_hours_per_day": float(ss.get("man_hours_per_day", 8)),
-                                        "outsource_flag":    bool(ss.get("outsource_flag", False)),
-                                        "notes":             ss.get("notes", ""),
-                                        "status":            "Pending",
-                                        "created_at":        NOW_IST(),
+                                        "outsource_flag": bool(ss.get("outsource_flag", False)),
+                                        "notes": ss.get("notes", ""), "status": "Pending", "created_at": NOW_IST(),
                                     })
-
                             st.success(f"✅ Cloned {len(src_main)} main tasks from {clone_src}.")
                             st.rerun()
 
@@ -578,12 +510,6 @@ with tab_schedule:
                 })
                 st.success("Main task added."); st.rerun()
 
-    # ── WBS Tree ──
-    if job_main.empty and not df_main.empty:
-        # job_main was populated above or not
-        pass
-
-    # Reload fresh after possible clone save
     job_main = df_main[df_main["job_no"] == job].sort_values("task_order") \
                if not df_main.empty else pd.DataFrame()
 
@@ -594,16 +520,14 @@ with tab_schedule:
                       if not job_sub.empty else pd.DataFrame()
             mt_icon = STATUS_ICON.get(mt.get("status", "Pending"), "🔵")
             done    = len(subs[subs["status"] == "Completed"]) if not subs.empty else 0
-            prog    = f"{done}/{len(subs)}"
 
             with st.expander(
                 f"{mt_icon} **{mt['name']}**  ·  "
                 f"{fmt(safe_date(mt.get('planned_start')), '%d-%b')} → "
                 f"{fmt(safe_date(mt.get('planned_end')), '%d-%b')}  "
-                f"· {prog} done",
+                f"· {done}/{len(subs)} done",
                 expanded=True,
             ):
-                # ── Main Task: inline edit ──
                 edit_mt_key = f"edit_mt_{mt_id}"
                 if st.session_state.get(edit_mt_key):
                     with st.form(f"edit_mt_form_{mt_id}", clear_on_submit=False):
@@ -611,26 +535,22 @@ with tab_schedule:
                         new_mt_name  = e1.text_input("Task Name", value=mt["name"])
                         new_mt_order = e2.number_input("Order", value=int(mt.get("task_order", 1)), min_value=1)
                         new_mt_desc  = st.text_input("Description", value=mt.get("description", "") or "")
-                        new_mt_dates = st.date_input(
-                            "Planned Window",
+                        new_mt_dates = st.date_input("Planned Window",
                             [safe_date(mt.get("planned_start")) or TODAY,
-                             safe_date(mt.get("planned_end"))   or TODAY],
-                        )
+                             safe_date(mt.get("planned_end"))   or TODAY])
                         new_mt_status = st.selectbox("Status", STATUSES,
-                                                     index=STATUSES.index(mt.get("status","Pending"))
-                                                           if mt.get("status") in STATUSES else 0)
+                            index=STATUSES.index(mt.get("status", "Pending"))
+                                  if mt.get("status") in STATUSES else 0)
                         bc1, bc2 = st.columns(2)
                         if bc1.form_submit_button("💾 Save"):
                             db_update("main_tasks", {
-                                "name":         new_mt_name,
-                                "description":  new_mt_desc,
-                                "task_order":   new_mt_order,
+                                "name": new_mt_name, "description": new_mt_desc,
+                                "task_order": new_mt_order,
                                 "planned_start": str(new_mt_dates[0]) if len(new_mt_dates) > 0 else None,
                                 "planned_end":   str(new_mt_dates[1]) if len(new_mt_dates) > 1 else None,
-                                "status":       new_mt_status,
+                                "status": new_mt_status,
                             }, "id", mt_id)
-                            del st.session_state[edit_mt_key]
-                            st.rerun()
+                            del st.session_state[edit_mt_key]; st.rerun()
                         if bc2.form_submit_button("Cancel"):
                             del st.session_state[edit_mt_key]; st.rerun()
                 else:
@@ -638,11 +558,10 @@ with tab_schedule:
                     mc1.caption(mt.get("description", "") or "")
                     if mc2.button("✏️ Edit", key=f"mt_edit_btn_{mt_id}"):
                         st.session_state[edit_mt_key] = True; st.rerun()
-                    # Status quick-save
                     new_mt_s = mc3.selectbox("", STATUSES,
-                                             index=STATUSES.index(mt.get("status","Pending"))
-                                                   if mt.get("status") in STATUSES else 0,
-                                             key=f"mts_{mt_id}", label_visibility="collapsed")
+                        index=STATUSES.index(mt.get("status", "Pending"))
+                              if mt.get("status") in STATUSES else 0,
+                        key=f"mts_{mt_id}", label_visibility="collapsed")
                     if mc3.button("✓", key=f"mtsv_{mt_id}"):
                         db_update("main_tasks", {"status": new_mt_s}, "id", mt_id); st.rerun()
                     if mc4.button("🗑️ Delete", key=f"mtdl_{mt_id}"):
@@ -650,7 +569,6 @@ with tab_schedule:
 
                 st.markdown("---")
 
-                # ── Add Sub Task ──
                 with st.form(f"add_sub_{mt_id}", clear_on_submit=True):
                     st.caption("➕ New Sub Task")
                     f1, f2, f3 = st.columns([3, 1, 1])
@@ -658,64 +576,49 @@ with tab_schedule:
                     dur = f2.number_input("Duration (days)", min_value=1, value=3, key=f"dur_{mt_id}")
                     mp  = f3.number_input("Workers/day", min_value=1, value=2, key=f"mp_{mt_id}")
                     f4, f5, f6 = st.columns([2, 1, 2])
-                    ps      = f4.date_input("Planned Start", value=TODAY, key=f"ps_{mt_id}")
-                    ord_    = f5.number_input("Order", min_value=1, value=len(subs) + 1,
-                                              key=f"ord_{mt_id}")
-                    mh      = f6.number_input("Man-hrs/person/day", min_value=1.0, value=8.0,
-                                              step=0.5, key=f"mh_{mt_id}")
+                    ps   = f4.date_input("Planned Start", value=TODAY, key=f"ps_{mt_id}")
+                    ord_ = f5.number_input("Order", min_value=1, value=len(subs) + 1, key=f"ord_{mt_id}")
+                    mh   = f6.number_input("Man-hrs/person/day", min_value=1.0, value=8.0,
+                                           step=0.5, key=f"mh_{mt_id}")
                     dep_opts = {int(r["id"]): r["name"] for _, r in subs.iterrows()} \
                                if not subs.empty else {}
-                    deps    = st.multiselect("Depends on", list(dep_opts.keys()),
-                                             format_func=lambda x: dep_opts.get(x, str(x)),
-                                             key=f"deps_{mt_id}")
-                    f7, f8  = st.columns(2)
-                    outsrc  = f7.checkbox("Outsource", key=f"out_{mt_id}")
-                    vendor  = f8.text_input("Vendor", key=f"vend_{mt_id}")
-                    notes   = st.text_input("Notes / Specs", key=f"notes_{mt_id}")
-
+                    deps = st.multiselect("Depends on", list(dep_opts.keys()),
+                                          format_func=lambda x: dep_opts.get(x, str(x)),
+                                          key=f"deps_{mt_id}")
+                    f7, f8 = st.columns(2)
+                    outsrc = f7.checkbox("Outsource", key=f"out_{mt_id}")
+                    vendor = f8.text_input("Vendor", key=f"vend_{mt_id}")
+                    notes  = st.text_input("Notes / Specs", key=f"notes_{mt_id}")
                     if st.form_submit_button("Add Sub Task") and sn:
                         pe = ps + timedelta(days=dur - 1)
                         db_insert("sub_tasks", {
-                            "main_task_id":      mt_id, "job_no": job,
-                            "name":              sn, "sub_order": ord_,
-                            "duration_days":     dur,
-                            "planned_start":     ps.isoformat(),
-                            "planned_end":       pe.isoformat(),
-                            "manpower_required": mp,
-                            "man_hours_per_day": float(mh),
-                            "depends_on":        deps if deps else None,
-                            "outsource_flag":    outsrc,
-                            "outsource_vendor":  vendor or None,
-                            "notes":             notes or None,
-                            "status":            "Pending",
-                            "created_at":        NOW_IST(),
+                            "main_task_id": mt_id, "job_no": job,
+                            "name": sn, "sub_order": ord_, "duration_days": dur,
+                            "planned_start": ps.isoformat(), "planned_end": pe.isoformat(),
+                            "manpower_required": mp, "man_hours_per_day": float(mh),
+                            "depends_on": deps if deps else None,
+                            "outsource_flag": outsrc, "outsource_vendor": vendor or None,
+                            "notes": notes or None, "status": "Pending", "created_at": NOW_IST(),
                         })
                         st.success("Sub task added."); st.rerun()
 
-                # ── Sub Task Cards ──
                 if subs.empty:
                     st.caption("No sub tasks yet.")
                 else:
                     for _, sub in subs.sort_values("sub_order").iterrows():
-                        sub_id   = int(sub["id"])
-                        is_crit  = bool(sub.get("is_critical", False))
-                        float_d  = int(sub.get("float_days", 0)) \
-                                   if pd.notna(sub.get("float_days")) else 0
-                        p_start  = safe_date(sub.get("planned_start"))
-                        p_end    = safe_date(sub.get("planned_end"))
-                        status   = sub.get("status", "Pending")
-                        outsrc   = sub.get("outsource_flag", False)
-
-                        # Allotment badge
-                        badge, allot_w, allot_mh, req_mh = allotment_badge(sub, df_asgn)
-
+                        sub_id  = int(sub["id"])
+                        is_crit = bool(sub.get("is_critical", False))
+                        float_d = int(sub.get("float_days", 0)) if pd.notna(sub.get("float_days")) else 0
+                        p_start = safe_date(sub.get("planned_start"))
+                        p_end   = safe_date(sub.get("planned_end"))
+                        status  = sub.get("status", "Pending")
+                        outsrc  = sub.get("outsource_flag", False)
+                        badge, _, _, _ = allotment_badge(sub, df_asgn)
                         crit_tag = " 🔥" if is_crit else ""
                         out_tag  = " 🏭" if outsrc else ""
 
                         with st.container(border=True):
-                            # ── Inline edit mode ──
                             edit_sub_key = f"edit_sub_{sub_id}"
-
                             if st.session_state.get(edit_sub_key):
                                 with st.form(f"edit_sub_form_{sub_id}", clear_on_submit=False):
                                     es1, es2, es3 = st.columns([3, 1, 1])
@@ -725,69 +628,47 @@ with tab_schedule:
                                     new_mp    = es3.number_input("Workers/day", min_value=1,
                                                                   value=int(sub.get("manpower_required", 1)))
                                     es4, es5, es6 = st.columns([2, 2, 1])
-                                    new_ps    = es4.date_input("Planned Start", value=p_start or TODAY)
-                                    new_mh    = es5.number_input("Man-hrs/person/day",
-                                                                   value=float(sub.get("man_hours_per_day", 8)),
-                                                                   min_value=0.5, step=0.5)
-                                    new_sord  = es6.number_input("Order",
-                                                                   value=int(sub.get("sub_order", 1)),
-                                                                   min_value=1)
+                                    new_ps   = es4.date_input("Planned Start", value=p_start or TODAY)
+                                    new_mh   = es5.number_input("Man-hrs/person/day",
+                                                                  value=float(sub.get("man_hours_per_day", 8)),
+                                                                  min_value=0.5, step=0.5)
+                                    new_sord = es6.number_input("Order", value=int(sub.get("sub_order", 1)), min_value=1)
                                     new_notes  = st.text_input("Notes", value=sub.get("notes", "") or "")
-                                    rev_reason = st.text_input(
-                                        "Reason for change (required if dates change)")
+                                    rev_reason = st.text_input("Reason for change (required if dates change)")
                                     rev_by     = st.text_input("Changed by")
-
-                                    bc1, bc2 = st.columns(2)
+                                    bc1, bc2   = st.columns(2)
                                     if bc1.form_submit_button("💾 Save"):
                                         new_pe = new_ps + timedelta(days=new_dur - 1)
-
-                                        # Auto-revision: if dates changed, log it
                                         dates_changed = (new_ps != p_start or new_pe != p_end)
                                         if dates_changed:
                                             if not rev_reason:
                                                 st.error("Please provide a reason for the date change.")
                                                 st.stop()
-                                            rev_no = log_revision(
-                                                job, sub_id, p_start, p_end,
-                                                new_ps, new_pe, rev_reason, rev_by, df_rev)
+                                            rev_no = log_revision(job, sub_id, p_start, p_end,
+                                                                   new_ps, new_pe, rev_reason, rev_by, df_rev)
                                             st.toast(f"Rev #{rev_no} auto-logged.")
-                                            # Cascade to dependents
-                                            cascade_reschedule(
-                                                sub_id, new_pe, df_sub, job,
-                                                rev_reason, rev_by, df_rev)
-
+                                            cascade_reschedule(sub_id, new_pe, df_sub, job,
+                                                               rev_reason, rev_by, df_rev)
                                         db_update("sub_tasks", {
-                                            "name":              new_sname,
-                                            "duration_days":     new_dur,
-                                            "manpower_required": new_mp,
-                                            "man_hours_per_day": float(new_mh),
-                                            "planned_start":     str(new_ps),
-                                            "planned_end":       str(new_pe),
-                                            "sub_order":         new_sord,
-                                            "notes":             new_notes,
+                                            "name": new_sname, "duration_days": new_dur,
+                                            "manpower_required": new_mp, "man_hours_per_day": float(new_mh),
+                                            "planned_start": str(new_ps), "planned_end": str(new_pe),
+                                            "sub_order": new_sord, "notes": new_notes,
                                         }, "id", sub_id)
-                                        del st.session_state[edit_sub_key]
-                                        st.rerun()
+                                        del st.session_state[edit_sub_key]; st.rerun()
                                     if bc2.form_submit_button("Cancel"):
                                         del st.session_state[edit_sub_key]; st.rerun()
-
                             else:
-                                # ── Display mode ──
                                 r1, r2, r3, r4, r5 = st.columns([4, 1.5, 1, 1, 1])
                                 r1.markdown(
-                                    f"{STATUS_ICON.get(status, '🔵')} **{sub['name']}**"
-                                    f"{crit_tag}{out_tag}  \n"
-                                    f"<small>"
-                                    f"{fmt(p_start, '%d-%b')} → {fmt(p_end, '%d-%b')} "
+                                    f"{STATUS_ICON.get(status, '🔵')} **{sub['name']}**{crit_tag}{out_tag}  \n"
+                                    f"<small>{fmt(p_start, '%d-%b')} → {fmt(p_end, '%d-%b')} "
                                     f"| {sub.get('duration_days', 1)}d "
                                     f"| {sub.get('manpower_required', 1)} workers "
-                                    f"| Float: {float_d}d "
-                                    f"| {badge}"
-                                    f"</small>",
+                                    f"| Float: {float_d}d | {badge}</small>",
                                     unsafe_allow_html=True,
                                 )
-                                new_s = r2.selectbox(
-                                    "", STATUSES,
+                                new_s = r2.selectbox("", STATUSES,
                                     index=STATUSES.index(status) if status in STATUSES else 0,
                                     key=f"sts_{sub_id}", label_visibility="collapsed")
                                 if r3.button("✓", key=f"stssv_{sub_id}", use_container_width=True):
@@ -797,27 +678,22 @@ with tab_schedule:
                                     elif new_s == "Completed" and not sub.get("actual_end"):
                                         upd["actual_end"] = TODAY.isoformat()
                                     db_update("sub_tasks", upd, "id", sub_id); st.rerun()
-
-                                if r4.button("✏️", key=f"edit_sub_btn_{sub_id}",
-                                             use_container_width=True, help="Edit"):
+                                if r4.button("✏️", key=f"edit_sub_btn_{sub_id}", use_container_width=True):
                                     st.session_state[edit_sub_key] = True; st.rerun()
-
                                 if r5.button("🗑️", key=f"del_{sub_id}", use_container_width=True):
                                     db_delete("sub_tasks", "id", sub_id); st.rerun()
 
-                            # ── Revision history ──
                             sub_revs = df_rev[df_rev["sub_task_id"] == sub_id] \
                                        if not df_rev.empty else pd.DataFrame()
                             if not sub_revs.empty:
                                 with st.expander(f"📜 {len(sub_revs)} revision(s)"):
                                     for _, rv in sub_revs.iterrows():
-                                        imp   = int(rv.get("impact_days", 0))
-                                        color = "red" if imp > 0 else "green"
-                                        auto  = "[Auto-cascade]" in str(rv.get("reason", ""))
+                                        imp    = int(rv.get("impact_days", 0))
+                                        color  = "red" if imp > 0 else "green"
+                                        auto   = "[Auto-cascade]" in str(rv.get("reason", ""))
                                         prefix = "🔄 " if auto else ""
                                         st.markdown(
-                                            f"{prefix}**Rev #{rv['revision_no']}** · "
-                                            f"{rv.get('revised_by', '—')}  \n"
+                                            f"{prefix}**Rev #{rv['revision_no']}** · {rv.get('revised_by', '—')}  \n"
                                             f"{fmt(safe_date(rv.get('old_start')), '%d-%b')} → "
                                             f"{fmt(safe_date(rv.get('old_end')), '%d-%b')} ⟶ "
                                             f"{fmt(safe_date(rv.get('new_start')), '%d-%b')} → "
@@ -860,9 +736,7 @@ with tab_gantt:
                 weeks.append(d); d += timedelta(days=7)
 
             html = (
-                "<style>"
-                ".gw{overflow-x:auto}"
-                ".gt{border-collapse:collapse;font-size:12px;width:100%}"
+                "<style>.gw{overflow-x:auto}.gt{border-collapse:collapse;font-size:12px;width:100%}"
                 ".gt th,.gt td{border:0.5px solid var(--color-border-tertiary);padding:3px 6px;white-space:nowrap}"
                 ".gt th{background:var(--color-background-secondary);font-weight:500;text-align:center}"
                 ".gt .lbl{text-align:left;min-width:170px;max-width:240px;overflow:hidden;text-overflow:ellipsis}"
@@ -870,8 +744,7 @@ with tab_gantt:
                 ".bc-cr{background:#E24B4A}.bc-ac{background:#378ADD}"
                 ".bc-dn{background:#639922}.bc-pe{background:#B4B2A9}.bc-hl{background:#EF9F27}"
                 ".mtr td{background:var(--color-background-secondary);font-weight:500}"
-                ".tw{background:rgba(239,159,39,0.10)!important}"
-                "</style>"
+                ".tw{background:rgba(239,159,39,0.10)!important}</style>"
                 "<div class='gw'><table class='gt'><thead><tr><th class='lbl'>Task</th>"
             )
             for w in weeks:
@@ -881,8 +754,7 @@ with tab_gantt:
 
             for _, mt in g_main.iterrows():
                 html += f"<tr class='mtr'><td class='lbl'>&#128230; {mt['name']}</td>"
-                html += "<td></td>" * len(weeks)
-                html += "</tr>"
+                html += "<td></td>" * len(weeks) + "</tr>"
                 mt_subs = g_sub[g_sub["main_task_id"] == int(mt["id"])]
                 for _, sub in mt_subs.iterrows():
                     ps  = safe_date(sub.get("planned_start"))
@@ -890,58 +762,46 @@ with tab_gantt:
                     st_ = sub.get("status", "Pending")
                     cr  = sub.get("is_critical", False)
                     out = sub.get("outsource_flag", False)
-                    icon = STATUS_ICON.get(st_, "")
                     html += (f"<td class='lbl' style='padding-left:18px'>"
-                             f"{icon}{sub['name']}"
+                             f"{STATUS_ICON.get(st_,'')}{sub['name']}"
                              f"{'&#128293;' if cr else ''}{'&#127981;' if out else ''}</td>")
                     for w in weeks:
                         we  = w + timedelta(days=6)
                         twc = " tw" if w <= TODAY <= we else ""
                         if ps and pe and ps <= we and pe >= w:
-                            bar = ("bc-cr" if cr and st_ != "Completed"
-                                   else "bc-dn" if st_ == "Completed"
-                                   else "bc-ac" if st_ == "Active"
-                                   else "bc-hl" if st_ in ("On Hold","Blocked")
-                                   else "bc-pe")
+                            bar = ("bc-cr" if cr and st_ != "Completed" else
+                                   "bc-dn" if st_ == "Completed" else
+                                   "bc-ac" if st_ == "Active" else
+                                   "bc-hl" if st_ in ("On Hold","Blocked") else "bc-pe")
                             html += f"<td class='{twc}'><div class='bc {bar}'></div></td>"
                         else:
                             html += f"<td class='{twc}'></td>"
                     html += "</tr>"
-            html += "</tbody></table></div>"
-            html += (
-                "<div style='margin-top:8px;font-size:11px;color:var(--color-text-secondary);"
-                "display:flex;gap:12px;flex-wrap:wrap'>"
-                "<span><span style='display:inline-block;width:12px;height:8px;"
-                "background:#E24B4A;border-radius:2px'></span> Critical</span>"
-                "<span><span style='display:inline-block;width:12px;height:8px;"
-                "background:#378ADD;border-radius:2px'></span> Active</span>"
-                "<span><span style='display:inline-block;width:12px;height:8px;"
-                "background:#639922;border-radius:2px'></span> Completed</span>"
-                "<span><span style='display:inline-block;width:12px;height:8px;"
-                "background:#B4B2A9;border-radius:2px'></span> Pending</span>"
-                "<span><span style='display:inline-block;width:12px;height:8px;"
-                "background:#EF9F27;border-radius:2px'></span> On Hold/Blocked</span>"
-                "</div>"
-            )
+            html += ("</tbody></table></div>"
+                     "<div style='margin-top:8px;font-size:11px;color:var(--color-text-secondary);"
+                     "display:flex;gap:12px;flex-wrap:wrap'>"
+                     "<span><span style='display:inline-block;width:12px;height:8px;background:#E24B4A;border-radius:2px'></span> Critical</span>"
+                     "<span><span style='display:inline-block;width:12px;height:8px;background:#378ADD;border-radius:2px'></span> Active</span>"
+                     "<span><span style='display:inline-block;width:12px;height:8px;background:#639922;border-radius:2px'></span> Completed</span>"
+                     "<span><span style='display:inline-block;width:12px;height:8px;background:#B4B2A9;border-radius:2px'></span> Pending</span>"
+                     "<span><span style='display:inline-block;width:12px;height:8px;background:#EF9F27;border-radius:2px'></span> On Hold</span></div>")
             st.components.v1.html(html, height=min(100 + len(g_sub) * 28, 650), scrolling=True)
 
-    # Revision log
     job_revs = df_rev[df_rev["job_no"] == g_job] if not df_rev.empty else pd.DataFrame()
     if not job_revs.empty:
         with st.expander(f"📜 Revision Log — {len(job_revs)} entries"):
             disp = job_revs.copy()
             disp["created_at"] = pd.to_datetime(disp["created_at"], utc=True, errors="coerce") \
                                     .dt.tz_convert(IST).dt.strftime("%d-%b %H:%M")
-            st.dataframe(
-                disp[["revision_no", "sub_task_id", "reason", "revised_by",
-                       "old_start", "old_end", "new_start", "new_end",
-                       "impact_days", "created_at"]],
-                use_container_width=True, hide_index=True)
+            st.dataframe(disp[["revision_no","sub_task_id","reason","revised_by",
+                                "old_start","old_end","new_start","new_end",
+                                "impact_days","created_at"]],
+                         use_container_width=True, hide_index=True)
             st.download_button("📥 Export", to_csv(disp), f"revisions_{g_job}.csv")
 
 
 # ══════════════════════════════════════════════
-# TAB 3 — MANPOWER LOAD
+# TAB 3 — MANPOWER
 # ══════════════════════════════════════════════
 with tab_manpower:
     st.subheader("👥 Manpower Load & Optimisation")
@@ -965,7 +825,6 @@ with tab_manpower:
         mk1.metric("🔴 Overloaded",    len(ov))
         mk2.metric("🟢 Optimal",       len(ok))
         mk3.metric("⚪ Underutilised", len(un))
-
         if not ov.empty:
             st.warning("**Overloaded — action needed:**")
             for _, w in ov.iterrows():
@@ -978,24 +837,18 @@ with tab_manpower:
                 )
         if not un.empty:
             st.info(f"{len(un)} underutilised workers — redeploy to overloaded tasks.")
-
         st.dataframe(
-            load_df.rename(columns={"worker_name": "Worker",
-                                     "allocated_hrs": "Alloc. Hrs/Day (own)",
-                                     "daily_cap_hrs": "Capacity Hrs/Day",
-                                     "load_pct": "Load %", "status": "Status"}),
-            use_container_width=True, hide_index=True,
-        )
+            load_df.rename(columns={"worker_name": "Worker", "allocated_hrs": "Alloc. Hrs/Day (own)",
+                                     "daily_cap_hrs": "Capacity Hrs/Day", "load_pct": "Load %",
+                                     "status": "Status"}),
+            use_container_width=True, hide_index=True)
         st.download_button("📥 Export Load", to_csv(load_df), f"load_{m_week}.csv")
     else:
         st.info("No assignments for this week.")
 
     st.divider()
     st.markdown("#### Assign Worker Pool to Sub Task")
-    st.caption(
-        "Select multiple workers at once. Each worker works their own hours — "
-        "e.g. Top Dish buffing: 3 workers × 2 hrs/day → 6 man-hrs/day team total, each charged 2 hrs only."
-    )
+    st.caption("Each worker works their own hours — e.g. 3 workers × 2 hrs/day → 6 man-hrs/day team total, each charged 2 hrs only.")
 
     a_job = st.selectbox("Job", ["-- Select --"] + all_jobs, key="asgn_job")
     if a_job == "-- Select --":
@@ -1005,184 +858,127 @@ with tab_manpower:
         if a_subs.empty:
             st.info("No sub tasks in this job.")
         else:
-            # Sub-task picker (outside form so existing assignments react to it)
             sub_opts = {
-                int(r["id"]): f"{r['name']}  ({r.get('duration_days', 1)}d | "
-                              f"needs {r.get('manpower_required', 1)}w × "
-                              f"{r.get('man_hours_per_day', 8)}h/d)"
+                int(r["id"]): f"{r['name']}  ({r.get('duration_days',1)}d | "
+                              f"needs {r.get('manpower_required',1)}w × {r.get('man_hours_per_day',8)}h/d)"
                 for _, r in a_subs.iterrows()
             }
-            a_sub_id = st.selectbox(
-                "Sub Task", list(sub_opts.keys()),
-                format_func=lambda x: sub_opts.get(x, str(x)),
-                key="asgn_sub",
-            )
+            a_sub_id = st.selectbox("Sub Task", list(sub_opts.keys()),
+                                    format_func=lambda x: sub_opts.get(x, str(x)), key="asgn_sub")
 
-            # ── Current pool for this sub-task ──────────────────────
             existing_asgn = df_asgn[df_asgn["sub_task_id"] == a_sub_id].copy() \
                             if not df_asgn.empty else pd.DataFrame()
-
             sub_row     = a_subs[a_subs["id"] == a_sub_id].iloc[0]
             duration    = int(sub_row.get("duration_days",    1) or 1)
             req_workers = int(sub_row.get("manpower_required", 1) or 1)
             mh_per_day  = float(sub_row.get("man_hours_per_day", 8) or 8)
             required_mh = req_workers * mh_per_day * duration
 
-            # Man-hour summary bar
             if not existing_asgn.empty:
-                allotted_mh  = existing_asgn["allocated_hrs_day"].sum() * duration
-                team_mh_day  = existing_asgn["allocated_hrs_day"].sum()
-                pct          = min(allotted_mh / required_mh * 100, 100) if required_mh else 0
-                fill_color   = "#639922" if pct >= 95 else ("#EF9F27" if pct >= 50 else "#E24B4A")
-                bar_html = (
-                    f"<div style='background:var(--color-background-secondary);"
-                    f"border-radius:6px;height:10px;margin:6px 0'>"
-                    f"<div style='background:{fill_color};width:{pct:.0f}%;"
-                    f"height:10px;border-radius:6px'></div></div>"
-                    f"<small style='color:var(--color-text-secondary)'>"
-                    f"Team: <b>{team_mh_day:.1f} hrs/day</b> × {duration}d = "
-                    f"<b>{allotted_mh:.0f} hrs</b> &nbsp;|&nbsp; "
-                    f"Required: {req_workers}w × {mh_per_day}h × {duration}d = "
-                    f"<b>{required_mh:.0f} hrs</b> &nbsp;({pct:.0f}%)</small>"
-                )
-                st.markdown(bar_html, unsafe_allow_html=True)
+                allotted_mh = existing_asgn["allocated_hrs_day"].sum() * duration
+                team_mh_day = existing_asgn["allocated_hrs_day"].sum()
+                pct         = min(allotted_mh / required_mh * 100, 100) if required_mh else 0
+                fill_color  = "#639922" if pct >= 95 else ("#EF9F27" if pct >= 50 else "#E24B4A")
+                st.markdown(
+                    f"<div style='background:var(--color-background-secondary);border-radius:6px;height:10px;margin:6px 0'>"
+                    f"<div style='background:{fill_color};width:{pct:.0f}%;height:10px;border-radius:6px'></div></div>"
+                    f"<small>Team: <b>{team_mh_day:.1f} hrs/day</b> × {duration}d = <b>{allotted_mh:.0f} hrs</b>"
+                    f" | Required: {req_workers}w × {mh_per_day}h × {duration}d = <b>{required_mh:.0f} hrs</b>"
+                    f" ({pct:.0f}%)</small>", unsafe_allow_html=True)
 
-                # Current workers list with inline edit + remove
                 st.markdown("**Current worker pool:**")
                 for _, ea in existing_asgn.iterrows():
-                    row_c1, row_c2, row_c3, row_c4 = st.columns([3, 1.5, 1, 0.8])
-                    row_c1.markdown(
-                        f"👤 **{ea['worker_name']}**  \n"
-                        f"<small>Wk {fmt(safe_date(ea.get('week_start_date')), '%d-%b')} "
-                        f"| {ea.get('target_description') or '—'}</small>",
-                        unsafe_allow_html=True,
-                    )
-                    new_hrs = row_c2.number_input(
-                        "h/day", min_value=0.5,
-                        value=float(ea["allocated_hrs_day"]),
-                        step=0.5, key=f"ea_h_{ea['id']}",
-                        label_visibility="collapsed",
-                    )
-                    if row_c3.button("✓ Save", key=f"ea_sv_{ea['id']}", use_container_width=True):
-                        db_update("task_assignments",
-                                  {"allocated_hrs_day": float(new_hrs)},
-                                  "id", int(ea["id"]))
-                        st.rerun()
-                    if row_c4.button("🗑️", key=f"ea_dl_{ea['id']}", use_container_width=True):
-                        db_delete("task_assignments", "id", int(ea["id"]))
-                        st.rerun()
+                    rc1, rc2, rc3, rc4 = st.columns([3, 1.5, 1, 0.8])
+                    rc1.markdown(f"👤 **{ea['worker_name']}**  \n"
+                                 f"<small>Wk {fmt(safe_date(ea.get('week_start_date')),'%d-%b')} "
+                                 f"| {ea.get('target_description') or '—'}</small>",
+                                 unsafe_allow_html=True)
+                    new_hrs = rc2.number_input("h/day", min_value=0.5,
+                                               value=float(ea["allocated_hrs_day"]),
+                                               step=0.5, key=f"ea_h_{ea['id']}",
+                                               label_visibility="collapsed")
+                    if rc3.button("✓ Save", key=f"ea_sv_{ea['id']}", use_container_width=True):
+                        db_update("task_assignments", {"allocated_hrs_day": float(new_hrs)},
+                                  "id", int(ea["id"])); st.rerun()
+                    if rc4.button("🗑️", key=f"ea_dl_{ea['id']}", use_container_width=True):
+                        db_delete("task_assignments", "id", int(ea["id"])); st.rerun()
             else:
                 st.caption("No workers assigned to this task yet.")
 
             st.divider()
-
-            # ── Add multiple workers at once ─────────────────────────
             st.markdown("**Add workers to this task:**")
-
             already_assigned = existing_asgn["worker_name"].tolist() \
                                if not existing_asgn.empty else []
 
             with st.form("assign_worker_pool", clear_on_submit=True):
-                # MULTI-SELECT — pick any number of workers simultaneously
                 selected_workers = st.multiselect(
-                    "Select workers (one or more)",
-                    options=all_workers,
-                    default=[],
-                    help="Pick all workers who will work on this task together. "
-                         "Already-assigned workers shown with ✓ below.",
+                    "Select workers (one or more)", options=all_workers, default=[],
+                    help="Pick all workers for this task. Each gets their own hour allocation.",
                     key="pool_multiselect",
                 )
-
-                # Show which are already assigned as a note
                 if already_assigned:
-                    st.caption(
-                        "Already in pool: " +
-                        ", ".join(f"✓ {w}" for w in already_assigned)
-                    )
-
+                    st.caption("Already in pool: " + ", ".join(f"✓ {w}" for w in already_assigned))
                 f1, f2, f3 = st.columns(3)
-                shared_hrs = f1.number_input(
-                    "Hrs/day per worker",
-                    min_value=0.5, value=float(mh_per_day), step=0.5,
-                    help="Each selected worker gets this many hours/day individually. "
-                         "E.g. 3 workers × 2 hrs = 6 man-hrs/day team total.",
-                )
+                shared_hrs = f1.number_input("Hrs/day per worker", min_value=0.5,
+                                              value=float(mh_per_day), step=0.5,
+                                              help="Each selected worker gets this many hrs/day individually.")
                 a_week   = f2.date_input("Week Starting", value=week_monday())
-                a_target = f3.text_input("Shared target / goal (applies to all)")
+                a_target = f3.text_input("Shared target / goal")
 
-                # Live preview of man-hour impact (computed from current selection)
                 new_workers_count = len(selected_workers)
                 if new_workers_count:
                     new_team_day = (existing_asgn["allocated_hrs_day"].sum()
-                                   if not existing_asgn.empty else 0) + \
-                                   new_workers_count * shared_hrs
+                                   if not existing_asgn.empty else 0) + new_workers_count * shared_hrs
                     new_total_mh = new_team_day * duration
                     preview_pct  = min(new_total_mh / required_mh * 100, 150) if required_mh else 0
                     pclr = "#639922" if preview_pct >= 95 else ("#EF9F27" if preview_pct >= 50 else "#E24B4A")
                     st.markdown(
-                        f"<small style='color:{pclr}'>After adding: "
-                        f"{new_workers_count} new worker(s) × {shared_hrs}h/day → "
-                        f"Team total {new_team_day:.1f} h/day × {duration}d = "
-                        f"<b>{new_total_mh:.0f} man-hrs</b> "
-                        f"({preview_pct:.0f}% of {required_mh:.0f}h required)</small>",
-                        unsafe_allow_html=True,
-                    )
+                        f"<small style='color:{pclr}'>After adding: {new_workers_count} worker(s) × "
+                        f"{shared_hrs}h/day → Team {new_team_day:.1f}h/day × {duration}d = "
+                        f"<b>{new_total_mh:.0f} man-hrs</b> ({preview_pct:.0f}% of {required_mh:.0f}h)</small>",
+                        unsafe_allow_html=True)
 
-                submitted = st.form_submit_button("➕ Assign Workers to Task")
-                if submitted:
+                if st.form_submit_button("➕ Assign Workers to Task"):
                     if not selected_workers:
                         st.error("Select at least one worker.")
                     else:
                         skipped, added = [], []
                         for w in selected_workers:
                             if w in already_assigned:
-                                skipped.append(w)
-                                continue
+                                skipped.append(w); continue
                             db_insert("task_assignments", {
-                                "sub_task_id":        int(a_sub_id),
-                                "job_no":             a_job,
-                                "worker_name":        w,
-                                "allocated_hrs_day":  float(shared_hrs),
-                                "week_start_date":    str(week_monday(a_week)),
-                                "target_description": a_target,
-                                "created_at":         NOW_IST(),
+                                "sub_task_id": int(a_sub_id), "job_no": a_job,
+                                "worker_name": w, "allocated_hrs_day": float(shared_hrs),
+                                "week_start_date": str(week_monday(a_week)),
+                                "target_description": a_target, "created_at": NOW_IST(),
                             })
                             added.append(w)
-
                         if added:
-                            st.success(
-                                f"✅ Assigned {len(added)} worker(s): {', '.join(added)}  \n"
-                                f"Each gets {shared_hrs} hrs/day (individual allocation)."
-                            )
+                            st.success(f"✅ Assigned {len(added)} worker(s): {', '.join(added)}  \n"
+                                       f"Each gets {shared_hrs} hrs/day (individual allocation).")
                         if skipped:
-                            st.warning(
-                                f"Skipped (already assigned): {', '.join(skipped)}"
-                            )
+                            st.warning(f"Skipped (already assigned): {', '.join(skipped)}")
                         st.rerun()
 
     with st.expander("👤 Manpower Pool"):
         if not df_pool.empty:
-            st.dataframe(df_pool[["worker_name", "worker_type", "trade",
-                                   "daily_cap_hrs", "active"]],
+            st.dataframe(df_pool[["worker_name","worker_type","trade","daily_cap_hrs","active"]],
                          use_container_width=True, hide_index=True)
         else:
             st.info("Add workers in Master tab.")
 
 
 # ══════════════════════════════════════════════
-# TAB 4 — WEEKLY SLIPS
+# TAB 4 — WORK SLIPS  (fully audited)
 # ══════════════════════════════════════════════
 with tab_slips:
     st.subheader("📋 Work Slips")
 
-    # ── helper: build printable text for a slip ──────────────────────
+    # ── helpers ──────────────────────────────────────────────────────
     def build_slip_text(slip, tasks, period_label):
-        wk_end = safe_date(slip.get("week_start_date")) + timedelta(days=5) \
-                 if safe_date(slip.get("week_start_date")) else None
+        # FIX 4: use period_label from caller — no hardcoded +5 days
         lines = [
-            "=" * 58,
-            "         B&G ENGINEERING — WORK PLAN SLIP",
-            "=" * 58,
+            "=" * 58, "         B&G ENGINEERING — WORK PLAN SLIP", "=" * 58,
             f"Worker    : {slip['worker_name']}",
             f"Job No.   : {slip['job_no']}",
             f"Period    : {period_label}",
@@ -1190,240 +986,225 @@ with tab_slips:
             "-" * 58,
         ]
         for i, t in enumerate(tasks, 1):
-            hrs    = t.get("target_hrs", 8)
-            days   = t.get("target_days", 6)
-            lines += [
-                f"{i}. TASK   : {t.get('task_name', '—')}",
-                f"   TARGET : {hrs} hrs/day  |  Total: {hrs * days:.0f} hrs over {days}d",
-            ]
+            hrs  = t.get("target_hrs", 8)
+            days = t.get("target_days", 6)   # stored per-slip, not hardcoded
+            lines += [f"{i}. TASK   : {t.get('task_name','—')}",
+                      f"   TARGET : {hrs} hrs/day  |  Total: {hrs * days:.0f} hrs over {days}d"]
             if t.get("target_desc"): lines.append(f"   GOAL   : {t['target_desc']}")
             if t.get("notes"):       lines.append(f"   NOTES  : {t['notes']}")
             lines.append("")
-        lines += [
-            "-" * 58,
-            "Worker Signature : ___________________________",
-            "Supervisor Sign  : ___________________________",
-            "Date             : ________________",
-            "=" * 58,
-        ]
+        lines += ["-" * 58,
+                  "Worker Signature : ___________________________",
+                  "Supervisor Sign  : ___________________________",
+                  "Date             : ________________", "=" * 58]
         return "\n".join(lines)
 
-    # ── helper: render one slip card ─────────────────────────────────
     def render_slip_card(slip, period_label, card_key):
+        # FIX 3: card_key already sanitised by caller
         try:
             tasks = json.loads(slip["slip_data"]) \
                     if isinstance(slip["slip_data"], str) else (slip["slip_data"] or [])
         except Exception:
             tasks = []
-
         ack = slip.get("acknowledged", False)
-
         with st.container(border=True):
             h1, h2, h3 = st.columns([3, 2, 1])
-            h1.markdown(
-                f"**{slip['worker_name']}** &nbsp;·&nbsp; `{slip['job_no']}`  \n"
-                f"<small>{period_label}</small>",
-                unsafe_allow_html=True,
-            )
-            h2.caption(
-                f"Issued: {slip.get('generated_by') or '—'}  \n"
-                f"{'✅ Acknowledged' if ack else '⏳ Pending'}"
-            )
+            h1.markdown(f"**{slip['worker_name']}** &nbsp;·&nbsp; `{slip['job_no']}`  \n"
+                        f"<small>{period_label}</small>", unsafe_allow_html=True)
+            h2.caption(f"Issued: {slip.get('generated_by') or '—'}  \n"
+                       f"{'✅ Acknowledged' if ack else '⏳ Pending'}")
             if not ack:
                 if h3.button("✅ Ack", key=f"ack_{card_key}"):
-                    db_update("weekly_slips", {"acknowledged": True}, "id", int(slip["id"]))
-                    st.rerun()
-
+                    db_update("weekly_slips", {"acknowledged": True}, "id", int(slip["id"])); st.rerun()
             if tasks:
-                rows = [{
-                    "Task":        t.get("task_name", "—"),
-                    "Hrs/Day":     t.get("target_hrs", 8),
-                    "Days":        t.get("target_days", 6),
-                    "Total Hrs":   f"{t.get('target_hrs', 8) * t.get('target_days', 6):.0f}",
-                    "Goal":        t.get("target_desc") or "—",
-                    "Notes":       t.get("notes") or "—",
-                } for t in tasks]
+                rows = [{"Task": t.get("task_name","—"), "Hrs/Day": t.get("target_hrs",8),
+                         "Days": t.get("target_days",6),
+                         "Total Hrs": f"{t.get('target_hrs',8)*t.get('target_days',6):.0f}",
+                         "Goal": t.get("target_desc") or "—", "Notes": t.get("notes") or "—"}
+                        for t in tasks]
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
             txt = build_slip_text(slip, tasks, period_label)
-            st.download_button(
-                "🖨️ Download",
-                txt.encode(),
-                f"Slip_{slip['worker_name'].replace(' ','_')}_{card_key}.txt",
-                key=f"dlslip_{card_key}",
-            )
+            st.download_button("🖨️ Download", txt.encode(),
+                               f"Slip_{slip['worker_name'].replace(' ','_')}_{card_key}.txt",
+                               key=f"dlslip_{card_key}")
 
-    # ════════════════════════════════════════════
-    # SECTION A — GENERATE NEW SLIP
-    # ════════════════════════════════════════════
+    # ════════════════════════
+    # SECTION A — GENERATE
+    # ════════════════════════
     with st.expander("➕ Generate New Slip", expanded=False):
-        # Sub-task picker depends on job — must be outside form
-        gj1, gj2 = st.columns(2)
-        gen_job    = gj1.selectbox("Job", ["-- Select --"] + all_jobs, key="gen_job")
-        gen_by     = gj2.text_input("Issued by (supervisor)", key="gen_by")
 
+        # ALL widgets outside form — no branching, no stale values
+        gg1, gg2, gg3 = st.columns(3)
+        gen_job    = gg1.selectbox("Job", ["-- Select --"] + all_jobs, key="gen_job")
+        gen_period = gg2.selectbox("Slip period",
+                                   ["Weekly (Mon–Sat)", "Daily", "Monthly", "Custom range"],
+                                   key="gen_period")
+        gen_by     = gg3.text_input("Issued by (supervisor)", key="gen_by")
+
+        # FIX 1: date inputs outside form, unique key per period type
+        gd1, gd2 = st.columns(2)
+        if gen_period == "Daily":
+            gen_date_from = gd1.date_input("Date", value=TODAY, key="gen_date_daily")
+            gen_date_to   = gen_date_from
+            gen_days      = 1
+            period_str    = fmt(gen_date_from, "%d-%b-%Y")
+            week_key      = str(gen_date_from)
+        elif gen_period == "Monthly":
+            gen_date_from = gd1.date_input("Month start", value=TODAY.replace(day=1), key="gen_date_monthly")
+            next_m        = (gen_date_from.replace(day=28) + timedelta(days=4)).replace(day=1)
+            gen_date_to   = next_m - timedelta(days=1)
+            gen_days      = (gen_date_to - gen_date_from).days + 1
+            period_str    = gen_date_from.strftime("%b %Y")
+            week_key      = str(gen_date_from)
+            gd2.caption(f"Month end: {fmt(gen_date_to)}  ({gen_days} days)")
+        elif gen_period == "Custom range":
+            dr            = gd1.date_input("From – To", value=[TODAY, TODAY + timedelta(days=6)],
+                                           key="gen_date_custom")
+            gen_date_from = dr[0] if len(dr) > 0 else TODAY
+            gen_date_to   = dr[1] if len(dr) > 1 else TODAY
+            gen_days      = (gen_date_to - gen_date_from).days + 1
+            period_str    = f"{fmt(gen_date_from,'%d-%b')} – {fmt(gen_date_to,'%d-%b-%Y')}"
+            week_key      = str(gen_date_from)
+            gd2.caption(f"{gen_days} day(s)")
+        else:  # Weekly
+            raw_week      = gd1.date_input("Week starting", value=week_monday(), key="gen_date_weekly")
+            gen_date_from = week_monday(raw_week)
+            gen_date_to   = gen_date_from + timedelta(days=5)
+            gen_days      = 6
+            period_str    = f"{fmt(gen_date_from,'%d-%b')} – {fmt(gen_date_to,'%d-%b-%Y')}"
+            week_key      = str(gen_date_from)
+            gd2.caption(f"Mon–Sat: {period_str}")
+
+        # FIX 8: task options key includes job so it resets when job changes
         if gen_job != "-- Select --":
-            gen_subs = df_sub[df_sub["job_no"] == gen_job] if not df_sub.empty else pd.DataFrame()
+            gen_subs     = df_sub[df_sub["job_no"] == gen_job] if not df_sub.empty else pd.DataFrame()
             sub_opts_gen = {int(r["id"]): f"{r['name']} ({r.get('duration_days',1)}d)"
                             for _, r in gen_subs.iterrows()}
+        else:
+            sub_opts_gen = {}
 
-            # Task picker outside form (reactive to job change)
-            gen_tasks_sel = st.multiselect(
-                "Tasks to include in slip",
-                options=list(sub_opts_gen.keys()),
-                format_func=lambda x: sub_opts_gen.get(x, str(x)),
-                key="gen_tasks",
-            )
+        # FIX 2: gen_tasks_sel outside form — not cleared on form submit
+        # FIX 8: key includes gen_job so widget resets on job change
+        gen_tasks_sel = st.multiselect(
+            "Tasks to include in slip",
+            options=list(sub_opts_gen.keys()),
+            format_func=lambda x: sub_opts_gen.get(x, str(x)),
+            key=f"gen_tasks_{gen_job}",          # ← includes job in key
+            disabled=(gen_job == "-- Select --"),
+            placeholder="Select a job first…" if gen_job == "-- Select --" else "Pick tasks…",
+        )
 
-            with st.form("gen_slip_form", clear_on_submit=True):
-                fa, fb, fc = st.columns(3)
-                gen_workers  = fa.multiselect("Worker(s)", all_workers, key="gen_workers_f")
-                gen_period   = fb.selectbox(
-                    "Slip period",
-                    ["Weekly (Mon–Sat)", "Daily", "Monthly", "Custom range"],
-                    key="gen_period_f",
-                )
-                # Date inputs vary by period
-                if gen_period == "Daily":
-                    gen_date_from = fc.date_input("Date", value=TODAY, key="gen_d1")
-                    gen_date_to   = gen_date_from
-                    gen_days      = 1
-                    period_str    = fmt(gen_date_from, "%d-%b-%Y")
-                    week_key      = str(gen_date_from)
-                elif gen_period == "Monthly":
-                    gen_date_from = fc.date_input("Month start", value=TODAY.replace(day=1), key="gen_d1")
-                    gen_date_to   = (gen_date_from.replace(day=28) + timedelta(days=4)).replace(day=1) \
-                                    - timedelta(days=1)
-                    gen_days      = (gen_date_to - gen_date_from).days + 1
-                    period_str    = gen_date_from.strftime("%b %Y")
-                    week_key      = str(gen_date_from)
-                elif gen_period == "Custom range":
-                    dr = fc.date_input("Range", [TODAY, TODAY + timedelta(days=6)], key="gen_d1")
-                    gen_date_from = dr[0] if len(dr) > 0 else TODAY
-                    gen_date_to   = dr[1] if len(dr) > 1 else TODAY
-                    gen_days      = (gen_date_to - gen_date_from).days + 1
-                    period_str    = f"{fmt(gen_date_from,'%d-%b')} – {fmt(gen_date_to,'%d-%b-%Y')}"
-                    week_key      = str(gen_date_from)
-                else:  # Weekly
-                    gen_date_from = fc.date_input("Week starting", value=week_monday(), key="gen_d1")
-                    gen_date_from = week_monday(gen_date_from)
-                    gen_date_to   = gen_date_from + timedelta(days=5)
-                    gen_days      = 6
-                    period_str    = f"{fmt(gen_date_from,'%d-%b')} – {fmt(gen_date_to,'%d-%b-%Y')}"
-                    week_key      = str(gen_date_from)
+        # FIX 2: workers outside form too
+        gen_workers_sel = st.multiselect(
+            "Worker(s) — one slip per worker",
+            options=all_workers,
+            key="gen_workers",
+        )
 
-                if st.form_submit_button("🖨️ Generate Slips"):
-                    if not gen_workers:
-                        st.error("Select at least one worker.")
-                    elif not gen_tasks_sel:
-                        st.error("Select at least one task.")
-                    else:
-                        count = 0
-                        for gw in gen_workers:
-                            items = []
-                            for tid in gen_tasks_sel:
-                                sr = df_sub[df_sub["id"] == tid]
-                                if sr.empty: continue
-                                sr = sr.iloc[0]
-                                # Pull allocated hrs from assignment if exists
-                                ar = df_asgn[
-                                    (df_asgn["sub_task_id"] == tid) &
-                                    (df_asgn["worker_name"] == gw)
-                                ] if not df_asgn.empty else pd.DataFrame()
-                                t_hrs = float(ar.iloc[0]["allocated_hrs_day"]) \
-                                        if not ar.empty \
-                                        else float(sr.get("man_hours_per_day", 8))
-                                t_desc = ar.iloc[0]["target_description"] \
-                                         if not ar.empty else ""
-                                items.append({
-                                    "sub_task_id": tid,
-                                    "task_name":   sr["name"],
-                                    "target_hrs":  t_hrs,
-                                    "target_days": gen_days,
-                                    "notes":       sr.get("notes", "") or "",
-                                    "target_desc": t_desc or "",
-                                })
-                            db_insert("weekly_slips", {
-                                "worker_name":     gw,
-                                "job_no":          gen_job,
-                                "week_start_date": week_key,
-                                "slip_data":       json.dumps(items),
-                                "generated_by":    gen_by,
-                                "acknowledged":    False,
-                                "created_at":      NOW_IST(),
+        # Form contains ONLY the submit button
+        with st.form("gen_slip_form", clear_on_submit=False):
+            submitted = st.form_submit_button("🖨️ Generate Slips", type="primary",
+                                              use_container_width=True)
+            if submitted:
+                errors = []
+                if gen_job == "-- Select --": errors.append("Select a job.")
+                if not gen_tasks_sel:         errors.append("Select at least one task.")
+                if not gen_workers_sel:       errors.append("Select at least one worker.")
+                if errors:
+                    for e in errors: st.error(e)
+                else:
+                    count = 0
+                    for gw in gen_workers_sel:
+                        items = []
+                        for tid in gen_tasks_sel:
+                            # FIX 7: cast tid to same type as df column for safe comparison
+                            tid_int = int(tid)
+                            sr = df_sub[df_sub["id"] == tid_int]
+                            if sr.empty: continue
+                            sr = sr.iloc[0]
+                            ar = df_asgn[
+                                (df_asgn["sub_task_id"] == tid_int) &
+                                (df_asgn["worker_name"] == gw)
+                            ] if not df_asgn.empty else pd.DataFrame()
+                            t_hrs  = float(ar.iloc[0]["allocated_hrs_day"]) \
+                                     if not ar.empty else float(sr.get("man_hours_per_day", 8) or 8)
+                            t_desc = str(ar.iloc[0]["target_description"] or "") if not ar.empty else ""
+                            items.append({
+                                "sub_task_id": tid_int, "task_name": str(sr["name"]),
+                                "target_hrs": t_hrs, "target_days": gen_days,
+                                "notes": str(sr.get("notes","") or ""), "target_desc": t_desc,
                             })
-                            count += 1
-                        st.success(
-                            f"✅ Generated {count} slip(s) for: {', '.join(gen_workers)}  \n"
-                            f"Period: {period_str}"
-                        )
+                        if not items: continue
+                        db_insert("weekly_slips", {
+                            "worker_name": gw, "job_no": gen_job,
+                            "week_start_date": week_key,
+                            "slip_data": json.dumps(items),
+                            "generated_by": gen_by, "acknowledged": False,
+                            "created_at": NOW_IST(),
+                        })
+                        count += 1
+                    if count:
+                        st.success(f"✅ Generated {count} slip(s) for: {', '.join(gen_workers_sel)}  \n"
+                                   f"Period: {period_str}")
                         st.rerun()
+                    else:
+                        st.warning("No slips generated — tasks may have no data.")
 
     st.divider()
 
-    # ════════════════════════════════════════════
-    # SECTION B — VIEW / FILTER SLIPS
-    # ════════════════════════════════════════════
+    # ════════════════════════
+    # SECTION B — VIEW
+    # ════════════════════════
     st.markdown("#### View & Download Slips")
 
-    # Single filter bar — worker dropdown appears exactly ONCE here
     vf1, vf2, vf3, vf4 = st.columns([2, 2, 2, 2])
-    view_mode   = vf1.selectbox(
-        "View by",
-        ["This Week", "Today", "This Month", "Custom Range", "All Time"],
-        key="slip_view_mode",
-    )
-    view_job    = vf2.selectbox("Job", ["All Jobs"] + all_jobs, key="slip_view_job")
+    view_mode   = vf1.selectbox("View by",
+                                ["This Week","Today","This Month","Custom Range","All Time"],
+                                key="slip_view_mode")
+    view_job    = vf2.selectbox("Job",    ["All Jobs"]    + all_jobs,    key="slip_view_job")
     view_worker = vf3.selectbox("Worker", ["All Workers"] + all_workers, key="slip_view_worker")
-    view_ack    = vf4.selectbox("Status", ["All", "Pending only", "Acknowledged only"],
+    view_ack    = vf4.selectbox("Status", ["All","Pending only","Acknowledged only"],
                                 key="slip_view_ack")
 
-    # Resolve date range from view_mode
     if view_mode == "Today":
         v_from, v_to = TODAY, TODAY
     elif view_mode == "This Week":
-        v_from = week_monday()
-        v_to   = v_from + timedelta(days=6)
+        v_from = week_monday(); v_to = v_from + timedelta(days=6)
     elif view_mode == "This Month":
-        v_from = TODAY.replace(day=1)
-        v_to   = TODAY
+        v_from = TODAY.replace(day=1); v_to = TODAY
     elif view_mode == "Custom Range":
-        cr = st.date_input("Date range", [TODAY - timedelta(days=30), TODAY], key="slip_cr")
+        cr     = st.date_input("Date range", [TODAY - timedelta(days=30), TODAY], key="slip_cr")
         v_from = cr[0] if len(cr) > 0 else TODAY - timedelta(days=30)
         v_to   = cr[1] if len(cr) > 1 else TODAY
-    else:  # All Time
-        v_from = date(2000, 1, 1)
-        v_to   = date(2099, 12, 31)
+    else:
+        v_from = date(2000, 1, 1); v_to = date(2099, 12, 31)
 
-    # Filter slips
     view_df = df_slips.copy() if not df_slips.empty else pd.DataFrame()
-
     if not view_df.empty:
-        view_df["_wsd"] = pd.to_datetime(view_df["week_start_date"]).dt.date
-        view_df = view_df[
-            (view_df["_wsd"] >= v_from) &
-            (view_df["_wsd"] <= v_to)
-        ]
-        if view_job != "All Jobs":
-            view_df = view_df[view_df["job_no"] == view_job]
-        if view_worker != "All Workers":
-            view_df = view_df[view_df["worker_name"] == view_worker]
+        # FIX 4: safe parse of stored date (daily slips store plain dates, not Mondays)
+        view_df["_wsd"] = pd.to_datetime(view_df["week_start_date"], errors="coerce").dt.date
+        view_df = view_df[view_df["_wsd"].notna()]
+        view_df = view_df[(view_df["_wsd"] >= v_from) & (view_df["_wsd"] <= v_to)]
+        if view_job    != "All Jobs":    view_df = view_df[view_df["job_no"]     == view_job]
+        if view_worker != "All Workers": view_df = view_df[view_df["worker_name"] == view_worker]
+
+        # FIX 6: acknowledged may be None from Supabase — use fillna before bool comparison
+        view_df["acknowledged"] = view_df["acknowledged"].fillna(False).astype(bool)
         if view_ack == "Pending only":
-            view_df = view_df[view_df["acknowledged"] == False]
+            view_df = view_df[~view_df["acknowledged"]]
         elif view_ack == "Acknowledged only":
-            view_df = view_df[view_df["acknowledged"] == True]
+            view_df = view_df[view_df["acknowledged"]]
 
     if view_df.empty:
         st.info("No slips match the selected filters.")
     else:
         total = len(view_df)
-        acked = view_df["acknowledged"].sum()
+        acked = int(view_df["acknowledged"].sum())
         sv1, sv2, sv3 = st.columns(3)
-        sv1.metric("Total Slips",    total)
-        sv2.metric("Acknowledged",   int(acked))
-        sv3.metric("Pending",        total - int(acked))
+        sv1.metric("Total Slips",  total)
+        sv2.metric("Acknowledged", acked)
+        sv3.metric("Pending",      total - acked)
 
-        # Bulk download all visible slips as one text file
         all_lines = []
         for _, slip in view_df.iterrows():
             try:
@@ -1442,24 +1223,21 @@ with tab_slips:
             f"Slips_{view_mode.replace(' ','_')}_{view_job}.txt",
             key="bulk_download",
         )
-
         st.divider()
 
-        # Group display: job-wise if "All Jobs", else flat list
         if view_job == "All Jobs":
             for job_grp, grp_df in view_df.groupby("job_no"):
                 st.markdown(f"##### 🏗️ Job: `{job_grp}` — {len(grp_df)} slip(s)")
                 for _, slip in grp_df.iterrows():
-                    wsd = safe_date(slip.get("week_start_date"))
-                    card_key = f"{slip['id']}_{slip['worker_name']}"
-                    pl = fmt(wsd, "%d-%b-%Y") if wsd else "—"
-                    render_slip_card(slip, pl, card_key)
+                    wsd      = safe_date(slip.get("week_start_date"))
+                    # FIX 3: sanitise card_key
+                    card_key = f"{int(slip['id'])}_{str(slip['worker_name']).replace(' ','_')}"
+                    render_slip_card(slip, fmt(wsd, "%d-%b-%Y") if wsd else "—", card_key)
         else:
             for _, slip in view_df.iterrows():
                 wsd      = safe_date(slip.get("week_start_date"))
-                card_key = f"{slip['id']}_{slip['worker_name']}"
-                pl       = fmt(wsd, "%d-%b-%Y") if wsd else "—"
-                render_slip_card(slip, pl, card_key)
+                card_key = f"{int(slip['id'])}_{str(slip['worker_name']).replace(' ','_')}"
+                render_slip_card(slip, fmt(wsd, "%d-%b-%Y") if wsd else "—", card_key)
 
 
 # ══════════════════════════════════════════════
@@ -1468,46 +1246,47 @@ with tab_slips:
 with tab_logs:
     st.subheader("📝 Daily Production Log")
     lg_job = st.selectbox("Job", ["-- Select --"] + all_jobs, key="lg_job")
+
     if lg_job != "-- Select --":
-        lg_subs  = df_sub[df_sub["job_no"] == lg_job] if not df_sub.empty else pd.DataFrame()
-        active   = lg_subs[lg_subs["status"] == "Active"] if not lg_subs.empty else pd.DataFrame()
-        fsubs    = active if not active.empty else lg_subs
+        lg_subs = df_sub[df_sub["job_no"] == lg_job] if not df_sub.empty else pd.DataFrame()
+        active  = lg_subs[lg_subs["status"] == "Active"] if not lg_subs.empty else pd.DataFrame()
+        fsubs   = active if not active.empty else lg_subs
+
         if not fsubs.empty:
             sopts = {int(r["id"]): r["name"] for _, r in fsubs.iterrows()}
+
+            # FIX 5: sub-task and worker pickers OUTSIDE the form so prefill is not stale
+            lf1, lf2, lf3 = st.columns(3)
+            lg_sub    = lf1.selectbox("Sub Task", list(sopts.keys()),
+                                      format_func=lambda x: sopts.get(x, str(x)),
+                                      key="lg_sub_sel")
+            lg_worker = lf2.selectbox("Worker", all_workers, key="lg_worker_sel")
+            lg_date   = lf3.date_input("Date", value=TODAY, key="lg_date_sel")
+
+            # FIX 5: prefill computed OUTSIDE form — reactive to sub/worker changes
+            if not df_asgn.empty:
+                prefill     = df_asgn[(df_asgn["sub_task_id"] == lg_sub) &
+                                      (df_asgn["worker_name"] == lg_worker)]
+                default_hrs = float(prefill.iloc[0]["allocated_hrs_day"]) \
+                              if not prefill.empty else 8.0
+            else:
+                default_hrs = 8.0
+
             with st.form("daily_log", clear_on_submit=True):
-                l1, l2, l3 = st.columns(3)
-                lg_sub    = l1.selectbox("Sub Task", list(sopts.keys()),
-                                         format_func=lambda x: sopts.get(x, str(x)))
-                # ← workers from master_workers
-                lg_worker = l2.selectbox("Worker", all_workers)
-                lg_date   = l3.date_input("Date", value=TODAY)
-
-                # Pre-fill hours from this worker's assignment for this sub-task
-                if not df_asgn.empty:
-                    prefill = df_asgn[
-                        (df_asgn["sub_task_id"] == lg_sub) &
-                        (df_asgn["worker_name"] == lg_worker)
-                    ]
-                    default_hrs = float(prefill.iloc[0]["allocated_hrs_day"]) \
-                                  if not prefill.empty else 8.0
-                else:
-                    default_hrs = 8.0
-
-                l4, l5, l6 = st.columns(3)
-                lg_hrs  = l4.number_input(
-                    "Hours worked (this worker only)",
+                lf4, lf5, lf6 = st.columns(3)
+                lg_hrs  = lf4.number_input(
+                    f"Hours worked (default: {default_hrs}h from assignment)",
                     min_value=0.0, step=0.5, value=default_hrs,
-                    help="Log only THIS worker's hours. Pool workers are logged separately.")
-                lg_out  = l5.number_input("Output Qty", min_value=0.0, step=0.1)
-                lg_unit = l6.selectbox("Unit", UNITS)
+                    help="Log only THIS worker's hours.")
+                lg_out  = lf5.number_input("Output Qty", min_value=0.0, step=0.1)
+                lg_unit = lf6.selectbox("Unit", UNITS)
                 lg_note = st.text_input("Remarks")
                 if st.form_submit_button("Log Entry"):
                     db_insert("daily_logs", {
-                        "sub_task_id": lg_sub, "job_no": lg_job,
+                        "sub_task_id": int(lg_sub), "job_no": lg_job,
                         "worker_name": lg_worker, "log_date": str(lg_date),
                         "hours_worked": float(lg_hrs), "output_qty": float(lg_out),
-                        "output_unit": lg_unit, "notes": lg_note,
-                        "created_at": NOW_IST(),
+                        "output_unit": lg_unit, "notes": lg_note, "created_at": NOW_IST(),
                     })
                     st.success("Logged."); st.rerun()
         else:
@@ -1517,10 +1296,9 @@ with tab_logs:
         show_logs = df_logs[df_logs["job_no"] == lg_job].copy() \
                     if lg_job != "-- Select --" else df_logs.copy()
         show_logs["log_date"] = pd.to_datetime(show_logs["log_date"]).dt.date
-        st.dataframe(
-            show_logs[["log_date","job_no","worker_name","hours_worked",
-                        "output_qty","output_unit","notes"]].head(30),
-            use_container_width=True, hide_index=True)
+        st.dataframe(show_logs[["log_date","job_no","worker_name","hours_worked",
+                                 "output_qty","output_unit","notes"]].head(30),
+                     use_container_width=True, hide_index=True)
         st.download_button("📥 Export", to_csv(show_logs),
                            f"logs_{lg_job if lg_job != '-- Select --' else 'all'}.csv")
 
@@ -1541,25 +1319,21 @@ with tab_analytics:
         ac1, ac2 = st.columns(2)
         an_job  = ac1.multiselect("Jobs",    all_jobs,    default=all_jobs)
         an_wrkr = ac2.multiselect("Workers", all_workers, default=all_workers)
-        period  = st.selectbox("Period",
-                               ["Last 7 Days", "Last 30 Days", "Current Month", "All Time"])
+        period  = st.selectbox("Period", ["Last 7 Days","Last 30 Days","Current Month","All Time"])
         d_from  = {"Last 7 Days":   TODAY - timedelta(days=7),
                    "Last 30 Days":  TODAY - timedelta(days=30),
                    "Current Month": TODAY.replace(day=1),
                    "All Time":      date(2000, 1, 1)}[period]
 
-        rdf = adf[
-            (adf["log_date"] >= d_from) &
-            (adf["job_no"].isin(an_job)) &
-            (adf["worker_name"].isin(an_wrkr))
-        ]
+        rdf = adf[(adf["log_date"] >= d_from) &
+                  (adf["job_no"].isin(an_job)) &
+                  (adf["worker_name"].isin(an_wrkr))]
 
         if rdf.empty:
             st.warning("No data for selection.")
         else:
             k1, k2, k3, k4 = st.columns(4)
-            th = rdf["hours_worked"].sum()
-            to_ = rdf["output_qty"].sum()
+            th = rdf["hours_worked"].sum(); to_ = rdf["output_qty"].sum()
             k1.metric("Man-Hours",      f"{th:.1f}")
             k2.metric("Total Output",   f"{to_:.0f}")
             k3.metric("Productivity",   f"{(to_/th if th else 0):.2f} U/Hr")
@@ -1570,20 +1344,16 @@ with tab_analytics:
                 st.markdown("#### By Worker")
                 ws = rdf.groupby("worker_name")[["hours_worked","output_qty"]].sum().reset_index()
                 ws["U/Hr"] = (ws["output_qty"] / ws["hours_worked"].replace(0, np.nan)).round(2).fillna(0)
-                st.dataframe(ws.rename(columns={"worker_name": "Worker",
-                                                  "hours_worked": "Hrs", "output_qty": "Output"}),
+                st.dataframe(ws.rename(columns={"worker_name":"Worker","hours_worked":"Hrs","output_qty":"Output"}),
                              use_container_width=True, hide_index=True)
                 st.download_button("📥", to_csv(ws), "worker_analytics.csv")
-
             with c2:
                 st.markdown("#### By Job")
                 js = rdf.groupby("job_no")[["hours_worked","output_qty"]].sum().reset_index()
-                st.dataframe(js.rename(columns={"job_no": "Job",
-                                                  "hours_worked": "Hrs", "output_qty": "Output"}),
+                st.dataframe(js.rename(columns={"job_no":"Job","hours_worked":"Hrs","output_qty":"Output"}),
                              use_container_width=True, hide_index=True)
                 st.download_button("📥", to_csv(js), "job_analytics.csv")
 
-            # Schedule compliance
             if not df_sub.empty:
                 st.markdown("#### Schedule Compliance")
                 comp = df_sub[df_sub["job_no"].isin(an_job)].copy()
@@ -1598,12 +1368,9 @@ with tab_analytics:
                               else ("🔴 Late" if x is not None else "⏳ Ongoing"))
                 st.dataframe(
                     comp[["job_no","name","p_end","a_end","delay","result","status"]].rename(columns={
-                        "job_no": "Job", "name": "Sub Task", "p_end": "Planned End",
-                        "a_end": "Actual End", "delay": "Delay (d)",
-                        "result": "Result", "status": "Status",
-                    }),
-                    use_container_width=True, hide_index=True,
-                )
+                        "job_no":"Job","name":"Sub Task","p_end":"Planned End",
+                        "a_end":"Actual End","delay":"Delay (d)","result":"Result","status":"Status"}),
+                    use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════════
@@ -1611,20 +1378,15 @@ with tab_analytics:
 # ══════════════════════════════════════════════
 with tab_master:
     st.subheader("⚙️ Master Settings")
-
-    st.info(
-        "Worker names for dropdowns come from the **master_workers** table "
-        "(same as the rest of the ERP). Add workers there to make them available here.",
-        icon="ℹ️",
-    )
+    st.info("Worker dropdowns across the app pull from the **master_workers** table. "
+            "Add workers there first, then register them in the pool below for load analysis.", icon="ℹ️")
 
     m1, m2 = st.columns(2)
     with m1:
         st.markdown("#### Register Worker in Manpower Pool")
-        st.caption("This sets capacity / availability / type for scheduling load analysis.")
+        st.caption("Sets capacity, type, and availability for load analysis.")
         with st.form("add_worker", clear_on_submit=True):
-            w1, w2 = st.columns(2)
-            # ← select from master_workers, not free text
+            w1, w2  = st.columns(2)
             w_name  = w1.selectbox("Worker (from master)", all_workers, key="pool_wname")
             w_type  = w2.selectbox("Type", WORKER_TYPES)
             w3, w4  = st.columns(2)
@@ -1636,19 +1398,18 @@ with tab_master:
             w_rate  = st.number_input("Daily Rate (₹)", min_value=0.0, step=100.0)
             if st.form_submit_button("Register in Pool") and w_name:
                 db_insert("manpower_pool", {
-                    "worker_name":   w_name, "worker_type": w_type,
-                    "trade":         w_trade, "daily_cap_hrs": float(w_cap),
-                    "available_from": str(w_from), "available_to": str(w_to),
-                    "daily_rate":    float(w_rate) if w_rate else None,
-                    "active":        True, "created_at": NOW_IST(),
+                    "worker_name": w_name, "worker_type": w_type, "trade": w_trade,
+                    "daily_cap_hrs": float(w_cap), "available_from": str(w_from),
+                    "available_to": str(w_to),
+                    "daily_rate": float(w_rate) if w_rate else None,
+                    "active": True, "created_at": NOW_IST(),
                 })
                 st.success(f"Registered {w_name}."); st.rerun()
 
     with m2:
         st.markdown("#### Manpower Pool")
         if not df_pool.empty:
-            st.dataframe(df_pool[["worker_name","worker_type","trade",
-                                   "daily_cap_hrs","active"]],
+            st.dataframe(df_pool[["worker_name","worker_type","trade","daily_cap_hrs","active"]],
                          use_container_width=True, hide_index=True)
             t_name = st.selectbox("Toggle active for:", df_pool["worker_name"].tolist())
             if st.button("Toggle Active"):
