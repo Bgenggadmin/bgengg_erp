@@ -1114,36 +1114,65 @@ with tab_slips:
                 if errors:
                     for e in errors: st.error(e)
                 else:
+                    # STRICT MODE: a task only goes on a worker's slip if THAT worker
+                    # is assigned to that task. Tasks with no assignments at all are
+                    # collected separately and reported back to the supervisor — they
+                    # never end up on anyone's slip.
                     count = 0
+                    unassigned_task_names = []   # tasks that have NO assignments at all
+                    skipped_pairs = []           # (worker, task) pairs where worker isn't assigned
+
+                    # Build a lookup: sub_task_id -> set of worker_names assigned to it
+                    asgn_by_task = {}
+                    if not df_asgn.empty:
+                        for _, ar in df_asgn.iterrows():
+                            tid_a = int(ar["sub_task_id"]) if pd.notna(ar["sub_task_id"]) else None
+                            if tid_a is not None:
+                                asgn_by_task.setdefault(tid_a, []).append(ar)
+
+                    # First pass: identify unassigned tasks (so we don't mention them
+                    # again in the per-worker skip list)
+                    for tid in gen_tasks_sel:
+                        tid_int = int(tid)
+                        sr = df_sub[df_sub["id"] == tid_int]
+                        if sr.empty:
+                            continue
+                        sr = sr.iloc[0]
+                        if tid_int not in asgn_by_task:
+                            unassigned_task_names.append(str(sr["name"]))
+
+                    # Second pass: build slips per worker, strict assignment-only
                     for gw in gen_workers_sel:
                         items = []
                         for tid in gen_tasks_sel:
                             tid_int = int(tid)
                             sr = df_sub[df_sub["id"] == tid_int]
-                            if sr.empty: continue
+                            if sr.empty:
+                                continue
                             sr = sr.iloc[0]
 
-                            # KEY FIX: only include this task if worker is assigned to it
-                            # (or if no assignments exist at all for this task — fallback mode)
-                            if not df_asgn.empty:
-                                task_asgn = df_asgn[df_asgn["sub_task_id"] == tid_int]
-                                worker_asgn = task_asgn[task_asgn["worker_name"] == gw]
-                                # If task has assignments but this worker isn't one — skip
-                                if not task_asgn.empty and worker_asgn.empty:
-                                    continue
-                                ar = worker_asgn
-                            else:
-                                ar = pd.DataFrame()
+                            assigns_for_task = asgn_by_task.get(tid_int, [])
+                            if not assigns_for_task:
+                                # Task has no assignments at all — already reported globally above.
+                                continue
 
-                            t_hrs  = float(ar.iloc[0]["allocated_hrs_day"]) \
-                                     if not ar.empty else float(sr.get("man_hours_per_day", 8) or 8)
-                            t_desc = str(ar.iloc[0]["target_description"] or "") if not ar.empty else ""
+                            worker_assign = next((a for a in assigns_for_task
+                                                  if a["worker_name"] == gw), None)
+                            if worker_assign is None:
+                                # Task is assigned, but not to THIS worker → skip silently
+                                skipped_pairs.append((gw, str(sr["name"])))
+                                continue
+
+                            t_hrs  = float(worker_assign["allocated_hrs_day"])
+                            t_desc = str(worker_assign.get("target_description") or "")
                             items.append({
                                 "sub_task_id": tid_int, "task_name": str(sr["name"]),
                                 "target_hrs": t_hrs, "target_days": gen_days,
-                                "notes": str(sr.get("notes","") or ""), "target_desc": t_desc,
+                                "notes": str(sr.get("notes", "") or ""), "target_desc": t_desc,
                             })
-                        if not items: continue
+
+                        if not items:
+                            continue
                         db_insert("weekly_slips", {
                             "worker_name": gw, "job_no": gen_job,
                             "week_start_date": week_key,
@@ -1152,12 +1181,46 @@ with tab_slips:
                             "created_at": NOW_IST(),
                         })
                         count += 1
+
+                    # Report results
+                    workers_with_slips = []
+                    for gw in gen_workers_sel:
+                        for tid in gen_tasks_sel:
+                            tid_int = int(tid)
+                            if any(a["worker_name"] == gw
+                                   for a in asgn_by_task.get(tid_int, [])):
+                                workers_with_slips.append(gw)
+                                break
+
                     if count:
-                        st.success(f"✅ Generated {count} slip(s) for: {', '.join(gen_workers_sel)}  \n"
-                                   f"Period: {period_str}")
+                        st.success(
+                            f"✅ Generated {count} slip(s) for: "
+                            f"{', '.join(workers_with_slips)}  \n"
+                            f"Period: {period_str}"
+                        )
+
+                    if unassigned_task_names:
+                        st.warning(
+                            "⚠️ The following selected task(s) have no worker "
+                            "assignments and were NOT added to any slip. Assign "
+                            "workers in the Manpower tab first:  \n• "
+                            + "  \n• ".join(sorted(set(unassigned_task_names)))
+                        )
+
+                    workers_without_slips = [gw for gw in gen_workers_sel
+                                             if gw not in workers_with_slips]
+                    if workers_without_slips:
+                        st.info(
+                            "ℹ️ No slip generated for: "
+                            + ", ".join(workers_without_slips)
+                            + " — none of the selected tasks were assigned to them."
+                        )
+
+                    if count == 0 and not unassigned_task_names and not workers_without_slips:
+                        st.warning("No slips generated — please check task assignments.")
+
+                    if count:
                         st.rerun()
-                    else:
-                        st.warning("No slips generated — tasks may have no data.")
 
     st.divider()
 
