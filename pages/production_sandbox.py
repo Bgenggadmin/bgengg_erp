@@ -1,5 +1,5 @@
 """
-B&G Production Scheduler ERP — v5 (Full Audit)
+B&G Production Scheduler ERP — v6 (Audit + Fixes)
 All bugs fixed:
   ✅ Slips: period/date/workers/tasks ALL outside form — no branching inside st.form
   ✅ Slips: gen_tasks options reset when job changes (key includes job)
@@ -10,6 +10,14 @@ All bugs fixed:
   ✅ Type safety: sub_task_id cast to int everywhere for consistent comparison
   ✅ Tabs: Schedule/Gantt no longer halt the script when no job is selected
            (replaced st.stop() with if/else so later tabs still render)
+  ✅ Slips: STRICT MODE — only assigned workers get the task; unassigned tasks
+           are reported back, never put on every slip
+  ✅ Slips: assignments are filtered by overlap with the slip's period — old
+           assignments from previous weeks no longer pollute new slips
+  ✅ Manpower load: AUDIT FIX — uses real sub_task date windows, not just
+           assignment row's stored week_start_date
+  ✅ Manpower: per-worker drill-down shows which tasks make up the load
+  ✅ Slips: per-card 🗑️ delete button + bulk delete of filtered slips
   ✅ All previous fixes retained
 """
 
@@ -229,15 +237,60 @@ def auto_schedule_from(source_subs: pd.DataFrame, new_start: date) -> pd.DataFra
 # ─────────────────────────────────────────────
 # MANPOWER LOAD
 # ─────────────────────────────────────────────
-def manpower_load(asgn_df: pd.DataFrame, pool_df: pd.DataFrame, week: date) -> pd.DataFrame:
+def manpower_load(asgn_df: pd.DataFrame, pool_df: pd.DataFrame,
+                  week: date, sub_df: pd.DataFrame = None) -> pd.DataFrame:
+    """
+    Compute per-worker load for the given week.
+
+    AUDIT FIX: An assignment row's `week_start_date` is just the week the
+    supervisor recorded it on — it does NOT mean the task only spans that one
+    week. The task's actual active window comes from sub_tasks.planned_start /
+    planned_end. We treat an assignment as "active in the requested week" if
+    the task overlaps that week.
+
+    If sub_df is None or empty, falls back to the old (buggy) week_start_date
+    matching behaviour so the function is backward compatible.
+    """
     if asgn_df.empty:
         return pd.DataFrame()
+
+    # Build a sub_task_id -> (planned_start, planned_end) lookup for date-range filtering
+    task_window = {}
+    if sub_df is not None and not sub_df.empty:
+        for _, row in sub_df.iterrows():
+            sid = int(row["id"]) if pd.notna(row["id"]) else None
+            if sid is None:
+                continue
+            ps = safe_date(row.get("planned_start"))
+            pe = safe_date(row.get("planned_end"))
+            if ps and pe:
+                task_window[sid] = (ps, pe)
+
+    week_end = week + timedelta(days=6)
+
     wa = asgn_df.copy()
-    wa["week_start_date"] = pd.to_datetime(wa["week_start_date"]).dt.date
-    week_asgn = wa[wa["week_start_date"] == week]
-    if week_asgn.empty:
+
+    if task_window:
+        # NEW correct behaviour: keep assignments whose underlying task overlaps the week
+        def overlaps(row):
+            sid = int(row["sub_task_id"]) if pd.notna(row["sub_task_id"]) else None
+            if sid is None or sid not in task_window:
+                # Fall back to week_start_date check for orphan assignments
+                wsd = safe_date(row.get("week_start_date"))
+                return wsd == week
+            ps, pe = task_window[sid]
+            # overlap if task_start <= week_end AND task_end >= week_start
+            return ps <= week_end and pe >= week
+        wa = wa[wa.apply(overlaps, axis=1)]
+    else:
+        # OLD behaviour: match the stored week_start_date directly
+        wa["week_start_date"] = pd.to_datetime(wa["week_start_date"]).dt.date
+        wa = wa[wa["week_start_date"] == week]
+
+    if wa.empty:
         return pd.DataFrame()
-    worker_hrs = week_asgn.groupby("worker_name")["allocated_hrs_day"].sum().reset_index()
+
+    worker_hrs = wa.groupby("worker_name")["allocated_hrs_day"].sum().reset_index()
     worker_hrs.columns = ["worker_name", "allocated_hrs"]
     if not pool_df.empty:
         merged = worker_hrs.merge(pool_df[["worker_name", "daily_cap_hrs"]], on="worker_name", how="left")
@@ -816,7 +869,7 @@ with tab_manpower:
     if m_job != "All Jobs" and not asgn_src.empty:
         asgn_src = asgn_src[asgn_src["job_no"] == m_job]
 
-    load_df = manpower_load(asgn_src, df_pool, m_week)
+    load_df = manpower_load(asgn_src, df_pool, m_week, sub_df=df_sub)
 
     if not load_df.empty:
         ov = load_df[load_df["status"].str.contains("Over")]
@@ -844,6 +897,78 @@ with tab_manpower:
                                      "status": "Status"}),
             use_container_width=True, hide_index=True)
         st.download_button("📥 Export Load", to_csv(load_df), f"load_{m_week}.csv")
+
+        # ── Drill-down: see WHICH tasks make up a worker's load ──
+        with st.expander("🔍 Drill down — which tasks make up a worker's load?"):
+            picked = st.selectbox(
+                "Worker", ["-- Select --"] + load_df["worker_name"].tolist(),
+                key="mp_drill_worker",
+            )
+            if picked != "-- Select --":
+                # Re-run the same overlap logic to get the assignments contributing
+                week_end = m_week + timedelta(days=6)
+                task_window = {}
+                if not df_sub.empty:
+                    for _, row in df_sub.iterrows():
+                        sid = int(row["id"]) if pd.notna(row["id"]) else None
+                        if sid is None:
+                            continue
+                        ps = safe_date(row.get("planned_start"))
+                        pe = safe_date(row.get("planned_end"))
+                        if ps and pe:
+                            task_window[sid] = (ps, pe, str(row.get("name", "")),
+                                                str(row.get("job_no", "")))
+
+                worker_rows = []
+                for _, ar in asgn_src[asgn_src["worker_name"] == picked].iterrows():
+                    sid = int(ar["sub_task_id"]) if pd.notna(ar["sub_task_id"]) else None
+                    if sid is None:
+                        continue
+                    info = task_window.get(sid)
+                    if info is None:
+                        # Orphan: no matching sub_task. Use stored week_start_date check.
+                        wsd = safe_date(ar.get("week_start_date"))
+                        if wsd != m_week:
+                            continue
+                        worker_rows.append({
+                            "Job": ar.get("job_no", ""),
+                            "Task": "(orphan - sub-task missing)",
+                            "Task Start": "—", "Task End": "—",
+                            "Hrs/Day": float(ar["allocated_hrs_day"]),
+                            "Assignment ID": int(ar["id"]),
+                        })
+                        continue
+                    ps, pe, tname, tjob = info
+                    if ps <= week_end and pe >= m_week:
+                        worker_rows.append({
+                            "Job": tjob, "Task": tname,
+                            "Task Start": fmt(ps, "%d-%b"),
+                            "Task End":   fmt(pe, "%d-%b"),
+                            "Hrs/Day": float(ar["allocated_hrs_day"]),
+                            "Assignment ID": int(ar["id"]),
+                        })
+
+                if worker_rows:
+                    drill_df = pd.DataFrame(worker_rows)
+                    total_h = drill_df["Hrs/Day"].sum()
+                    cap_row = df_pool[df_pool["worker_name"] == picked]
+                    cap = float(cap_row.iloc[0]["daily_cap_hrs"]) if not cap_row.empty else 8.0
+                    st.markdown(
+                        f"**{picked}** — {len(drill_df)} active assignment(s) "
+                        f"in week of {fmt(m_week, '%d-%b-%Y')}  \n"
+                        f"Total allocated: **{total_h:.1f} hrs/day**  ·  "
+                        f"Capacity: **{cap:.1f} hrs/day**  ·  "
+                        f"Load: **{(total_h/cap*100):.0f}%**"
+                    )
+                    st.dataframe(drill_df, use_container_width=True, hide_index=True)
+                    st.caption(
+                        "💡 If you see duplicate or wrong rows, go to "
+                        "'Assign Worker Pool to Sub Task' below and remove them with "
+                        "the 🗑️ button. Or run: "
+                        f"`DELETE FROM task_assignments WHERE id = <Assignment ID>;` in Supabase."
+                    )
+                else:
+                    st.info(f"No active assignments for {picked} in this week.")
     else:
         st.info("No assignments for this week.")
 
@@ -1129,23 +1254,61 @@ with tab_slips:
                     for e in errors: st.error(e)
                 else:
                     # STRICT MODE: a task only goes on a worker's slip if THAT worker
-                    # is assigned to that task. Tasks with no assignments at all are
-                    # collected separately and reported back to the supervisor — they
-                    # never end up on anyone's slip.
+                    # is assigned to that task AND the assignment is active for the
+                    # slip's period (i.e. either the assignment's stored week matches
+                    # the slip's week, OR the assignment's week falls within the slip's
+                    # date range, OR the underlying sub_task's planned window overlaps
+                    # the slip's period).
+                    #
+                    # Tasks with no qualifying assignments are collected separately
+                    # and reported back to the supervisor — they never end up on a
+                    # slip. This prevents stale assignments from earlier weeks from
+                    # polluting current slips.
                     count = 0
-                    unassigned_task_names = []   # tasks that have NO assignments at all
-                    skipped_pairs = []           # (worker, task) pairs where worker isn't assigned
+                    unassigned_task_names = []
+                    skipped_pairs = []
 
-                    # Build a lookup: sub_task_id -> set of worker_names assigned to it
+                    # Slip period boundaries (already computed above):
+                    #   gen_date_from, gen_date_to
+                    period_from = gen_date_from
+                    period_to   = gen_date_to
+
+                    # Build sub_task_id -> list of {worker_name, hrs/day, target_desc}
+                    # filtered to assignments active during this slip's period.
                     asgn_by_task = {}
                     if not df_asgn.empty:
                         for _, ar in df_asgn.iterrows():
                             tid_a = int(ar["sub_task_id"]) if pd.notna(ar["sub_task_id"]) else None
-                            if tid_a is not None:
+                            if tid_a is None:
+                                continue
+
+                            # Only include assignments whose stored week_start_date
+                            # falls within the slip's period (or is the same week).
+                            asgn_wsd = safe_date(ar.get("week_start_date"))
+                            include = False
+                            if asgn_wsd is not None:
+                                asgn_week_end = asgn_wsd + timedelta(days=6)
+                                # overlap check between [asgn_wsd, asgn_week_end]
+                                # and [period_from, period_to]
+                                if asgn_wsd <= period_to and asgn_week_end >= period_from:
+                                    include = True
+
+                            # Fallback: if assignment has no usable date but the
+                            # underlying sub_task overlaps the slip period, include.
+                            if not include:
+                                sub_row_local = df_sub[df_sub["id"] == tid_a]
+                                if not sub_row_local.empty:
+                                    sps = safe_date(sub_row_local.iloc[0].get("planned_start"))
+                                    spe = safe_date(sub_row_local.iloc[0].get("planned_end"))
+                                    if (sps and spe and
+                                            sps <= period_to and spe >= period_from and
+                                            asgn_wsd is None):
+                                        include = True
+
+                            if include:
                                 asgn_by_task.setdefault(tid_a, []).append(ar)
 
-                    # First pass: identify unassigned tasks (so we don't mention them
-                    # again in the per-worker skip list)
+                    # First pass: unassigned tasks (no qualifying assignment in window)
                     for tid in gen_tasks_sel:
                         tid_int = int(tid)
                         sr = df_sub[df_sub["id"] == tid_int]
@@ -1155,7 +1318,7 @@ with tab_slips:
                         if tid_int not in asgn_by_task:
                             unassigned_task_names.append(str(sr["name"]))
 
-                    # Second pass: build slips per worker, strict assignment-only
+                    # Second pass: build slips per worker
                     for gw in gen_workers_sel:
                         items = []
                         for tid in gen_tasks_sel:
@@ -1167,13 +1330,11 @@ with tab_slips:
 
                             assigns_for_task = asgn_by_task.get(tid_int, [])
                             if not assigns_for_task:
-                                # Task has no assignments at all — already reported globally above.
                                 continue
 
                             worker_assign = next((a for a in assigns_for_task
                                                   if a["worker_name"] == gw), None)
                             if worker_assign is None:
-                                # Task is assigned, but not to THIS worker → skip silently
                                 skipped_pairs.append((gw, str(sr["name"])))
                                 continue
 
