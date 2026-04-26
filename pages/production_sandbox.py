@@ -1009,7 +1009,7 @@ with tab_slips:
             tasks = []
         ack = slip.get("acknowledged", False)
         with st.container(border=True):
-            h1, h2, h3 = st.columns([3, 2, 1])
+            h1, h2, h3, h4 = st.columns([3, 2, 1, 1])
             h1.markdown(f"**{slip['worker_name']}** &nbsp;·&nbsp; `{slip['job_no']}`  \n"
                         f"<small>{period_label}</small>", unsafe_allow_html=True)
             h2.caption(f"Issued: {slip.get('generated_by') or '—'}  \n"
@@ -1017,6 +1017,20 @@ with tab_slips:
             if not ack:
                 if h3.button("✅ Ack", key=f"ack_{card_key}"):
                     db_update("weekly_slips", {"acknowledged": True}, "id", int(slip["id"])); st.rerun()
+            # Delete with two-click confirmation via session state
+            confirm_key = f"confirm_del_{card_key}"
+            if st.session_state.get(confirm_key):
+                if h4.button("⚠️ Confirm", key=f"cfm_{card_key}", type="primary",
+                             help="Click again to permanently delete this slip"):
+                    db_delete("weekly_slips", "id", int(slip["id"]))
+                    st.session_state.pop(confirm_key, None)
+                    st.toast(f"Deleted slip for {slip['worker_name']}")
+                    st.rerun()
+            else:
+                if h4.button("🗑️ Del", key=f"del_{card_key}",
+                             help="Delete this slip"):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
             if tasks:
                 rows = [{"Task": t.get("task_name","—"), "Hrs/Day": t.get("target_hrs",8),
                          "Days": t.get("target_days",6),
@@ -1289,12 +1303,40 @@ with tab_slips:
             all_lines.append(build_slip_text(slip, tasks, pl))
             all_lines.append("\n\n")
 
-        st.download_button(
+        bulk_c1, bulk_c2 = st.columns(2)
+        bulk_c1.download_button(
             f"📦 Download All {total} Slip(s) as One File",
             "\n".join(all_lines).encode(),
             f"Slips_{view_mode.replace(' ','_')}_{view_job}.txt",
             key="bulk_download",
+            use_container_width=True,
         )
+        # Bulk delete with two-click confirmation
+        bulk_confirm_key = "bulk_del_confirm"
+        if st.session_state.get(bulk_confirm_key):
+            if bulk_c2.button(
+                f"⚠️ CONFIRM — Delete all {total} filtered slip(s)?",
+                key="bulk_del_cfm", type="primary", use_container_width=True,
+                help="This permanently deletes every slip currently shown below"
+            ):
+                deleted = 0
+                for _, sd in view_df.iterrows():
+                    db_delete("weekly_slips", "id", int(sd["id"]))
+                    deleted += 1
+                st.session_state.pop(bulk_confirm_key, None)
+                st.toast(f"Deleted {deleted} slip(s)")
+                st.rerun()
+            if bulk_c2.button("Cancel", key="bulk_del_cancel", use_container_width=True):
+                st.session_state.pop(bulk_confirm_key, None)
+                st.rerun()
+        else:
+            if bulk_c2.button(
+                f"🗑️ Delete All {total} Filtered Slip(s)",
+                key="bulk_del_btn", use_container_width=True,
+                help="Permanently delete every slip currently shown — use the filters above to narrow first"
+            ):
+                st.session_state[bulk_confirm_key] = True
+                st.rerun()
         st.divider()
 
         if view_job == "All Jobs":
