@@ -8,6 +8,8 @@ All bugs fixed:
   ✅ Slips: acknowledged filter handles None from Supabase correctly
   ✅ Daily log: hours prefill moved outside form (inside form = stale values)
   ✅ Type safety: sub_task_id cast to int everywhere for consistent comparison
+  ✅ Tabs: Schedule/Gantt no longer halt the script when no job is selected
+           (replaced st.stop() with if/else so later tabs still render)
   ✅ All previous fixes retained
 """
 
@@ -382,326 +384,325 @@ with tab_schedule:
     job = st.selectbox("Select Job", ["-- Select --"] + all_jobs, key="sch_job")
     if job == "-- Select --":
         st.info("Select a job to manage its schedule.")
-        st.stop()
+    else:
+        pr = df_proj[df_proj["job_no"] == job]
+        if not pr.empty:
+            p = pr.iloc[0]
+            po_disp = safe_date(p.get("po_delivery_date"))
+            rev_dt  = safe_date(p.get("revised_delivery_date"))
+            target  = rev_dt or po_disp
+            days    = (target - TODAY).days if target else None
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("PO No",        p.get("po_no") or "---")
+            c2.metric("PO Dispatch",  fmt(po_disp))
+            c3.metric("Revised Date", fmt(rev_dt))
+            if days is not None:
+                c4.metric("Days Left", f"{days}d", delta=days,
+                          delta_color="normal" if days > 7 else "inverse")
 
-    pr = df_proj[df_proj["job_no"] == job]
-    if not pr.empty:
-        p = pr.iloc[0]
-        po_disp = safe_date(p.get("po_delivery_date"))
-        rev_dt  = safe_date(p.get("revised_delivery_date"))
-        target  = rev_dt or po_disp
-        days    = (target - TODAY).days if target else None
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("PO No",        p.get("po_no") or "---")
-        c2.metric("PO Dispatch",  fmt(po_disp))
-        c3.metric("Revised Date", fmt(rev_dt))
-        if days is not None:
-            c4.metric("Days Left", f"{days}d", delta=days,
-                      delta_color="normal" if days > 7 else "inverse")
+        st.divider()
 
-    st.divider()
+        job_main = df_main[df_main["job_no"] == job].sort_values("task_order") \
+                   if not df_main.empty else pd.DataFrame()
+        job_sub  = df_sub[df_sub["job_no"] == job].sort_values("sub_order") \
+                   if not df_sub.empty else pd.DataFrame()
+        if not job_sub.empty:
+            job_sub = compute_cpm(job_sub)
 
-    job_main = df_main[df_main["job_no"] == job].sort_values("task_order") \
-               if not df_main.empty else pd.DataFrame()
-    job_sub  = df_sub[df_sub["job_no"] == job].sort_values("sub_order") \
-               if not df_sub.empty else pd.DataFrame()
-    if not job_sub.empty:
-        job_sub = compute_cpm(job_sub)
+        # ── Clone ──────────────────────────────────
+        if job_main.empty:
+            st.warning("⚠️ No schedule found for this job.")
+            with st.expander("🔁 Clone Schedule from Another Job", expanded=True):
+                other_jobs = [j for j in all_jobs if j != job]
+                clone_src  = st.selectbox("Source Job (template)", ["-- Select --"] + other_jobs, key="clone_src")
 
-    # ── Clone ──────────────────────────────────
-    if job_main.empty:
-        st.warning("⚠️ No schedule found for this job.")
-        with st.expander("🔁 Clone Schedule from Another Job", expanded=True):
-            other_jobs = [j for j in all_jobs if j != job]
-            clone_src  = st.selectbox("Source Job (template)", ["-- Select --"] + other_jobs, key="clone_src")
+                if clone_src != "-- Select --":
+                    src_main = df_main[df_main["job_no"] == clone_src].sort_values("task_order") \
+                               if not df_main.empty else pd.DataFrame()
+                    src_sub  = df_sub[df_sub["job_no"] == clone_src].sort_values("sub_order") \
+                               if not df_sub.empty else pd.DataFrame()
 
-            if clone_src != "-- Select --":
-                src_main = df_main[df_main["job_no"] == clone_src].sort_values("task_order") \
-                           if not df_main.empty else pd.DataFrame()
-                src_sub  = df_sub[df_sub["job_no"] == clone_src].sort_values("sub_order") \
-                           if not df_sub.empty else pd.DataFrame()
-
-                if src_main.empty:
-                    st.info("Source job has no schedule to clone.")
-                else:
-                    new_start = st.date_input("New Project Start Date", value=TODAY, key="clone_start")
-                    preview_rows = []
-                    cursor = new_start
-                    for _, sm in src_main.iterrows():
-                        sm_id      = int(sm["id"])
-                        sm_subs    = src_sub[src_sub["main_task_id"] == sm_id]
-                        sched_subs = auto_schedule_from(sm_subs, cursor)
-                        for _, ss in sched_subs.iterrows():
-                            preview_rows.append({
-                                "Main Task": sm["name"], "Sub Task": ss["name"],
-                                "Duration (d)": int(ss.get("duration_days", 1)),
-                                "Start": ss["planned_start"], "End": ss["planned_end"],
-                                "Workers/day": int(ss.get("manpower_required", 1)),
-                            })
-                        if not sched_subs.empty:
-                            last_end = sched_subs["planned_end"].max()
-                            cursor = (last_end if isinstance(last_end, date)
-                                      else pd.to_datetime(last_end).date()) + timedelta(days=1)
-
-                    if preview_rows:
-                        st.markdown("#### 📋 Preview — Edit before saving")
-                        prev_df = pd.DataFrame(preview_rows)
-                        edited  = st.data_editor(
-                            prev_df, use_container_width=True, num_rows="fixed",
-                            column_config={
-                                "Start": st.column_config.DateColumn("Start", format="DD-MMM-YYYY"),
-                                "End":   st.column_config.DateColumn("End",   format="DD-MMM-YYYY"),
-                                "Duration (d)": st.column_config.NumberColumn("Duration (d)", min_value=1),
-                                "Workers/day":  st.column_config.NumberColumn("Workers/day",  min_value=1),
-                            },
-                            key="clone_editor",
-                        )
-                        if st.button("🚀 Save Cloned Schedule", type="primary"):
-                            for _, sm in src_main.sort_values("task_order").iterrows():
-                                sm_rows  = edited[edited["Main Task"] == sm["name"]]
-                                mt_start = sm_rows["Start"].min() if not sm_rows.empty else TODAY
-                                mt_end   = sm_rows["End"].max()   if not sm_rows.empty else TODAY
-                                new_mt   = db_insert("main_tasks", {
-                                    "job_no": job, "name": sm["name"],
-                                    "description": sm.get("description", ""),
-                                    "task_order": int(sm.get("task_order", 1)),
-                                    "planned_start": str(mt_start), "planned_end": str(mt_end),
-                                    "status": "Pending", "created_at": NOW_IST(),
+                    if src_main.empty:
+                        st.info("Source job has no schedule to clone.")
+                    else:
+                        new_start = st.date_input("New Project Start Date", value=TODAY, key="clone_start")
+                        preview_rows = []
+                        cursor = new_start
+                        for _, sm in src_main.iterrows():
+                            sm_id      = int(sm["id"])
+                            sm_subs    = src_sub[src_sub["main_task_id"] == sm_id]
+                            sched_subs = auto_schedule_from(sm_subs, cursor)
+                            for _, ss in sched_subs.iterrows():
+                                preview_rows.append({
+                                    "Main Task": sm["name"], "Sub Task": ss["name"],
+                                    "Duration (d)": int(ss.get("duration_days", 1)),
+                                    "Start": ss["planned_start"], "End": ss["planned_end"],
+                                    "Workers/day": int(ss.get("manpower_required", 1)),
                                 })
-                                new_mt_id = new_mt[0]["id"]
-                                sm_subs   = src_sub[src_sub["main_task_id"] == int(sm["id"])]
-                                for _, ss in sm_subs.sort_values("sub_order").iterrows():
-                                    er = edited[(edited["Main Task"] == sm["name"]) &
-                                                (edited["Sub Task"]  == ss["name"])]
-                                    if not er.empty:
-                                        er  = er.iloc[0]
-                                        ps  = er["Start"] if isinstance(er["Start"], date) else pd.to_datetime(er["Start"]).date()
-                                        pe  = er["End"]   if isinstance(er["End"],   date) else pd.to_datetime(er["End"]).date()
-                                        dur = int(er["Duration (d)"]); mp = int(er["Workers/day"])
-                                    else:
-                                        ps, pe, dur, mp = TODAY, TODAY, 1, 1
-                                    db_insert("sub_tasks", {
-                                        "main_task_id": new_mt_id, "job_no": job,
-                                        "name": ss["name"], "sub_order": int(ss.get("sub_order", 1)),
-                                        "duration_days": dur, "planned_start": str(ps), "planned_end": str(pe),
-                                        "manpower_required": mp,
-                                        "man_hours_per_day": float(ss.get("man_hours_per_day", 8)),
-                                        "outsource_flag": bool(ss.get("outsource_flag", False)),
-                                        "notes": ss.get("notes", ""), "status": "Pending", "created_at": NOW_IST(),
+                            if not sched_subs.empty:
+                                last_end = sched_subs["planned_end"].max()
+                                cursor = (last_end if isinstance(last_end, date)
+                                          else pd.to_datetime(last_end).date()) + timedelta(days=1)
+
+                        if preview_rows:
+                            st.markdown("#### 📋 Preview — Edit before saving")
+                            prev_df = pd.DataFrame(preview_rows)
+                            edited  = st.data_editor(
+                                prev_df, use_container_width=True, num_rows="fixed",
+                                column_config={
+                                    "Start": st.column_config.DateColumn("Start", format="DD-MMM-YYYY"),
+                                    "End":   st.column_config.DateColumn("End",   format="DD-MMM-YYYY"),
+                                    "Duration (d)": st.column_config.NumberColumn("Duration (d)", min_value=1),
+                                    "Workers/day":  st.column_config.NumberColumn("Workers/day",  min_value=1),
+                                },
+                                key="clone_editor",
+                            )
+                            if st.button("🚀 Save Cloned Schedule", type="primary"):
+                                for _, sm in src_main.sort_values("task_order").iterrows():
+                                    sm_rows  = edited[edited["Main Task"] == sm["name"]]
+                                    mt_start = sm_rows["Start"].min() if not sm_rows.empty else TODAY
+                                    mt_end   = sm_rows["End"].max()   if not sm_rows.empty else TODAY
+                                    new_mt   = db_insert("main_tasks", {
+                                        "job_no": job, "name": sm["name"],
+                                        "description": sm.get("description", ""),
+                                        "task_order": int(sm.get("task_order", 1)),
+                                        "planned_start": str(mt_start), "planned_end": str(mt_end),
+                                        "status": "Pending", "created_at": NOW_IST(),
                                     })
-                            st.success(f"✅ Cloned {len(src_main)} main tasks from {clone_src}.")
-                            st.rerun()
+                                    new_mt_id = new_mt[0]["id"]
+                                    sm_subs   = src_sub[src_sub["main_task_id"] == int(sm["id"])]
+                                    for _, ss in sm_subs.sort_values("sub_order").iterrows():
+                                        er = edited[(edited["Main Task"] == sm["name"]) &
+                                                    (edited["Sub Task"]  == ss["name"])]
+                                        if not er.empty:
+                                            er  = er.iloc[0]
+                                            ps  = er["Start"] if isinstance(er["Start"], date) else pd.to_datetime(er["Start"]).date()
+                                            pe  = er["End"]   if isinstance(er["End"],   date) else pd.to_datetime(er["End"]).date()
+                                            dur = int(er["Duration (d)"]); mp = int(er["Workers/day"])
+                                        else:
+                                            ps, pe, dur, mp = TODAY, TODAY, 1, 1
+                                        db_insert("sub_tasks", {
+                                            "main_task_id": new_mt_id, "job_no": job,
+                                            "name": ss["name"], "sub_order": int(ss.get("sub_order", 1)),
+                                            "duration_days": dur, "planned_start": str(ps), "planned_end": str(pe),
+                                            "manpower_required": mp,
+                                            "man_hours_per_day": float(ss.get("man_hours_per_day", 8)),
+                                            "outsource_flag": bool(ss.get("outsource_flag", False)),
+                                            "notes": ss.get("notes", ""), "status": "Pending", "created_at": NOW_IST(),
+                                        })
+                                st.success(f"✅ Cloned {len(src_main)} main tasks from {clone_src}.")
+                                st.rerun()
 
-    # ── Add Main Task ──
-    with st.expander("➕ Add Main Task", expanded=False):
-        with st.form("add_main_task", clear_on_submit=True):
-            c1, c2, c3 = st.columns([3, 1, 2])
-            mt_name  = c1.text_input("Name")
-            mt_order = c2.number_input("Order", min_value=1, value=1)
-            mt_dates = c3.date_input("Planned Window", [TODAY, TODAY + timedelta(days=10)])
-            mt_desc  = st.text_input("Description (optional)")
-            if st.form_submit_button("Add Main Task") and mt_name:
-                db_insert("main_tasks", {
-                    "job_no": job, "name": mt_name, "description": mt_desc,
-                    "task_order": mt_order,
-                    "planned_start": mt_dates[0].isoformat() if len(mt_dates) > 0 else None,
-                    "planned_end":   mt_dates[1].isoformat() if len(mt_dates) > 1 else None,
-                    "status": "Pending", "created_at": NOW_IST(),
-                })
-                st.success("Main task added."); st.rerun()
+        # ── Add Main Task ──
+        with st.expander("➕ Add Main Task", expanded=False):
+            with st.form("add_main_task", clear_on_submit=True):
+                c1, c2, c3 = st.columns([3, 1, 2])
+                mt_name  = c1.text_input("Name")
+                mt_order = c2.number_input("Order", min_value=1, value=1)
+                mt_dates = c3.date_input("Planned Window", [TODAY, TODAY + timedelta(days=10)])
+                mt_desc  = st.text_input("Description (optional)")
+                if st.form_submit_button("Add Main Task") and mt_name:
+                    db_insert("main_tasks", {
+                        "job_no": job, "name": mt_name, "description": mt_desc,
+                        "task_order": mt_order,
+                        "planned_start": mt_dates[0].isoformat() if len(mt_dates) > 0 else None,
+                        "planned_end":   mt_dates[1].isoformat() if len(mt_dates) > 1 else None,
+                        "status": "Pending", "created_at": NOW_IST(),
+                    })
+                    st.success("Main task added."); st.rerun()
 
-    job_main = df_main[df_main["job_no"] == job].sort_values("task_order") \
-               if not df_main.empty else pd.DataFrame()
+        job_main = df_main[df_main["job_no"] == job].sort_values("task_order") \
+                   if not df_main.empty else pd.DataFrame()
 
-    if not job_main.empty:
-        for _, mt in job_main.iterrows():
-            mt_id   = int(mt["id"])
-            subs    = job_sub[job_sub["main_task_id"] == mt_id] \
-                      if not job_sub.empty else pd.DataFrame()
-            mt_icon = STATUS_ICON.get(mt.get("status", "Pending"), "🔵")
-            done    = len(subs[subs["status"] == "Completed"]) if not subs.empty else 0
+        if not job_main.empty:
+            for _, mt in job_main.iterrows():
+                mt_id   = int(mt["id"])
+                subs    = job_sub[job_sub["main_task_id"] == mt_id] \
+                          if not job_sub.empty else pd.DataFrame()
+                mt_icon = STATUS_ICON.get(mt.get("status", "Pending"), "🔵")
+                done    = len(subs[subs["status"] == "Completed"]) if not subs.empty else 0
 
-            with st.expander(
-                f"{mt_icon} **{mt['name']}**  ·  "
-                f"{fmt(safe_date(mt.get('planned_start')), '%d-%b')} → "
-                f"{fmt(safe_date(mt.get('planned_end')), '%d-%b')}  "
-                f"· {done}/{len(subs)} done",
-                expanded=True,
-            ):
-                edit_mt_key = f"edit_mt_{mt_id}"
-                if st.session_state.get(edit_mt_key):
-                    with st.form(f"edit_mt_form_{mt_id}", clear_on_submit=False):
-                        e1, e2 = st.columns([3, 1])
-                        new_mt_name  = e1.text_input("Task Name", value=mt["name"])
-                        new_mt_order = e2.number_input("Order", value=int(mt.get("task_order", 1)), min_value=1)
-                        new_mt_desc  = st.text_input("Description", value=mt.get("description", "") or "")
-                        new_mt_dates = st.date_input("Planned Window",
-                            [safe_date(mt.get("planned_start")) or TODAY,
-                             safe_date(mt.get("planned_end"))   or TODAY])
-                        new_mt_status = st.selectbox("Status", STATUSES,
+                with st.expander(
+                    f"{mt_icon} **{mt['name']}**  ·  "
+                    f"{fmt(safe_date(mt.get('planned_start')), '%d-%b')} → "
+                    f"{fmt(safe_date(mt.get('planned_end')), '%d-%b')}  "
+                    f"· {done}/{len(subs)} done",
+                    expanded=True,
+                ):
+                    edit_mt_key = f"edit_mt_{mt_id}"
+                    if st.session_state.get(edit_mt_key):
+                        with st.form(f"edit_mt_form_{mt_id}", clear_on_submit=False):
+                            e1, e2 = st.columns([3, 1])
+                            new_mt_name  = e1.text_input("Task Name", value=mt["name"])
+                            new_mt_order = e2.number_input("Order", value=int(mt.get("task_order", 1)), min_value=1)
+                            new_mt_desc  = st.text_input("Description", value=mt.get("description", "") or "")
+                            new_mt_dates = st.date_input("Planned Window",
+                                [safe_date(mt.get("planned_start")) or TODAY,
+                                 safe_date(mt.get("planned_end"))   or TODAY])
+                            new_mt_status = st.selectbox("Status", STATUSES,
+                                index=STATUSES.index(mt.get("status", "Pending"))
+                                      if mt.get("status") in STATUSES else 0)
+                            bc1, bc2 = st.columns(2)
+                            if bc1.form_submit_button("💾 Save"):
+                                db_update("main_tasks", {
+                                    "name": new_mt_name, "description": new_mt_desc,
+                                    "task_order": new_mt_order,
+                                    "planned_start": str(new_mt_dates[0]) if len(new_mt_dates) > 0 else None,
+                                    "planned_end":   str(new_mt_dates[1]) if len(new_mt_dates) > 1 else None,
+                                    "status": new_mt_status,
+                                }, "id", mt_id)
+                                del st.session_state[edit_mt_key]; st.rerun()
+                            if bc2.form_submit_button("Cancel"):
+                                del st.session_state[edit_mt_key]; st.rerun()
+                    else:
+                        mc1, mc2, mc3, mc4 = st.columns([5, 1, 1, 1])
+                        mc1.caption(mt.get("description", "") or "")
+                        if mc2.button("✏️ Edit", key=f"mt_edit_btn_{mt_id}"):
+                            st.session_state[edit_mt_key] = True; st.rerun()
+                        new_mt_s = mc3.selectbox("", STATUSES,
                             index=STATUSES.index(mt.get("status", "Pending"))
-                                  if mt.get("status") in STATUSES else 0)
-                        bc1, bc2 = st.columns(2)
-                        if bc1.form_submit_button("💾 Save"):
-                            db_update("main_tasks", {
-                                "name": new_mt_name, "description": new_mt_desc,
-                                "task_order": new_mt_order,
-                                "planned_start": str(new_mt_dates[0]) if len(new_mt_dates) > 0 else None,
-                                "planned_end":   str(new_mt_dates[1]) if len(new_mt_dates) > 1 else None,
-                                "status": new_mt_status,
-                            }, "id", mt_id)
-                            del st.session_state[edit_mt_key]; st.rerun()
-                        if bc2.form_submit_button("Cancel"):
-                            del st.session_state[edit_mt_key]; st.rerun()
-                else:
-                    mc1, mc2, mc3, mc4 = st.columns([5, 1, 1, 1])
-                    mc1.caption(mt.get("description", "") or "")
-                    if mc2.button("✏️ Edit", key=f"mt_edit_btn_{mt_id}"):
-                        st.session_state[edit_mt_key] = True; st.rerun()
-                    new_mt_s = mc3.selectbox("", STATUSES,
-                        index=STATUSES.index(mt.get("status", "Pending"))
-                              if mt.get("status") in STATUSES else 0,
-                        key=f"mts_{mt_id}", label_visibility="collapsed")
-                    if mc3.button("✓", key=f"mtsv_{mt_id}"):
-                        db_update("main_tasks", {"status": new_mt_s}, "id", mt_id); st.rerun()
-                    if mc4.button("🗑️ Delete", key=f"mtdl_{mt_id}"):
-                        db_delete("main_tasks", "id", mt_id); st.rerun()
+                                  if mt.get("status") in STATUSES else 0,
+                            key=f"mts_{mt_id}", label_visibility="collapsed")
+                        if mc3.button("✓", key=f"mtsv_{mt_id}"):
+                            db_update("main_tasks", {"status": new_mt_s}, "id", mt_id); st.rerun()
+                        if mc4.button("🗑️ Delete", key=f"mtdl_{mt_id}"):
+                            db_delete("main_tasks", "id", mt_id); st.rerun()
 
-                st.markdown("---")
+                    st.markdown("---")
 
-                with st.form(f"add_sub_{mt_id}", clear_on_submit=True):
-                    st.caption("➕ New Sub Task")
-                    f1, f2, f3 = st.columns([3, 1, 1])
-                    sn  = f1.text_input("Sub Task Name", key=f"sn_{mt_id}")
-                    dur = f2.number_input("Duration (days)", min_value=1, value=3, key=f"dur_{mt_id}")
-                    mp  = f3.number_input("Workers/day", min_value=1, value=2, key=f"mp_{mt_id}")
-                    f4, f5, f6 = st.columns([2, 1, 2])
-                    ps   = f4.date_input("Planned Start", value=TODAY, key=f"ps_{mt_id}")
-                    ord_ = f5.number_input("Order", min_value=1, value=len(subs) + 1, key=f"ord_{mt_id}")
-                    mh   = f6.number_input("Man-hrs/person/day", min_value=1.0, value=8.0,
-                                           step=0.5, key=f"mh_{mt_id}")
-                    dep_opts = {int(r["id"]): r["name"] for _, r in subs.iterrows()} \
-                               if not subs.empty else {}
-                    deps = st.multiselect("Depends on", list(dep_opts.keys()),
-                                          format_func=lambda x: dep_opts.get(x, str(x)),
-                                          key=f"deps_{mt_id}")
-                    f7, f8 = st.columns(2)
-                    outsrc = f7.checkbox("Outsource", key=f"out_{mt_id}")
-                    vendor = f8.text_input("Vendor", key=f"vend_{mt_id}")
-                    notes  = st.text_input("Notes / Specs", key=f"notes_{mt_id}")
-                    if st.form_submit_button("Add Sub Task") and sn:
-                        pe = ps + timedelta(days=dur - 1)
-                        db_insert("sub_tasks", {
-                            "main_task_id": mt_id, "job_no": job,
-                            "name": sn, "sub_order": ord_, "duration_days": dur,
-                            "planned_start": ps.isoformat(), "planned_end": pe.isoformat(),
-                            "manpower_required": mp, "man_hours_per_day": float(mh),
-                            "depends_on": deps if deps else None,
-                            "outsource_flag": outsrc, "outsource_vendor": vendor or None,
-                            "notes": notes or None, "status": "Pending", "created_at": NOW_IST(),
-                        })
-                        st.success("Sub task added."); st.rerun()
+                    with st.form(f"add_sub_{mt_id}", clear_on_submit=True):
+                        st.caption("➕ New Sub Task")
+                        f1, f2, f3 = st.columns([3, 1, 1])
+                        sn  = f1.text_input("Sub Task Name", key=f"sn_{mt_id}")
+                        dur = f2.number_input("Duration (days)", min_value=1, value=3, key=f"dur_{mt_id}")
+                        mp  = f3.number_input("Workers/day", min_value=1, value=2, key=f"mp_{mt_id}")
+                        f4, f5, f6 = st.columns([2, 1, 2])
+                        ps   = f4.date_input("Planned Start", value=TODAY, key=f"ps_{mt_id}")
+                        ord_ = f5.number_input("Order", min_value=1, value=len(subs) + 1, key=f"ord_{mt_id}")
+                        mh   = f6.number_input("Man-hrs/person/day", min_value=1.0, value=8.0,
+                                               step=0.5, key=f"mh_{mt_id}")
+                        dep_opts = {int(r["id"]): r["name"] for _, r in subs.iterrows()} \
+                                   if not subs.empty else {}
+                        deps = st.multiselect("Depends on", list(dep_opts.keys()),
+                                              format_func=lambda x: dep_opts.get(x, str(x)),
+                                              key=f"deps_{mt_id}")
+                        f7, f8 = st.columns(2)
+                        outsrc = f7.checkbox("Outsource", key=f"out_{mt_id}")
+                        vendor = f8.text_input("Vendor", key=f"vend_{mt_id}")
+                        notes  = st.text_input("Notes / Specs", key=f"notes_{mt_id}")
+                        if st.form_submit_button("Add Sub Task") and sn:
+                            pe = ps + timedelta(days=dur - 1)
+                            db_insert("sub_tasks", {
+                                "main_task_id": mt_id, "job_no": job,
+                                "name": sn, "sub_order": ord_, "duration_days": dur,
+                                "planned_start": ps.isoformat(), "planned_end": pe.isoformat(),
+                                "manpower_required": mp, "man_hours_per_day": float(mh),
+                                "depends_on": deps if deps else None,
+                                "outsource_flag": outsrc, "outsource_vendor": vendor or None,
+                                "notes": notes or None, "status": "Pending", "created_at": NOW_IST(),
+                            })
+                            st.success("Sub task added."); st.rerun()
 
-                if subs.empty:
-                    st.caption("No sub tasks yet.")
-                else:
-                    for _, sub in subs.sort_values("sub_order").iterrows():
-                        sub_id  = int(sub["id"])
-                        is_crit = bool(sub.get("is_critical", False))
-                        float_d = int(sub.get("float_days", 0)) if pd.notna(sub.get("float_days")) else 0
-                        p_start = safe_date(sub.get("planned_start"))
-                        p_end   = safe_date(sub.get("planned_end"))
-                        status  = sub.get("status", "Pending")
-                        outsrc  = sub.get("outsource_flag", False)
-                        badge, _, _, _ = allotment_badge(sub, df_asgn)
-                        crit_tag = " 🔥" if is_crit else ""
-                        out_tag  = " 🏭" if outsrc else ""
+                    if subs.empty:
+                        st.caption("No sub tasks yet.")
+                    else:
+                        for _, sub in subs.sort_values("sub_order").iterrows():
+                            sub_id  = int(sub["id"])
+                            is_crit = bool(sub.get("is_critical", False))
+                            float_d = int(sub.get("float_days", 0)) if pd.notna(sub.get("float_days")) else 0
+                            p_start = safe_date(sub.get("planned_start"))
+                            p_end   = safe_date(sub.get("planned_end"))
+                            status  = sub.get("status", "Pending")
+                            outsrc  = sub.get("outsource_flag", False)
+                            badge, _, _, _ = allotment_badge(sub, df_asgn)
+                            crit_tag = " 🔥" if is_crit else ""
+                            out_tag  = " 🏭" if outsrc else ""
 
-                        with st.container(border=True):
-                            edit_sub_key = f"edit_sub_{sub_id}"
-                            if st.session_state.get(edit_sub_key):
-                                with st.form(f"edit_sub_form_{sub_id}", clear_on_submit=False):
-                                    es1, es2, es3 = st.columns([3, 1, 1])
-                                    new_sname = es1.text_input("Name", value=sub["name"])
-                                    new_dur   = es2.number_input("Duration (d)", min_value=1,
-                                                                  value=int(sub.get("duration_days", 1)))
-                                    new_mp    = es3.number_input("Workers/day", min_value=1,
-                                                                  value=int(sub.get("manpower_required", 1)))
-                                    es4, es5, es6 = st.columns([2, 2, 1])
-                                    new_ps   = es4.date_input("Planned Start", value=p_start or TODAY)
-                                    new_mh   = es5.number_input("Man-hrs/person/day",
-                                                                  value=float(sub.get("man_hours_per_day", 8)),
-                                                                  min_value=0.5, step=0.5)
-                                    new_sord = es6.number_input("Order", value=int(sub.get("sub_order", 1)), min_value=1)
-                                    new_notes  = st.text_input("Notes", value=sub.get("notes", "") or "")
-                                    rev_reason = st.text_input("Reason for change (required if dates change)")
-                                    rev_by     = st.text_input("Changed by")
-                                    bc1, bc2   = st.columns(2)
-                                    if bc1.form_submit_button("💾 Save"):
-                                        new_pe = new_ps + timedelta(days=new_dur - 1)
-                                        dates_changed = (new_ps != p_start or new_pe != p_end)
-                                        if dates_changed:
-                                            if not rev_reason:
-                                                st.error("Please provide a reason for the date change.")
-                                                st.stop()
-                                            rev_no = log_revision(job, sub_id, p_start, p_end,
-                                                                   new_ps, new_pe, rev_reason, rev_by, df_rev)
-                                            st.toast(f"Rev #{rev_no} auto-logged.")
-                                            cascade_reschedule(sub_id, new_pe, df_sub, job,
-                                                               rev_reason, rev_by, df_rev)
-                                        db_update("sub_tasks", {
-                                            "name": new_sname, "duration_days": new_dur,
-                                            "manpower_required": new_mp, "man_hours_per_day": float(new_mh),
-                                            "planned_start": str(new_ps), "planned_end": str(new_pe),
-                                            "sub_order": new_sord, "notes": new_notes,
-                                        }, "id", sub_id)
-                                        del st.session_state[edit_sub_key]; st.rerun()
-                                    if bc2.form_submit_button("Cancel"):
-                                        del st.session_state[edit_sub_key]; st.rerun()
-                            else:
-                                r1, r2, r3, r4, r5 = st.columns([4, 1.5, 1, 1, 1])
-                                r1.markdown(
-                                    f"{STATUS_ICON.get(status, '🔵')} **{sub['name']}**{crit_tag}{out_tag}  \n"
-                                    f"<small>{fmt(p_start, '%d-%b')} → {fmt(p_end, '%d-%b')} "
-                                    f"| {sub.get('duration_days', 1)}d "
-                                    f"| {sub.get('manpower_required', 1)} workers "
-                                    f"| Float: {float_d}d | {badge}</small>",
-                                    unsafe_allow_html=True,
-                                )
-                                new_s = r2.selectbox("", STATUSES,
-                                    index=STATUSES.index(status) if status in STATUSES else 0,
-                                    key=f"sts_{sub_id}", label_visibility="collapsed")
-                                if r3.button("✓", key=f"stssv_{sub_id}", use_container_width=True):
-                                    upd = {"status": new_s}
-                                    if new_s == "Active" and not sub.get("actual_start"):
-                                        upd["actual_start"] = TODAY.isoformat()
-                                    elif new_s == "Completed" and not sub.get("actual_end"):
-                                        upd["actual_end"] = TODAY.isoformat()
-                                    db_update("sub_tasks", upd, "id", sub_id); st.rerun()
-                                if r4.button("✏️", key=f"edit_sub_btn_{sub_id}", use_container_width=True):
-                                    st.session_state[edit_sub_key] = True; st.rerun()
-                                if r5.button("🗑️", key=f"del_{sub_id}", use_container_width=True):
-                                    db_delete("sub_tasks", "id", sub_id); st.rerun()
+                            with st.container(border=True):
+                                edit_sub_key = f"edit_sub_{sub_id}"
+                                if st.session_state.get(edit_sub_key):
+                                    with st.form(f"edit_sub_form_{sub_id}", clear_on_submit=False):
+                                        es1, es2, es3 = st.columns([3, 1, 1])
+                                        new_sname = es1.text_input("Name", value=sub["name"])
+                                        new_dur   = es2.number_input("Duration (d)", min_value=1,
+                                                                      value=int(sub.get("duration_days", 1)))
+                                        new_mp    = es3.number_input("Workers/day", min_value=1,
+                                                                      value=int(sub.get("manpower_required", 1)))
+                                        es4, es5, es6 = st.columns([2, 2, 1])
+                                        new_ps   = es4.date_input("Planned Start", value=p_start or TODAY)
+                                        new_mh   = es5.number_input("Man-hrs/person/day",
+                                                                      value=float(sub.get("man_hours_per_day", 8)),
+                                                                      min_value=0.5, step=0.5)
+                                        new_sord = es6.number_input("Order", value=int(sub.get("sub_order", 1)), min_value=1)
+                                        new_notes  = st.text_input("Notes", value=sub.get("notes", "") or "")
+                                        rev_reason = st.text_input("Reason for change (required if dates change)")
+                                        rev_by     = st.text_input("Changed by")
+                                        bc1, bc2   = st.columns(2)
+                                        if bc1.form_submit_button("💾 Save"):
+                                            new_pe = new_ps + timedelta(days=new_dur - 1)
+                                            dates_changed = (new_ps != p_start or new_pe != p_end)
+                                            if dates_changed:
+                                                if not rev_reason:
+                                                    st.error("Please provide a reason for the date change.")
+                                                    st.stop()
+                                                rev_no = log_revision(job, sub_id, p_start, p_end,
+                                                                       new_ps, new_pe, rev_reason, rev_by, df_rev)
+                                                st.toast(f"Rev #{rev_no} auto-logged.")
+                                                cascade_reschedule(sub_id, new_pe, df_sub, job,
+                                                                   rev_reason, rev_by, df_rev)
+                                            db_update("sub_tasks", {
+                                                "name": new_sname, "duration_days": new_dur,
+                                                "manpower_required": new_mp, "man_hours_per_day": float(new_mh),
+                                                "planned_start": str(new_ps), "planned_end": str(new_pe),
+                                                "sub_order": new_sord, "notes": new_notes,
+                                            }, "id", sub_id)
+                                            del st.session_state[edit_sub_key]; st.rerun()
+                                        if bc2.form_submit_button("Cancel"):
+                                            del st.session_state[edit_sub_key]; st.rerun()
+                                else:
+                                    r1, r2, r3, r4, r5 = st.columns([4, 1.5, 1, 1, 1])
+                                    r1.markdown(
+                                        f"{STATUS_ICON.get(status, '🔵')} **{sub['name']}**{crit_tag}{out_tag}  \n"
+                                        f"<small>{fmt(p_start, '%d-%b')} → {fmt(p_end, '%d-%b')} "
+                                        f"| {sub.get('duration_days', 1)}d "
+                                        f"| {sub.get('manpower_required', 1)} workers "
+                                        f"| Float: {float_d}d | {badge}</small>",
+                                        unsafe_allow_html=True,
+                                    )
+                                    new_s = r2.selectbox("", STATUSES,
+                                        index=STATUSES.index(status) if status in STATUSES else 0,
+                                        key=f"sts_{sub_id}", label_visibility="collapsed")
+                                    if r3.button("✓", key=f"stssv_{sub_id}", use_container_width=True):
+                                        upd = {"status": new_s}
+                                        if new_s == "Active" and not sub.get("actual_start"):
+                                            upd["actual_start"] = TODAY.isoformat()
+                                        elif new_s == "Completed" and not sub.get("actual_end"):
+                                            upd["actual_end"] = TODAY.isoformat()
+                                        db_update("sub_tasks", upd, "id", sub_id); st.rerun()
+                                    if r4.button("✏️", key=f"edit_sub_btn_{sub_id}", use_container_width=True):
+                                        st.session_state[edit_sub_key] = True; st.rerun()
+                                    if r5.button("🗑️", key=f"del_{sub_id}", use_container_width=True):
+                                        db_delete("sub_tasks", "id", sub_id); st.rerun()
 
-                            sub_revs = df_rev[df_rev["sub_task_id"] == sub_id] \
-                                       if not df_rev.empty else pd.DataFrame()
-                            if not sub_revs.empty:
-                                with st.expander(f"📜 {len(sub_revs)} revision(s)"):
-                                    for _, rv in sub_revs.iterrows():
-                                        imp    = int(rv.get("impact_days", 0))
-                                        color  = "red" if imp > 0 else "green"
-                                        auto   = "[Auto-cascade]" in str(rv.get("reason", ""))
-                                        prefix = "🔄 " if auto else ""
-                                        st.markdown(
-                                            f"{prefix}**Rev #{rv['revision_no']}** · {rv.get('revised_by', '—')}  \n"
-                                            f"{fmt(safe_date(rv.get('old_start')), '%d-%b')} → "
-                                            f"{fmt(safe_date(rv.get('old_end')), '%d-%b')} ⟶ "
-                                            f"{fmt(safe_date(rv.get('new_start')), '%d-%b')} → "
-                                            f"{fmt(safe_date(rv.get('new_end')), '%d-%b')} "
-                                            f"| <span style='color:{color}'>Δ {imp:+d}d</span>  \n"
-                                            f"*{rv.get('reason', '')}*",
-                                            unsafe_allow_html=True,
-                                        )
+                                sub_revs = df_rev[df_rev["sub_task_id"] == sub_id] \
+                                           if not df_rev.empty else pd.DataFrame()
+                                if not sub_revs.empty:
+                                    with st.expander(f"📜 {len(sub_revs)} revision(s)"):
+                                        for _, rv in sub_revs.iterrows():
+                                            imp    = int(rv.get("impact_days", 0))
+                                            color  = "red" if imp > 0 else "green"
+                                            auto   = "[Auto-cascade]" in str(rv.get("reason", ""))
+                                            prefix = "🔄 " if auto else ""
+                                            st.markdown(
+                                                f"{prefix}**Rev #{rv['revision_no']}** · {rv.get('revised_by', '—')}  \n"
+                                                f"{fmt(safe_date(rv.get('old_start')), '%d-%b')} → "
+                                                f"{fmt(safe_date(rv.get('old_end')), '%d-%b')} ⟶ "
+                                                f"{fmt(safe_date(rv.get('new_start')), '%d-%b')} → "
+                                                f"{fmt(safe_date(rv.get('new_end')), '%d-%b')} "
+                                                f"| <span style='color:{color}'>Δ {imp:+d}d</span>  \n"
+                                                f"*{rv.get('reason', '')}*",
+                                                unsafe_allow_html=True,
+                                            )
 
 
 # ══════════════════════════════════════════════
@@ -711,93 +712,93 @@ with tab_gantt:
     st.subheader("📅 Gantt Chart")
     g_job = st.selectbox("Job", ["-- Select --"] + all_jobs, key="gantt_job")
     if g_job == "-- Select --":
-        st.stop()
-
-    g_main = df_main[df_main["job_no"] == g_job].sort_values("task_order") \
-             if not df_main.empty else pd.DataFrame()
-    g_sub  = df_sub[df_sub["job_no"] == g_job].sort_values("sub_order") \
-             if not df_sub.empty else pd.DataFrame()
-    if not g_sub.empty:
-        g_sub = compute_cpm(g_sub)
-
-    if g_sub.empty:
-        st.info("No sub tasks to display.")
+        st.info("Select a job to view its Gantt chart.")
     else:
-        starts = pd.to_datetime(g_sub["planned_start"].dropna())
-        ends   = pd.to_datetime(g_sub["planned_end"].dropna())
-        if starts.empty:
-            st.warning("No dates set.")
+        g_main = df_main[df_main["job_no"] == g_job].sort_values("task_order") \
+                 if not df_main.empty else pd.DataFrame()
+        g_sub  = df_sub[df_sub["job_no"] == g_job].sort_values("sub_order") \
+                 if not df_sub.empty else pd.DataFrame()
+        if not g_sub.empty:
+            g_sub = compute_cpm(g_sub)
+
+        if g_sub.empty:
+            st.info("No sub tasks to display.")
         else:
-            win_start = starts.min().date()
-            win_end   = ends.max().date()
-            weeks = []
-            d = win_start - timedelta(days=win_start.weekday())
-            while d <= win_end:
-                weeks.append(d); d += timedelta(days=7)
+            starts = pd.to_datetime(g_sub["planned_start"].dropna())
+            ends   = pd.to_datetime(g_sub["planned_end"].dropna())
+            if starts.empty:
+                st.warning("No dates set.")
+            else:
+                win_start = starts.min().date()
+                win_end   = ends.max().date()
+                weeks = []
+                d = win_start - timedelta(days=win_start.weekday())
+                while d <= win_end:
+                    weeks.append(d); d += timedelta(days=7)
 
-            html = (
-                "<style>.gw{overflow-x:auto}.gt{border-collapse:collapse;font-size:12px;width:100%}"
-                ".gt th,.gt td{border:0.5px solid var(--color-border-tertiary);padding:3px 6px;white-space:nowrap}"
-                ".gt th{background:var(--color-background-secondary);font-weight:500;text-align:center}"
-                ".gt .lbl{text-align:left;min-width:170px;max-width:240px;overflow:hidden;text-overflow:ellipsis}"
-                ".bc{border-radius:3px;height:13px;margin:2px 0}"
-                ".bc-cr{background:#E24B4A}.bc-ac{background:#378ADD}"
-                ".bc-dn{background:#639922}.bc-pe{background:#B4B2A9}.bc-hl{background:#EF9F27}"
-                ".mtr td{background:var(--color-background-secondary);font-weight:500}"
-                ".tw{background:rgba(239,159,39,0.10)!important}</style>"
-                "<div class='gw'><table class='gt'><thead><tr><th class='lbl'>Task</th>"
-            )
-            for w in weeks:
-                cls = " class='tw'" if w <= TODAY <= w + timedelta(days=6) else ""
-                html += f"<th{cls} style='min-width:72px'>{w.strftime('%d %b')}</th>"
-            html += "</tr></thead><tbody>"
+                html = (
+                    "<style>.gw{overflow-x:auto}.gt{border-collapse:collapse;font-size:12px;width:100%}"
+                    ".gt th,.gt td{border:0.5px solid var(--color-border-tertiary);padding:3px 6px;white-space:nowrap}"
+                    ".gt th{background:var(--color-background-secondary);font-weight:500;text-align:center}"
+                    ".gt .lbl{text-align:left;min-width:170px;max-width:240px;overflow:hidden;text-overflow:ellipsis}"
+                    ".bc{border-radius:3px;height:13px;margin:2px 0}"
+                    ".bc-cr{background:#E24B4A}.bc-ac{background:#378ADD}"
+                    ".bc-dn{background:#639922}.bc-pe{background:#B4B2A9}.bc-hl{background:#EF9F27}"
+                    ".mtr td{background:var(--color-background-secondary);font-weight:500}"
+                    ".tw{background:rgba(239,159,39,0.10)!important}</style>"
+                    "<div class='gw'><table class='gt'><thead><tr><th class='lbl'>Task</th>"
+                )
+                for w in weeks:
+                    cls = " class='tw'" if w <= TODAY <= w + timedelta(days=6) else ""
+                    html += f"<th{cls} style='min-width:72px'>{w.strftime('%d %b')}</th>"
+                html += "</tr></thead><tbody>"
 
-            for _, mt in g_main.iterrows():
-                html += f"<tr class='mtr'><td class='lbl'>&#128230; {mt['name']}</td>"
-                html += "<td></td>" * len(weeks) + "</tr>"
-                mt_subs = g_sub[g_sub["main_task_id"] == int(mt["id"])]
-                for _, sub in mt_subs.iterrows():
-                    ps  = safe_date(sub.get("planned_start"))
-                    pe  = safe_date(sub.get("planned_end"))
-                    st_ = sub.get("status", "Pending")
-                    cr  = sub.get("is_critical", False)
-                    out = sub.get("outsource_flag", False)
-                    html += (f"<td class='lbl' style='padding-left:18px'>"
-                             f"{STATUS_ICON.get(st_,'')}{sub['name']}"
-                             f"{'&#128293;' if cr else ''}{'&#127981;' if out else ''}</td>")
-                    for w in weeks:
-                        we  = w + timedelta(days=6)
-                        twc = " tw" if w <= TODAY <= we else ""
-                        if ps and pe and ps <= we and pe >= w:
-                            bar = ("bc-cr" if cr and st_ != "Completed" else
-                                   "bc-dn" if st_ == "Completed" else
-                                   "bc-ac" if st_ == "Active" else
-                                   "bc-hl" if st_ in ("On Hold","Blocked") else "bc-pe")
-                            html += f"<td class='{twc}'><div class='bc {bar}'></div></td>"
-                        else:
-                            html += f"<td class='{twc}'></td>"
-                    html += "</tr>"
-            html += ("</tbody></table></div>"
-                     "<div style='margin-top:8px;font-size:11px;color:var(--color-text-secondary);"
-                     "display:flex;gap:12px;flex-wrap:wrap'>"
-                     "<span><span style='display:inline-block;width:12px;height:8px;background:#E24B4A;border-radius:2px'></span> Critical</span>"
-                     "<span><span style='display:inline-block;width:12px;height:8px;background:#378ADD;border-radius:2px'></span> Active</span>"
-                     "<span><span style='display:inline-block;width:12px;height:8px;background:#639922;border-radius:2px'></span> Completed</span>"
-                     "<span><span style='display:inline-block;width:12px;height:8px;background:#B4B2A9;border-radius:2px'></span> Pending</span>"
-                     "<span><span style='display:inline-block;width:12px;height:8px;background:#EF9F27;border-radius:2px'></span> On Hold</span></div>")
-            st.components.v1.html(html, height=min(100 + len(g_sub) * 28, 650), scrolling=True)
+                for _, mt in g_main.iterrows():
+                    html += f"<tr class='mtr'><td class='lbl'>&#128230; {mt['name']}</td>"
+                    html += "<td></td>" * len(weeks) + "</tr>"
+                    mt_subs = g_sub[g_sub["main_task_id"] == int(mt["id"])]
+                    for _, sub in mt_subs.iterrows():
+                        ps  = safe_date(sub.get("planned_start"))
+                        pe  = safe_date(sub.get("planned_end"))
+                        st_ = sub.get("status", "Pending")
+                        cr  = sub.get("is_critical", False)
+                        out = sub.get("outsource_flag", False)
+                        html += (f"<td class='lbl' style='padding-left:18px'>"
+                                 f"{STATUS_ICON.get(st_,'')}{sub['name']}"
+                                 f"{'&#128293;' if cr else ''}{'&#127981;' if out else ''}</td>")
+                        for w in weeks:
+                            we  = w + timedelta(days=6)
+                            twc = " tw" if w <= TODAY <= we else ""
+                            if ps and pe and ps <= we and pe >= w:
+                                bar = ("bc-cr" if cr and st_ != "Completed" else
+                                       "bc-dn" if st_ == "Completed" else
+                                       "bc-ac" if st_ == "Active" else
+                                       "bc-hl" if st_ in ("On Hold","Blocked") else "bc-pe")
+                                html += f"<td class='{twc}'><div class='bc {bar}'></div></td>"
+                            else:
+                                html += f"<td class='{twc}'></td>"
+                        html += "</tr>"
+                html += ("</tbody></table></div>"
+                         "<div style='margin-top:8px;font-size:11px;color:var(--color-text-secondary);"
+                         "display:flex;gap:12px;flex-wrap:wrap'>"
+                         "<span><span style='display:inline-block;width:12px;height:8px;background:#E24B4A;border-radius:2px'></span> Critical</span>"
+                         "<span><span style='display:inline-block;width:12px;height:8px;background:#378ADD;border-radius:2px'></span> Active</span>"
+                         "<span><span style='display:inline-block;width:12px;height:8px;background:#639922;border-radius:2px'></span> Completed</span>"
+                         "<span><span style='display:inline-block;width:12px;height:8px;background:#B4B2A9;border-radius:2px'></span> Pending</span>"
+                         "<span><span style='display:inline-block;width:12px;height:8px;background:#EF9F27;border-radius:2px'></span> On Hold</span></div>")
+                st.components.v1.html(html, height=min(100 + len(g_sub) * 28, 650), scrolling=True)
 
-    job_revs = df_rev[df_rev["job_no"] == g_job] if not df_rev.empty else pd.DataFrame()
-    if not job_revs.empty:
-        with st.expander(f"📜 Revision Log — {len(job_revs)} entries"):
-            disp = job_revs.copy()
-            disp["created_at"] = pd.to_datetime(disp["created_at"], utc=True, errors="coerce") \
-                                    .dt.tz_convert(IST).dt.strftime("%d-%b %H:%M")
-            st.dataframe(disp[["revision_no","sub_task_id","reason","revised_by",
-                                "old_start","old_end","new_start","new_end",
-                                "impact_days","created_at"]],
-                         use_container_width=True, hide_index=True)
-            st.download_button("📥 Export", to_csv(disp), f"revisions_{g_job}.csv")
+        job_revs = df_rev[df_rev["job_no"] == g_job] if not df_rev.empty else pd.DataFrame()
+        if not job_revs.empty:
+            with st.expander(f"📜 Revision Log — {len(job_revs)} entries"):
+                disp = job_revs.copy()
+                disp["created_at"] = pd.to_datetime(disp["created_at"], utc=True, errors="coerce") \
+                                        .dt.tz_convert(IST).dt.strftime("%d-%b %H:%M")
+                st.dataframe(disp[["revision_no","sub_task_id","reason","revised_by",
+                                    "old_start","old_end","new_start","new_end",
+                                    "impact_days","created_at"]],
+                             use_container_width=True, hide_index=True)
+                st.download_button("📥 Export", to_csv(disp), f"revisions_{g_job}.csv")
 
 
 # ══════════════════════════════════════════════
