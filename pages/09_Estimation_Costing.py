@@ -139,6 +139,60 @@ def geom_tube_bundle(tube_od_mm, tube_thk_mm, tube_length_mm, n_tubes, density=8
     mid_r = (_m(tube_od_mm) / 2) - (_m(tube_thk_mm) / 2)
     return PI * 2 * mid_r * _m(tube_length_mm) * _m(tube_thk_mm) * density * n_tubes * (1 + scrap)
 
+def geom_limpet_coil(shell_id_mm, shell_thk_mm, shell_ht_mm,
+                     pipe_od_mm, pipe_thk_mm, pitch_mm,
+                     cover_bottom_dish=False, density=8000, scrap=0.10):
+    """
+    Limpet coil (half-pipe coil) welded on shell OD and optionally bottom dish.
+
+    Method (industry standard):
+    ─────────────────────────────────────────────────────────────────────────────
+    Shell OD = Shell ID + 2 × Shell_Thk
+    Coil mean dia = Shell_OD + pipe_OD  (coil wraps on shell OD, centre of pipe)
+    Coil mean circumference = π × coil_mean_dia
+
+    Number of turns on shell = Shell_Ht / pitch
+    Shell coil length = n_turns × coil_mean_circumference
+
+    Bottom dish limpet (if applicable):
+      Dish OD ≈ Shell_OD (for torispherical dish)
+      Bottom dish spiral — assume coverage up to 0.7 × dish_OD radius
+      Dish coil length ≈ π × (0.7 × dish_OD/2)² / pitch  (Archimedes spiral approx)
+
+    Total limpet pipe length = shell_coil_length + dish_coil_length
+    Weight = π × (pipe_OD − pipe_Thk) × pipe_Thk × total_length × density × (1 + scrap)
+    ─────────────────────────────────────────────────────────────────────────────
+    Returns: (wt_per_m, total_wt_kg, total_length_m)
+    """
+    shell_od_mm    = shell_id_mm + 2.0 * shell_thk_mm
+    coil_mean_d_m  = _m(shell_od_mm + pipe_od_mm)        # centre of pipe
+    coil_circ_m    = PI * coil_mean_d_m
+    n_turns        = _m(shell_ht_mm) / _m(pitch_mm) if pitch_mm > 0 else 0
+    shell_coil_m   = n_turns * coil_circ_m
+
+    dish_coil_m = 0.0
+    if cover_bottom_dish:
+        # Archimedes spiral approximation for dish bottom
+        dish_r_m    = _m(shell_od_mm) / 2.0 * 0.7   # 70% of shell OD radius
+        # Total length of spiral = π × r² / pitch (approximate)
+        dish_coil_m = PI * dish_r_m ** 2 / _m(pitch_mm) if pitch_mm > 0 else 0
+
+    total_length_m = shell_coil_m + dish_coil_m
+
+    # Pipe cross-section weight: π × (OD - thk) × thk × density
+    mid_r_m     = (_m(pipe_od_mm) - _m(pipe_thk_mm)) / 2.0
+    wt_per_m    = PI * 2 * mid_r_m * _m(pipe_thk_mm) * density
+    total_wt    = wt_per_m * total_length_m * (1 + scrap)
+
+    return round(wt_per_m, 4), round(total_wt, 3), round(total_length_m, 3)
+
+# Default scrap % per part type — shown as starting value, engineer can override per part
+DEFAULT_SCRAP = {
+    "shell": 5.0, "dish": 15.0, "annular": 5.0, "solid": 15.0,
+    "flat": 5.0, "stiff": 5.0, "cone": 5.0, "rect": 5.0, "tube": 5.0,
+    "limpet": 10.0,
+}
+
 PART_TYPES = {
     "Cylindrical shell": {
         "fields": [("id_mm", "Shell ID (mm)"), ("ht_mm", "Height (mm)"), ("thk_mm", "Thickness (mm)")],
@@ -187,35 +241,73 @@ PART_TYPES = {
         ],
         "fn": "tube",
     },
+    "Limpet coil (half-pipe on shell)": {
+        "fields": [
+            ("shell_id_mm",   "Shell ID (mm)"),
+            ("shell_thk_mm",  "Shell Thickness (mm)"),
+            ("shell_ht_mm",   "Shell Height (mm)"),
+            ("pipe_od_mm",    "Half-pipe OD (mm)"),
+            ("pipe_thk_mm",   "Half-pipe Thickness (mm)"),
+            ("pitch_mm",      "Coil Pitch (mm)"),
+        ],
+        "fn": "limpet",
+        "has_checkbox": True,   # shows "Include bottom dish" checkbox
+    },
 }
 
-def calc_weight(fn, dims, density, qty):
+def calc_weight(fn, dims, density, qty, scrap_pct=None):
+    """Calculate weight for a part.
+    scrap_pct: override scrap % (0–100). None = use geometry function default.
+    """
     d = dims
     used_qty = qty
     wt = 0.0
+    # Convert scrap_pct (e.g. 15.0) to fraction (0.15); None means use default
+    sc = scrap_pct / 100.0 if scrap_pct is not None else None
     try:
         if fn == "shell":
-            wt = geom_cylindrical_shell(d["id_mm"], d["ht_mm"], d["thk_mm"], density)
+            wt = geom_cylindrical_shell(d["id_mm"], d["ht_mm"], d["thk_mm"], density,
+                                         scrap=sc if sc is not None else 0.05)
         elif fn == "dish":
-            wt = geom_dish_end(d["shell_id_mm"], d["thk_mm"], density)
+            wt = geom_dish_end(d["shell_id_mm"], d["thk_mm"], density,
+                                scrap=sc if sc is not None else 0.15)
         elif fn == "annular":
-            wt = geom_annular_plate(d["od_mm"], d["id_mm"], d["thk_mm"], density)
+            wt = geom_annular_plate(d["od_mm"], d["id_mm"], d["thk_mm"], density,
+                                     scrap=sc if sc is not None else 0.05)
         elif fn == "solid":
-            wt = geom_solid_round(d["dia_mm"], d["length_mm"], density)
+            wt = geom_solid_round(d["dia_mm"], d["length_mm"], density,
+                                   scrap=sc if sc is not None else 0.15)
         elif fn == "flat":
-            wt = geom_flat_rect(d["w_mm"], d["h_mm"], d["thk_mm"], density)
+            wt = geom_flat_rect(d["w_mm"], d["h_mm"], d["thk_mm"], density,
+                                 scrap=sc if sc is not None else 0.05)
         elif fn == "stiff":
+            sc2 = sc if sc is not None else 0.05
             wt, used_qty, total = geom_stiffener_ring(
                 d.get("shell_id_mm", 0), d.get("shell_thk_mm", 0), d.get("shell_ht_mm", 0),
                 d.get("pitch_mm", 100), d.get("bar_w_mm", 0), d.get("thk_mm", 0), density,
+                scrap=sc2,
             )
             return round(wt, 3), round(total, 3), round(used_qty, 2)
         elif fn == "cone":
-            wt = geom_cone(d["large_id_mm"], d["small_id_mm"], d["ht_mm"], d["thk_mm"], density)
+            wt = geom_cone(d["large_id_mm"], d["small_id_mm"], d["ht_mm"], d["thk_mm"], density,
+                           scrap=sc if sc is not None else 0.05)
         elif fn == "rect":
-            wt = geom_rect_plate(d["length_mm"], d["width_mm"], d["thk_mm"], density)
+            wt = geom_rect_plate(d["length_mm"], d["width_mm"], d["thk_mm"], density,
+                                  scrap=sc if sc is not None else 0.05)
         elif fn == "tube":
-            wt = geom_tube_bundle(d["tube_od_mm"], d["tube_thk_mm"], d["tube_length_mm"], d["n_tubes"], density)
+            wt = geom_tube_bundle(d["tube_od_mm"], d["tube_thk_mm"], d["tube_length_mm"], d["n_tubes"], density,
+                                   scrap=sc if sc is not None else 0.05)
+        elif fn == "limpet":
+            _, wt_total, length_m = geom_limpet_coil(
+                d.get("shell_id_mm", 0), d.get("shell_thk_mm", 0), d.get("shell_ht_mm", 0),
+                d.get("pipe_od_mm", 0), d.get("pipe_thk_mm", 0), d.get("pitch_mm", 80),
+                cover_bottom_dish=bool(d.get("cover_bottom_dish", False)),
+                density=density,
+                scrap=sc if sc is not None else 0.10,
+            )
+            # Store computed length in dims for display
+            wt = wt_total / max(qty, 1)
+            return round(wt, 3), round(wt_total, 3), qty
         else:
             wt = 0.0
     except Exception as e:
@@ -1052,6 +1144,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         "cone":    "π × (R1+R2) × slant × Thk × ρ × (1+scrap)",
         "rect":    "L × W × Thk × ρ × (1+scrap)",
         "tube":    "π × (OD−Thk) × Thk × TubeL × ρ × N × (1+scrap)",
+        "limpet":  "CoilMeanD=ShOD+PipeOD | Turns=ShHt/Pitch | ShellCoil=Turns×π×CoilMeanD | DishCoil=π×(0.7×ShOD/2)²/Pitch | Wt=π×(PipeOD−PipeThk)×PipeThk×TotalL×ρ×(1+scrap)",
     }
     SCRAP_PCT = {
         "shell":"5%","dish":"15%","annular":"5%","solid":"15%",
@@ -1071,6 +1164,9 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         if fn=="cone":   return f"LgID={d.get('large_id_mm','')} SmID={d.get('small_id_mm','')} Ht={d.get('ht_mm','')} Thk={d.get('thk_mm','')} mm"
         if fn=="rect":   return f"L={d.get('length_mm','')} W={d.get('width_mm','')} Thk={d.get('thk_mm','')} mm"
         if fn=="tube":   return f"OD={d.get('tube_od_mm','')} Thk={d.get('tube_thk_mm','')} L={d.get('tube_length_mm','')} N={d.get('n_tubes','')} mm"
+        if fn=="limpet": return (f"ShID={d.get('shell_id_mm','')} ShThk={d.get('shell_thk_mm','')} ShHt={d.get('shell_ht_mm','')} mm | "
+                                 f"PipeOD={d.get('pipe_od_mm','')} PipeThk={d.get('pipe_thk_mm','')} Pitch={d.get('pitch_mm','')} mm | "
+                                 f"BottomDish={'Yes' if d.get('cover_bottom_dish') else 'No'}")
         return str(dims)
 
     row_n = 2
@@ -1091,7 +1187,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
             p.get("total_wt_kg",0),
             p.get("rate",0),
             p.get("amount",0),
-            SCRAP_PCT.get(fn,"5%"),
+            f"{p.get('scrap_pct', DEFAULT_SCRAP.get(fn, 5)):.0f}%",
         ]
         for col, val in enumerate(vals, 1):
             c = ws2.cell(row=row_n, column=col, value=val)
@@ -2297,19 +2393,55 @@ with TAB_NEW:
             p_rate_ov  = rc6.number_input("Rate Override ₹/kg  (0 = use master)", value=0.0, min_value=0.0, key=f"{ek}pr")
 
             pt_info    = PART_TYPES[p_type]
+            fn_key     = pt_info["fn"]
             is_derived = pt_info.get("qty_derived", False)
+
+            # Scrap % input — pre-filled with default for this part type, editable
+            def_scrap = float(editing_part.get("scrap_pct", DEFAULT_SCRAP.get(fn_key, 5.0))) if editing_part else DEFAULT_SCRAP.get(fn_key, 5.0)
+            sc_col1, sc_col2 = st.columns([3,1])
             if is_derived:
-                st.info("Qty is auto-calculated from geometry (shell height ÷ pitch).")
+                sc_col1.info("Qty is auto-calculated from geometry (shell height ÷ pitch).")
                 p_qty = 1.0
             else:
-                p_qty = st.number_input("Qty", value=float(editing_part.get("qty", 1)) if editing_part else 1.0, min_value=1.0, step=1.0, key=f"{ek}pq")
+                p_qty = sc_col1.number_input("Qty", value=float(editing_part.get("qty", 1)) if editing_part else 1.0, min_value=1.0, step=1.0, key=f"{ek}pq")
+            p_scrap = sc_col2.number_input(
+                "Scrap %",
+                value=def_scrap,
+                min_value=0.0, max_value=50.0, step=0.5,
+                key=f"{ek}scrap",
+                help=f"Default for {p_type}: {DEFAULT_SCRAP.get(fn_key,5)}%. Adjust based on actual cutting/forming losses.",
+            )
 
             needed   = pt_info["fields"]
-            dim_cols = st.columns(len(needed))
+            dim_cols = st.columns(min(len(needed), 6))
             dims     = {}
             for i, (field, label) in enumerate(needed):
                 def_val = float(editing_part.get("dims", {}).get(field, 0.0)) if editing_part else 0.0
-                dims[field] = dim_cols[i].number_input(label, value=def_val, min_value=0.0, step=1.0, key=f"{ek}d_{p_type}_{field}")
+                dims[field] = dim_cols[i % 6].number_input(label, value=def_val, min_value=0.0, step=1.0, key=f"{ek}d_{p_type}_{field}")
+
+            # Limpet coil — extra options
+            if pt_info.get("has_checkbox"):
+                lc1, lc2, lc3 = st.columns(3)
+                def_dish = bool(editing_part.get("dims", {}).get("cover_bottom_dish", False)) if editing_part else False
+                cover_dish = lc1.checkbox(
+                    "Include bottom dish limpet",
+                    value=def_dish,
+                    key=f"{ek}limpet_dish",
+                    help="Adds spiral limpet coil on bottom dish end (Archimedes spiral approx, 70% dish OD coverage)",
+                )
+                dims["cover_bottom_dish"] = cover_dish
+
+                # Show computed coil length preview
+                if all(dims.get(k, 0) > 0 for k in ["shell_id_mm","shell_thk_mm","shell_ht_mm","pipe_od_mm","pipe_thk_mm","pitch_mm"]):
+                    _, prev_wt, prev_len = geom_limpet_coil(
+                        dims["shell_id_mm"], dims["shell_thk_mm"], dims["shell_ht_mm"],
+                        dims["pipe_od_mm"], dims["pipe_thk_mm"], dims["pitch_mm"],
+                        cover_bottom_dish=cover_dish,
+                        density=DENSITY.get(p_material, 8000),
+                        scrap=p_scrap/100.0,
+                    )
+                    lc2.metric("Coil Length (m)", f"{prev_len:.2f} m")
+                    lc3.metric("Est. Weight (kg)", f"{prev_wt:.2f} kg")
 
             btn_c1, btn_c2 = st.columns([3, 1])
             add_btn    = btn_c1.button("➕ Add Part" if not editing_part else "✅ Update Part", type="primary", use_container_width=True)
@@ -2323,7 +2455,7 @@ with TAB_NEW:
                 fn       = pt_info["fn"]
                 rm       = rm_master.get(p_code, {})
                 rate     = p_rate_ov if p_rate_ov > 0 else rm.get("rate", 0)
-                wt, total_wt, used_qty = calc_weight(fn, dims, density, p_qty)
+                wt, total_wt, used_qty = calc_weight(fn, dims, density, p_qty, scrap_pct=p_scrap)
                 if wt == 0:
                     st.warning("⚠️ Weight is zero — check all dimension inputs.")
                 new_part = dict(
@@ -2331,6 +2463,7 @@ with TAB_NEW:
                     material=p_material, item_code=p_code, dims=dims,
                     qty=used_qty, net_wt_kg=wt, total_wt_kg=total_wt,
                     rate=rate, amount=round(total_wt * rate, 2),
+                    scrap_pct=p_scrap,
                 )
                 if editing_part is not None and edit_pidx is not None:
                     st.session_state.est_parts[edit_pidx] = new_part
@@ -2345,13 +2478,15 @@ with TAB_NEW:
             st.markdown("---")
             st.markdown("**Parts list — click ✏️ to edit a row**")
             for idx, p in enumerate(st.session_state.est_parts):
-                c1, c2, c3, c4, c5, c6, c7, c8 = st.columns([3, 2, 1.5, 1, 1, 1.5, 2, 0.7])
-                c1.write(p.get("name", "")); c2.write(p.get("part_type", "")[:22])
+                c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([2.5, 2, 1.5, 1, 0.8, 0.8, 1.5, 2, 0.7])
+                c1.write(p.get("name", "")); c2.write(p.get("part_type", "")[:20])
                 c3.write(p.get("group", "")); c4.write(p.get("material", ""))
                 c5.write(f"{p.get('qty', 1):.1f}")
-                c6.write(f"{p.get('total_wt_kg', 0):.1f} kg")
-                c7.write(f"₹{p.get('amount', 0):,.0f}")
-                if c8.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name', '')}"):
+                sc = p.get("scrap_pct", None)
+                c6.write(f"{sc:.0f}%" if sc is not None else "—")
+                c7.write(f"{p.get('total_wt_kg', 0):.1f} kg")
+                c8.write(f"₹{p.get('amount', 0):,.0f}")
+                if c9.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name', '')}"):
                     st.session_state["edit_part_idx"] = idx
 
             tot_wt  = sum(p.get("total_wt_kg", 0) for p in st.session_state.est_parts)
