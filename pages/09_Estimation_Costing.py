@@ -3152,7 +3152,7 @@ agitator/drive (if applicable), surface finish, supports, nameplate, testing.
                     with st.spinner("Claude is writing quality points..."):
                         try:
                             _msg = _claude_client.messages.create(
-                                model="claude-sonnet-4-20250514",
+                                model="claude-sonnet-4-6",
                                 max_tokens=1000,
                                 messages=[{"role": "user", "content": f"""You are a quality engineer at B&G Engineering Industries,
 Hyderabad — Indian manufacturer of ASME-coded pharma process equipment.
@@ -3195,7 +3195,7 @@ surface finish, dimensional inspection, pressure testing, DP testing, documentat
                     with st.spinner("Claude is writing..."):
                         try:
                             _msg = _claude_client.messages.create(
-                                model="claude-sonnet-4-20250514",
+                                model="claude-sonnet-4-6",
                                 max_tokens=800,
                                 messages=[{"role": "user", "content": f"""You are a senior sales engineer at B&G Engineering Industries,
 Hyderabad — leading Indian manufacturer of pharma-grade SS316L process equipment.
@@ -3242,7 +3242,7 @@ Write as if you know this customer personally."""}]
                     with st.spinner("Claude is reviewing..."):
                         try:
                             _msg = _claude_client.messages.create(
-                                model="claude-sonnet-4-20250514",
+                                model="claude-sonnet-4-6",
                                 max_tokens=600,
                                 messages=[{"role": "user", "content": f"""You are a senior commercial manager reviewing a quotation
 for Indian pharma process equipment (ASME SS316L reactors / dryers / evaporators).
