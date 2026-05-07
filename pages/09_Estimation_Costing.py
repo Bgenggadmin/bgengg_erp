@@ -3059,7 +3059,10 @@ with TAB_QUOTE:
 
         try:
             import anthropic as _anthropic
-            _claude_key = st.secrets.get("ANTHROPIC_API_KEY", "") or st.secrets.get("connections", {}).get("ANTHROPIC_API_KEY", "")
+            try:
+                _claude_key = st.secrets["ANTHROPIC_API_KEY"]
+            except Exception:
+                _claude_key = ""
             _claude_client = _anthropic.Anthropic(api_key=_claude_key) if _claude_key else None
         except Exception:
             _claude_client = None
