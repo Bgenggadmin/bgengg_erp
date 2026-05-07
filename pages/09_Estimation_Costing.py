@@ -3052,6 +3052,229 @@ with TAB_QUOTE:
         st.divider()
 
         # ── Download buttons ──────────────────────────────────────────────────
+        # ── CLAUDE AI ASSISTANT ──────────────────────────────────────────────────
+        st.divider()
+        st.markdown("### 🤖 AI Assistant — Generate & Improve Quotation Content")
+        st.caption("Claude reads your equipment parameters and generates professional content. Review and edit before downloading.")
+
+        try:
+            import anthropic as _anthropic
+            _claude_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+            _claude_client = _anthropic.Anthropic(api_key=_claude_key) if _claude_key else None
+        except Exception:
+            _claude_client = None
+
+        if not _claude_client:
+            st.warning("⚠️ Add ANTHROPIC_API_KEY to Streamlit secrets to enable AI features.")
+        else:
+            _eq_context = f"""
+Equipment Type: {h.get('equipment_type', '')}
+Description: {h.get('equipment_desc', '')}
+Capacity: {h.get('capacity_ltrs', '')} Litres
+Shell ID: {h.get('shell_dia_mm', '')} mm | Height: {h.get('shell_ht_mm', '')} mm
+MOC Shell: {h.get('moc_shell', 'SS316L')} | MOC Jacket: {h.get('moc_jacket', 'SS304')}
+Jacket: {h.get('jacket_type', '')} | Agitator: {h.get('agitator_type', '')}
+Design Code: {h.get('design_code', 'ASME Sec VIII Div 1')}
+Design Pressure: {h.get('design_pressure', '')} | Temp: {h.get('design_temp', '')}
+Customer: {h.get('customer_name', '')}
+"""
+
+            _ai_t1, _ai_t2, _ai_t3, _ai_t4 = st.tabs([
+                "📦 Generate Scope",
+                "🔬 Quality Points",
+                "📝 Cover Narrative",
+                "🔍 Review Terms",
+            ])
+
+            # ── TAB 1: SCOPE ─────────────────────────────────────────────────
+            with _ai_t1:
+                st.markdown("**Generate scope of supply specific to this equipment**")
+                _c1, _c2 = st.columns(2)
+                _pharma  = _c1.checkbox("Pharma / cGMP client", value=True, key="ai_pharma")
+                _excl    = _c2.checkbox("Include exclusions list", value=True, key="ai_excl_cb")
+                if st.button("⚡ Generate Scope", type="primary", key="ai_gen_scope"):
+                    with st.spinner("Claude is writing scope items..."):
+                        try:
+                            _msg = _claude_client.messages.create(
+                                model="claude-sonnet-4-20250514",
+                                max_tokens=1000,
+                                messages=[{"role": "user", "content": f"""You are a technical writer at B&G Engineering Industries, 
+Hyderabad — Indian manufacturer of pharma-grade ASME process equipment.
+
+Equipment:
+{_eq_context}
+
+Generate a precise scope of supply for this quotation.
+{'This is for a pharma/API/cGMP client.' if _pharma else ''}
+
+Output ONLY a plain list — one item per line, no bullets, no numbers, no headers.
+Generate 8-12 items covering: vessel construction, nozzles, jacket/heating,
+agitator/drive (if applicable), surface finish, supports, nameplate, testing.
+{'Then add a blank line, then write EXCLUSIONS: followed by 5-7 exclusion items one per line.' if _excl else ''}"""}]
+                            )
+                            _result = _msg.content[0].text
+                            if _excl and "EXCLUSIONS:" in _result:
+                                _sp = _result.split("EXCLUSIONS:")
+                                st.session_state["ai_scope_result"] = _sp[0].strip()
+                                st.session_state["ai_excl_result"]  = _sp[1].strip() if len(_sp) > 1 else ""
+                            else:
+                                st.session_state["ai_scope_result"] = _result.strip()
+                            st.success("✅ Generated — review and apply below")
+                        except Exception as _e:
+                            st.error(f"Claude API error: {_e}")
+
+                if "ai_scope_result" in st.session_state:
+                    st.markdown("**Generated Scope — edit if needed:**")
+                    _es = st.text_area("Scope", value=st.session_state["ai_scope_result"],
+                                       height=200, label_visibility="collapsed", key="ai_scope_edit")
+                    if "ai_excl_result" in st.session_state:
+                        st.markdown("**Generated Exclusions — edit if needed:**")
+                        _ee = st.text_area("Excl", value=st.session_state["ai_excl_result"],
+                                           height=120, label_visibility="collapsed", key="ai_excl_edit")
+                    if st.button("✅ Apply to Quotation", type="primary", key="ai_apply_scope"):
+                        h["scope_items"] = st.session_state.get("ai_scope_edit", st.session_state["ai_scope_result"])
+                        if "ai_excl_result" in st.session_state:
+                            h["scope_exclusions"] = st.session_state.get("ai_excl_edit", st.session_state["ai_excl_result"])
+                        st.success("✅ Applied. Download quotation to see result.")
+                        st.session_state.pop("ai_scope_result", None)
+                        st.session_state.pop("ai_excl_result", None)
+
+            # ── TAB 2: QUALITY POINTS ─────────────────────────────────────────
+            with _ai_t2:
+                st.markdown("**Generate quality assurance points specific to this equipment**")
+                _qa1, _qa2 = st.columns(2)
+                _urs = _qa1.checkbox("Pharma URS-specific points", value=True, key="ai_urs")
+                _tpi = _qa2.checkbox("TPI / inspection points",   value=True, key="ai_tpi")
+                if st.button("⚡ Generate Quality Points", type="primary", key="ai_gen_quality"):
+                    with st.spinner("Claude is writing quality points..."):
+                        try:
+                            _msg = _claude_client.messages.create(
+                                model="claude-sonnet-4-20250514",
+                                max_tokens=1000,
+                                messages=[{"role": "user", "content": f"""You are a quality engineer at B&G Engineering Industries,
+Hyderabad — Indian manufacturer of ASME-coded pharma process equipment.
+
+Equipment:
+{_eq_context}
+
+Generate manufacturing and quality assurance points for this quotation.
+{'Include pharma URS compliance points.' if _urs else ''}
+{'Include TPI and documentation points.' if _tpi else ''}
+
+Output ONLY a plain list — one point per line, no bullets, no numbers, no headers.
+Generate 10-14 points. Each must be specific and technical — not generic.
+Cover: raw material traceability, PMI, welding qualifications, forming,
+surface finish, dimensional inspection, pressure testing, DP testing, documentation."""}]
+                            )
+                            st.session_state["ai_quality_result"] = _msg.content[0].text.strip()
+                            st.success("✅ Generated — review and apply below")
+                        except Exception as _e:
+                            st.error(f"Claude API error: {_e}")
+
+                if "ai_quality_result" in st.session_state:
+                    st.markdown("**Generated Quality Points — edit if needed:**")
+                    _eq2 = st.text_area("Quality", value=st.session_state["ai_quality_result"],
+                                        height=280, label_visibility="collapsed", key="ai_quality_edit")
+                    if st.button("✅ Apply to Quotation", type="primary", key="ai_apply_quality"):
+                        h["quality_points"] = st.session_state.get("ai_quality_edit", st.session_state["ai_quality_result"])
+                        st.success("✅ Applied.")
+                        st.session_state.pop("ai_quality_result", None)
+
+            # ── TAB 3: COVER NARRATIVE ────────────────────────────────────────
+            with _ai_t3:
+                st.markdown("**Write a professional cover letter for this quotation**")
+                _tone = st.radio("Tone", [
+                    "Formal & Technical",
+                    "Warm & Relationship-focused",
+                    "Competitive & Value-focused"
+                ], horizontal=True, key="ai_tone")
+                if st.button("⚡ Write Cover Narrative", type="primary", key="ai_gen_narrative"):
+                    with st.spinner("Claude is writing..."):
+                        try:
+                            _msg = _claude_client.messages.create(
+                                model="claude-sonnet-4-20250514",
+                                max_tokens=800,
+                                messages=[{"role": "user", "content": f"""You are a senior sales engineer at B&G Engineering Industries,
+Hyderabad — leading Indian manufacturer of pharma-grade SS316L process equipment.
+
+You are writing a brief professional cover narrative (3-4 paragraphs) 
+to accompany a technical quotation sent to {h.get('customer_name', 'the customer')}.
+
+Equipment: {h.get('equipment_desc', '')} ({h.get('capacity_ltrs', '')} Litres)
+Delivery: {h.get('delivery_weeks', '12-16')} weeks
+Design Code: {h.get('design_code', 'ASME Sec VIII Div 1')}
+MOC: {h.get('moc_shell', 'SS316L')}
+Tone: {_tone}
+
+Write 3-4 short paragraphs that:
+1. Acknowledge the inquiry and summarise what B&G is offering
+2. Highlight B&G's manufacturing capabilities and pharma experience
+3. Mention key technical differentiators for this specific equipment
+4. Close with next steps
+
+Do not mention specific prices. Do not use hollow phrases like 'we are pleased to submit'.
+Write as if you know this customer personally."""}]
+                            )
+                            st.session_state["ai_narrative_result"] = _msg.content[0].text.strip()
+                            st.success("✅ Generated")
+                        except Exception as _e:
+                            st.error(f"Claude API error: {_e}")
+
+                if "ai_narrative_result" in st.session_state:
+                    st.markdown("**Generated Narrative — edit if needed:**")
+                    _en = st.text_area("Narrative", value=st.session_state["ai_narrative_result"],
+                                       height=250, label_visibility="collapsed", key="ai_narrative_edit")
+                    if st.button("✅ Add to Special Notes", type="primary", key="ai_apply_narrative"):
+                        _existing = h.get("special_notes", "").strip()
+                        _new_note = st.session_state.get("ai_narrative_edit", st.session_state["ai_narrative_result"])
+                        h["special_notes"] = (_new_note + "\n\n" + _existing).strip()
+                        st.success("✅ Added to Special Notes.")
+                        st.session_state.pop("ai_narrative_result", None)
+
+            # ── TAB 4: REVIEW TERMS ───────────────────────────────────────────
+            with _ai_t4:
+                st.markdown("**Claude reviews your commercial terms and flags issues**")
+                st.caption("Checks payment terms, delivery, warranty and flags anything needing attention.")
+                if st.button("🔍 Review My Commercial Terms", type="primary", key="ai_review_terms"):
+                    with st.spinner("Claude is reviewing..."):
+                        try:
+                            _msg = _claude_client.messages.create(
+                                model="claude-sonnet-4-20250514",
+                                max_tokens=600,
+                                messages=[{"role": "user", "content": f"""You are a senior commercial manager reviewing a quotation
+for Indian pharma process equipment (ASME SS316L reactors / dryers / evaporators).
+
+Review these commercial terms and provide specific feedback:
+Payment Terms: {h.get('payment_terms', '')}
+Delivery: {h.get('delivery_weeks', '')} weeks — {h.get('delivery_note', '')}
+Offer Validity: {h.get('offer_validity', '')}
+Warranty: {h.get('warranty_clause', '')}
+Inspection Rights: {h.get('inspection_clause', '')}
+Price Basis: {h.get('price_basis', '')}
+GST Clause: {h.get('gst_clause', '')}
+Equipment: {h.get('equipment_desc', '')}
+Customer: {h.get('customer_name', '')}
+
+Respond with:
+1. ✅ What protects B&G well
+2. ⚠️ What needs attention or is missing
+3. 💡 Specific improvements to suggest
+
+Be specific and practical. Focus on: payment risk, delivery commitment,
+warranty exposure, inspection rights, price escalation protection.
+Maximum 250 words."""}]
+                            )
+                            st.session_state["ai_review_result"] = _msg.content[0].text.strip()
+                        except Exception as _e:
+                            st.error(f"Claude API error: {_e}")
+
+                if "ai_review_result" in st.session_state:
+                    st.markdown("**Claude's Review:**")
+                    st.markdown(st.session_state["ai_review_result"])
+                    if st.button("🗑️ Clear", key="ai_clear_review"):
+                        st.session_state.pop("ai_review_result", None)
+
+        st.divider()
         st.markdown("**📄 Download Final Quotation**")
         st.caption("Edits above are captured in memory. Save Draft to persist, then download.")
 
