@@ -98,7 +98,7 @@ def upload_many(files, bucket: str, folder: str = "") -> list[str]:
 header_l, header_r = st.columns([4, 1])
 with header_l:
     st.title("🌾 Farm Manager")
-    st.caption("Petty cash · Daily work log · Assets register")
+    st.caption("Petty cash · Daily work · Assets · Vehicles")
 with header_r:
     st.write("")
     st.write("")
@@ -106,10 +106,11 @@ with header_r:
         st.session_state.pop("farm_authed", None)
         st.rerun()
 
-tab_cash, tab_work, tab_assets = st.tabs([
+tab_cash, tab_work, tab_assets, tab_vehicles = st.tabs([
     "💰 Petty Cash",
     "🌾 Daily Work",
     "🏞️ Assets",
+    "🚜 Vehicles",
 ])
 
 
@@ -449,3 +450,360 @@ with tab_assets:
         cats = client.table("farm_asset_categories").select("*").order("name").execute().data
         if cats:
             st.dataframe(pd.DataFrame(cats)[["id", "name"]], use_container_width=True, hide_index=True)
+
+
+# ═════════════════════════════════════════════════════════════
+# TAB 4 · VEHICLES (Trips · Fuel · Maintenance)
+# ═════════════════════════════════════════════════════════════
+with tab_vehicles:
+
+    def get_or_create_head(name: str, head_type: str = "payment") -> int:
+        """Find or create a petty cash head and return its id."""
+        existing = (
+            client.table("farm_heads").select("id").eq("name", name).execute().data
+        )
+        if existing:
+            return existing[0]["id"]
+        new_row = (
+            client.table("farm_heads")
+            .insert({"name": name, "type": head_type})
+            .execute()
+            .data
+        )
+        return new_row[0]["id"]
+
+    def auto_log_payment(head_name: str, amount: float, txn_date, remarks: str) -> int | None:
+        """Create a payment in farm_transactions; returns the transaction id."""
+        try:
+            head_id = get_or_create_head(head_name, "payment")
+            res = (
+                client.table("farm_transactions")
+                .insert({
+                    "txn_date": str(txn_date),
+                    "head_id": head_id,
+                    "type": "payment",
+                    "amount": float(amount),
+                    "remarks": remarks,
+                })
+                .execute()
+                .data
+            )
+            return res[0]["id"] if res else None
+        except Exception as e:
+            st.warning(f"Saved entry, but could not auto-log to petty cash: {e}")
+            return None
+
+    sub_v_list, sub_v_trip, sub_v_fuel, sub_v_maint, sub_v_history = st.tabs([
+        "🚜 Vehicles",
+        "🛣️ Log Trip",
+        "⛽ Log Fuel",
+        "🔧 Log Maintenance",
+        "📒 History",
+    ])
+
+    # --- Manage Vehicles ---
+    with sub_v_list:
+        st.subheader("Vehicles")
+        with st.form("vehicle_form", clear_on_submit=True):
+            c1, c2, c3 = st.columns([2, 1, 2])
+            v_name = c1.text_input("Vehicle name *", placeholder="e.g. Tractor 1, Old Jimney")
+            v_type = c2.selectbox("Type", ["Tractor", "Jimney", "Other"])
+            v_reg = c3.text_input("Registration No.", placeholder="AP12 AB 1234")
+            v_notes = st.text_input("Notes", placeholder="Optional")
+            if st.form_submit_button("Add Vehicle", type="primary", use_container_width=True):
+                if not v_name.strip():
+                    st.error("Name is required.")
+                else:
+                    try:
+                        client.table("farm_vehicles").insert({
+                            "name": v_name.strip(),
+                            "vehicle_type": v_type,
+                            "registration_no": v_reg or None,
+                            "notes": v_notes or None,
+                        }).execute()
+                        st.success(f"Added: {v_name}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+
+        vehicles = client.table("farm_vehicles").select("*").order("name").execute().data
+        if vehicles:
+            df = pd.DataFrame(vehicles)[
+                ["id", "name", "vehicle_type", "registration_no", "notes"]
+            ]
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            with st.expander("🗑️ Delete a vehicle (also deletes its trip/fuel/maintenance history)"):
+                to_del = st.selectbox(
+                    "Select vehicle",
+                    options=vehicles,
+                    format_func=lambda v: f"{v['name']} ({v['vehicle_type']})",
+                    key="del_vehicle",
+                )
+                if st.button("Delete vehicle", type="secondary", key="btn_del_vehicle"):
+                    client.table("farm_vehicles").delete().eq("id", to_del["id"]).execute()
+                    st.success("Deleted.")
+                    st.rerun()
+        else:
+            st.info("No vehicles yet. Add one above to start logging trips, fuel, and maintenance.")
+
+    vehicles = client.table("farm_vehicles").select("*").order("name").execute().data
+
+    # --- Log Trip ---
+    with sub_v_trip:
+        if not vehicles:
+            st.warning("Add a vehicle first in the 'Vehicles' tab.")
+        else:
+            with st.form("trip_form", clear_on_submit=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    t_date = st.date_input("Date", value=date.today(), key="trip_date")
+                    t_vehicle = st.selectbox(
+                        "Vehicle", options=vehicles, format_func=lambda v: v["name"], key="trip_v"
+                    )
+                    t_driver = st.text_input("Driver")
+                with c2:
+                    t_from = st.text_input("From")
+                    t_to = st.text_input("To")
+                    t_km = st.number_input("Distance (km)", min_value=0.0, step=1.0, format="%.2f")
+
+                t_purpose = st.text_area("Purpose / notes", height=80)
+
+                if st.form_submit_button("Save Trip", type="primary", use_container_width=True):
+                    client.table("farm_vehicle_trips").insert({
+                        "trip_date": str(t_date),
+                        "vehicle_id": t_vehicle["id"],
+                        "from_place": t_from or None,
+                        "to_place": t_to or None,
+                        "km": float(t_km) if t_km else None,
+                        "purpose": t_purpose or None,
+                        "driver": t_driver or None,
+                    }).execute()
+                    st.success(f"✅ Trip logged for {t_vehicle['name']}.")
+                    st.rerun()
+
+    # --- Log Fuel ---
+    with sub_v_fuel:
+        if not vehicles:
+            st.warning("Add a vehicle first in the 'Vehicles' tab.")
+        else:
+            with st.form("fuel_form", clear_on_submit=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    f_date = st.date_input("Date", value=date.today(), key="fuel_date")
+                    f_vehicle = st.selectbox(
+                        "Vehicle", options=vehicles, format_func=lambda v: v["name"], key="fuel_v"
+                    )
+                    f_liters = st.number_input("Liters", min_value=0.0, step=0.5, format="%.2f")
+                with c2:
+                    f_amount = st.number_input("Amount (₹)", min_value=0.0, step=100.0, format="%.2f")
+                    f_odo = st.number_input("Odometer reading (km)", min_value=0.0, step=1.0, format="%.2f")
+
+                f_remarks = st.text_input("Remarks", placeholder="Pump name, etc.")
+                st.info("💡 This will auto-create a payment in Petty Cash under 'Vehicle Fuel'.")
+
+                if st.form_submit_button("Save Fuel Entry", type="primary", use_container_width=True):
+                    if f_liters <= 0 or f_amount <= 0:
+                        st.error("Liters and amount are both required.")
+                    else:
+                        # Auto-log payment to petty cash
+                        remarks = f"Fuel — {f_vehicle['name']} — {f_liters:.2f} L"
+                        if f_remarks:
+                            remarks += f" — {f_remarks}"
+                        txn_id = auto_log_payment("Vehicle Fuel", f_amount, f_date, remarks)
+
+                        client.table("farm_vehicle_fuel").insert({
+                            "fuel_date": str(f_date),
+                            "vehicle_id": f_vehicle["id"],
+                            "liters": float(f_liters),
+                            "amount": float(f_amount),
+                            "odometer": float(f_odo) if f_odo else None,
+                            "remarks": f_remarks or None,
+                            "txn_id": txn_id,
+                        }).execute()
+
+                        msg = f"✅ Fuel entry saved for {f_vehicle['name']}."
+                        if txn_id:
+                            msg += f" Petty cash payment of ₹{f_amount:,.2f} auto-logged."
+                        st.success(msg)
+                        st.rerun()
+
+    # --- Log Maintenance ---
+    with sub_v_maint:
+        if not vehicles:
+            st.warning("Add a vehicle first in the 'Vehicles' tab.")
+        else:
+            with st.form("maint_form", clear_on_submit=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    m_date = st.date_input("Date", value=date.today(), key="maint_date")
+                    m_vehicle = st.selectbox(
+                        "Vehicle", options=vehicles, format_func=lambda v: v["name"], key="maint_v"
+                    )
+                    m_type = st.text_input(
+                        "Service type *", placeholder="e.g. Oil change, Tyre, Engine repair"
+                    )
+                with c2:
+                    m_cost = st.number_input("Cost (₹)", min_value=0.0, step=100.0, format="%.2f")
+                    m_vendor = st.text_input("Vendor / mechanic")
+
+                m_notes = st.text_area("Notes", height=80)
+                m_bills = st.file_uploader(
+                    "Upload bill / photos",
+                    type=["pdf", "jpg", "jpeg", "png"],
+                    accept_multiple_files=True,
+                )
+                st.info("💡 This will auto-create a payment in Petty Cash under 'Vehicle Maintenance'.")
+
+                if st.form_submit_button("Save Maintenance Entry", type="primary", use_container_width=True):
+                    if not m_type.strip() or m_cost <= 0:
+                        st.error("Service type and cost are required.")
+                    else:
+                        with st.spinner("Saving..."):
+                            bill_urls = upload_many(
+                                m_bills, "farm-asset-docs", folder=f"vehicle-bills/{m_vehicle['name']}"
+                            )
+
+                            # Auto-log payment to petty cash
+                            remarks = f"Maintenance — {m_vehicle['name']} — {m_type.strip()}"
+                            if m_vendor:
+                                remarks += f" @ {m_vendor}"
+                            txn_id = auto_log_payment("Vehicle Maintenance", m_cost, m_date, remarks)
+
+                            client.table("farm_vehicle_maintenance").insert({
+                                "service_date": str(m_date),
+                                "vehicle_id": m_vehicle["id"],
+                                "service_type": m_type.strip(),
+                                "cost": float(m_cost),
+                                "vendor": m_vendor or None,
+                                "notes": m_notes or None,
+                                "bill_urls": bill_urls,
+                                "txn_id": txn_id,
+                            }).execute()
+
+                        msg = f"✅ Maintenance saved with {len(bill_urls)} bill(s)."
+                        if txn_id:
+                            msg += f" Petty cash payment of ₹{m_cost:,.2f} auto-logged."
+                        st.success(msg)
+                        st.rerun()
+
+    # --- History ---
+    with sub_v_history:
+        if not vehicles:
+            st.warning("No vehicles registered.")
+        else:
+            v_filter = st.selectbox(
+                "Vehicle",
+                options=vehicles,
+                format_func=lambda v: v["name"],
+                key="hist_v",
+            )
+            hist_kind = st.radio(
+                "Show", ["Trips", "Fuel", "Maintenance", "Summary"], horizontal=True
+            )
+
+            if hist_kind == "Trips":
+                trips = (
+                    client.table("farm_vehicle_trips")
+                    .select("*")
+                    .eq("vehicle_id", v_filter["id"])
+                    .order("trip_date", desc=True)
+                    .execute()
+                    .data
+                )
+                if not trips:
+                    st.info("No trips logged.")
+                else:
+                    df = pd.DataFrame(trips)[
+                        ["trip_date", "from_place", "to_place", "km", "driver", "purpose"]
+                    ].rename(columns={
+                        "trip_date": "Date", "from_place": "From", "to_place": "To",
+                        "km": "KM", "driver": "Driver", "purpose": "Purpose",
+                    })
+                    st.metric("Total KM", f"{df['KM'].sum():,.1f}")
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
+            elif hist_kind == "Fuel":
+                fuel = (
+                    client.table("farm_vehicle_fuel")
+                    .select("*")
+                    .eq("vehicle_id", v_filter["id"])
+                    .order("fuel_date", desc=True)
+                    .execute()
+                    .data
+                )
+                if not fuel:
+                    st.info("No fuel entries.")
+                else:
+                    df = pd.DataFrame(fuel)[
+                        ["fuel_date", "liters", "amount", "odometer", "remarks"]
+                    ].rename(columns={
+                        "fuel_date": "Date", "liters": "Liters", "amount": "Amount (₹)",
+                        "odometer": "Odometer", "remarks": "Remarks",
+                    })
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Total Liters", f"{df['Liters'].sum():,.2f}")
+                    c2.metric("Total Spent", f"₹{df['Amount (₹)'].sum():,.0f}")
+                    avg_rate = (
+                        df["Amount (₹)"].sum() / df["Liters"].sum()
+                        if df["Liters"].sum() > 0 else 0
+                    )
+                    c3.metric("Avg ₹/L", f"₹{avg_rate:,.2f}")
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
+            elif hist_kind == "Maintenance":
+                maint = (
+                    client.table("farm_vehicle_maintenance")
+                    .select("*")
+                    .eq("vehicle_id", v_filter["id"])
+                    .order("service_date", desc=True)
+                    .execute()
+                    .data
+                )
+                if not maint:
+                    st.info("No maintenance entries.")
+                else:
+                    st.metric(
+                        "Total Maintenance Spend",
+                        f"₹{sum(m['cost'] for m in maint):,.0f}",
+                    )
+                    for m in maint:
+                        with st.expander(
+                            f"🔧 {m['service_date']} — {m['service_type']} — ₹{m['cost']:,.0f}"
+                        ):
+                            st.write(f"**Vendor:** {m.get('vendor') or '—'}")
+                            if m.get("notes"):
+                                st.write(f"**Notes:** {m['notes']}")
+                            urls = m.get("bill_urls") or []
+                            if urls:
+                                st.write(f"**Bills ({len(urls)}):**")
+                                for i, url in enumerate(urls, 1):
+                                    st.markdown(f"- [Bill {i}]({url})")
+
+            else:  # Summary
+                trips = client.table("farm_vehicle_trips").select("km").eq(
+                    "vehicle_id", v_filter["id"]
+                ).execute().data
+                fuel = client.table("farm_vehicle_fuel").select("liters, amount").eq(
+                    "vehicle_id", v_filter["id"]
+                ).execute().data
+                maint = client.table("farm_vehicle_maintenance").select("cost").eq(
+                    "vehicle_id", v_filter["id"]
+                ).execute().data
+
+                total_km = sum((t.get("km") or 0) for t in trips)
+                total_liters = sum((f.get("liters") or 0) for f in fuel)
+                total_fuel_cost = sum((f.get("amount") or 0) for f in fuel)
+                total_maint_cost = sum((m.get("cost") or 0) for m in maint)
+                mileage = (total_km / total_liters) if total_liters > 0 else 0
+
+                st.subheader(f"📊 {v_filter['name']} — All-time Summary")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total KM", f"{total_km:,.1f}")
+                c2.metric("Total Fuel", f"{total_liters:,.1f} L")
+                c3.metric("Mileage", f"{mileage:,.2f} km/L" if mileage else "—")
+
+                c4, c5, c6 = st.columns(3)
+                c4.metric("Fuel Cost", f"₹{total_fuel_cost:,.0f}")
+                c5.metric("Maintenance Cost", f"₹{total_maint_cost:,.0f}")
+                c6.metric("Total Spend", f"₹{total_fuel_cost + total_maint_cost:,.0f}")
