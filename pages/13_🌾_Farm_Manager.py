@@ -10,8 +10,9 @@ Password-gated. Tables are prefixed `farm_` to coexist with the rest of the ERP 
 """
 
 import uuid
+import io
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -98,7 +99,7 @@ def upload_many(files, bucket: str, folder: str = "") -> list[str]:
 header_l, header_r = st.columns([4, 1])
 with header_l:
     st.title("🌾 Farm Manager")
-    st.caption("Petty cash · Daily work · Assets · Vehicles")
+    st.caption("Petty cash · Daily work · Assets · Vehicles · Reports")
 with header_r:
     st.write("")
     st.write("")
@@ -106,11 +107,12 @@ with header_r:
         st.session_state.pop("farm_authed", None)
         st.rerun()
 
-tab_cash, tab_work, tab_assets, tab_vehicles = st.tabs([
+tab_cash, tab_work, tab_assets, tab_vehicles, tab_reports = st.tabs([
     "💰 Petty Cash",
     "🌾 Daily Work",
     "🏞️ Assets",
     "🚜 Vehicles",
+    "📊 Reports",
 ])
 
 
@@ -807,3 +809,454 @@ with tab_vehicles:
                 c4.metric("Fuel Cost", f"₹{total_fuel_cost:,.0f}")
                 c5.metric("Maintenance Cost", f"₹{total_maint_cost:,.0f}")
                 c6.metric("Total Spend", f"₹{total_fuel_cost + total_maint_cost:,.0f}")
+
+
+# ═════════════════════════════════════════════════════════════
+# TAB 5 · REPORTS
+# ═════════════════════════════════════════════════════════════
+with tab_reports:
+
+    # ---------- Date range helper ----------
+    def date_range_picker(key_prefix: str) -> tuple[date, date]:
+        """Renders a quick-filter + custom range picker. Returns (start, end)."""
+        today = date.today()
+        first_of_month = today.replace(day=1)
+        last_month_end = first_of_month - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
+        first_of_year = today.replace(month=1, day=1)
+
+        c1, c2 = st.columns([2, 3])
+        with c1:
+            preset = st.selectbox(
+                "Quick filter",
+                [
+                    "Custom range",
+                    "This month",
+                    "Last month",
+                    "This year",
+                    "All time",
+                ],
+                key=f"{key_prefix}_preset",
+            )
+        with c2:
+            if preset == "This month":
+                start, end = first_of_month, today
+                st.info(f"📅 {start} → {end}")
+            elif preset == "Last month":
+                start, end = last_month_start, last_month_end
+                st.info(f"📅 {start} → {end}")
+            elif preset == "This year":
+                start, end = first_of_year, today
+                st.info(f"📅 {start} → {end}")
+            elif preset == "All time":
+                start, end = date(2000, 1, 1), today
+                st.info("📅 All available data")
+            else:  # Custom range
+                d1, d2 = st.columns(2)
+                start = d1.date_input("From", value=first_of_month, key=f"{key_prefix}_from")
+                end = d2.date_input("To", value=today, key=f"{key_prefix}_to")
+        return start, end
+
+    # ---------- Excel export helper ----------
+    def to_excel_bytes(sheets: dict[str, pd.DataFrame]) -> bytes:
+        """Build a multi-sheet xlsx in memory; returns bytes."""
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            for sheet_name, df in sheets.items():
+                if df is None or df.empty:
+                    pd.DataFrame({"Note": ["No data in this range"]}).to_excel(
+                        writer, sheet_name=sheet_name[:31], index=False
+                    )
+                else:
+                    df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
+                    # Auto-fit column widths
+                    ws = writer.sheets[sheet_name[:31]]
+                    for col_cells in ws.columns:
+                        max_len = max(
+                            (len(str(c.value)) if c.value is not None else 0)
+                            for c in col_cells
+                        )
+                        ws.column_dimensions[col_cells[0].column_letter].width = min(
+                            max_len + 2, 50
+                        )
+        return buf.getvalue()
+
+    # ---------- Report selector ----------
+    report = st.radio(
+        "Select report",
+        [
+            "💰 Cash Summary",
+            "🚜 Vehicle Running Cost",
+            "🌾 Daily Work Summary",
+            "🏞️ Asset Register",
+        ],
+        horizontal=True,
+    )
+    st.divider()
+
+    # ═══════════════════════════════════════════════════════════
+    # CASH SUMMARY
+    # ═══════════════════════════════════════════════════════════
+    if report == "💰 Cash Summary":
+        st.subheader("Cash Summary by Head")
+        start, end = date_range_picker("cash")
+
+        txns = (
+            client.table("farm_transactions")
+            .select("*, farm_heads(name)")
+            .gte("txn_date", str(start))
+            .lte("txn_date", str(end))
+            .order("txn_date", desc=True)
+            .execute()
+            .data
+        )
+
+        if not txns:
+            st.info("No transactions in this range.")
+        else:
+            df = pd.DataFrame([
+                {
+                    "Date": t["txn_date"],
+                    "Type": t["type"],
+                    "Head": (t.get("farm_heads") or {}).get("name", "—"),
+                    "Amount": t["amount"],
+                    "Remarks": t.get("remarks") or "",
+                }
+                for t in txns
+            ])
+
+            receipts = df[df["Type"] == "receipt"]["Amount"].sum()
+            payments = df[df["Type"] == "payment"]["Amount"].sum()
+            balance = receipts - payments
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Receipts", f"₹{receipts:,.0f}")
+            c2.metric("Payments", f"₹{payments:,.0f}")
+            c3.metric("Net", f"₹{balance:,.0f}")
+            c4.metric("Entries", len(df))
+
+            # By-head breakdown
+            st.markdown("#### Breakdown by Head")
+            by_head = (
+                df.groupby(["Type", "Head"])["Amount"]
+                .agg(["sum", "count"])
+                .reset_index()
+                .rename(columns={"sum": "Total", "count": "Entries"})
+                .sort_values(["Type", "Total"], ascending=[True, False])
+            )
+            st.dataframe(by_head, use_container_width=True, hide_index=True)
+
+            with st.expander("📋 All transactions"):
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+            # Excel download
+            sheets = {
+                "Summary": pd.DataFrame({
+                    "Metric": ["Receipts", "Payments", "Net Balance", "Entry Count"],
+                    "Value": [receipts, payments, balance, len(df)],
+                }),
+                "By Head": by_head,
+                "Transactions": df,
+            }
+            c1, c2 = st.columns(2)
+            c1.download_button(
+                "⬇️ Download Excel",
+                to_excel_bytes(sheets),
+                f"cash_summary_{start}_to_{end}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            c2.download_button(
+                "⬇️ Download CSV (transactions)",
+                df.to_csv(index=False).encode("utf-8"),
+                f"cash_transactions_{start}_to_{end}.csv",
+                "text/csv",
+                use_container_width=True,
+            )
+
+    # ═══════════════════════════════════════════════════════════
+    # VEHICLE RUNNING COST
+    # ═══════════════════════════════════════════════════════════
+    elif report == "🚜 Vehicle Running Cost":
+        st.subheader("Vehicle Running Cost")
+        start, end = date_range_picker("vehicle")
+
+        vehicles = client.table("farm_vehicles").select("*").order("name").execute().data
+        if not vehicles:
+            st.info("No vehicles registered.")
+        else:
+            v_options = ["All vehicles"] + [v["name"] for v in vehicles]
+            v_choice = st.selectbox("Vehicle", v_options)
+            selected = vehicles if v_choice == "All vehicles" else [
+                v for v in vehicles if v["name"] == v_choice
+            ]
+
+            rows = []
+            for v in selected:
+                trips = (
+                    client.table("farm_vehicle_trips")
+                    .select("km")
+                    .eq("vehicle_id", v["id"])
+                    .gte("trip_date", str(start))
+                    .lte("trip_date", str(end))
+                    .execute()
+                    .data
+                )
+                fuel = (
+                    client.table("farm_vehicle_fuel")
+                    .select("liters, amount")
+                    .eq("vehicle_id", v["id"])
+                    .gte("fuel_date", str(start))
+                    .lte("fuel_date", str(end))
+                    .execute()
+                    .data
+                )
+                maint = (
+                    client.table("farm_vehicle_maintenance")
+                    .select("cost")
+                    .eq("vehicle_id", v["id"])
+                    .gte("service_date", str(start))
+                    .lte("service_date", str(end))
+                    .execute()
+                    .data
+                )
+
+                total_km = sum((t.get("km") or 0) for t in trips)
+                total_liters = sum((f.get("liters") or 0) for f in fuel)
+                fuel_cost = sum((f.get("amount") or 0) for f in fuel)
+                maint_cost = sum((m.get("cost") or 0) for m in maint)
+                mileage = (total_km / total_liters) if total_liters > 0 else 0
+                cost_per_km = ((fuel_cost + maint_cost) / total_km) if total_km > 0 else 0
+
+                rows.append({
+                    "Vehicle": v["name"],
+                    "Type": v["vehicle_type"],
+                    "Total KM": round(total_km, 1),
+                    "Liters": round(total_liters, 2),
+                    "Mileage (km/L)": round(mileage, 2) if mileage else None,
+                    "Fuel Cost (₹)": round(fuel_cost, 0),
+                    "Maintenance (₹)": round(maint_cost, 0),
+                    "Total Spend (₹)": round(fuel_cost + maint_cost, 0),
+                    "₹/km": round(cost_per_km, 2) if cost_per_km else None,
+                })
+
+            df = pd.DataFrame(rows)
+
+            # Totals
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total KM", f"{df['Total KM'].sum():,.1f}")
+            c2.metric("Total Fuel", f"{df['Liters'].sum():,.1f} L")
+            c3.metric("Fuel Cost", f"₹{df['Fuel Cost (₹)'].sum():,.0f}")
+            c4.metric("Maintenance", f"₹{df['Maintenance (₹)'].sum():,.0f}")
+
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            # Detailed per-vehicle data for export
+            detail_sheets = {"Summary": df}
+            for v in selected:
+                trips_full = (
+                    client.table("farm_vehicle_trips")
+                    .select("trip_date, from_place, to_place, km, driver, purpose")
+                    .eq("vehicle_id", v["id"])
+                    .gte("trip_date", str(start))
+                    .lte("trip_date", str(end))
+                    .order("trip_date", desc=True)
+                    .execute()
+                    .data
+                )
+                fuel_full = (
+                    client.table("farm_vehicle_fuel")
+                    .select("fuel_date, liters, amount, odometer, remarks")
+                    .eq("vehicle_id", v["id"])
+                    .gte("fuel_date", str(start))
+                    .lte("fuel_date", str(end))
+                    .order("fuel_date", desc=True)
+                    .execute()
+                    .data
+                )
+                maint_full = (
+                    client.table("farm_vehicle_maintenance")
+                    .select("service_date, service_type, cost, vendor, notes")
+                    .eq("vehicle_id", v["id"])
+                    .gte("service_date", str(start))
+                    .lte("service_date", str(end))
+                    .order("service_date", desc=True)
+                    .execute()
+                    .data
+                )
+                short = v["name"][:20]
+                if trips_full:
+                    detail_sheets[f"{short} Trips"] = pd.DataFrame(trips_full)
+                if fuel_full:
+                    detail_sheets[f"{short} Fuel"] = pd.DataFrame(fuel_full)
+                if maint_full:
+                    detail_sheets[f"{short} Maint"] = pd.DataFrame(maint_full)
+
+            st.download_button(
+                "⬇️ Download Excel (with per-vehicle detail sheets)",
+                to_excel_bytes(detail_sheets),
+                f"vehicle_running_cost_{start}_to_{end}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+    # ═══════════════════════════════════════════════════════════
+    # DAILY WORK SUMMARY
+    # ═══════════════════════════════════════════════════════════
+    elif report == "🌾 Daily Work Summary":
+        st.subheader("Daily Work Summary")
+        start, end = date_range_picker("work")
+
+        farms = client.table("farm_farms").select("*").order("name").execute().data
+        farm_options = ["All farms"] + [f["name"] for f in farms]
+        f_choice = st.selectbox("Farm", farm_options)
+
+        q = (
+            client.table("farm_work_entries")
+            .select("*, farm_farms(name)")
+            .gte("work_date", str(start))
+            .lte("work_date", str(end))
+            .order("work_date", desc=True)
+        )
+        if f_choice != "All farms":
+            farm_id = next(f["id"] for f in farms if f["name"] == f_choice)
+            q = q.eq("farm_id", farm_id)
+        entries = q.execute().data
+
+        if not entries:
+            st.info("No work entries in this range.")
+        else:
+            df = pd.DataFrame([
+                {
+                    "Date": e["work_date"],
+                    "Farm": (e.get("farm_farms") or {}).get("name", "—"),
+                    "Workers": e.get("workers_count") or 0,
+                    "Cost (₹)": e.get("cost") or 0,
+                    "Description": e["description"],
+                    "Photos": len(e.get("photo_urls") or []),
+                }
+                for e in entries
+            ])
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Entries", len(df))
+            c2.metric("Total Cost", f"₹{df['Cost (₹)'].sum():,.0f}")
+            c3.metric("Total Workers", int(df["Workers"].sum()))
+            c4.metric("Farms Active", df["Farm"].nunique())
+
+            # By-farm breakdown
+            st.markdown("#### Breakdown by Farm")
+            by_farm = (
+                df.groupby("Farm")
+                .agg(
+                    Entries=("Date", "count"),
+                    **{"Total Cost (₹)": ("Cost (₹)", "sum")},
+                    **{"Total Workers": ("Workers", "sum")},
+                )
+                .reset_index()
+                .sort_values("Total Cost (₹)", ascending=False)
+            )
+            st.dataframe(by_farm, use_container_width=True, hide_index=True)
+
+            with st.expander("📋 All entries"):
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+            sheets = {
+                "Summary": pd.DataFrame({
+                    "Metric": ["Entries", "Total Cost", "Total Workers", "Active Farms"],
+                    "Value": [
+                        len(df),
+                        df["Cost (₹)"].sum(),
+                        int(df["Workers"].sum()),
+                        df["Farm"].nunique(),
+                    ],
+                }),
+                "By Farm": by_farm,
+                "Entries": df,
+            }
+            c1, c2 = st.columns(2)
+            c1.download_button(
+                "⬇️ Download Excel",
+                to_excel_bytes(sheets),
+                f"work_summary_{start}_to_{end}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            c2.download_button(
+                "⬇️ Download CSV (entries)",
+                df.to_csv(index=False).encode("utf-8"),
+                f"work_entries_{start}_to_{end}.csv",
+                "text/csv",
+                use_container_width=True,
+            )
+
+    # ═══════════════════════════════════════════════════════════
+    # ASSET REGISTER
+    # ═══════════════════════════════════════════════════════════
+    elif report == "🏞️ Asset Register":
+        st.subheader("Asset Register (snapshot)")
+        st.caption("Full list of all registered assets — no date filter applied.")
+
+        assets = (
+            client.table("farm_assets")
+            .select("*, farm_asset_categories(name)")
+            .order("short_name")
+            .execute()
+            .data
+        )
+
+        if not assets:
+            st.info("No assets registered.")
+        else:
+            df = pd.DataFrame([
+                {
+                    "Short Name": a["short_name"],
+                    "Category": (a.get("farm_asset_categories") or {}).get("name", "—"),
+                    "Survey No.": a.get("survey_no") or "",
+                    "Area": a.get("area") or "",
+                    "Unit": a.get("area_unit") or "",
+                    "Passbook": a.get("passbook_details") or "",
+                    "Notes": a.get("notes") or "",
+                    "Documents": len(a.get("document_urls") or []),
+                }
+                for a in assets
+            ])
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Assets", len(df))
+            c2.metric("Categories", df["Category"].nunique())
+            try:
+                total_area = pd.to_numeric(df["Area"], errors="coerce").fillna(0).sum()
+                c3.metric("Total Area (mixed units)", f"{total_area:,.2f}")
+            except Exception:
+                pass
+
+            # By-category breakdown
+            st.markdown("#### Breakdown by Category")
+            by_cat = (
+                df.groupby("Category")
+                .size()
+                .reset_index(name="Count")
+                .sort_values("Count", ascending=False)
+            )
+            st.dataframe(by_cat, use_container_width=True, hide_index=True)
+
+            st.markdown("#### Full Register")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+            sheets = {"By Category": by_cat, "Asset Register": df}
+            c1, c2 = st.columns(2)
+            c1.download_button(
+                "⬇️ Download Excel",
+                to_excel_bytes(sheets),
+                f"asset_register_{date.today()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+            c2.download_button(
+                "⬇️ Download CSV",
+                df.to_csv(index=False).encode("utf-8"),
+                f"asset_register_{date.today()}.csv",
+                "text/csv",
+                use_container_width=True,
+            )
