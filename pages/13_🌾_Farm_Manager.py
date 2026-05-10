@@ -64,8 +64,8 @@ if not check_password():
 @st.cache_resource
 def get_client() -> Client:
     """Reuses your existing ERP Supabase credentials."""
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    url = st.secrets["connections"]["supabase"]["SUPABASE_URL"]
+    key = st.secrets["connections"]["supabase"]["SUPABASE_KEY"]
     return create_client(url, key)
 
 
