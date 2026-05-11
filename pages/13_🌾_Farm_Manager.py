@@ -128,13 +128,19 @@ with tab_cash:
         if not heads:
             st.warning("No heads yet. Add one in 'Manage Heads' first.")
         else:
+            # Type radio OUTSIDE the form so changing it triggers a rerun
+            # and the Head dropdown filters correctly.
+            txn_type = st.radio(
+                "Type", ["receipt", "payment"], horizontal=True, key="txn_type_radio"
+            )
+            filtered = [h for h in heads if h["type"] == txn_type]
+
             with st.form("txn_form", clear_on_submit=True):
                 c1, c2 = st.columns(2)
                 with c1:
-                    txn_type = st.radio("Type", ["receipt", "payment"], horizontal=True)
                     txn_date = st.date_input("Date", value=date.today())
+                    amount = st.number_input("Amount (₹)", min_value=0.01, step=100.0, format="%.2f")
                 with c2:
-                    filtered = [h for h in heads if h["type"] == txn_type]
                     if not filtered:
                         st.warning(f"No '{txn_type}' heads. Create one in Manage Heads.")
                         head_id = None
@@ -145,7 +151,6 @@ with tab_cash:
                             format_func=lambda h: h["name"],
                         )
                         head_id = head_choice["id"]
-                    amount = st.number_input("Amount (₹)", min_value=0.01, step=100.0, format="%.2f")
 
                 remarks = st.text_area("Remarks", placeholder="Optional notes...")
                 if st.form_submit_button("Save", type="primary", use_container_width=True) and head_id:
