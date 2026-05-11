@@ -94,6 +94,38 @@ def upload_many(files, bucket: str, folder: str = "") -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────
+# CONFIRM-DELETE HELPER
+# ─────────────────────────────────────────────────────────────
+def confirm_delete_ui(record_key: str, label: str) -> bool:
+    """
+    Two-step delete confirmation. Returns True if user has confirmed delete.
+
+    Usage:
+        if confirm_delete_ui(f"txn_{t['id']}", f"transaction #{t['id']}"):
+            client.table(...).delete().eq("id", t["id"]).execute()
+            st.rerun()
+    """
+    pending_key = f"_confirm_del_{record_key}"
+
+    if not st.session_state.get(pending_key):
+        if st.button("🗑️ Delete", key=f"btn_del_{record_key}", type="secondary"):
+            st.session_state[pending_key] = True
+            st.rerun()
+        return False
+
+    # Confirmation stage
+    st.warning(f"⚠️ Are you sure you want to delete {label}? This cannot be undone.")
+    c1, c2 = st.columns(2)
+    if c1.button("✅ Yes, delete", key=f"btn_yes_{record_key}", type="primary"):
+        st.session_state.pop(pending_key, None)
+        return True
+    if c2.button("Cancel", key=f"btn_no_{record_key}"):
+        st.session_state.pop(pending_key, None)
+        st.rerun()
+    return False
+
+
+# ─────────────────────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────────────────────
 header_l, header_r = st.columns([4, 1])
@@ -184,22 +216,46 @@ with tab_cash:
 
         heads = client.table("farm_heads").select("*").order("type").order("name").execute().data
         if heads:
-            df = pd.DataFrame(heads)[["id", "name", "type"]]
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            with st.expander("🗑️ Delete a head"):
-                to_delete = st.selectbox(
-                    "Select head to delete",
-                    options=heads,
-                    format_func=lambda h: f"{h['name']} ({h['type']})",
-                    key="del_head",
-                )
-                if st.button("Delete", type="secondary", key="btn_del_head"):
-                    try:
-                        client.table("farm_heads").delete().eq("id", to_delete["id"]).execute()
-                        st.success("Deleted.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Cannot delete (in use?): {e}")
+            st.markdown("#### Existing Heads")
+            for h in heads:
+                with st.expander(f"🏷️ {h['name']} ({h['type']})"):
+                    edit_key = f"edit_head_{h['id']}"
+                    if st.session_state.get(edit_key):
+                        # Edit mode
+                        with st.form(f"edit_head_form_{h['id']}", clear_on_submit=False):
+                            new_name = st.text_input("Name", value=h["name"])
+                            new_type = st.selectbox(
+                                "Type", ["payment", "receipt"],
+                                index=0 if h["type"] == "payment" else 1,
+                            )
+                            c1, c2 = st.columns(2)
+                            if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                try:
+                                    client.table("farm_heads").update({
+                                        "name": new_name.strip(),
+                                        "type": new_type,
+                                    }).eq("id", h["id"]).execute()
+                                    st.session_state.pop(edit_key, None)
+                                    st.success("Updated.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                            if c2.form_submit_button("Cancel", use_container_width=True):
+                                st.session_state.pop(edit_key, None)
+                                st.rerun()
+                    else:
+                        c1, c2 = st.columns(2)
+                        if c1.button("✏️ Edit", key=f"btn_edit_head_{h['id']}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                        with c2:
+                            if confirm_delete_ui(f"head_{h['id']}", f"head '{h['name']}'"):
+                                try:
+                                    client.table("farm_heads").delete().eq("id", h["id"]).execute()
+                                    st.success("Deleted.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Cannot delete (in use by transactions?): {e}")
 
     # --- Ledger ---
     with sub_ledger:
@@ -213,32 +269,126 @@ with tab_cash:
         if not txns:
             st.info("No transactions yet.")
         else:
-            rows = []
-            for t in txns:
-                rows.append({
-                    "ID": t["id"],
-                    "Date": t["txn_date"],
-                    "Type": t["type"],
-                    "Head": (t.get("farm_heads") or {}).get("name", "—"),
-                    "Amount": t["amount"],
-                    "Remarks": t.get("remarks") or "",
-                })
-            df = pd.DataFrame(rows)
-
+            # Summary metrics
+            receipts_total = sum(t["amount"] for t in txns if t["type"] == "receipt")
+            payments_total = sum(t["amount"] for t in txns if t["type"] == "payment")
             c1, c2, c3 = st.columns(3)
-            receipts = df[df["Type"] == "receipt"]["Amount"].sum()
-            payments = df[df["Type"] == "payment"]["Amount"].sum()
-            c1.metric("Receipts", f"₹{receipts:,.0f}")
-            c2.metric("Payments", f"₹{payments:,.0f}")
-            c3.metric("Balance", f"₹{receipts - payments:,.0f}")
+            c1.metric("Receipts", f"₹{receipts_total:,.0f}")
+            c2.metric("Payments", f"₹{payments_total:,.0f}")
+            c3.metric("Balance", f"₹{receipts_total - payments_total:,.0f}")
 
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            # CSV download (from full ledger as flat table)
+            df = pd.DataFrame([{
+                "ID": t["id"],
+                "Date": t["txn_date"],
+                "Type": t["type"],
+                "Head": (t.get("farm_heads") or {}).get("name", "—"),
+                "Amount": t["amount"],
+                "Remarks": t.get("remarks") or "",
+            } for t in txns])
             st.download_button(
                 "⬇️ Download CSV",
                 df.to_csv(index=False).encode("utf-8"),
                 "farm_ledger.csv",
                 "text/csv",
             )
+
+            st.markdown("#### Transactions (click to expand and edit)")
+            all_heads = client.table("farm_heads").select("*").order("name").execute().data
+
+            for t in txns:
+                head_name = (t.get("farm_heads") or {}).get("name", "—")
+                icon = "📈" if t["type"] == "receipt" else "📉"
+                sign = "+" if t["type"] == "receipt" else "-"
+                with st.expander(
+                    f"{icon} {t['txn_date']} — {head_name} — {sign}₹{t['amount']:,.2f}"
+                ):
+                    edit_key = f"edit_txn_{t['id']}"
+                    if st.session_state.get(edit_key):
+                        # Edit mode — Type radio outside form so head dropdown filters live
+                        cur_type = st.session_state.get(
+                            f"_txn_type_edit_{t['id']}", t["type"]
+                        )
+                        new_type = st.radio(
+                            "Type", ["receipt", "payment"],
+                            index=0 if cur_type == "receipt" else 1,
+                            horizontal=True,
+                            key=f"_txn_type_edit_{t['id']}",
+                        )
+                        filtered_heads = [h for h in all_heads if h["type"] == new_type]
+
+                        with st.form(f"edit_txn_form_{t['id']}", clear_on_submit=False):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                new_date = st.date_input(
+                                    "Date",
+                                    value=pd.to_datetime(t["txn_date"]).date(),
+                                )
+                                new_amount = st.number_input(
+                                    "Amount (₹)",
+                                    min_value=0.01,
+                                    value=float(t["amount"]),
+                                    step=100.0, format="%.2f",
+                                )
+                            with c2:
+                                if not filtered_heads:
+                                    st.warning(f"No '{new_type}' heads exist.")
+                                    new_head_id = None
+                                else:
+                                    # Find current head index in the filtered list
+                                    cur_head_id = t.get("head_id")
+                                    head_ids = [h["id"] for h in filtered_heads]
+                                    idx = head_ids.index(cur_head_id) if cur_head_id in head_ids else 0
+                                    new_head = st.selectbox(
+                                        "Head",
+                                        options=filtered_heads,
+                                        format_func=lambda h: h["name"],
+                                        index=idx,
+                                    )
+                                    new_head_id = new_head["id"]
+                            new_remarks = st.text_area(
+                                "Remarks", value=t.get("remarks") or ""
+                            )
+                            c1, c2 = st.columns(2)
+                            if c1.form_submit_button(
+                                "💾 Save", type="primary", use_container_width=True
+                            ):
+                                if not new_head_id:
+                                    st.error("Select a head.")
+                                else:
+                                    client.table("farm_transactions").update({
+                                        "txn_date": str(new_date),
+                                        "head_id": new_head_id,
+                                        "type": new_type,
+                                        "amount": float(new_amount),
+                                        "remarks": new_remarks or None,
+                                    }).eq("id", t["id"]).execute()
+                                    st.session_state.pop(edit_key, None)
+                                    st.session_state.pop(f"_txn_type_edit_{t['id']}", None)
+                                    st.success("Updated.")
+                                    st.rerun()
+                            if c2.form_submit_button("Cancel", use_container_width=True):
+                                st.session_state.pop(edit_key, None)
+                                st.session_state.pop(f"_txn_type_edit_{t['id']}", None)
+                                st.rerun()
+                    else:
+                        # View + buttons
+                        if t.get("remarks"):
+                            st.write(f"**Remarks:** {t['remarks']}")
+                        c1, c2 = st.columns(2)
+                        if c1.button("✏️ Edit", key=f"btn_edit_txn_{t['id']}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                        with c2:
+                            if confirm_delete_ui(
+                                f"txn_{t['id']}",
+                                f"this {t['type']} of ₹{t['amount']:,.2f}"
+                            ):
+                                client.table("farm_transactions").delete().eq(
+                                    "id", t["id"]
+                                ).execute()
+                                st.success("Deleted.")
+                                st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -306,7 +456,40 @@ with tab_work:
 
         farms = client.table("farm_farms").select("*").order("name").execute().data
         if farms:
-            st.dataframe(pd.DataFrame(farms)[["id", "name"]], use_container_width=True, hide_index=True)
+            st.markdown("#### Existing Farms")
+            for f in farms:
+                with st.expander(f"🏞️ {f['name']}"):
+                    edit_key = f"edit_farm_{f['id']}"
+                    if st.session_state.get(edit_key):
+                        with st.form(f"edit_farm_form_{f['id']}", clear_on_submit=False):
+                            new_name = st.text_input("Name", value=f["name"])
+                            c1, c2 = st.columns(2)
+                            if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                try:
+                                    client.table("farm_farms").update(
+                                        {"name": new_name.strip()}
+                                    ).eq("id", f["id"]).execute()
+                                    st.session_state.pop(edit_key, None)
+                                    st.success("Updated.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
+                            if c2.form_submit_button("Cancel", use_container_width=True):
+                                st.session_state.pop(edit_key, None)
+                                st.rerun()
+                    else:
+                        c1, c2 = st.columns(2)
+                        if c1.button("✏️ Edit", key=f"btn_edit_farm_{f['id']}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                        with c2:
+                            if confirm_delete_ui(f"farm_{f['id']}", f"farm '{f['name']}'"):
+                                try:
+                                    client.table("farm_farms").delete().eq("id", f["id"]).execute()
+                                    st.success("Deleted.")
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Cannot delete (has work entries?): {e}")
 
     # --- History ---
     with sub_w_hist:
@@ -328,49 +511,100 @@ with tab_work:
             for e in entries:
                 farm_name = (e.get("farm_farms") or {}).get("name", "—")
                 with st.expander(f"📅 {e['work_date']} — {farm_name}"):
-                    st.write(f"**Description:** {e['description']}")
-                    c1, c2 = st.columns(2)
-                    c1.metric("Workers", e.get("workers_count") or 0)
-                    c2.metric("Cost", f"₹{e.get('cost') or 0:,.2f}")
-                    urls = e.get("photo_urls") or []
-                    if urls:
-                        st.write(f"**Photos ({len(urls)}):**")
-                        cols = st.columns(min(len(urls), 4))
-                        for i, url in enumerate(urls):
-                            cols[i % 4].image(url, use_container_width=True)
+                    edit_key = f"edit_work_{e['id']}"
+                    if st.session_state.get(edit_key):
+                        # Edit mode
+                        with st.form(f"edit_work_form_{e['id']}", clear_on_submit=False):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                new_date = st.date_input(
+                                    "Date",
+                                    value=pd.to_datetime(e["work_date"]).date(),
+                                )
+                                farm_ids = [fm["id"] for fm in farms]
+                                idx = farm_ids.index(e["farm_id"]) if e["farm_id"] in farm_ids else 0
+                                new_farm = st.selectbox(
+                                    "Farm", options=farms,
+                                    format_func=lambda fm: fm["name"],
+                                    index=idx,
+                                )
+                            with c2:
+                                new_workers = st.number_input(
+                                    "Workers", min_value=0, step=1,
+                                    value=int(e.get("workers_count") or 0),
+                                )
+                                new_cost = st.number_input(
+                                    "Cost (₹)", min_value=0.0, step=100.0, format="%.2f",
+                                    value=float(e.get("cost") or 0),
+                                )
+                            new_desc = st.text_area(
+                                "Description",
+                                value=e["description"],
+                                height=100,
+                            )
+                            st.caption("Note: existing photos are kept. To replace photos, delete and re-create the entry.")
+                            c1, c2 = st.columns(2)
+                            if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                client.table("farm_work_entries").update({
+                                    "work_date": str(new_date),
+                                    "farm_id": new_farm["id"],
+                                    "description": new_desc.strip(),
+                                    "workers_count": int(new_workers) if new_workers else None,
+                                    "cost": float(new_cost) if new_cost else None,
+                                }).eq("id", e["id"]).execute()
+                                st.session_state.pop(edit_key, None)
+                                st.success("Updated.")
+                                st.rerun()
+                            if c2.form_submit_button("Cancel", use_container_width=True):
+                                st.session_state.pop(edit_key, None)
+                                st.rerun()
+                    else:
+                        # View mode
+                        st.write(f"**Description:** {e['description']}")
+                        c1, c2 = st.columns(2)
+                        c1.metric("Workers", e.get("workers_count") or 0)
+                        c2.metric("Cost", f"₹{e.get('cost') or 0:,.2f}")
+                        urls = e.get("photo_urls") or []
+                        if urls:
+                            st.write(f"**Photos ({len(urls)}):**")
+                            cols = st.columns(min(len(urls), 4))
+                            for i, url in enumerate(urls):
+                                cols[i % 4].image(url, use_container_width=True)
+
+                        st.divider()
+                        c1, c2 = st.columns(2)
+                        if c1.button("✏️ Edit", key=f"btn_edit_work_{e['id']}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                        with c2:
+                            if confirm_delete_ui(
+                                f"work_{e['id']}",
+                                f"work entry on {e['work_date']} for {farm_name}"
+                            ):
+                                client.table("farm_work_entries").delete().eq(
+                                    "id", e["id"]
+                                ).execute()
+                                st.success("Deleted.")
+                                st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
 # TAB 3 · ASSETS REGISTER
 # ═════════════════════════════════════════════════════════════
 with tab_assets:
-    DEFAULT_CATEGORIES = [
-        "Farm Land", "Mango Farm", "Tobacco Barn", "Tractor",
-        "Jimney", "Shed", "House", "Other",
-    ]
-
-    # Seed defaults if empty
-    existing_cats = client.table("farm_asset_categories").select("id").execute().data
-    if not existing_cats:
-        client.table("farm_asset_categories").insert(
-            [{"name": n} for n in DEFAULT_CATEGORIES]
-        ).execute()
-
-    sub_a_add, sub_a_list, sub_a_cats = st.tabs(["➕ Add Asset", "📋 All Assets", "🏷️ Categories"])
+    sub_a_add, sub_a_list = st.tabs(["➕ Add Asset", "📋 All Assets"])
 
     # --- Add Asset ---
     with sub_a_add:
-        cats = client.table("farm_asset_categories").select("*").order("name").execute().data
         with st.form("asset_form", clear_on_submit=True):
             c1, c2 = st.columns(2)
             with c1:
                 short_name = st.text_input("Short name *", placeholder="e.g. North Mango Farm")
-                category = st.selectbox("Category *", options=cats, format_func=lambda c: c["name"])
                 survey_no = st.text_input("Survey No.")
+                passbook = st.text_input("Passbook details")
             with c2:
                 area = st.number_input("Area", min_value=0.0, step=0.1, format="%.2f")
                 area_unit = st.selectbox("Unit", ["acres", "sq.ft", "sq.m", "hectares", "guntas"])
-                passbook = st.text_input("Passbook details")
 
             notes = st.text_area("Short notes", placeholder="Anything worth remembering...")
             docs = st.file_uploader(
@@ -387,7 +621,6 @@ with tab_assets:
                         doc_urls = upload_many(docs, "farm-asset-docs", folder=short_name.strip())
                         client.table("farm_assets").insert({
                             "short_name": short_name.strip(),
-                            "category_id": category["id"],
                             "survey_no": survey_no or None,
                             "passbook_details": passbook or None,
                             "area": area or None,
@@ -400,63 +633,92 @@ with tab_assets:
 
     # --- List Assets ---
     with sub_a_list:
-        cats = client.table("farm_asset_categories").select("*").order("name").execute().data
-        cat_filter = st.selectbox(
-            "Filter by category",
-            options=[None] + cats,
-            format_func=lambda c: "All categories" if c is None else c["name"],
-            key="asset_cat_filter",
-        )
+        search = st.text_input("🔍 Search by name", placeholder="Type to filter...")
 
-        q = client.table("farm_assets").select("*, farm_asset_categories(name)").order("short_name")
-        if cat_filter:
-            q = q.eq("category_id", cat_filter["id"])
+        q = client.table("farm_assets").select("*").order("short_name")
+        if search.strip():
+            q = q.ilike("short_name", f"%{search.strip()}%")
         assets = q.execute().data
 
         if not assets:
-            st.info("No assets registered yet.")
+            st.info("No assets found." if search else "No assets registered yet.")
         else:
             st.write(f"**{len(assets)} asset(s) found**")
             for a in assets:
-                cat_name = (a.get("farm_asset_categories") or {}).get("name", "—")
-                with st.expander(f"🏷️ {a['short_name']} — {cat_name}"):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.write(f"**Survey No:** {a.get('survey_no') or '—'}")
-                        st.write(f"**Passbook:** {a.get('passbook_details') or '—'}")
-                    with c2:
-                        if a.get("area"):
-                            st.write(f"**Area:** {a['area']} {a.get('area_unit') or ''}")
-                        st.write(f"**Category:** {cat_name}")
-                    if a.get("notes"):
-                        st.write(f"**Notes:** {a['notes']}")
-                    urls = a.get("document_urls") or []
-                    if urls:
-                        st.write(f"**Documents ({len(urls)}):**")
-                        for i, url in enumerate(urls, 1):
-                            st.markdown(f"- [Document {i}]({url})")
-                    if st.button("🗑️ Delete", key=f"del_asset_{a['id']}"):
-                        client.table("farm_assets").delete().eq("id", a["id"]).execute()
-                        st.success("Deleted.")
-                        st.rerun()
+                with st.expander(f"🏷️ {a['short_name']}"):
+                    edit_key = f"edit_asset_{a['id']}"
+                    if st.session_state.get(edit_key):
+                        # Edit mode
+                        with st.form(f"edit_asset_form_{a['id']}", clear_on_submit=False):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                new_name = st.text_input("Short name *", value=a["short_name"])
+                                new_survey = st.text_input(
+                                    "Survey No.", value=a.get("survey_no") or ""
+                                )
+                                new_passbook = st.text_input(
+                                    "Passbook details", value=a.get("passbook_details") or ""
+                                )
+                            with c2:
+                                new_area = st.number_input(
+                                    "Area", min_value=0.0, step=0.1, format="%.2f",
+                                    value=float(a.get("area") or 0),
+                                )
+                                units = ["acres", "sq.ft", "sq.m", "hectares", "guntas"]
+                                cur_unit = a.get("area_unit") or "acres"
+                                idx = units.index(cur_unit) if cur_unit in units else 0
+                                new_unit = st.selectbox("Unit", units, index=idx)
 
-    # --- Categories ---
-    with sub_a_cats:
-        with st.form("cat_form", clear_on_submit=True):
-            c1, c2 = st.columns([3, 1])
-            new_cat = c1.text_input("New category", placeholder="e.g. Borewell, Pump House")
-            c2.markdown("&nbsp;")
-            if c2.form_submit_button("Add", use_container_width=True) and new_cat.strip():
-                try:
-                    client.table("farm_asset_categories").insert({"name": new_cat.strip()}).execute()
-                    st.success(f"Added: {new_cat}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                            new_notes = st.text_area("Notes", value=a.get("notes") or "")
+                            st.caption("Note: existing documents are kept. To replace documents, delete and re-create the asset.")
+                            c1, c2 = st.columns(2)
+                            if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                if not new_name.strip():
+                                    st.error("Short name is required.")
+                                else:
+                                    client.table("farm_assets").update({
+                                        "short_name": new_name.strip(),
+                                        "survey_no": new_survey or None,
+                                        "passbook_details": new_passbook or None,
+                                        "area": new_area or None,
+                                        "area_unit": new_unit,
+                                        "notes": new_notes or None,
+                                    }).eq("id", a["id"]).execute()
+                                    st.session_state.pop(edit_key, None)
+                                    st.success("Updated.")
+                                    st.rerun()
+                            if c2.form_submit_button("Cancel", use_container_width=True):
+                                st.session_state.pop(edit_key, None)
+                                st.rerun()
+                    else:
+                        # View mode
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.write(f"**Survey No:** {a.get('survey_no') or '—'}")
+                            st.write(f"**Passbook:** {a.get('passbook_details') or '—'}")
+                        with c2:
+                            if a.get("area"):
+                                st.write(f"**Area:** {a['area']} {a.get('area_unit') or ''}")
+                        if a.get("notes"):
+                            st.write(f"**Notes:** {a['notes']}")
+                        urls = a.get("document_urls") or []
+                        if urls:
+                            st.write(f"**Documents ({len(urls)}):**")
+                            for i, url in enumerate(urls, 1):
+                                st.markdown(f"- [Document {i}]({url})")
 
-        cats = client.table("farm_asset_categories").select("*").order("name").execute().data
-        if cats:
-            st.dataframe(pd.DataFrame(cats)[["id", "name"]], use_container_width=True, hide_index=True)
+                        st.divider()
+                        c1, c2 = st.columns(2)
+                        if c1.button("✏️ Edit", key=f"btn_edit_asset_{a['id']}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                        with c2:
+                            if confirm_delete_ui(
+                                f"asset_{a['id']}", f"asset '{a['short_name']}'"
+                            ):
+                                client.table("farm_assets").delete().eq("id", a["id"]).execute()
+                                st.success("Deleted.")
+                                st.rerun()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -500,6 +762,74 @@ with tab_vehicles:
             st.warning(f"Saved entry, but could not auto-log to petty cash: {e}")
             return None
 
+    def sync_linked_payment(txn_id: int | None, head_name: str, amount: float,
+                             txn_date, remarks: str) -> int | None:
+        """
+        Keep the auto-linked petty cash row in sync with the vehicle entry.
+        If txn_id exists → update it. Otherwise → create a new one and return its id.
+        """
+        if txn_id:
+            try:
+                head_id = get_or_create_head(head_name, "payment")
+                client.table("farm_transactions").update({
+                    "txn_date": str(txn_date),
+                    "head_id": head_id,
+                    "amount": float(amount),
+                    "remarks": remarks,
+                }).eq("id", txn_id).execute()
+                return txn_id
+            except Exception as e:
+                st.warning(f"Could not sync linked petty cash row: {e}")
+                return txn_id
+        else:
+            # No prior link — create one
+            return auto_log_payment(head_name, amount, txn_date, remarks)
+
+    def delete_linked_payment(txn_id: int | None) -> None:
+        """Delete the auto-linked petty cash row if it exists."""
+        if txn_id:
+            try:
+                client.table("farm_transactions").delete().eq("id", txn_id).execute()
+            except Exception as e:
+                st.warning(f"Could not delete linked petty cash row: {e}")
+
+    def latest_odometer(vehicle_id: int, exclude_trip_id: int | None = None) -> float | None:
+        """
+        Find the most recent odometer reading for a vehicle, looking at:
+        - the highest odometer_end from trips
+        - the highest odometer reading from fuel entries
+        Returns the max of both, or None if no readings exist.
+        Pass exclude_trip_id to skip a specific trip (used when editing it).
+        """
+        readings = []
+
+        # From trips
+        q = (
+            client.table("farm_vehicle_trips")
+            .select("id, odometer_end")
+            .eq("vehicle_id", vehicle_id)
+            .not_.is_("odometer_end", "null")
+        )
+        for row in q.execute().data:
+            if exclude_trip_id and row["id"] == exclude_trip_id:
+                continue
+            if row.get("odometer_end"):
+                readings.append(float(row["odometer_end"]))
+
+        # From fuel
+        for row in (
+            client.table("farm_vehicle_fuel")
+            .select("odometer")
+            .eq("vehicle_id", vehicle_id)
+            .not_.is_("odometer", "null")
+            .execute()
+            .data
+        ):
+            if row.get("odometer"):
+                readings.append(float(row["odometer"]))
+
+        return max(readings) if readings else None
+
     sub_v_list, sub_v_trip, sub_v_fuel, sub_v_maint, sub_v_history = st.tabs([
         "🚜 Vehicles",
         "🛣️ Log Trip",
@@ -534,25 +864,59 @@ with tab_vehicles:
                         st.error(f"Error: {e}")
 
         vehicles = client.table("farm_vehicles").select("*").order("name").execute().data
-        if vehicles:
-            df = pd.DataFrame(vehicles)[
-                ["id", "name", "vehicle_type", "registration_no", "notes"]
-            ]
-            st.dataframe(df, use_container_width=True, hide_index=True)
-
-            with st.expander("🗑️ Delete a vehicle (also deletes its trip/fuel/maintenance history)"):
-                to_del = st.selectbox(
-                    "Select vehicle",
-                    options=vehicles,
-                    format_func=lambda v: f"{v['name']} ({v['vehicle_type']})",
-                    key="del_vehicle",
-                )
-                if st.button("Delete vehicle", type="secondary", key="btn_del_vehicle"):
-                    client.table("farm_vehicles").delete().eq("id", to_del["id"]).execute()
-                    st.success("Deleted.")
-                    st.rerun()
-        else:
+        if not vehicles:
             st.info("No vehicles yet. Add one above to start logging trips, fuel, and maintenance.")
+        else:
+            st.markdown("#### Existing Vehicles")
+            for v in vehicles:
+                with st.expander(f"🚜 {v['name']} ({v['vehicle_type']})"):
+                    edit_key = f"edit_vehicle_{v['id']}"
+                    if st.session_state.get(edit_key):
+                        with st.form(f"edit_vehicle_form_{v['id']}", clear_on_submit=False):
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                new_name = st.text_input("Name", value=v["name"])
+                                types = ["Tractor", "Jimney", "Other"]
+                                idx = types.index(v["vehicle_type"]) if v["vehicle_type"] in types else 0
+                                new_type = st.selectbox("Type", types, index=idx)
+                            with c2:
+                                new_reg = st.text_input(
+                                    "Registration No.", value=v.get("registration_no") or ""
+                                )
+                                new_notes = st.text_input(
+                                    "Notes", value=v.get("notes") or ""
+                                )
+                            c1, c2 = st.columns(2)
+                            if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                client.table("farm_vehicles").update({
+                                    "name": new_name.strip(),
+                                    "vehicle_type": new_type,
+                                    "registration_no": new_reg or None,
+                                    "notes": new_notes or None,
+                                }).eq("id", v["id"]).execute()
+                                st.session_state.pop(edit_key, None)
+                                st.success("Updated.")
+                                st.rerun()
+                            if c2.form_submit_button("Cancel", use_container_width=True):
+                                st.session_state.pop(edit_key, None)
+                                st.rerun()
+                    else:
+                        st.write(f"**Registration:** {v.get('registration_no') or '—'}")
+                        if v.get("notes"):
+                            st.write(f"**Notes:** {v['notes']}")
+                        st.divider()
+                        c1, c2 = st.columns(2)
+                        if c1.button("✏️ Edit", key=f"btn_edit_v_{v['id']}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                        with c2:
+                            if confirm_delete_ui(
+                                f"vehicle_{v['id']}",
+                                f"vehicle '{v['name']}' (this will also delete all its trips, fuel, and maintenance records)"
+                            ):
+                                client.table("farm_vehicles").delete().eq("id", v["id"]).execute()
+                                st.success("Deleted.")
+                                st.rerun()
 
     vehicles = client.table("farm_vehicles").select("*").order("name").execute().data
 
@@ -561,33 +925,76 @@ with tab_vehicles:
         if not vehicles:
             st.warning("Add a vehicle first in the 'Vehicles' tab.")
         else:
+            # Vehicle picker OUTSIDE the form so we can auto-fill start odometer
+            t_vehicle = st.selectbox(
+                "Vehicle", options=vehicles,
+                format_func=lambda v: v["name"], key="trip_v",
+            )
+
+            # Auto-fill start odometer from the latest known reading
+            prev_reading = latest_odometer(t_vehicle["id"])
+            if prev_reading is not None:
+                st.caption(
+                    f"💡 Last known odometer for **{t_vehicle['name']}**: "
+                    f"**{prev_reading:,.1f} km** — used as default Start below."
+                )
+            else:
+                st.caption(
+                    f"ℹ️ This is the first odometer entry for **{t_vehicle['name']}**. "
+                    "Enter both Start and End readings."
+                )
+
             with st.form("trip_form", clear_on_submit=True):
                 c1, c2 = st.columns(2)
                 with c1:
                     t_date = st.date_input("Date", value=date.today(), key="trip_date")
-                    t_vehicle = st.selectbox(
-                        "Vehicle", options=vehicles, format_func=lambda v: v["name"], key="trip_v"
-                    )
                     t_driver = st.text_input("Driver")
+                    t_odo_start = st.number_input(
+                        "Start odometer (km)",
+                        min_value=0.0, step=1.0, format="%.2f",
+                        value=float(prev_reading) if prev_reading is not None else 0.0,
+                        help="Pre-filled from last trip/fuel entry. Override if needed.",
+                    )
                 with c2:
                     t_from = st.text_input("From")
                     t_to = st.text_input("To")
-                    t_km = st.number_input("Distance (km)", min_value=0.0, step=1.0, format="%.2f")
+                    t_odo_end = st.number_input(
+                        "End odometer (km) *",
+                        min_value=0.0, step=1.0, format="%.2f",
+                    )
+
+                # Live KM preview
+                if t_odo_end > 0 and t_odo_end >= t_odo_start:
+                    calc_km = t_odo_end - t_odo_start
+                    st.success(f"📏 Distance: **{calc_km:,.2f} km** ({t_odo_start:,.1f} → {t_odo_end:,.1f})")
+                elif t_odo_end > 0 and t_odo_end < t_odo_start:
+                    st.error(
+                        f"End odometer ({t_odo_end:,.1f}) is less than Start ({t_odo_start:,.1f}). "
+                        "Please check the values."
+                    )
 
                 t_purpose = st.text_area("Purpose / notes", height=80)
 
                 if st.form_submit_button("Save Trip", type="primary", use_container_width=True):
-                    client.table("farm_vehicle_trips").insert({
-                        "trip_date": str(t_date),
-                        "vehicle_id": t_vehicle["id"],
-                        "from_place": t_from or None,
-                        "to_place": t_to or None,
-                        "km": float(t_km) if t_km else None,
-                        "purpose": t_purpose or None,
-                        "driver": t_driver or None,
-                    }).execute()
-                    st.success(f"✅ Trip logged for {t_vehicle['name']}.")
-                    st.rerun()
+                    if t_odo_end <= 0:
+                        st.error("End odometer is required.")
+                    elif t_odo_end < t_odo_start:
+                        st.error("End odometer must be greater than or equal to Start.")
+                    else:
+                        km = t_odo_end - t_odo_start
+                        client.table("farm_vehicle_trips").insert({
+                            "trip_date": str(t_date),
+                            "vehicle_id": t_vehicle["id"],
+                            "from_place": t_from or None,
+                            "to_place": t_to or None,
+                            "odometer_start": float(t_odo_start),
+                            "odometer_end": float(t_odo_end),
+                            "km": float(km),
+                            "purpose": t_purpose or None,
+                            "driver": t_driver or None,
+                        }).execute()
+                        st.success(f"✅ Trip logged: {km:,.1f} km for {t_vehicle['name']}.")
+                        st.rerun()
 
     # --- Log Fuel ---
     with sub_v_fuel:
@@ -709,6 +1116,7 @@ with tab_vehicles:
                 "Show", ["Trips", "Fuel", "Maintenance", "Summary"], horizontal=True
             )
 
+            # ─── TRIPS ───
             if hist_kind == "Trips":
                 trips = (
                     client.table("farm_vehicle_trips")
@@ -721,15 +1129,98 @@ with tab_vehicles:
                 if not trips:
                     st.info("No trips logged.")
                 else:
-                    df = pd.DataFrame(trips)[
-                        ["trip_date", "from_place", "to_place", "km", "driver", "purpose"]
-                    ].rename(columns={
-                        "trip_date": "Date", "from_place": "From", "to_place": "To",
-                        "km": "KM", "driver": "Driver", "purpose": "Purpose",
-                    })
-                    st.metric("Total KM", f"{df['KM'].sum():,.1f}")
-                    st.dataframe(df, use_container_width=True, hide_index=True)
+                    total_km = sum((t.get("km") or 0) for t in trips)
+                    st.metric("Total KM", f"{total_km:,.1f}")
 
+                    for tr in trips:
+                        with st.expander(
+                            f"🛣️ {tr['trip_date']} — {tr.get('from_place') or '?'} → "
+                            f"{tr.get('to_place') or '?'} — {tr.get('km') or 0} km"
+                        ):
+                            edit_key = f"edit_trip_{tr['id']}"
+                            if st.session_state.get(edit_key):
+                                with st.form(f"edit_trip_form_{tr['id']}", clear_on_submit=False):
+                                    c1, c2 = st.columns(2)
+                                    with c1:
+                                        n_date = st.date_input(
+                                            "Date",
+                                            value=pd.to_datetime(tr["trip_date"]).date(),
+                                        )
+                                        n_from = st.text_input("From", value=tr.get("from_place") or "")
+                                        n_driver = st.text_input("Driver", value=tr.get("driver") or "")
+                                        n_odo_start = st.number_input(
+                                            "Start odometer (km)",
+                                            min_value=0.0, step=1.0, format="%.2f",
+                                            value=float(tr.get("odometer_start") or 0),
+                                        )
+                                    with c2:
+                                        n_to = st.text_input("To", value=tr.get("to_place") or "")
+                                        n_odo_end = st.number_input(
+                                            "End odometer (km)",
+                                            min_value=0.0, step=1.0, format="%.2f",
+                                            value=float(tr.get("odometer_end") or 0),
+                                        )
+
+                                    # Live KM preview
+                                    if n_odo_end > 0 and n_odo_end >= n_odo_start:
+                                        calc_km = n_odo_end - n_odo_start
+                                        st.success(f"📏 Distance: **{calc_km:,.2f} km**")
+                                    elif n_odo_end > 0 and n_odo_end < n_odo_start:
+                                        st.error(
+                                            f"End odometer ({n_odo_end:,.1f}) is less than "
+                                            f"Start ({n_odo_start:,.1f})."
+                                        )
+
+                                    n_purpose = st.text_area("Purpose", value=tr.get("purpose") or "")
+                                    c1, c2 = st.columns(2)
+                                    if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                        if n_odo_end > 0 and n_odo_end < n_odo_start:
+                                            st.error("End odometer must be ≥ Start odometer.")
+                                        else:
+                                            km = (n_odo_end - n_odo_start) if (n_odo_end and n_odo_end >= n_odo_start) else None
+                                            client.table("farm_vehicle_trips").update({
+                                                "trip_date": str(n_date),
+                                                "from_place": n_from or None,
+                                                "to_place": n_to or None,
+                                                "odometer_start": float(n_odo_start) if n_odo_start else None,
+                                                "odometer_end": float(n_odo_end) if n_odo_end else None,
+                                                "km": float(km) if km is not None else None,
+                                                "purpose": n_purpose or None,
+                                                "driver": n_driver or None,
+                                            }).eq("id", tr["id"]).execute()
+                                            st.session_state.pop(edit_key, None)
+                                            st.success("Updated.")
+                                            st.rerun()
+                                    if c2.form_submit_button("Cancel", use_container_width=True):
+                                        st.session_state.pop(edit_key, None)
+                                        st.rerun()
+                            else:
+                                if tr.get("odometer_start") is not None and tr.get("odometer_end") is not None:
+                                    st.write(
+                                        f"**Odometer:** {tr['odometer_start']:,.1f} → "
+                                        f"{tr['odometer_end']:,.1f} km"
+                                    )
+                                if tr.get("driver"):
+                                    st.write(f"**Driver:** {tr['driver']}")
+                                if tr.get("purpose"):
+                                    st.write(f"**Purpose:** {tr['purpose']}")
+                                st.divider()
+                                c1, c2 = st.columns(2)
+                                if c1.button("✏️ Edit", key=f"btn_edit_trip_{tr['id']}", use_container_width=True):
+                                    st.session_state[edit_key] = True
+                                    st.rerun()
+                                with c2:
+                                    if confirm_delete_ui(
+                                        f"trip_{tr['id']}",
+                                        f"trip on {tr['trip_date']}"
+                                    ):
+                                        client.table("farm_vehicle_trips").delete().eq(
+                                            "id", tr["id"]
+                                        ).execute()
+                                        st.success("Deleted.")
+                                        st.rerun()
+
+            # ─── FUEL ───
             elif hist_kind == "Fuel":
                 fuel = (
                     client.table("farm_vehicle_fuel")
@@ -742,22 +1233,94 @@ with tab_vehicles:
                 if not fuel:
                     st.info("No fuel entries.")
                 else:
-                    df = pd.DataFrame(fuel)[
-                        ["fuel_date", "liters", "amount", "odometer", "remarks"]
-                    ].rename(columns={
-                        "fuel_date": "Date", "liters": "Liters", "amount": "Amount (₹)",
-                        "odometer": "Odometer", "remarks": "Remarks",
-                    })
+                    total_l = sum((f.get("liters") or 0) for f in fuel)
+                    total_amt = sum((f.get("amount") or 0) for f in fuel)
+                    avg_rate = total_amt / total_l if total_l > 0 else 0
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("Total Liters", f"{df['Liters'].sum():,.2f}")
-                    c2.metric("Total Spent", f"₹{df['Amount (₹)'].sum():,.0f}")
-                    avg_rate = (
-                        df["Amount (₹)"].sum() / df["Liters"].sum()
-                        if df["Liters"].sum() > 0 else 0
-                    )
+                    c1.metric("Total Liters", f"{total_l:,.2f}")
+                    c2.metric("Total Spent", f"₹{total_amt:,.0f}")
                     c3.metric("Avg ₹/L", f"₹{avg_rate:,.2f}")
-                    st.dataframe(df, use_container_width=True, hide_index=True)
 
+                    for fu in fuel:
+                        with st.expander(
+                            f"⛽ {fu['fuel_date']} — {fu['liters']:.2f} L — ₹{fu['amount']:,.0f}"
+                        ):
+                            edit_key = f"edit_fuel_{fu['id']}"
+                            if st.session_state.get(edit_key):
+                                with st.form(f"edit_fuel_form_{fu['id']}", clear_on_submit=False):
+                                    c1, c2 = st.columns(2)
+                                    with c1:
+                                        n_date = st.date_input(
+                                            "Date",
+                                            value=pd.to_datetime(fu["fuel_date"]).date(),
+                                        )
+                                        n_liters = st.number_input(
+                                            "Liters", min_value=0.01, step=0.5, format="%.2f",
+                                            value=float(fu["liters"]),
+                                        )
+                                    with c2:
+                                        n_amount = st.number_input(
+                                            "Amount (₹)", min_value=0.01, step=100.0, format="%.2f",
+                                            value=float(fu["amount"]),
+                                        )
+                                        n_odo = st.number_input(
+                                            "Odometer (km)", min_value=0.0, step=1.0, format="%.2f",
+                                            value=float(fu.get("odometer") or 0),
+                                        )
+                                    n_remarks = st.text_input(
+                                        "Remarks", value=fu.get("remarks") or ""
+                                    )
+                                    st.info("💡 The linked petty cash payment will also be updated.")
+                                    c1, c2 = st.columns(2)
+                                    if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                        # Sync the linked petty cash row first
+                                        rem = f"Fuel — {v_filter['name']} — {n_liters:.2f} L"
+                                        if n_remarks:
+                                            rem += f" — {n_remarks}"
+                                        new_txn_id = sync_linked_payment(
+                                            fu.get("txn_id"), "Vehicle Fuel",
+                                            n_amount, n_date, rem
+                                        )
+                                        client.table("farm_vehicle_fuel").update({
+                                            "fuel_date": str(n_date),
+                                            "liters": float(n_liters),
+                                            "amount": float(n_amount),
+                                            "odometer": float(n_odo) if n_odo else None,
+                                            "remarks": n_remarks or None,
+                                            "txn_id": new_txn_id,
+                                        }).eq("id", fu["id"]).execute()
+                                        st.session_state.pop(edit_key, None)
+                                        st.success("Updated (petty cash synced).")
+                                        st.rerun()
+                                    if c2.form_submit_button("Cancel", use_container_width=True):
+                                        st.session_state.pop(edit_key, None)
+                                        st.rerun()
+                            else:
+                                if fu.get("odometer"):
+                                    st.write(f"**Odometer:** {fu['odometer']:,.0f} km")
+                                if fu.get("remarks"):
+                                    st.write(f"**Remarks:** {fu['remarks']}")
+                                if fu.get("txn_id"):
+                                    st.caption(f"🔗 Linked to petty cash payment #{fu['txn_id']}")
+                                st.divider()
+                                c1, c2 = st.columns(2)
+                                if c1.button("✏️ Edit", key=f"btn_edit_fuel_{fu['id']}", use_container_width=True):
+                                    st.session_state[edit_key] = True
+                                    st.rerun()
+                                with c2:
+                                    if confirm_delete_ui(
+                                        f"fuel_{fu['id']}",
+                                        f"fuel entry of ₹{fu['amount']:,.2f} on {fu['fuel_date']} "
+                                        f"(linked petty cash payment will also be deleted)"
+                                    ):
+                                        delete_linked_payment(fu.get("txn_id"))
+                                        client.table("farm_vehicle_fuel").delete().eq(
+                                            "id", fu["id"]
+                                        ).execute()
+                                        st.success("Deleted (petty cash row also removed).")
+                                        st.rerun()
+
+            # ─── MAINTENANCE ───
             elif hist_kind == "Maintenance":
                 maint = (
                     client.table("farm_vehicle_maintenance")
@@ -778,14 +1341,82 @@ with tab_vehicles:
                         with st.expander(
                             f"🔧 {m['service_date']} — {m['service_type']} — ₹{m['cost']:,.0f}"
                         ):
-                            st.write(f"**Vendor:** {m.get('vendor') or '—'}")
-                            if m.get("notes"):
-                                st.write(f"**Notes:** {m['notes']}")
-                            urls = m.get("bill_urls") or []
-                            if urls:
-                                st.write(f"**Bills ({len(urls)}):**")
-                                for i, url in enumerate(urls, 1):
-                                    st.markdown(f"- [Bill {i}]({url})")
+                            edit_key = f"edit_maint_{m['id']}"
+                            if st.session_state.get(edit_key):
+                                with st.form(f"edit_maint_form_{m['id']}", clear_on_submit=False):
+                                    c1, c2 = st.columns(2)
+                                    with c1:
+                                        n_date = st.date_input(
+                                            "Date",
+                                            value=pd.to_datetime(m["service_date"]).date(),
+                                        )
+                                        n_type = st.text_input(
+                                            "Service type *", value=m["service_type"]
+                                        )
+                                    with c2:
+                                        n_cost = st.number_input(
+                                            "Cost (₹)", min_value=0.01, step=100.0, format="%.2f",
+                                            value=float(m["cost"]),
+                                        )
+                                        n_vendor = st.text_input(
+                                            "Vendor", value=m.get("vendor") or ""
+                                        )
+                                    n_notes = st.text_area("Notes", value=m.get("notes") or "")
+                                    st.caption("Existing bill photos are kept. The linked petty cash payment will be updated.")
+                                    c1, c2 = st.columns(2)
+                                    if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
+                                        if not n_type.strip():
+                                            st.error("Service type is required.")
+                                        else:
+                                            rem = f"Maintenance — {v_filter['name']} — {n_type.strip()}"
+                                            if n_vendor:
+                                                rem += f" @ {n_vendor}"
+                                            new_txn_id = sync_linked_payment(
+                                                m.get("txn_id"), "Vehicle Maintenance",
+                                                n_cost, n_date, rem
+                                            )
+                                            client.table("farm_vehicle_maintenance").update({
+                                                "service_date": str(n_date),
+                                                "service_type": n_type.strip(),
+                                                "cost": float(n_cost),
+                                                "vendor": n_vendor or None,
+                                                "notes": n_notes or None,
+                                                "txn_id": new_txn_id,
+                                            }).eq("id", m["id"]).execute()
+                                            st.session_state.pop(edit_key, None)
+                                            st.success("Updated (petty cash synced).")
+                                            st.rerun()
+                                    if c2.form_submit_button("Cancel", use_container_width=True):
+                                        st.session_state.pop(edit_key, None)
+                                        st.rerun()
+                            else:
+                                st.write(f"**Vendor:** {m.get('vendor') or '—'}")
+                                if m.get("notes"):
+                                    st.write(f"**Notes:** {m['notes']}")
+                                urls = m.get("bill_urls") or []
+                                if urls:
+                                    st.write(f"**Bills ({len(urls)}):**")
+                                    for i, url in enumerate(urls, 1):
+                                        st.markdown(f"- [Bill {i}]({url})")
+                                if m.get("txn_id"):
+                                    st.caption(f"🔗 Linked to petty cash payment #{m['txn_id']}")
+                                st.divider()
+                                c1, c2 = st.columns(2)
+                                if c1.button("✏️ Edit", key=f"btn_edit_maint_{m['id']}", use_container_width=True):
+                                    st.session_state[edit_key] = True
+                                    st.rerun()
+                                with c2:
+                                    if confirm_delete_ui(
+                                        f"maint_{m['id']}",
+                                        f"maintenance entry of ₹{m['cost']:,.2f} on {m['service_date']} "
+                                        f"(linked petty cash payment will also be deleted)"
+                                    ):
+                                        delete_linked_payment(m.get("txn_id"))
+                                        client.table("farm_vehicle_maintenance").delete().eq(
+                                            "id", m["id"]
+                                        ).execute()
+                                        st.success("Deleted (petty cash row also removed).")
+                                        st.rerun()
 
             else:  # Summary
                 trips = client.table("farm_vehicle_trips").select("km").eq(
@@ -1204,7 +1835,7 @@ with tab_reports:
 
         assets = (
             client.table("farm_assets")
-            .select("*, farm_asset_categories(name)")
+            .select("*")
             .order("short_name")
             .execute()
             .data
@@ -1216,7 +1847,6 @@ with tab_reports:
             df = pd.DataFrame([
                 {
                     "Short Name": a["short_name"],
-                    "Category": (a.get("farm_asset_categories") or {}).get("name", "—"),
                     "Survey No.": a.get("survey_no") or "",
                     "Area": a.get("area") or "",
                     "Unit": a.get("area_unit") or "",
@@ -1227,29 +1857,18 @@ with tab_reports:
                 for a in assets
             ])
 
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             c1.metric("Total Assets", len(df))
-            c2.metric("Categories", df["Category"].nunique())
             try:
                 total_area = pd.to_numeric(df["Area"], errors="coerce").fillna(0).sum()
-                c3.metric("Total Area (mixed units)", f"{total_area:,.2f}")
+                c2.metric("Total Area (mixed units)", f"{total_area:,.2f}")
             except Exception:
                 pass
-
-            # By-category breakdown
-            st.markdown("#### Breakdown by Category")
-            by_cat = (
-                df.groupby("Category")
-                .size()
-                .reset_index(name="Count")
-                .sort_values("Count", ascending=False)
-            )
-            st.dataframe(by_cat, use_container_width=True, hide_index=True)
 
             st.markdown("#### Full Register")
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-            sheets = {"By Category": by_cat, "Asset Register": df}
+            sheets = {"Asset Register": df}
             c1, c2 = st.columns(2)
             c1.download_button(
                 "⬇️ Download Excel",
