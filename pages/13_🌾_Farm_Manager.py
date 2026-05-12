@@ -16,6 +16,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 import pandas as pd
+from PIL import Image, ImageOps
 from supabase import create_client, Client
 
 
@@ -76,21 +77,183 @@ client = get_client()
 # ─────────────────────────────────────────────────────────────
 # STORAGE HELPERS
 # ─────────────────────────────────────────────────────────────
+def _safe_folder(name: str) -> str:
+    """Convert any string into a storage-safe folder name (no spaces, no special chars)."""
+    import re
+    # Replace anything not a letter/digit/dash/underscore/dot/slash with a dash
+    s = re.sub(r"[^A-Za-z0-9._/-]+", "-", name.strip())
+    # Collapse multiple dashes, strip leading/trailing dashes
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s
+
+
+# Image compression target: 200 KB
+MAX_IMAGE_BYTES = 200 * 1024
+# Max dimensions for compressed images (any side >1600px gets scaled down proportionally)
+MAX_IMAGE_DIM = 1600
+
+
+def compress_image(file_bytes: bytes, filename: str) -> tuple[bytes, str, str]:
+    """
+    Compress an image to under MAX_IMAGE_BYTES using progressive JPEG quality reduction
+    and resizing if needed.
+
+    Returns (compressed_bytes, new_filename, content_type).
+    If compression keeps it under the cap, the new filename gets a .jpg extension.
+    If even at minimum quality + resize it can't fit, returns the best attempt anyway.
+    """
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        # Honor EXIF orientation (phone photos especially)
+        img = ImageOps.exif_transpose(img)
+
+        # Convert to RGB (drop alpha, handle PNG/HEIC etc.)
+        if img.mode in ("RGBA", "LA", "P"):
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            bg.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+
+        # Resize if too large on either dimension
+        if max(img.size) > MAX_IMAGE_DIM:
+            img.thumbnail((MAX_IMAGE_DIM, MAX_IMAGE_DIM), Image.LANCZOS)
+
+        # Progressive JPEG quality reduction
+        new_name = Path(filename).stem + ".jpg"
+        for quality in (85, 75, 65, 55, 45, 35, 25):
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
+            data = buf.getvalue()
+            if len(data) <= MAX_IMAGE_BYTES:
+                return data, new_name, "image/jpeg"
+
+        # Last-resort: aggressive resize + low quality
+        smaller = img.copy()
+        smaller.thumbnail((1024, 1024), Image.LANCZOS)
+        buf = io.BytesIO()
+        smaller.save(buf, format="JPEG", quality=30, optimize=True, progressive=True)
+        return buf.getvalue(), new_name, "image/jpeg"
+    except Exception as e:
+        # Not a valid image — return original
+        st.warning(f"Could not compress {filename} ({e}). Uploading as-is.")
+        return file_bytes, filename, "application/octet-stream"
+
+
 def upload_file(uploaded_file, bucket: str, folder: str = "") -> str:
-    """Upload a single Streamlit UploadedFile to Supabase Storage; return public URL."""
-    ext = Path(uploaded_file.name).suffix
-    filename = f"{folder}/{uuid.uuid4().hex}{ext}".lstrip("/")
-    file_bytes = uploaded_file.getvalue()
-    client.storage.from_(bucket).upload(
-        path=filename,
-        file=file_bytes,
-        file_options={"content-type": uploaded_file.type or "application/octet-stream"},
-    )
-    return client.storage.from_(bucket).get_public_url(filename)
+    """Upload a single Streamlit UploadedFile to Supabase Storage; return public URL.
+
+    For image files, compresses to under 200 KB before upload.
+    PDFs and other non-image files pass through unchanged.
+
+    Raises a clear st.error and returns "" on failure rather than crashing the page.
+    """
+    try:
+        original_name = uploaded_file.name
+        file_bytes = uploaded_file.getvalue()
+        original_size = len(file_bytes)
+        content_type = uploaded_file.type or "application/octet-stream"
+
+        # Compress images; leave PDFs and others alone
+        is_image = content_type.startswith("image/") or \
+            Path(original_name).suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif")
+
+        if is_image:
+            file_bytes, processed_name, content_type = compress_image(file_bytes, original_name)
+            if len(file_bytes) < original_size:
+                pct = 100 - (100 * len(file_bytes) // max(original_size, 1))
+                st.caption(
+                    f"📸 **{original_name}** compressed: "
+                    f"{original_size/1024:,.0f} KB → {len(file_bytes)/1024:,.0f} KB "
+                    f"({pct}% smaller)"
+                )
+        else:
+            processed_name = original_name
+
+        ext = Path(processed_name).suffix.lower() or ".bin"
+        safe_folder = _safe_folder(folder) if folder else ""
+        filename = f"{safe_folder}/{uuid.uuid4().hex}{ext}".lstrip("/")
+
+        client.storage.from_(bucket).upload(
+            path=filename,
+            file=file_bytes,
+            file_options={"content-type": content_type},
+        )
+        return client.storage.from_(bucket).get_public_url(filename)
+    except Exception as e:
+        st.error(
+            f"❌ Upload failed for **{uploaded_file.name}** to bucket **{bucket}**.\n\n"
+            f"Reason: `{e}`\n\n"
+            f"Common fixes: (1) verify the bucket exists in Supabase Storage and is **public**; "
+            f"(2) check bucket policies allow uploads from the anon role."
+        )
+        return ""
 
 
 def upload_many(files, bucket: str, folder: str = "") -> list[str]:
-    return [upload_file(f, bucket, folder) for f in files] if files else []
+    if not files:
+        return []
+    urls = [upload_file(f, bucket, folder) for f in files]
+    # Drop any that failed (empty strings)
+    return [u for u in urls if u]
+
+
+def delete_storage_file(public_url: str, bucket: str) -> bool:
+    """
+    Delete a file from Supabase Storage given its public URL.
+    Returns True on success.
+    """
+    try:
+        # Public URLs look like: https://<project>.supabase.co/storage/v1/object/public/<bucket>/<path>
+        marker = f"/public/{bucket}/"
+        idx = public_url.find(marker)
+        if idx == -1:
+            return False
+        path = public_url[idx + len(marker):]
+        client.storage.from_(bucket).remove([path])
+        return True
+    except Exception as e:
+        st.warning(f"Could not delete storage file: {e}")
+        return False
+
+
+def render_existing_files(
+    current_urls: list[str],
+    bucket: str,
+    parent_table: str,
+    parent_id: int,
+    column: str = "document_urls",
+    file_label: str = "Document",
+) -> list[str]:
+    """
+    Render existing files with a 'Remove' button next to each.
+    Returns the updated url list (in case any were removed this run).
+    Caller is responsible for re-saving the row if changes occurred — but this function
+    persists removals immediately too, so it's safe to use either way.
+    """
+    if not current_urls:
+        st.caption("_No files yet._")
+        return current_urls
+
+    new_list = list(current_urls)
+    st.markdown(f"**Existing {file_label.lower()}s ({len(new_list)}):**")
+    for i, url in enumerate(new_list):
+        c1, c2 = st.columns([5, 1])
+        c1.markdown(f"- [{file_label} {i+1}]({url})")
+        if c2.button("🗑️", key=f"rm_{parent_table}_{parent_id}_{i}", help="Remove this file"):
+            # Delete from storage
+            delete_storage_file(url, bucket)
+            # Persist updated array immediately
+            updated = [u for u in new_list if u != url]
+            try:
+                client.table(parent_table).update({column: updated}).eq("id", parent_id).execute()
+                st.success("File removed.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not update record: {e}")
+    return new_list
 
 
 # ─────────────────────────────────────────────────────────────
@@ -513,7 +676,31 @@ with tab_work:
                 with st.expander(f"📅 {e['work_date']} — {farm_name}"):
                     edit_key = f"edit_work_{e['id']}"
                     if st.session_state.get(edit_key):
-                        # Edit mode
+                        # Existing photos with remove buttons (outside the form so the buttons work)
+                        st.markdown("##### Photos")
+                        existing_urls = e.get("photo_urls") or []
+                        if existing_urls:
+                            # Thumbnails grid with remove buttons
+                            cols = st.columns(min(len(existing_urls), 4))
+                            for i, url in enumerate(existing_urls):
+                                with cols[i % 4]:
+                                    st.image(url, use_container_width=True)
+                                    if st.button(
+                                        "🗑️ Remove", key=f"rm_work_{e['id']}_{i}",
+                                        use_container_width=True,
+                                    ):
+                                        delete_storage_file(url, "farm-photos")
+                                        updated = [u for u in existing_urls if u != url]
+                                        client.table("farm_work_entries").update(
+                                            {"photo_urls": updated}
+                                        ).eq("id", e["id"]).execute()
+                                        st.success("Photo removed.")
+                                        st.rerun()
+                        else:
+                            st.caption("_No photos yet._")
+
+                        st.divider()
+
                         with st.form(f"edit_work_form_{e['id']}", clear_on_submit=False):
                             c1, c2 = st.columns(2)
                             with c1:
@@ -542,16 +729,34 @@ with tab_work:
                                 value=e["description"],
                                 height=100,
                             )
-                            st.caption("Note: existing photos are kept. To replace photos, delete and re-create the entry.")
+                            new_photos = st.file_uploader(
+                                "Add more photos (optional — appends to existing)",
+                                type=["jpg", "jpeg", "png"],
+                                accept_multiple_files=True,
+                                key=f"upload_work_{e['id']}",
+                            )
                             c1, c2 = st.columns(2)
                             if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
-                                client.table("farm_work_entries").update({
-                                    "work_date": str(new_date),
-                                    "farm_id": new_farm["id"],
-                                    "description": new_desc.strip(),
-                                    "workers_count": int(new_workers) if new_workers else None,
-                                    "cost": float(new_cost) if new_cost else None,
-                                }).eq("id", e["id"]).execute()
+                                with st.spinner("Saving..."):
+                                    # Re-fetch current urls (in case some were removed via buttons)
+                                    cur = client.table("farm_work_entries").select(
+                                        "photo_urls"
+                                    ).eq("id", e["id"]).execute().data
+                                    cur_urls = (cur[0].get("photo_urls") if cur else []) or []
+                                    if new_photos:
+                                        new_urls = upload_many(
+                                            new_photos, "farm-photos",
+                                            folder=str(new_date),
+                                        )
+                                        cur_urls = cur_urls + new_urls
+                                    client.table("farm_work_entries").update({
+                                        "work_date": str(new_date),
+                                        "farm_id": new_farm["id"],
+                                        "description": new_desc.strip(),
+                                        "workers_count": int(new_workers) if new_workers else None,
+                                        "cost": float(new_cost) if new_cost else None,
+                                        "photo_urls": cur_urls,
+                                    }).eq("id", e["id"]).execute()
                                 st.session_state.pop(edit_key, None)
                                 st.success("Updated.")
                                 st.rerun()
@@ -648,7 +853,29 @@ with tab_assets:
                 with st.expander(f"🏷️ {a['short_name']}"):
                     edit_key = f"edit_asset_{a['id']}"
                     if st.session_state.get(edit_key):
-                        # Edit mode
+                        # Existing documents (outside form so remove buttons can rerun)
+                        st.markdown("##### Documents")
+                        existing_urls = a.get("document_urls") or []
+                        if existing_urls:
+                            for i, url in enumerate(existing_urls):
+                                c1, c2 = st.columns([5, 1])
+                                c1.markdown(f"- [Document {i+1}]({url})")
+                                if c2.button(
+                                    "🗑️ Remove", key=f"rm_asset_{a['id']}_{i}",
+                                    use_container_width=True,
+                                ):
+                                    delete_storage_file(url, "farm-asset-docs")
+                                    updated = [u for u in existing_urls if u != url]
+                                    client.table("farm_assets").update(
+                                        {"document_urls": updated}
+                                    ).eq("id", a["id"]).execute()
+                                    st.success("Document removed.")
+                                    st.rerun()
+                        else:
+                            st.caption("_No documents yet._")
+
+                        st.divider()
+
                         with st.form(f"edit_asset_form_{a['id']}", clear_on_submit=False):
                             c1, c2 = st.columns(2)
                             with c1:
@@ -670,20 +897,38 @@ with tab_assets:
                                 new_unit = st.selectbox("Unit", units, index=idx)
 
                             new_notes = st.text_area("Notes", value=a.get("notes") or "")
-                            st.caption("Note: existing documents are kept. To replace documents, delete and re-create the asset.")
+                            new_docs = st.file_uploader(
+                                "Add more documents (optional — appends to existing)",
+                                type=["pdf", "jpg", "jpeg", "png"],
+                                accept_multiple_files=True,
+                                key=f"upload_asset_{a['id']}",
+                            )
                             c1, c2 = st.columns(2)
                             if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
                                 if not new_name.strip():
                                     st.error("Short name is required.")
                                 else:
-                                    client.table("farm_assets").update({
-                                        "short_name": new_name.strip(),
-                                        "survey_no": new_survey or None,
-                                        "passbook_details": new_passbook or None,
-                                        "area": new_area or None,
-                                        "area_unit": new_unit,
-                                        "notes": new_notes or None,
-                                    }).eq("id", a["id"]).execute()
+                                    with st.spinner("Saving..."):
+                                        # Re-fetch current urls in case any were removed
+                                        cur = client.table("farm_assets").select(
+                                            "document_urls"
+                                        ).eq("id", a["id"]).execute().data
+                                        cur_urls = (cur[0].get("document_urls") if cur else []) or []
+                                        if new_docs:
+                                            added = upload_many(
+                                                new_docs, "farm-asset-docs",
+                                                folder=new_name.strip(),
+                                            )
+                                            cur_urls = cur_urls + added
+                                        client.table("farm_assets").update({
+                                            "short_name": new_name.strip(),
+                                            "survey_no": new_survey or None,
+                                            "passbook_details": new_passbook or None,
+                                            "area": new_area or None,
+                                            "area_unit": new_unit,
+                                            "notes": new_notes or None,
+                                            "document_urls": cur_urls,
+                                        }).eq("id", a["id"]).execute()
                                     st.session_state.pop(edit_key, None)
                                     st.success("Updated.")
                                     st.rerun()
@@ -1343,6 +1588,29 @@ with tab_vehicles:
                         ):
                             edit_key = f"edit_maint_{m['id']}"
                             if st.session_state.get(edit_key):
+                                # Existing bills (outside form for remove buttons)
+                                st.markdown("##### Bills")
+                                existing_urls = m.get("bill_urls") or []
+                                if existing_urls:
+                                    for i, url in enumerate(existing_urls):
+                                        c1, c2 = st.columns([5, 1])
+                                        c1.markdown(f"- [Bill {i+1}]({url})")
+                                        if c2.button(
+                                            "🗑️ Remove", key=f"rm_maint_{m['id']}_{i}",
+                                            use_container_width=True,
+                                        ):
+                                            delete_storage_file(url, "farm-asset-docs")
+                                            updated = [u for u in existing_urls if u != url]
+                                            client.table("farm_vehicle_maintenance").update(
+                                                {"bill_urls": updated}
+                                            ).eq("id", m["id"]).execute()
+                                            st.success("Bill removed.")
+                                            st.rerun()
+                                else:
+                                    st.caption("_No bills yet._")
+
+                                st.divider()
+
                                 with st.form(f"edit_maint_form_{m['id']}", clear_on_submit=False):
                                     c1, c2 = st.columns(2)
                                     with c1:
@@ -1362,27 +1630,47 @@ with tab_vehicles:
                                             "Vendor", value=m.get("vendor") or ""
                                         )
                                     n_notes = st.text_area("Notes", value=m.get("notes") or "")
-                                    st.caption("Existing bill photos are kept. The linked petty cash payment will be updated.")
+                                    new_bills = st.file_uploader(
+                                        "Add more bills (optional — appends to existing)",
+                                        type=["pdf", "jpg", "jpeg", "png"],
+                                        accept_multiple_files=True,
+                                        key=f"upload_maint_{m['id']}",
+                                    )
+                                    st.caption("💡 The linked petty cash payment will be updated.")
                                     c1, c2 = st.columns(2)
                                     if c1.form_submit_button("💾 Save", type="primary", use_container_width=True):
                                         if not n_type.strip():
                                             st.error("Service type is required.")
                                         else:
-                                            rem = f"Maintenance — {v_filter['name']} — {n_type.strip()}"
-                                            if n_vendor:
-                                                rem += f" @ {n_vendor}"
-                                            new_txn_id = sync_linked_payment(
-                                                m.get("txn_id"), "Vehicle Maintenance",
-                                                n_cost, n_date, rem
-                                            )
-                                            client.table("farm_vehicle_maintenance").update({
-                                                "service_date": str(n_date),
-                                                "service_type": n_type.strip(),
-                                                "cost": float(n_cost),
-                                                "vendor": n_vendor or None,
-                                                "notes": n_notes or None,
-                                                "txn_id": new_txn_id,
-                                            }).eq("id", m["id"]).execute()
+                                            with st.spinner("Saving..."):
+                                                # Re-fetch current bills in case any were removed
+                                                cur = client.table("farm_vehicle_maintenance").select(
+                                                    "bill_urls"
+                                                ).eq("id", m["id"]).execute().data
+                                                cur_urls = (cur[0].get("bill_urls") if cur else []) or []
+                                                if new_bills:
+                                                    added = upload_many(
+                                                        new_bills, "farm-asset-docs",
+                                                        folder=f"vehicle-bills/{v_filter['name']}",
+                                                    )
+                                                    cur_urls = cur_urls + added
+
+                                                rem = f"Maintenance — {v_filter['name']} — {n_type.strip()}"
+                                                if n_vendor:
+                                                    rem += f" @ {n_vendor}"
+                                                new_txn_id = sync_linked_payment(
+                                                    m.get("txn_id"), "Vehicle Maintenance",
+                                                    n_cost, n_date, rem
+                                                )
+                                                client.table("farm_vehicle_maintenance").update({
+                                                    "service_date": str(n_date),
+                                                    "service_type": n_type.strip(),
+                                                    "cost": float(n_cost),
+                                                    "vendor": n_vendor or None,
+                                                    "notes": n_notes or None,
+                                                    "bill_urls": cur_urls,
+                                                    "txn_id": new_txn_id,
+                                                }).eq("id", m["id"]).execute()
                                             st.session_state.pop(edit_key, None)
                                             st.success("Updated (petty cash synced).")
                                             st.rerun()
