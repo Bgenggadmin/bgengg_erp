@@ -1481,9 +1481,10 @@ with tabs[4]:
             if st.form_submit_button("Update Access Key"):
                 if new_key:
                     safe_db_write(
-                        lambda: conn.table("employee_auth").upsert({
-                            "employee_name": target_emp, "access_key": new_key
-                        }).execute(),
+                        lambda: conn.table("employee_auth").upsert(
+                            {"employee_name": target_emp, "access_key": new_key},
+                            on_conflict="employee_name"
+                        ).execute(),
                         success_msg=f"✅ Key updated for {target_emp}!",
                         error_prefix="Key Update Error"
                     )
