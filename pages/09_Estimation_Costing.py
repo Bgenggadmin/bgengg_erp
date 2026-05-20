@@ -441,6 +441,7 @@ def auto_fab_services(h, fab_rates, parts):
 # ─────────────────────────────────────────────────────────────────────────────
 EQUIPMENT_TYPES = {
     "SSR — Stainless Steel Reactor":        {"icon": "⚗️",  "category": "Reactor",        "margin_hint": (12, 18), "labour_norm": "High",      "description": "SS316L reactor with jacket, agitator, mechanical seal"},
+    "HAR — Hastelloy Reactor":              {"icon": "⚗️",  "category": "Reactor",        "margin_hint": (12, 18), "labour_norm": "High",      "description": "Hastelloy reactor with jacket, agitator, mechanical seal"},
     "RCVD — Rotary Cone Vacuum Dryer":      {"icon": "🌀",  "category": "Dryer",          "margin_hint": (14, 20), "labour_norm": "High",      "description": "Rotary cone vacuum dryer — jacketed, vacuum operation, integrated condenser"},
     "RD — Receiver / Decanter":            {"icon": "🧪",  "category": "Vessel",         "margin_hint": (10, 15), "labour_norm": "Medium",    "description": "SS316L receiver cum decanter vessel, no agitator"},
     "ANFD — Agitated Nutsche Filter Dryer": {"icon": "🔩",  "category": "Filter",         "margin_hint": (14, 20), "labour_norm": "Very High", "description": "ANFD with filter plate, agitator, jacket"},
