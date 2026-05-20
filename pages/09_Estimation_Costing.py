@@ -1755,6 +1755,11 @@ with TAB_NEW:
     ])
     h = st.session_state.est_hdr
 
+    # ── Initialise edit-index trackers for all line-item lists ────────────────
+    for _k in ["edit_pipe_idx", "edit_flg_idx", "edit_fab_idx", "edit_bo_idx", "edit_oh_idx"]:
+        if _k not in st.session_state:
+            st.session_state[_k] = None
+
     # ── F1: HEADER ─────────────────────────────────────────────────────────────
     with f1:
         all_est_list = load_all_estimations()
@@ -2101,11 +2106,21 @@ with TAB_NEW:
 
         if st.session_state.est_parts:
             st.markdown("---")
-            st.markdown("**Parts list — click ✏️ to edit a row**")
+            st.markdown("**Parts list — click ✏️ to edit, 🗑️ to delete**")
+            # Column headers
+            hc = st.columns([0.5, 2.5, 2, 1.5, 1, 0.8, 0.8, 1.5, 2, 0.5, 0.5])
+            for col, lbl in zip(hc, ["#", "Name", "Part Type", "Group", "Material",
+                                      "Qty", "Scrap", "Weight", "Amount", "✏️", "🗑️"]):
+                col.caption(f"**{lbl}**")
+
             for idx, p in enumerate(st.session_state.est_parts):
-                c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([2.5, 2, 1.5, 1, 0.8, 0.8, 1.5, 2, 0.7])
-                c1.write(p.get("name", "")); c2.write(p.get("part_type", "")[:20])
-                c3.write(p.get("group", "")); c4.write(p.get("material", ""))
+                c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns(
+                    [0.5, 2.5, 2, 1.5, 1, 0.8, 0.8, 1.5, 2, 0.5, 0.5])
+                c0.write(f"**{idx + 1}**")
+                c1.write(p.get("name", ""))
+                c2.write(p.get("part_type", "")[:20])
+                c3.write(p.get("group", ""))
+                c4.write(p.get("material", ""))
                 c5.write(f"{p.get('qty', 1):.1f}")
                 sc = p.get("scrap_pct", None)
                 c6.write(f"{sc:.0f}%" if sc is not None else "—")
@@ -2113,75 +2128,192 @@ with TAB_NEW:
                 c8.write(f"₹{p.get('amount', 0):,.0f}")
                 if c9.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name', '')}"):
                     st.session_state["edit_part_idx"] = idx
+                    st.rerun()
+                if c10.button("🗑️", key=f"dp_{idx}", help=f"Delete row {idx + 1}"):
+                    st.session_state.est_parts.pop(idx)
+                    st.session_state["edit_part_idx"] = None
+                    st.rerun()
 
             tot_wt  = sum(p.get("total_wt_kg", 0) for p in st.session_state.est_parts)
             tot_amt = sum(p.get("amount", 0) for p in st.session_state.est_parts)
             st.success(f"**Total — Weight: {tot_wt:,.1f} kg  |  Amount: ₹{tot_amt:,.0f}**")
 
-            dc1, dc2 = st.columns([3, 1])
-            del_idx = dc1.number_input("Row to delete", min_value=1, max_value=len(st.session_state.est_parts), value=1, step=1)
-            if dc2.button("🗑️ Delete Row", use_container_width=True):
-                st.session_state.est_parts.pop(int(del_idx) - 1)
-                st.session_state["edit_part_idx"] = None
             if st.button("🗑️ Clear All Parts"):
-                st.session_state.est_parts = []; st.session_state["edit_part_idx"] = None
-
+                st.session_state.est_parts = []
+                st.session_state["edit_part_idx"] = None
+                st.rerun()
         _save_draft_bar("f2")
                   
     # ── F3: PIPES & FLANGES ────────────────────────────────────────────────────
+    
     with f3:
         st.markdown("##### Nozzle Pipes")
+
+        # Are we editing an existing pipe row?
+        _epi = st.session_state.get("edit_pipe_idx")
+        _editing_pipe = None
+        if _epi is not None and 0 <= _epi < len(st.session_state.est_pipes):
+            _editing_pipe = st.session_state.est_pipes[_epi]
+
         with st.container(border=True):
+            if _editing_pipe is not None:
+                st.info(f"Editing pipe row #{_epi + 1}: **{_editing_pipe.get('name', '')}**")
+
+            # Pre-fill values from editing row
+            _def_name = _editing_pipe.get("name", "") if _editing_pipe else ""
+            _def_code = _editing_pipe.get("item_code", "") if _editing_pipe else ""
+            _def_len  = float(_editing_pipe.get("length_m", 0.2)) if _editing_pipe else 0.2
+            _def_qty  = int(_editing_pipe.get("qty", 1)) if _editing_pipe else 1
+            _def_rate = float(_editing_pipe.get("rate", 0)) if _editing_pipe else 0.0
+
+            # Key suffix changes when editing so widgets reset cleanly
+            _pk = f"ep{_epi}_" if _epi is not None else "pp_new_"
+
             pc1, pc2, pc3, pc4, pc5 = st.columns(5)
-            pp_name = pc1.text_input("Description",           placeholder='e.g. 2" Nozzle', key="pp_name")
-            pp_code = pc2.selectbox("Pipe Size", pipe_rm or ["—"],                           key="pp_code")
-            pp_len  = pc3.number_input("Length (m)",  value=0.2,  min_value=0.0, step=0.1,  key="pp_len")
-            pp_qty  = pc4.number_input("Qty",         value=1,    min_value=1,   step=1,     key="pp_qty")
-            pp_rate = pc5.number_input("Rate Override (0=master)", value=0.0, min_value=0.0, key="pp_rate")
+            pp_name = pc1.text_input("Description", value=_def_name, placeholder='e.g. 2" Nozzle', key=f"{_pk}name")
+            _pipe_opts = pipe_rm or ["—"]
+            _code_idx = _pipe_opts.index(_def_code) if _def_code in _pipe_opts else 0
+            pp_code = pc2.selectbox("Pipe Size", _pipe_opts, index=_code_idx, key=f"{_pk}code")
+            pp_len  = pc3.number_input("Length (m)", value=_def_len, min_value=0.0, step=0.1, key=f"{_pk}len")
+            pp_qty  = pc4.number_input("Qty", value=_def_qty, min_value=1, step=1, key=f"{_pk}qty")
+            pp_rate = pc5.number_input("Rate Override (0=master)", value=_def_rate, min_value=0.0, key=f"{_pk}rate")
+
             if pipe_rm:
                 rm = rm_master.get(pp_code, {})
                 st.caption(f"Selected: {rm.get('description', '')} | {rm.get('unit_wt_kg_per_m', 0)} kg/m | Rate: ₹{rm.get('rate', 0)}/kg")
-            if st.button("➕ Add Pipe", type="primary", key="add_pipe"):
+
+            bcol1, bcol2 = st.columns([3, 1])
+            _btn_label = "✅ Update Pipe" if _editing_pipe else "➕ Add Pipe"
+            if bcol1.button(_btn_label, type="primary", key=f"{_pk}btn", use_container_width=True):
                 rm   = rm_master.get(pp_code, {})
                 rate = pp_rate if pp_rate > 0 else rm.get("rate", 0)
                 wpm  = rm.get("unit_wt_kg_per_m") or 0
                 wt   = wpm * pp_len * 1.05 * pp_qty
-                st.session_state.est_pipes.append(dict(name=pp_name, item_code=pp_code, length_m=pp_len, qty=pp_qty, wt_per_m=wpm, total_wt_kg=round(wt, 3), rate=rate, amount=round(wt * rate, 2)))
+                new_pipe = dict(name=pp_name, item_code=pp_code, length_m=pp_len, qty=pp_qty,
+                                 wt_per_m=wpm, total_wt_kg=round(wt, 3), rate=rate,
+                                 amount=round(wt * rate, 2))
+                if _editing_pipe is not None:
+                    st.session_state.est_pipes[_epi] = new_pipe
+                    st.session_state["edit_pipe_idx"] = None
+                    st.success(f"✅ Updated pipe row #{_epi + 1}")
+                else:
+                    st.session_state.est_pipes.append(new_pipe)
+                    st.success(f"✅ Added: {pp_name}")
+                st.rerun()
+            if _editing_pipe and bcol2.button("✖ Cancel", key=f"{_pk}cancel", use_container_width=True):
+                st.session_state["edit_pipe_idx"] = None
+                st.rerun()
 
         if st.session_state.est_pipes:
-            df = pd.DataFrame(st.session_state.est_pipes)[["name", "item_code", "length_m", "qty", "total_wt_kg", "rate", "amount"]]
-            df.columns = ["Description", "Code", "Length(m)", "Qty", "Wt(kg)", "Rate", "Amount(₹)"]
-            df["Amount(₹)"] = df["Amount(₹)"].map(lambda x: f"₹{x:,.0f}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.success(f"Total Pipes: ₹{sum(p['amount'] for p in st.session_state.est_pipes):,.0f}")
-            if st.button("🗑️ Clear Pipes"):
-                st.session_state.est_pipes = []
+            st.markdown("**Pipes list**")
+            hc = st.columns([0.5, 3, 2, 1, 0.8, 1.2, 1.5, 0.5, 0.5])
+            for col, lbl in zip(hc, ["#", "Description", "Code", "Len(m)", "Qty",
+                                      "Wt(kg)", "Amount", "✏️", "🗑️"]):
+                col.caption(f"**{lbl}**")
 
+            for idx, p in enumerate(st.session_state.est_pipes):
+                c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
+                    [0.5, 3, 2, 1, 0.8, 1.2, 1.5, 0.5, 0.5])
+                c0.write(f"**{idx + 1}**")
+                c1.write(p.get("name", ""))
+                c2.write(p.get("item_code", ""))
+                c3.write(f"{p.get('length_m', 0):.2f}")
+                c4.write(f"{p.get('qty', 1)}")
+                c5.write(f"{p.get('total_wt_kg', 0):.1f}")
+                c6.write(f"₹{p.get('amount', 0):,.0f}")
+                if c7.button("✏️", key=f"epipe_{idx}", help=f"Edit row {idx + 1}"):
+                    st.session_state["edit_pipe_idx"] = idx
+                    st.rerun()
+                if c8.button("🗑️", key=f"dpipe_{idx}", help=f"Delete row {idx + 1}"):
+                    st.session_state.est_pipes.pop(idx)
+                    st.session_state["edit_pipe_idx"] = None
+                    st.rerun()
+
+            st.success(f"Total Pipes: ₹{sum(p['amount'] for p in st.session_state.est_pipes):,.0f}")
+            if st.button("🗑️ Clear All Pipes", key="clr_pipes"):
+                st.session_state.est_pipes = []
+                st.session_state["edit_pipe_idx"] = None
+                st.rerun()
+        
         st.divider()
         st.markdown("##### Flanges & Fittings")
+
+        _efi = st.session_state.get("edit_flg_idx")
+        _editing_flg = None
+        if _efi is not None and 0 <= _efi < len(st.session_state.est_flanges):
+            _editing_flg = st.session_state.est_flanges[_efi]
+
         with st.container(border=True):
+            if _editing_flg is not None:
+                st.info(f"Editing flange row #{_efi + 1}: **{_editing_flg.get('name', '')}**")
+
+            _def_name = _editing_flg.get("name", "") if _editing_flg else ""
+            _def_code = _editing_flg.get("item_code", "") if _editing_flg else ""
+            _def_qty  = int(_editing_flg.get("qty", 1)) if _editing_flg else 1
+            _def_rate = float(_editing_flg.get("rate", 0)) if _editing_flg else 0.0
+
+            _fk = f"ef{_efi}_" if _efi is not None else "fl_new_"
+
             fl1, fl2, fl3, fl4 = st.columns(4)
-            fl_name = fl1.text_input("Description",           placeholder='e.g. 4" #150 Flange', key="fl_name")
-            fl_code = fl2.selectbox("Flange Size", flg_rm or ["—"],                               key="fl_code")
-            fl_qty  = fl3.number_input("Qty", value=1, min_value=1, step=1,                       key="fl_qty")
-            fl_rate = fl4.number_input("Rate Override (0=master)", value=0.0, min_value=0.0,       key="fl_rate")
-            if st.button("➕ Add Flange", type="primary", key="add_flange"):
+            fl_name = fl1.text_input("Description", value=_def_name, placeholder='e.g. 4" #150 Flange', key=f"{_fk}name")
+            _flg_opts = flg_rm or ["—"]
+            _flg_idx = _flg_opts.index(_def_code) if _def_code in _flg_opts else 0
+            fl_code = fl2.selectbox("Flange Size", _flg_opts, index=_flg_idx, key=f"{_fk}code")
+            fl_qty  = fl3.number_input("Qty", value=_def_qty, min_value=1, step=1, key=f"{_fk}qty")
+            fl_rate = fl4.number_input("Rate Override (0=master)", value=_def_rate, min_value=0.0, key=f"{_fk}rate")
+
+            bcol1, bcol2 = st.columns([3, 1])
+            _btn_label = "✅ Update Flange" if _editing_flg else "➕ Add Flange"
+            if bcol1.button(_btn_label, type="primary", key=f"{_fk}btn", use_container_width=True):
                 rm   = rm_master.get(fl_code, {})
                 rate = fl_rate if fl_rate > 0 else rm.get("rate", 0)
                 wt   = ((rm.get("unit_wt_kg_per_m") or 0) * 1.15) * fl_qty
-                st.session_state.est_flanges.append(dict(name=fl_name, item_code=fl_code, qty=fl_qty, total_wt_kg=round(wt, 3), rate=rate, amount=round(wt * rate, 2)))
+                new_flg = dict(name=fl_name, item_code=fl_code, qty=fl_qty,
+                               total_wt_kg=round(wt, 3), rate=rate,
+                               amount=round(wt * rate, 2))
+                if _editing_flg is not None:
+                    st.session_state.est_flanges[_efi] = new_flg
+                    st.session_state["edit_flg_idx"] = None
+                    st.success(f"✅ Updated flange row #{_efi + 1}")
+                else:
+                    st.session_state.est_flanges.append(new_flg)
+                    st.success(f"✅ Added: {fl_name}")
+                st.rerun()
+            if _editing_flg and bcol2.button("✖ Cancel", key=f"{_fk}cancel", use_container_width=True):
+                st.session_state["edit_flg_idx"] = None
+                st.rerun()
 
         if st.session_state.est_flanges:
-            df = pd.DataFrame(st.session_state.est_flanges)[["name", "item_code", "qty", "total_wt_kg", "rate", "amount"]]
-            df.columns = ["Description", "Code", "Qty", "Wt(kg)", "Rate", "Amount(₹)"]
-            df["Amount(₹)"] = df["Amount(₹)"].map(lambda x: f"₹{x:,.0f}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.markdown("**Flanges list**")
+            hc = st.columns([0.5, 3, 2, 1, 1.2, 1.5, 0.5, 0.5])
+            for col, lbl in zip(hc, ["#", "Description", "Code", "Qty", "Wt(kg)",
+                                      "Amount", "✏️", "🗑️"]):
+                col.caption(f"**{lbl}**")
+
+            for idx, p in enumerate(st.session_state.est_flanges):
+                c0, c1, c2, c3, c4, c5, c6, c7 = st.columns(
+                    [0.5, 3, 2, 1, 1.2, 1.5, 0.5, 0.5])
+                c0.write(f"**{idx + 1}**")
+                c1.write(p.get("name", ""))
+                c2.write(p.get("item_code", ""))
+                c3.write(f"{p.get('qty', 1)}")
+                c4.write(f"{p.get('total_wt_kg', 0):.1f}")
+                c5.write(f"₹{p.get('amount', 0):,.0f}")
+                if c6.button("✏️", key=f"eflg_{idx}", help=f"Edit row {idx + 1}"):
+                    st.session_state["edit_flg_idx"] = idx
+                    st.rerun()
+                if c7.button("🗑️", key=f"dflg_{idx}", help=f"Delete row {idx + 1}"):
+                    st.session_state.est_flanges.pop(idx)
+                    st.session_state["edit_flg_idx"] = None
+                    st.rerun()
+
             st.success(f"Total Flanges: ₹{sum(p['amount'] for p in st.session_state.est_flanges):,.0f}")
-            if st.button("🗑️ Clear Flanges"):
+            if st.button("🗑️ Clear All Flanges", key="clr_flg"):
                 st.session_state.est_flanges = []
+                st.session_state["edit_flg_idx"] = None
+                st.rerun()
 
         _save_draft_bar("f3")
-
     # ── F_STRUCT: STRUCTURAL STEEL (Angles, Channels, Beams) ───────────────────
     with f_struct:
         st.markdown("##### Structural Steel — Angles, Channels & Beams")
@@ -2343,91 +2475,256 @@ with TAB_NEW:
 
         if st.session_state.est_fab:
             st.markdown("---")
-            st.markdown("**Fabrication services — edit amounts if needed**")
+            st.markdown("**Fabrication services — click ✏️ to edit, 🗑️ to delete**")
+            hc = st.columns([0.5, 3.5, 3.5, 1.2, 1, 1.5, 0.5, 0.5])
+            for col, lbl in zip(hc, ["#", "Service", "Basis", "Qty", "UOM",
+                                      "Amount", "✏️", "🗑️"]):
+                col.caption(f"**{lbl}**")
+
             fab_total = 0
             for idx, fs in enumerate(st.session_state.est_fab):
-                fc1, fc2, fc3, fc4, fc5 = st.columns([4, 4, 1.5, 2, 1])
-                fc1.write(fs.get("service", ""))
-                fc2.caption(fs.get("basis", ""))
-                fc3.write(f"{fs.get('qty', '')} {fs.get('uom', '')}")
-                new_amt = fc4.number_input("₹", value=float(fs.get("amount", 0)), min_value=0.0, step=100.0, label_visibility="collapsed", key=f"fab_amt_{idx}")
-                st.session_state.est_fab[idx]["amount"] = new_amt
-                fab_total += new_amt
-                if fc5.button("🗑️", key=f"fab_del_{idx}", help="Remove"):
+                c0, c1, c2, c3, c4, c5, c6, c7 = st.columns(
+                    [0.5, 3.5, 3.5, 1.2, 1, 1.5, 0.5, 0.5])
+                c0.write(f"**{idx + 1}**")
+                c1.write(fs.get("service", ""))
+                c2.caption(fs.get("basis", ""))
+                c3.write(f"{fs.get('qty', '')}")
+                c4.write(fs.get("uom", ""))
+                c5.write(f"₹{fs.get('amount', 0):,.0f}")
+                if c6.button("✏️", key=f"efab_{idx}", help=f"Edit row {idx + 1}"):
+                    st.session_state["edit_fab_idx"] = idx
+                    st.rerun()
+                if c7.button("🗑️", key=f"dfab_{idx}", help=f"Delete row {idx + 1}"):
                     st.session_state.est_fab.pop(idx)
+                    st.session_state["edit_fab_idx"] = None
+                    st.rerun()
+                fab_total += fs.get("amount", 0)
+
             st.success(f"**Total Fabrication Services: ₹{fab_total:,.0f}**")
 
-            st.markdown("**➕ Add custom line**")
-            with st.container(border=True):
-                ma1, ma2, ma3, ma4 = st.columns(4)
-                ma_svc   = ma1.text_input("Service description",   key="ma_svc")
-                ma_basis = ma2.text_input("Basis / note",           key="ma_basis")
-                ma_uom   = ma3.text_input("UOM", value="LS",        key="ma_uom")
-                ma_amt   = ma4.number_input("Amount ₹", value=0.0,  key="ma_amt")
-                if st.button("➕ Add Line", type="primary"):
-                    st.session_state.est_fab.append({"service": ma_svc, "basis": ma_basis, "qty": 1, "uom": ma_uom, "rate": ma_amt, "amount": ma_amt})
+        # ── Edit / Add fabrication line ──────────────────────────────────────
+        _efabi = st.session_state.get("edit_fab_idx")
+        _editing_fab = None
+        if _efabi is not None and 0 <= _efabi < len(st.session_state.est_fab):
+            _editing_fab = st.session_state.est_fab[_efabi]
+
+        st.markdown(f"**{'✏️ Edit fabrication line #' + str(_efabi + 1) if _editing_fab else '➕ Add custom line'}**")
+        with st.container(border=True):
+            _def_svc   = _editing_fab.get("service", "") if _editing_fab else ""
+            _def_basis = _editing_fab.get("basis", "") if _editing_fab else ""
+            _def_qty   = float(_editing_fab.get("qty", 1)) if _editing_fab else 1.0
+            _def_uom   = _editing_fab.get("uom", "LS") if _editing_fab else "LS"
+            _def_rate  = float(_editing_fab.get("rate", 0)) if _editing_fab else 0.0
+            _def_amt   = float(_editing_fab.get("amount", 0)) if _editing_fab else 0.0
+
+            _fak = f"efab{_efabi}_" if _efabi is not None else "fab_new_"
+
+            ma1, ma2 = st.columns(2)
+            ma_svc   = ma1.text_input("Service description", value=_def_svc, key=f"{_fak}svc")
+            ma_basis = ma2.text_input("Basis / note", value=_def_basis, key=f"{_fak}basis")
+
+            ma3, ma4, ma5, ma6 = st.columns(4)
+            ma_qty   = ma3.number_input("Qty",  value=_def_qty,  min_value=0.0, step=0.1,    key=f"{_fak}qty")
+            ma_uom   = ma4.text_input("UOM",    value=_def_uom,                              key=f"{_fak}uom")
+            ma_rate  = ma5.number_input("Rate", value=_def_rate, min_value=0.0, step=10.0,   key=f"{_fak}rate")
+            ma_amt   = ma6.number_input("Amount ₹", value=_def_amt, min_value=0.0, step=100.0, key=f"{_fak}amt")
+
+            bcol1, bcol2 = st.columns([3, 1])
+            _btn_label = "✅ Update Line" if _editing_fab else "➕ Add Line"
+            if bcol1.button(_btn_label, type="primary", key=f"{_fak}btn", use_container_width=True):
+                new_line = {"service": ma_svc, "basis": ma_basis, "qty": ma_qty,
+                            "uom": ma_uom, "rate": ma_rate, "amount": ma_amt}
+                if _editing_fab is not None:
+                    st.session_state.est_fab[_efabi] = new_line
+                    st.session_state["edit_fab_idx"] = None
+                    st.success(f"✅ Updated fab row #{_efabi + 1}")
+                else:
+                    st.session_state.est_fab.append(new_line)
+                    st.success(f"✅ Added: {ma_svc}")
+                st.rerun()
+            if _editing_fab and bcol2.button("✖ Cancel", key=f"{_fak}cancel", use_container_width=True):
+                st.session_state["edit_fab_idx"] = None
+                st.rerun()
 
         _save_draft_bar("f4")
 
+    
     # ── F5: BOUGHT-OUT & OH ────────────────────────────────────────────────────
     with f5:
         st.markdown("##### Bought-Out Items  _(Motor, Gearbox, Seal, Fasteners, Insulation, etc.)_")
+
+        _eboi = st.session_state.get("edit_bo_idx")
+        _editing_bo = None
+        if _eboi is not None and 0 <= _eboi < len(st.session_state.est_bo):
+            _editing_bo = st.session_state.est_bo[_eboi]
+
         with st.container(border=True):
+            if _editing_bo is not None:
+                st.info(f"Editing BO row #{_eboi + 1}: **{_editing_bo.get('name', '')}**")
+
+            _def_name  = _editing_bo.get("name", "") if _editing_bo else ""
+            _def_code  = _editing_bo.get("item_code", "") if _editing_bo else ""
+            _def_qty   = int(_editing_bo.get("qty", 1)) if _editing_bo else 1
+            _def_rate  = float(_editing_bo.get("rate", 0)) if _editing_bo else 0.0
+            _def_group = _editing_bo.get("group", "BO") if _editing_bo else "BO"
+
+            _bok = f"ebo{_eboi}_" if _eboi is not None else "bo_new_"
+
             b1, b2, b3, b4, b5 = st.columns(5)
-            bo_desc  = b1.text_input("Description",            placeholder="e.g. 7.5HP Motor", key="bo_d")
-            bo_code  = b2.selectbox("BO Code",  bo_rm or ["—"],                                 key="bo_c")
-            bo_qty   = b3.number_input("Qty",   value=1, min_value=1, step=1,                   key="bo_q")
-            bo_rate  = b4.number_input("Rate Override (0=master)", value=0.0, min_value=0.0,    key="bo_r")
-            bo_group = b5.selectbox("Group",    ["BO", "FASTENERS", "INSULATION", "OTHER"],     key="bo_g")
+            bo_desc  = b1.text_input("Description", value=_def_name, placeholder="e.g. 7.5HP Motor", key=f"{_bok}d")
+            _bo_opts = bo_rm or ["—"]
+            _bo_idx  = _bo_opts.index(_def_code) if _def_code in _bo_opts else 0
+            bo_code  = b2.selectbox("BO Code", _bo_opts, index=_bo_idx, key=f"{_bok}c")
+            bo_qty   = b3.number_input("Qty", value=_def_qty, min_value=1, step=1, key=f"{_bok}q")
+            bo_rate  = b4.number_input("Rate Override (0=master)", value=_def_rate, min_value=0.0, key=f"{_bok}r")
+            _grp_opts = ["BO", "FASTENERS", "INSULATION", "OTHER"]
+            _grp_idx  = _grp_opts.index(_def_group) if _def_group in _grp_opts else 0
+            bo_group = b5.selectbox("Group", _grp_opts, index=_grp_idx, key=f"{_bok}g")
+
             if bo_rm:
                 rm = rm_master.get(bo_code, {})
                 st.caption(f"Selected: {rm.get('description', '')} | Rate: ₹{rm.get('rate', 0):,.0f} | UOM: {rm.get('uom', '')}")
-            if st.button("➕ Add BO Item", type="primary", key="add_bo"):
+
+            bcol1, bcol2 = st.columns([3, 1])
+            _btn_label = "✅ Update BO Item" if _editing_bo else "➕ Add BO Item"
+            if bcol1.button(_btn_label, type="primary", key=f"{_bok}btn", use_container_width=True):
                 rm   = rm_master.get(bo_code, {})
                 rate = bo_rate if bo_rate > 0 else rm.get("rate", 0)
-                st.session_state.est_bo.append(dict(name=bo_desc or rm.get("description", ""), item_code=bo_code, qty=bo_qty, rate=rate, amount=round(rate * bo_qty, 2), group=bo_group))
+                new_bo = dict(name=bo_desc or rm.get("description", ""),
+                              item_code=bo_code, qty=bo_qty, rate=rate,
+                              amount=round(rate * bo_qty, 2), group=bo_group)
+                if _editing_bo is not None:
+                    st.session_state.est_bo[_eboi] = new_bo
+                    st.session_state["edit_bo_idx"] = None
+                    st.success(f"✅ Updated BO row #{_eboi + 1}")
+                else:
+                    st.session_state.est_bo.append(new_bo)
+                    st.success(f"✅ Added: {bo_desc or rm.get('description', '')}")
+                st.rerun()
+            if _editing_bo and bcol2.button("✖ Cancel", key=f"{_bok}cancel", use_container_width=True):
+                st.session_state["edit_bo_idx"] = None
+                st.rerun()
 
         if st.session_state.est_bo:
-            df = pd.DataFrame(st.session_state.est_bo)[["name", "item_code", "qty", "rate", "amount", "group"]]
-            df.columns = ["Description", "Code", "Qty", "Rate", "Amount(₹)", "Group"]
-            df["Amount(₹)"] = df["Amount(₹)"].map(lambda x: f"₹{x:,.0f}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.markdown("**Bought-Out items list**")
+            hc = st.columns([0.5, 3, 2, 0.8, 1.2, 1.5, 1.2, 0.5, 0.5])
+            for col, lbl in zip(hc, ["#", "Description", "Code", "Qty", "Rate",
+                                      "Amount", "Group", "✏️", "🗑️"]):
+                col.caption(f"**{lbl}**")
+
+            for idx, b in enumerate(st.session_state.est_bo):
+                c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
+                    [0.5, 3, 2, 0.8, 1.2, 1.5, 1.2, 0.5, 0.5])
+                c0.write(f"**{idx + 1}**")
+                c1.write(b.get("name", ""))
+                c2.write(b.get("item_code", ""))
+                c3.write(f"{b.get('qty', 1)}")
+                c4.write(f"₹{b.get('rate', 0):,.0f}")
+                c5.write(f"₹{b.get('amount', 0):,.0f}")
+                c6.write(b.get("group", ""))
+                if c7.button("✏️", key=f"ebo_{idx}", help=f"Edit row {idx + 1}"):
+                    st.session_state["edit_bo_idx"] = idx
+                    st.rerun()
+                if c8.button("🗑️", key=f"dbo_{idx}", help=f"Delete row {idx + 1}"):
+                    st.session_state.est_bo.pop(idx)
+                    st.session_state["edit_bo_idx"] = None
+                    st.rerun()
+
             st.success(f"Total Bought-Out: ₹{sum(b['amount'] for b in st.session_state.est_bo):,.0f}")
-            if st.button("🗑️ Clear BO"):
+            if st.button("🗑️ Clear All BO", key="clr_bo"):
                 st.session_state.est_bo = []
+                st.session_state["edit_bo_idx"] = None
+                st.rerun()
 
         st.divider()
         st.markdown("##### Additional Overheads  _(any cost not covered above)_")
+
+        _eohi = st.session_state.get("edit_oh_idx")
+        _editing_oh = None
+        if _eohi is not None and 0 <= _eohi < len(st.session_state.est_oh):
+            _editing_oh = st.session_state.est_oh[_eohi]
+
         with st.container(border=True):
+            if _editing_oh is not None:
+                st.info(f"Editing OH row #{_eohi + 1}: **{_editing_oh.get('description', '')}**")
+
+            _def_code  = _editing_oh.get("oh_code", "") if _editing_oh else ""
+            _def_qty   = float(_editing_oh.get("qty", 1)) if _editing_oh else 1.0
+            _def_rate  = float(_editing_oh.get("rate", 0)) if _editing_oh else 0.0
+            _def_desc  = _editing_oh.get("description", "") if _editing_oh else ""
+
+            _ohk = f"eoh{_eohi}_" if _eohi is not None else "oh_new_"
+
             o1, o2, o3, o4 = st.columns(4)
-            oh_sel = o1.selectbox("OH Code",                 oh_codes or ["—"],                 key="oh_sel")
-            oh_qty = o2.number_input("Qty / Hours / Area",   value=1.0, min_value=0.0, step=1.0, key="oh_q")
-            oh_rov = o3.number_input("Rate Override (0=master)", value=0.0, min_value=0.0,       key="oh_r")
-            oh_dov = o4.text_input("Description override (optional)",                            key="oh_d")
+            _oh_opts = oh_codes or ["—"]
+            _oh_idx  = _oh_opts.index(_def_code) if _def_code in _oh_opts else 0
+            oh_sel = o1.selectbox("OH Code", _oh_opts, index=_oh_idx, key=f"{_ohk}sel")
+            oh_qty = o2.number_input("Qty / Hours / Area", value=_def_qty, min_value=0.0, step=1.0, key=f"{_ohk}q")
+            oh_rov = o3.number_input("Rate Override (0=master)", value=_def_rate, min_value=0.0, key=f"{_ohk}r")
+            oh_dov = o4.text_input("Description override (optional)", value=_def_desc, key=f"{_ohk}d")
             oh_inf = oh_master.get(oh_sel, {})
             st.caption(f"Selected: **{oh_inf.get('description', '')}** | Type: {oh_inf.get('oh_type', '')} | UOM: {oh_inf.get('uom', '')} | Rate: ₹{oh_inf.get('rate', 0):,.0f}")
-            if st.button("➕ Add Overhead", type="primary", key="add_oh"):
+
+            bcol1, bcol2 = st.columns([3, 1])
+            _btn_label = "✅ Update Overhead" if _editing_oh else "➕ Add Overhead"
+            if bcol1.button(_btn_label, type="primary", key=f"{_ohk}btn", use_container_width=True):
                 rate = oh_rov if oh_rov > 0 else oh_inf.get("rate", 0)
                 uom  = oh_inf.get("uom", "")
                 desc = oh_dov or oh_inf.get("description", "")
                 if uom == "%":
-                    base   = sum(p.get("amount", 0) for p in st.session_state.est_parts) + sum(p.get("amount", 0) for p in st.session_state.est_pipes) + sum(p.get("amount", 0) for p in st.session_state.est_flanges)
+                    base   = sum(p.get("amount", 0) for p in st.session_state.est_parts) + \
+                             sum(p.get("amount", 0) for p in st.session_state.est_pipes) + \
+                             sum(p.get("amount", 0) for p in st.session_state.est_flanges)
                     amount = base * rate / 100
                 else:
                     amount = rate * oh_qty
-                st.session_state.est_oh.append(dict(oh_code=oh_sel, description=desc, oh_type=oh_inf.get("oh_type", ""), uom=uom, qty=oh_qty, rate=rate, amount=round(amount, 2)))
+                new_oh = dict(oh_code=oh_sel, description=desc,
+                              oh_type=oh_inf.get("oh_type", ""), uom=uom,
+                              qty=oh_qty, rate=rate, amount=round(amount, 2))
+                if _editing_oh is not None:
+                    st.session_state.est_oh[_eohi] = new_oh
+                    st.session_state["edit_oh_idx"] = None
+                    st.success(f"✅ Updated OH row #{_eohi + 1}")
+                else:
+                    st.session_state.est_oh.append(new_oh)
+                    st.success(f"✅ Added: {desc}")
+                st.rerun()
+            if _editing_oh and bcol2.button("✖ Cancel", key=f"{_ohk}cancel", use_container_width=True):
+                st.session_state["edit_oh_idx"] = None
+                st.rerun()
 
         if st.session_state.est_oh:
-            df = pd.DataFrame(st.session_state.est_oh)[["description", "oh_type", "uom", "qty", "rate", "amount"]]
-            df.columns = ["Description", "Type", "UOM", "Qty", "Rate", "Amount(₹)"]
-            df["Amount(₹)"] = df["Amount(₹)"].map(lambda x: f"₹{x:,.0f}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.markdown("**Overheads list**")
+            hc = st.columns([0.5, 3, 1.5, 0.8, 1, 1.2, 1.5, 0.5, 0.5])
+            for col, lbl in zip(hc, ["#", "Description", "Type", "UOM", "Qty",
+                                      "Rate", "Amount", "✏️", "🗑️"]):
+                col.caption(f"**{lbl}**")
+
+            for idx, o in enumerate(st.session_state.est_oh):
+                c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
+                    [0.5, 3, 1.5, 0.8, 1, 1.2, 1.5, 0.5, 0.5])
+                c0.write(f"**{idx + 1}**")
+                c1.write(o.get("description", ""))
+                c2.write(o.get("oh_type", ""))
+                c3.write(o.get("uom", ""))
+                c4.write(f"{o.get('qty', 1):.1f}")
+                c5.write(f"₹{o.get('rate', 0):,.0f}")
+                c6.write(f"₹{o.get('amount', 0):,.0f}")
+                if c7.button("✏️", key=f"eoh_{idx}", help=f"Edit row {idx + 1}"):
+                    st.session_state["edit_oh_idx"] = idx
+                    st.rerun()
+                if c8.button("🗑️", key=f"doh_{idx}", help=f"Delete row {idx + 1}"):
+                    st.session_state.est_oh.pop(idx)
+                    st.session_state["edit_oh_idx"] = None
+                    st.rerun()
+
             st.success(f"Total OH: ₹{sum(o['amount'] for o in st.session_state.est_oh):,.0f}")
-            if st.button("🗑️ Clear OH"):
+            if st.button("🗑️ Clear All OH", key="clr_oh"):
                 st.session_state.est_oh = []
+                st.session_state["edit_oh_idx"] = None
+                st.rerun()
 
         _save_draft_bar("f5")
-
     # ── F6: SUMMARY & SAVE ─────────────────────────────────────────────────────
     with f6:
         eq_info = EQUIPMENT_TYPES.get(h["equipment_type"], {})
