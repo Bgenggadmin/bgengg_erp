@@ -44,11 +44,6 @@ if "master_data" not in st.session_state:
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600)
 def _fetch_logo_bytes():
-    """
-    Fetch B&G logo from Supabase storage bucket 'progress-photos'.
-    Returns raw bytes or None if not found.
-    Try common filenames — change LOGO_FILENAME if yours is different.
-    """
     BUCKET = "progress-photos"
     LOGO_FILE = "logo.png"
     try:
@@ -144,49 +139,28 @@ def geom_limpet_coil(shell_id_mm, shell_thk_mm, shell_ht_mm,
                      cover_bottom_dish=False, density=8000, scrap=0.10):
     """
     Limpet coil (half-pipe coil) welded on shell OD and optionally bottom dish.
-
-    Method (industry standard):
-    ─────────────────────────────────────────────────────────────────────────────
-    Shell OD = Shell ID + 2 × Shell_Thk
-    Coil mean dia = Shell_OD + pipe_OD  (coil wraps on shell OD, centre of pipe)
-    Coil mean circumference = π × coil_mean_dia
-
-    Number of turns on shell = Shell_Ht / pitch
-    Shell coil length = n_turns × coil_mean_circumference
-
-    Bottom dish limpet (if applicable):
-      Dish OD ≈ Shell_OD (for torispherical dish)
-      Bottom dish spiral — assume coverage up to 0.7 × dish_OD radius
-      Dish coil length ≈ π × (0.7 × dish_OD/2)² / pitch  (Archimedes spiral approx)
-
-    Total limpet pipe length = shell_coil_length + dish_coil_length
-    Weight = π × (pipe_OD − pipe_Thk) × pipe_Thk × total_length × density × (1 + scrap)
-    ─────────────────────────────────────────────────────────────────────────────
     Returns: (wt_per_m, total_wt_kg, total_length_m)
     """
     shell_od_mm    = shell_id_mm + 2.0 * shell_thk_mm
-    coil_mean_d_m  = _m(shell_od_mm + pipe_od_mm)        # centre of pipe
+    coil_mean_d_m  = _m(shell_od_mm + pipe_od_mm)
     coil_circ_m    = PI * coil_mean_d_m
     n_turns        = _m(shell_ht_mm) / _m(pitch_mm) if pitch_mm > 0 else 0
     shell_coil_m   = n_turns * coil_circ_m
 
     dish_coil_m = 0.0
     if cover_bottom_dish:
-        # Archimedes spiral approximation for dish bottom
-        dish_r_m    = _m(shell_od_mm) / 2.0 * 0.7   # 70% of shell OD radius
-        # Total length of spiral = π × r² / pitch (approximate)
+        dish_r_m    = _m(shell_od_mm) / 2.0 * 0.7
         dish_coil_m = PI * dish_r_m ** 2 / _m(pitch_mm) if pitch_mm > 0 else 0
 
     total_length_m = shell_coil_m + dish_coil_m
 
-    # Pipe cross-section weight: π × (OD - thk) × thk × density
     mid_r_m     = (_m(pipe_od_mm) - _m(pipe_thk_mm)) / 2.0
     wt_per_m    = PI * 2 * mid_r_m * _m(pipe_thk_mm) * density
     total_wt    = wt_per_m * total_length_m * (1 + scrap)
 
     return round(wt_per_m, 4), round(total_wt, 3), round(total_length_m, 3)
 
-# Default scrap % per part type — shown as starting value, engineer can override per part
+# Default scrap % per part type
 DEFAULT_SCRAP = {
     "shell": 5.0, "dish": 15.0, "annular": 5.0, "solid": 15.0,
     "flat": 5.0, "stiff": 5.0, "cone": 5.0, "rect": 5.0, "tube": 5.0,
@@ -251,18 +225,14 @@ PART_TYPES = {
             ("pitch_mm",      "Coil Pitch (mm)"),
         ],
         "fn": "limpet",
-        "has_checkbox": True,   # shows "Include bottom dish" checkbox
+        "has_checkbox": True,
     },
 }
 
 def calc_weight(fn, dims, density, qty, scrap_pct=None):
-    """Calculate weight for a part.
-    scrap_pct: override scrap % (0–100). None = use geometry function default.
-    """
     d = dims
     used_qty = qty
     wt = 0.0
-    # Convert scrap_pct (e.g. 15.0) to fraction (0.15); None means use default
     sc = scrap_pct / 100.0 if scrap_pct is not None else None
     try:
         if fn == "shell":
@@ -305,7 +275,6 @@ def calc_weight(fn, dims, density, qty, scrap_pct=None):
                 density=density,
                 scrap=sc if sc is not None else 0.10,
             )
-            # Store computed length in dims for display
             wt = wt_total / max(qty, 1)
             return round(wt, 3), round(wt_total, 3), qty
         else:
@@ -314,6 +283,66 @@ def calc_weight(fn, dims, density, qty, scrap_pct=None):
         st.warning(f"Weight calc error ({fn}): {e} | dims: {dims}")
         wt = 0.0
     return round(wt, 3), round(wt * used_qty, 3), used_qty
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STRUCTURAL STEEL — Angles, Channels, Beams (IS standard unit weights kg/m)
+# ─────────────────────────────────────────────────────────────────────────────
+STRUCTURAL_SECTIONS = {
+    # Equal Angles (size_mm × thk_mm) → kg/m
+    "Angle 25x25x3":   {"type": "Equal Angle", "unit_wt": 1.11},
+    "Angle 25x25x5":   {"type": "Equal Angle", "unit_wt": 1.80},
+    "Angle 35x35x3":   {"type": "Equal Angle", "unit_wt": 1.60},
+    "Angle 35x35x5":   {"type": "Equal Angle", "unit_wt": 2.60},
+    "Angle 40x40x3":   {"type": "Equal Angle", "unit_wt": 1.84},
+    "Angle 40x40x5":   {"type": "Equal Angle", "unit_wt": 2.95},
+    "Angle 40x40x6":   {"type": "Equal Angle", "unit_wt": 3.50},
+    "Angle 50x50x5":   {"type": "Equal Angle", "unit_wt": 3.77},
+    "Angle 50x50x6":   {"type": "Equal Angle", "unit_wt": 4.47},
+    "Angle 50x50x8":   {"type": "Equal Angle", "unit_wt": 5.80},
+    "Angle 60x60x5":   {"type": "Equal Angle", "unit_wt": 4.57},
+    "Angle 60x60x6":   {"type": "Equal Angle", "unit_wt": 5.42},
+    "Angle 60x60x8":   {"type": "Equal Angle", "unit_wt": 7.09},
+    "Angle 65x65x6":   {"type": "Equal Angle", "unit_wt": 5.80},
+    "Angle 65x65x8":   {"type": "Equal Angle", "unit_wt": 7.70},
+    "Angle 65x65x10":  {"type": "Equal Angle", "unit_wt": 9.42},
+    "Angle 75x75x6":   {"type": "Equal Angle", "unit_wt": 6.85},
+    "Angle 75x75x8":   {"type": "Equal Angle", "unit_wt": 8.99},
+    "Angle 75x75x10":  {"type": "Equal Angle", "unit_wt": 11.00},
+    "Angle 90x90x6":   {"type": "Equal Angle", "unit_wt": 8.20},
+    "Angle 90x90x8":   {"type": "Equal Angle", "unit_wt": 10.80},
+    "Angle 90x90x10":  {"type": "Equal Angle", "unit_wt": 13.40},
+    "Angle 100x100x6": {"type": "Equal Angle", "unit_wt": 9.20},
+    "Angle 100x100x8": {"type": "Equal Angle", "unit_wt": 12.10},
+    "Angle 100x100x10":{"type": "Equal Angle", "unit_wt": 14.90},
+    "Angle 100x100x12":{"type": "Equal Angle", "unit_wt": 17.70},
+
+    # ISMC Channels → kg/m
+    "ISMC 75":  {"type": "Channel", "unit_wt": 7.14},
+    "ISMC 100": {"type": "Channel", "unit_wt": 9.56},
+    "ISMC 125": {"type": "Channel", "unit_wt": 13.10},
+    "ISMC 150": {"type": "Channel", "unit_wt": 16.40},
+    "ISMC 175": {"type": "Channel", "unit_wt": 19.10},
+    "ISMC 200": {"type": "Channel", "unit_wt": 22.10},
+
+    # ISMB Beams → kg/m
+    "ISMB 100": {"type": "Beam", "unit_wt": 11.50},
+    "ISMB 125": {"type": "Beam", "unit_wt": 13.00},
+    "ISMB 150": {"type": "Beam", "unit_wt": 14.90},
+    "ISMB 175": {"type": "Beam", "unit_wt": 19.30},
+    "ISMB 200": {"type": "Beam", "unit_wt": 25.40},
+    "ISMB 225": {"type": "Beam", "unit_wt": 31.20},
+    "ISMB 250": {"type": "Beam", "unit_wt": 37.30},
+    "ISMB 300": {"type": "Beam", "unit_wt": 44.20},
+    "ISMB 350": {"type": "Beam", "unit_wt": 52.40},
+    "ISMB 400": {"type": "Beam", "unit_wt": 61.60},
+    "ISMB 450": {"type": "Beam", "unit_wt": 72.40},
+    "ISMB 500": {"type": "Beam", "unit_wt": 86.90},
+}
+
+STRUCT_DEFAULT_RATES = {
+    "MS": 75.0,
+    "SS": 280.0,
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FABRICATION SERVICES ENGINE
@@ -446,12 +475,13 @@ def calc_dish_area(shell_id_mm):
 def calc_shell_volume_ltrs(dia_mm, ht_mm):
     return PI * (_m(dia_mm) / 2) ** 2 * _m(ht_mm) * 1000
 
-def calc_totals(parts, pipes, flanges, fab_services, bo_items, oh_items,
+def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
                 profit_pct, contingency_pct, packing, freight, gst_pct, engg_design):
     tot_plates  = sum(p.get("amount", 0) for p in parts)
     tot_pipes   = sum(p.get("amount", 0) for p in pipes)
     tot_flanges = sum(p.get("amount", 0) for p in flanges)
-    tot_rm      = tot_plates + tot_pipes + tot_flanges
+    tot_struct  = sum(p.get("amount", 0) for p in struct)
+    tot_rm      = tot_plates + tot_pipes + tot_flanges + tot_struct
     tot_fab     = sum(f.get("amount", 0) for f in fab_services)
     tot_bo      = sum(p.get("amount", 0) for p in bo_items)
     tot_lab     = sum(o.get("amount", 0) for o in oh_items if o.get("oh_type") in ("LABOUR", "LABOUR_BUFF"))
@@ -468,6 +498,7 @@ def calc_totals(parts, pipes, flanges, fab_services, bo_items, oh_items,
     safe        = ex_works if ex_works else 1
     return dict(
         tot_plates=tot_plates, tot_pipes=tot_pipes, tot_flanges=tot_flanges,
+        tot_struct=tot_struct,
         tot_rm=tot_rm, tot_fab=tot_fab, tot_bo=tot_bo, tot_lab=tot_lab,
         tot_cons=tot_cons, tot_other=tot_other, tot_oh=tot_oh,
         engg_design=engg_design, tot_mfg=tot_mfg, cont_amt=cont_amt,
@@ -523,73 +554,7 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
         sec.top_margin = Cm(1.8); sec.bottom_margin = Cm(1.8)
         sec.left_margin = Cm(2.0); sec.right_margin = Cm(2.0)
 
-    # ── Helpers ──────────────────────────────────────────────────────────────
-    def _build_header_banner(parent_para_or_cell, is_page_header=False):
-        """Build the full-width banner with logo left + text right.
-        Used both for page 1 body and for every-page header."""
-        from docx.oxml.ns import qn as _qn
-        from docx.oxml import OxmlElement as _OE
-        import io as _bio
-
-        # Full-width table: 1 row, 2 cols (logo | text)
-        tbl = doc.add_table(rows=1, cols=2)
-        tbl.style = "Table Grid"
-
-        # Set column widths: logo ~4cm, text rest of page
-        page_width_cm = 16.7  # A4 minus margins
-        logo_w = Cm(3.8) if _LOGO_BYTES else Cm(0)
-        text_w = Cm(page_width_cm) - logo_w
-
-        lc = tbl.rows[0].cells[0]
-        rc = tbl.rows[0].cells[1]
-
-        # ── Logo cell (white background) ──────────────────────────────────────
-        _shd(lc, "FFFFFF")
-        lc.paragraphs[0].clear()
-        lp = lc.paragraphs[0]
-        lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        lp.paragraph_format.space_before = Pt(2)
-        lp.paragraph_format.space_after  = Pt(2)
-        if _LOGO_BYTES:
-            try:
-                logo_stream = _bio.BytesIO(_LOGO_BYTES)
-                run = lp.add_run()
-                run.add_picture(logo_stream, width=Cm(3.5))
-            except Exception:
-                _run(lp, "B&G", bold=True, size=14, color=(27,58,107))
-        else:
-            # No logo — merge cells, use full width for text
-            lc.merge(rc)
-
-        # ── Text cell (dark blue background) ─────────────────────────────────
-        if _LOGO_BYTES:
-            _shd(rc, "1B3A6B")
-            rc.paragraphs[0].clear()
-            p = rc.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(8)
-            p.paragraph_format.space_after  = Pt(6)
-        else:
-            _shd(lc, "1B3A6B")
-            p = lc.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(8)
-            p.paragraph_format.space_after  = Pt(6)
-
-        _run(p, f"{BG_NAME}\n", bold=True, size=16, color=(255,255,255))
-        _run(p, f"{BG_TAGLINE}\n", size=10, color=(180,210,255))
-        _run(p, "TECHNICAL & COMMERCIAL OFFER\n", bold=True, size=12, color=(204,221,255))
-        eq_desc = est.get("equipment_desc","")
-        if eq_desc:
-            _run(p, eq_desc, bold=True, size=10, color=(255,255,255))
-
-        return tbl
-
     def _add_header_to_all_pages():
-        """
-        Insert the banner into the Word header so it repeats on every page.
-        Word headers repeat automatically — we build the same logo+text table there.
-        """
         import io as _bio2
         from docx.oxml.ns import qn as _qn2
         from docx.oxml import OxmlElement as _OE2
@@ -599,16 +564,12 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             header = section.header
             header.is_linked_to_previous = False
 
-            # Clear existing header content
             for p in header.paragraphs:
                 p.clear()
 
-            # Add logo+text table into header
-            # We need to add the table into the header's XML directly
             hdr_tbl = header.add_table(rows=1, cols=2 if _LOGO_BYTES else 1,
                                         width=Cm(16.7))
             hdr_tbl.style = "Table Grid"
-            # Remove all outer table borders so no line shows above the header
             from docx.oxml.ns import qn as _qn4
             from docx.oxml import OxmlElement as _OE4
             tblPr = hdr_tbl._tbl.tblPr
@@ -624,7 +585,6 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
                 tblBdr.append(el)
             tblPr.append(tblBdr)
 
-            # Set column widths: logo narrow (2.8cm), text wide (13.9cm)
             if _LOGO_BYTES and len(hdr_tbl.columns) >= 2:
                 from docx.oxml.ns import qn as _qn3
                 from docx.oxml import OxmlElement as _OE3
@@ -667,7 +627,6 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             _run(rp, f"{BG_EMAIL}  |  {BG_WEB}  |  GSTIN: {BG_GSTIN}",
                  size=8, color=(180,210,255))
 
-            # Remove all borders from header paragraphs so no line appears above the table
             for para in header.paragraphs:
                 pPr = para._p.get_or_add_pPr()
                 pBdr = _OE2("w:pBdr")
@@ -681,7 +640,6 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
                 pPr.append(pBdr)
 
     def banner():
-        # Word page header handles ALL pages including page 1 — no body banner needed
         _add_header_to_all_pages()
 
     def footer_block():
@@ -714,7 +672,6 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
         for r in p.runs: r.font.size = Pt(9); r.font.name = "Arial"
 
     def price_table(rows_data):
-        """rows_data: list of (label, value_str, is_highlight)"""
         t = doc.add_table(rows=0, cols=2); t.style = "Table Grid"
         for i, (label, value, highlight) in enumerate(rows_data):
             row = t.add_row()
@@ -774,7 +731,6 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
         ("Surface Finish",        est.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed")),
     ])
 
-    # ── Helper: split text block to bullets ──────────────────────────────────
     def bullets_from_text(text_block):
         for line in (text_block or "").split("\n"):
             line = line.strip()
@@ -846,21 +802,16 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
     sec_head("SECTION 6 — COMMERCIAL OFFER")
 
     if show_breakup:
-        # ── SCOPE-BASED BREAKUP (customer-friendly, not internal cost heads) ──
-        # Groups: (1) Pressure Vessel & Structural, (2) Mechanical Drive & Sealing,
-        #         (3) Surface Treatment, Testing & Inspection, (4) Engineering & Documentation
-        # Percentages are industry-standard allocation of Ex-Works price — not internal costs
         ex = totals["ex_works"]
-        # Scope head allocations — adjust to reflect actual content
-        vessel_pct  = 0.68   # vessel + jacket + nozzles + structural
-        drive_pct   = 0.18   # motor + gearbox + seal + instrumentation
-        testing_pct = 0.08   # buffing + EP + hydro + DP + inspection
-        engg_pct    = 0.06   # engineering + drawing + documentation + QA dossier
+        vessel_pct  = 0.68
+        drive_pct   = 0.18
+        testing_pct = 0.08
+        engg_pct    = 0.06
 
         vessel_amt  = round(ex * vessel_pct,  0)
         drive_amt   = round(ex * drive_pct,   0)
         testing_amt = round(ex * testing_pct, 0)
-        engg_amt    = round(ex - vessel_amt - drive_amt - testing_amt, 0)  # balancing
+        engg_amt    = round(ex - vessel_amt - drive_amt - testing_amt, 0)
 
         body("Scope-based price breakup (for your reference):")
         doc.add_paragraph()
@@ -886,7 +837,6 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
              "B&G Engineering supplies the complete equipment as a single integrated scope — "
              "partial scope orders are not accepted.")
     else:
-        # ── CLEAN PRICE — single Ex-Works line ───────────────────────────────
         clean_rows = [
             ("Equipment Description",
              est.get("equipment_desc",""), False),
@@ -903,7 +853,6 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
 
     doc.add_paragraph()
 
-    # ── Commercial terms — all editable per estimation ──────────────────────
     terms_rows = []
     def _add(label, key, fallback):
         val = (est.get(key,"") or "").strip() or fallback
@@ -948,15 +897,12 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
     doc.add_paragraph()
 
     t_sign = doc.add_table(rows=3, cols=2); t_sign.style = "Table Grid"
-    # Header
     for j, lbl in enumerate(["For B&G Engineering Industries", "Customer Acceptance"]):
         c = t_sign.rows[0].cells[j]; c.text = ""
         _run(c.paragraphs[0], lbl, bold=True, size=9, color=(255,255,255)); _shd(c, "1B3A6B")
-    # Prepared / authorised by
     for j, name in enumerate([est.get("prepared_by",""), ""]):
         c = t_sign.rows[1].cells[j]; c.text = ""
         _run(c.paragraphs[0], f"{'Authorised Signatory: ' if j==0 else 'Authorised Signatory: '}{name}", size=9)
-    # Date / stamp row
     for j, txt in enumerate([f"Date: {date.today().strftime('%d %B %Y')}", "Date & Company Stamp:"]):
         c = t_sign.rows[2].cells[j]; c.text = ""
         _run(c.paragraphs[0], txt, size=9, color=(100,100,100))
@@ -968,10 +914,8 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ESTIMATION FACT SHEET — XLSX
-# Internal engineer document. Shows dimensions, formulas used, weights, rates.
-# Used to cross-check against Excel estimation sheet.
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
+def generate_fact_sheet_xlsx(est, parts, pipes, flanges, struct_items, fab_services,
                               bo_items, oh_items, fab_rates, totals):
     if not OPENPYXL_OK:
         raise ImportError("openpyxl not installed. Add 'openpyxl' to requirements.txt and redeploy.")
@@ -979,7 +923,6 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
 
     wb = openpyxl.Workbook()
 
-    # ── Styles ────────────────────────────────────────────────────────────────
     DARK_BLUE  = "1B3A6B"
     MID_BLUE   = "2E75B6"
     LIGHT_BLUE = "D6E4F7"
@@ -1022,11 +965,8 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
 
     fmt_inr = '#,##0.00'
     fmt_kg  = '#,##0.000'
-    fmt_pct = '0.00%'
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 1 — COVER / SUMMARY
-    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 1 — SUMMARY
     ws1 = wb.active; ws1.title = "Summary"
     ws1.column_dimensions["A"].width = 30
     ws1.column_dimensions["B"].width = 40
@@ -1079,6 +1019,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         ("Plates & Parts (RM)",            totals["tot_plates"],   WHITE),
         ("Pipes (RM)",                      totals["tot_pipes"],    WHITE),
         ("Flanges (RM)",                    totals["tot_flanges"],  WHITE),
+        ("Structural Steel (RM)",           totals["tot_struct"],   WHITE),
         ("▶ Total Raw Material",            totals["tot_rm"],       LIGHT_BLUE),
         ("Fabrication Services",            totals["tot_fab"],      WHITE),
         ("Bought-Out Items",                totals["tot_bo"],       WHITE),
@@ -1117,9 +1058,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         vc.number_format = "0.00"; r += 1
         vc.value = str(round(val,2)) + "%"
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 2 — PLATES & PARTS with FORMULAS
-    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 2 — PLATES & PARTS
     ws2 = wb.create_sheet("Plates & Parts")
     headers = [
         "Part Name","Group","Part Type","Material","Density\n(kg/m³)",
@@ -1133,7 +1072,6 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         ws2.column_dimensions[get_column_letter(i)].width = w
     ws2.row_dimensions[1].height = 32
 
-    # Formula descriptions per part type
     FORMULA_DESC = {
         "shell":   "π × ID × Ht × Thk × ρ × (1+scrap)",
         "dish":    "1.09 × π × (ID×1.167/2)² × Thk × ρ × (1+scrap)",
@@ -1144,11 +1082,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         "cone":    "π × (R1+R2) × slant × Thk × ρ × (1+scrap)",
         "rect":    "L × W × Thk × ρ × (1+scrap)",
         "tube":    "π × (OD−Thk) × Thk × TubeL × ρ × N × (1+scrap)",
-        "limpet":  "CoilMeanD=ShOD+PipeOD | Turns=ShHt/Pitch | ShellCoil=Turns×π×CoilMeanD | DishCoil=π×(0.7×ShOD/2)²/Pitch | Wt=π×(PipeOD−PipeThk)×PipeThk×TotalL×ρ×(1+scrap)",
-    }
-    SCRAP_PCT = {
-        "shell":"5%","dish":"15%","annular":"5%","solid":"15%",
-        "flat":"5%","stiff":"5%","cone":"5%","rect":"5%","tube":"5%",
+        "limpet":  "CoilMeanD=ShOD+PipeOD | Turns=ShHt/Pitch | Wt=π×(PipeOD−PipeThk)×PipeThk×TotalL×ρ×(1+scrap)",
     }
 
     def dims_str(fn, dims):
@@ -1199,7 +1133,6 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         tot_amt += p.get("amount",0)
         row_n += 1
 
-    # Total row
     for col in range(1,14):
         c = ws2.cell(row=row_n, column=col)
         if col==1: c.value = "TOTAL"
@@ -1208,13 +1141,9 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         hdr_style(c, bg=MID_BLUE, sz=9)
         if col in (10,): c.number_format = fmt_kg
         if col in (12,): c.number_format = fmt_inr
-
-    # Freeze header
     ws2.freeze_panes = "A2"
 
-    # ══════════════════════════════════════════════════════════════════════════
     # SHEET 3 — PIPES & FLANGES
-    # ══════════════════════════════════════════════════════════════════════════
     ws3 = wb.create_sheet("Pipes & Flanges")
     for i, hdr in enumerate(["Description","Item Code","Type","Length(m)","Qty",
                                "Wt/m (kg/m)","Formula","Total Wt (kg)","Rate (₹/kg)","Amount (₹)"],1):
@@ -1247,9 +1176,53 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         row_n += 1
     ws3.freeze_panes = "A2"
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 4 — FABRICATION SERVICES
-    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 4 — STRUCTURAL STEEL
+    ws_struct = wb.create_sheet("Structural Steel")
+    for i, hdr in enumerate(["Description","Section","Type","Material","Group",
+                              "Unit Wt (kg/m)","Length (m)","Qty",
+                              "Total Wt (kg)","Rate (₹/kg)","Amount (₹)"],1):
+        c = ws_struct.cell(row=1, column=i, value=hdr); hdr_style(c, sz=9)
+    for w, col in zip([22,16,12,10,12,12,10,6,12,12,14],[1,2,3,4,5,6,7,8,9,10,11]):
+        ws_struct.column_dimensions[get_column_letter(col)].width = w
+
+    row_n = 2
+    tot_s_wt = 0; tot_s_amt = 0
+    for i, s in enumerate(struct_items or []):
+        bg = WHITE if i%2==0 else ALT_ROW
+        vals = [
+            s.get("name",""),
+            s.get("section",""),
+            s.get("type",""),
+            s.get("material",""),
+            s.get("group",""),
+            s.get("unit_wt_kg_per_m",0),
+            s.get("length_m",0),
+            s.get("qty",1),
+            s.get("total_wt_kg",0),
+            s.get("rate",0),
+            s.get("amount",0),
+        ]
+        for col, val in enumerate(vals, 1):
+            c = ws_struct.cell(row=row_n, column=col, value=val)
+            data_style(c, bg=bg, align="right" if col in (6,7,8,9,10,11) else "left")
+            if col in (9,): c.number_format = fmt_kg
+            if col in (10,11): c.number_format = fmt_inr
+        tot_s_wt += s.get("total_wt_kg",0)
+        tot_s_amt += s.get("amount",0)
+        row_n += 1
+
+    if struct_items:
+        for col in range(1,12):
+            c = ws_struct.cell(row=row_n, column=col)
+            if col==1: c.value = "TOTAL"
+            if col==9: c.value = round(tot_s_wt,3)
+            if col==11: c.value = round(tot_s_amt,2)
+            hdr_style(c, bg=MID_BLUE, sz=9)
+            if col == 9: c.number_format = fmt_kg
+            if col == 11: c.number_format = fmt_inr
+    ws_struct.freeze_panes = "A2"
+
+    # SHEET 5 — FABRICATION SERVICES
     ws4 = wb.create_sheet("Fabrication Services")
     for i, hdr in enumerate(["Service","Basis / Formula","Qty","UOM","Rate","Amount (₹)"],1):
         c = ws4.cell(row=1, column=i, value=hdr); hdr_style(c, sz=9)
@@ -1269,7 +1242,6 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
             if col in (5,6): c.number_format = fmt_inr
         row_n += 1
 
-    # Rates used
     row_n += 2
     ws4.cell(row=row_n, column=1, value="FABRICATION RATES USED")
     hdr_style(ws4.cell(row=row_n, column=1), bg=MID_BLUE); row_n += 1
@@ -1281,9 +1253,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         row_n += 1
     ws4.freeze_panes = "A2"
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 5 — BOUGHT-OUT & OVERHEADS
-    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 6 — BO & OH
     ws5 = wb.create_sheet("Bought-Out & OH")
     for i, hdr in enumerate(["Description","Item Code","Group","Qty","Rate","Amount (₹)"],1):
         c = ws5.cell(row=1, column=i, value=hdr); hdr_style(c, sz=9)
@@ -1313,9 +1283,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         row_n += 1
     ws5.freeze_panes = "A2"
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # SHEET 6 — FORMULA REFERENCE
-    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 7 — FORMULA REFERENCE
     ws6 = wb.create_sheet("Formula Reference")
     ws6.column_dimensions["A"].width = 28
     ws6.column_dimensions["B"].width = 55
@@ -1340,10 +1308,10 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         ("SOLID ROUND (Shaft / Bush)",
          "W = (π/4) × D(m)² × L(m) × ρ × (1 + scrap)",
          "scrap = 15%", ""),
-        ("FLAT RECTANGLE (Blade/Pad/Gusset)",
+        ("FLAT RECTANGLE",
          "W = W(m) × H(m) × Thk(m) × ρ × (1 + scrap)",
          "scrap = 5%", ""),
-        ("STIFFENER RINGS (Flat bar on shell OD)",
+        ("STIFFENER RINGS",
          "Shell OD = ID + 2×Thk | Circ = π×OD | N = ShHt/Pitch | Wt/ring = Circ×BarW×BarThk×ρ×(1+scrap) | Total = Wt/ring×N",
          "scrap = 5%", "N rings = derived qty"),
         ("CONE / REDUCER",
@@ -1355,14 +1323,17 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         ("TUBE BUNDLE",
          "Mid_r=(OD−Thk)/2 | Wt/tube=π×2×Mid_r×L×Thk×ρ | Total=Wt/tube×N_tubes×(1+scrap)",
          "scrap = 5%", ""),
+        ("STRUCTURAL (Angle / Channel / Beam)",
+         "W = Unit Wt (kg/m, per IS 808/2062) × Length(m) × Qty × 1.05",
+         "5% cutting allowance", "IS-standard unit weights"),
     ]
 
     for i, hdr in enumerate(["Part Type","Formula","Notes","Reference"],1):
         c = ws6.cell(row=r, column=i, value=hdr); hdr_style(c, sz=9)
     r += 1
 
-    for pt, formula, notes, ref in formulas:
-        bg = WHITE if formulas.index((pt,formula,notes,ref))%2==0 else ALT_ROW
+    for idx, (pt, formula, notes, ref) in enumerate(formulas):
+        bg = WHITE if idx%2==0 else ALT_ROW
         for col, val in enumerate([pt, formula, notes, ref], 1):
             c = ws6.cell(row=r, column=col, value=val)
             data_style(c, bg=LIGHT_BLUE if col==1 else bg, bold=(col==1))
@@ -1381,12 +1352,9 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, fab_services,
         data_style(vc, bg=WHITE, align="right")
         r += 1
 
-    # ── Save ──────────────────────────────────────────────────────────────────
     buf = _io.BytesIO()
     wb.save(buf); buf.seek(0)
     return buf
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # MASTER LOADERS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1422,7 +1390,6 @@ def load_all_estimations():
 # ─────────────────────────────────────────────────────────────────────────────
 def _blank_hdr():
     return dict(
-        # ── Core fields ───────────────────────────────────────────────────────
         qtn_number="", revision="R0", customer_name="",
         equipment_type=EQUIPMENT_NAMES[0], equipment_desc="", tag_number="",
         capacity_ltrs=2000.0, shell_dia_mm=1300.0, shell_ht_mm=1500.0,
@@ -1436,8 +1403,6 @@ def _blank_hdr():
         packing_amt=5000.0, freight_amt=10000.0,
         gst_pct=18.0, engg_design_amt=25000.0, notes="",
 
-        # ── DOCX customisable sections (editable per estimation) ──────────────
-        # Section 3 — Scope of Supply
         scope_items=(
             "Pressure vessel / equipment fabricated as per approved GA drawing\n"
             "All nozzles, manholes, handholes and process connections per nozzle schedule\n"
@@ -1447,7 +1412,6 @@ def _blank_hdr():
             "Internal grinding and buffing to specified Ra surface finish\n"
             "Equipment nameplate with tag number and serial number"
         ),
-        # Section 3 — Exclusions (appended to scope)
         scope_exclusions=(
             "Civil / structural works\n"
             "Electrical & Instrumentation\n"
@@ -1457,7 +1421,6 @@ def _blank_hdr():
             "Import duties if applicable"
         ),
 
-        # Section 4 — Quality & Manufacturing
         quality_intro=(
             "B&G Engineering Industries operates as an engineering-led manufacturer. "
             "Every project is built to ASME Section VIII Division 1 requirements "
@@ -1477,7 +1440,6 @@ def _blank_hdr():
             "Factory Acceptance Test (FAT) support at works on request"
         ),
 
-        # Section 5 — Documentation
         doc_deliverables=(
             "General Arrangement (GA) Drawing — IFC revision\n"
             "Nozzle orientation and schedule drawing\n"
@@ -1493,7 +1455,6 @@ def _blank_hdr():
             "Equipment nameplate photograph"
         ),
 
-        # Section 6 — Commercial terms
         price_basis="Ex-Works, Pashamylaram, Hyderabad — 502307. Packing in MS crate included. Freight, insurance and unloading at site excluded.",
         gst_clause="GST @ 18% (HSN 8419) as applicable at time of invoicing. Any new statutory levy introduced after offer date will be charged additionally.",
         payment_terms="40% advance along with Purchase Order  |  50% against Pro-forma invoice on readiness for dispatch  |  10% on delivery",
@@ -1506,8 +1467,8 @@ def _blank_hdr():
     )
 
 def _reset_form():
-    for k in ["est_hdr", "est_parts", "est_pipes", "est_flanges", "est_fab",
-              "est_bo", "est_oh", "est_edit_id", "edit_part_idx", "fab_rates"]:
+    for k in ["est_hdr", "est_parts", "est_pipes", "est_flanges", "est_struct",
+              "est_fab", "est_bo", "est_oh", "est_edit_id", "edit_part_idx", "fab_rates"]:
         st.session_state.pop(k, None)
 
 def _load_est_into_form(est):
@@ -1519,34 +1480,17 @@ def _load_est_into_form(est):
     st.session_state.est_parts   = json.loads(est.get("parts_json")     or "[]")
     st.session_state.est_pipes   = json.loads(est.get("pipes_json")     or "[]")
     st.session_state.est_flanges = json.loads(est.get("flanges_json")   or "[]")
+    st.session_state.est_struct  = json.loads(est.get("struct_json")    or "[]")
     st.session_state.est_fab     = json.loads(est.get("fab_json")       or "[]")
     st.session_state.est_bo      = json.loads(est.get("bo_json")        or "[]")
     st.session_state.est_oh      = json.loads(est.get("oh_json")        or "[]")
     st.session_state.fab_rates   = json.loads(est.get("fab_rates_json") or json.dumps(FAB_DEFAULTS))
     st.session_state.est_edit_id = est.get("id")
 
-def _build_save_row(h):
-    """Build clean row dict for Supabase — strips keys not in table."""
-    skip = {"customer_id"}
-    clean = {k: v for k, v in h.items() if k not in skip and v is not None}
-    return {
-        **clean,
-        "parts_json":     json.dumps(st.session_state.est_parts),
-        "pipes_json":     json.dumps(st.session_state.est_pipes),
-        "flanges_json":   json.dumps(st.session_state.est_flanges),
-        "fab_json":       json.dumps(st.session_state.est_fab),
-        "bo_json":        json.dumps(st.session_state.est_bo),
-        "oh_json":        json.dumps(st.session_state.est_oh),
-        "fab_rates_json": json.dumps(st.session_state.fab_rates),
-        "updated_at":     datetime.now().isoformat(),
-    }
-
 def _do_save(reset_after=False):
     """
     Core save function — always reads from st.session_state directly.
-    Works correctly from any tab because it never relies on widget return values.
-    If reset_after=True, clears the form after saving (used by Save & Close).
-    Returns True if saved successfully.
+    If reset_after=True, clears the form after saving.
     """
     h = st.session_state.est_hdr
     edit_id = st.session_state.est_edit_id
@@ -1556,7 +1500,6 @@ def _do_save(reset_after=False):
         st.warning("⚠️ Quotation Number is empty. Enter it in Tab 1️⃣ Header first.")
         return False
 
-    # Duplicate check — only flag if a DIFFERENT record has this QTN
     existing = sb_fetch("estimations", select="id", filters={"qtn_number": qtn})
     if existing and not edit_id:
         st.error(f"❌ QTN **{qtn}** already exists. Load it from the search panel to edit it.")
@@ -1566,7 +1509,6 @@ def _do_save(reset_after=False):
             st.error(f"❌ QTN **{qtn}** belongs to a different estimation.")
             return False
 
-    # Build row — strips customer_id and None values
     skip = {"customer_id"}
     clean_h = {k: v for k, v in h.items() if k not in skip and v is not None}
     row = {
@@ -1574,6 +1516,7 @@ def _do_save(reset_after=False):
         "parts_json":     json.dumps(st.session_state.est_parts),
         "pipes_json":     json.dumps(st.session_state.est_pipes),
         "flanges_json":   json.dumps(st.session_state.est_flanges),
+        "struct_json":    json.dumps(st.session_state.est_struct),
         "fab_json":       json.dumps(st.session_state.est_fab),
         "bo_json":        json.dumps(st.session_state.est_bo),
         "oh_json":        json.dumps(st.session_state.est_oh),
@@ -1589,7 +1532,6 @@ def _do_save(reset_after=False):
         ok = sb_insert("estimations", row)
         msg = f"Saved {qtn}"
         if ok:
-            # Capture the new record ID so subsequent saves go to update path
             saved = sb_fetch("estimations", select="id", filters={"qtn_number": qtn})
             if saved:
                 st.session_state.est_edit_id = saved[0]["id"]
@@ -1605,34 +1547,17 @@ def _do_save(reset_after=False):
         return True
     return False
 
-# Keep _build_save_row for backward compat (used nowhere else now but keep tidy)
-def _build_save_row(h):
-    skip = {"customer_id"}
-    clean = {k: v for k, v in h.items() if k not in skip and v is not None}
-    return {**clean, "parts_json": json.dumps(st.session_state.est_parts),
-            "pipes_json": json.dumps(st.session_state.est_pipes),
-            "flanges_json": json.dumps(st.session_state.est_flanges),
-            "fab_json": json.dumps(st.session_state.est_fab),
-            "bo_json": json.dumps(st.session_state.est_bo),
-            "oh_json": json.dumps(st.session_state.est_oh),
-            "fab_rates_json": json.dumps(st.session_state.fab_rates),
-            "updated_at": datetime.now().isoformat()}
-
 def _save_draft_bar(tab_key):
-    """
-    Save Draft bar — appears at the bottom of every tab.
-    Like Ctrl+S in Excel: saves current state without disturbing the form.
-    Reads everything from session state — never from widget return values.
-    """
     h = st.session_state.est_hdr
     st.divider()
     sb1, sb2, sb3 = st.columns([4, 1, 1])
     qtn  = h.get("qtn_number", "") or "—"
     n_p  = len(st.session_state.est_parts)
     n_pi = len(st.session_state.est_pipes)
+    n_st = len(st.session_state.est_struct)
     n_f  = len(st.session_state.est_fab)
     n_b  = len(st.session_state.est_bo)
-    sb1.caption(f"💾 **{qtn}**  |  {n_p} parts  |  {n_pi} pipes  |  {n_f} fab lines  |  {n_b} BO items")
+    sb1.caption(f"💾 **{qtn}**  |  {n_p} parts  |  {n_pi} pipes  |  {n_st} structural  |  {n_f} fab lines  |  {n_b} BO items")
     if sb2.button("💾 Save Draft", use_container_width=True, type="primary", key=f"sd_{tab_key}"):
         _do_save(reset_after=False)
     if sb3.button("🗑️ Reset / New", use_container_width=True, key=f"rst_{tab_key}"):
@@ -1644,6 +1569,7 @@ for key, default in [
     ("est_parts",     []),
     ("est_pipes",     []),
     ("est_flanges",   []),
+    ("est_struct",    []),
     ("est_fab",       []),
     ("est_bo",        []),
     ("est_oh",        []),
@@ -1727,11 +1653,12 @@ with TAB_LIST:
                 parts   = json.loads(est.get("parts_json")   or "[]")
                 pipes   = json.loads(est.get("pipes_json")   or "[]")
                 flanges = json.loads(est.get("flanges_json") or "[]")
+                struct_l = json.loads(est.get("struct_json")  or "[]")
                 fab_s   = json.loads(est.get("fab_json")     or "[]")
                 bo      = json.loads(est.get("bo_json")      or "[]")
                 oh      = json.loads(est.get("oh_json")      or "[]")
                 T = calc_totals(
-                    parts, pipes, flanges, fab_s, bo, oh,
+                    parts, pipes, flanges, struct_l, fab_s, bo, oh,
                     float(est.get("profit_margin_pct") or 10), float(est.get("contingency_pct") or 0),
                     float(est.get("packing_amt") or 0), float(est.get("freight_amt") or 0),
                     float(est.get("gst_pct") or 18), float(est.get("engg_design_amt") or 0),
@@ -1821,15 +1748,14 @@ with TAB_NEW:
                             "LUGS", "STIFFNERS", "MANHOLE", "NOZZLES", "RM_MISC", "BODY_FL",
                             "TUBE_BUNDLE", "TUBE_SHEET", "FILTER_PLATE", "TRAYS", "FRAME", "OTHER"})
 
-    f1, f2, f3, f4, f5, f6 = st.tabs([
+    f1, f2, f3, f_struct, f4, f5, f6 = st.tabs([
         "1️⃣ Header", "2️⃣ Plates & Parts", "3️⃣ Pipes & Flanges",
-        "4️⃣ Fabrication Services", "5️⃣ Bought-Out & OH", "6️⃣ Summary & Save",
+        "4️⃣ Structural", "5️⃣ Fabrication Services", "6️⃣ Bought-Out & OH", "7️⃣ Summary & Save",
     ])
     h = st.session_state.est_hdr
 
     # ── F1: HEADER ─────────────────────────────────────────────────────────────
     with f1:
-        # ── SEARCH & LOAD PANEL ────────────────────────────────────────────────
         all_est_list = load_all_estimations()
         all_est_valid = [e for e in all_est_list if e.get("qtn_number")]
 
@@ -1893,7 +1819,6 @@ with TAB_NEW:
 
         st.divider()
 
-        # ── Equipment type ────────────────────────────────────────────────────
         st.markdown("##### Equipment Type")
         prev_type = h.get("equipment_type", EQUIPMENT_NAMES[0])
         if prev_type not in EQUIPMENT_NAMES:
@@ -1910,7 +1835,6 @@ with TAB_NEW:
         st.caption(f"_{eq_info['description']}_  •  Margin: **{eq_info['margin_hint'][0]}–{eq_info['margin_hint'][1]}%**  •  Labour: **{eq_info['labour_norm']}**")
         st.divider()
 
-        # ── Anchor portal ─────────────────────────────────────────────────────
         st.markdown("##### Pull from Anchor Portal  _(optional)_")
         anc_options = ["— type QTN manually —"] + [
             f"{a.get('quote_ref', '')}  |  {a.get('client_name', '')}  |  {a.get('project_description', '')}"
@@ -1924,7 +1848,6 @@ with TAB_NEW:
             st.success(f"Auto-filled — QTN: **{h['qtn_number']}**  |  Customer: **{h['customer_name']}**")
         st.divider()
 
-        # ── Offer details ─────────────────────────────────────────────────────
         st.markdown("##### Offer Details")
         c1, c2, c3 = st.columns(3)
         h["qtn_number"] = c1.text_input("Quotation Number *", value=h["qtn_number"], placeholder="e.g. B&G/MAITHRI/2026/2922")
@@ -1934,7 +1857,6 @@ with TAB_NEW:
                                         index=["Draft", "Issued", "Won", "Lost", "On Hold"].index(h.get("status", "Draft")))
         st.divider()
 
-        # ── Customer ──────────────────────────────────────────────────────────
         st.markdown("##### Customer")
         cust_opts = ["— select —"] + client_names
         cust_idx  = cust_opts.index(h["customer_name"]) if h["customer_name"] in cust_opts else 0
@@ -1949,7 +1871,6 @@ with TAB_NEW:
             cc[3].caption(f"📞 {cd.get('phone', '—')}")
         st.divider()
 
-        # ── Equipment parameters ──────────────────────────────────────────────
         st.markdown("##### Equipment Parameters")
         c1, c2 = st.columns(2)
         h["equipment_desc"] = c1.text_input("Description", value=h["equipment_desc"], placeholder="e.g. 2000 Ltrs SS316L Jacketed Reactor")
@@ -2000,7 +1921,6 @@ with TAB_NEW:
         h["notes"] = st.text_area("Internal Notes (not printed in quote)", value=h["notes"], height=60)
         st.divider()
 
-        # ── DOCX CUSTOMISATION ────────────────────────────────────────────────
         st.markdown("##### 📝 Quotation Content Customisation")
         st.caption("All sections below print directly into the customer quotation. Edit per client URS / requirements.")
 
@@ -2030,7 +1950,6 @@ with TAB_NEW:
                 help="One point per line. Add/remove/edit based on equipment type and client URS.",
                 label_visibility="collapsed",
             )
-            st.caption("💡 Tip — add for ANFD: 'Filter plate flatness inspection per DIN 1685' | for RCVD: 'Vacuum integrity test to -1 bar for 30 min' | for pharma: 'GAMP5 documentation support available on request'")
 
         with st.expander("📋 Section 5 — Documentation Deliverables", expanded=False):
             st.markdown("**Document list** — one per line")
@@ -2039,7 +1958,6 @@ with TAB_NEW:
                 help="One document per line. Add client-specific requirements like ASME data report, 3.1 certs, etc.",
                 label_visibility="collapsed",
             )
-            st.caption("💡 Tip — add for regulated clients: 'ASME U-stamp data report' | 'EN 10204 3.1 material certs' | 'Radiographic (RT) test report' | 'Positive pressure decay test record'")
 
         with st.expander("💰 Section 6 — Commercial Terms", expanded=False):
             h["surface_finish"]    = st.text_input("Surface Finish (shown in Tech Basis)", value=h.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed"))
@@ -2052,14 +1970,12 @@ with TAB_NEW:
             h["offer_validity"]    = st.text_area("Offer Validity",      value=h.get("offer_validity",""), height=60)
             h["warranty_clause"]   = st.text_area("Warranty",            value=h.get("warranty_clause",""),height=60)
             h["inspection_clause"] = st.text_area("Inspection Rights",   value=h.get("inspection_clause",""),height=60)
-            h["special_notes"]     = st.text_area("Special Notes / Additional Conditions (printed at end of Section 6)", value=h.get("special_notes",""), height=80,
-                help="Use for client-specific conditions: GAMP5, ATEX zone, clean room requirements, etc.")
+            h["special_notes"]     = st.text_area("Special Notes / Additional Conditions", value=h.get("special_notes",""), height=80)
 
         _save_draft_bar("f1")
 
     # ── F2: PLATES & PARTS ─────────────────────────────────────────────────────
     with f2:
-        # Status banner
         qtn_d = h.get("qtn_number", "") or "New"
         n_p   = len(st.session_state.est_parts)
         rm_t  = sum(p.get("amount", 0) for p in st.session_state.est_parts)
@@ -2068,294 +1984,6 @@ with TAB_NEW:
         else:
             st.info(f"**{qtn_d}** — No parts yet. Load from Tab 1️⃣ or add below.")
 
-
-        # ── ESTIMATION AUDIT ───────────────────────────────────────────────────────
-        with st.expander("🔍 Audit Estimation Sheet — Upload CSV to verify weights & amounts", expanded=False):
-            st.markdown("""
-**How to use:**
-1. Export your existing estimation sheet (Excel → Save As CSV)
-2. Make sure it has these columns (column names must match exactly):
-   `part_name, part_type, material, qty, rate_per_kg, claimed_wt_kg, claimed_amount`
-3. Optional dimension columns are used to recalculate weight using B&G formulas
-4. Upload below — the app shows where your sheet matches and where it differs
-""")
-
-            # ── Audit template download ──────────────────────────────────────
-            import io as _io, csv as _csv
-            audit_template = [
-                ["part_name","part_type","group","material","qty","rate_per_kg",
-                 "claimed_wt_kg","claimed_amount",
-                 "id_mm","ht_mm","thk_mm",
-                 "shell_id_mm","dish_thk_mm",
-                 "dia_mm","length_mm",
-                 "w_mm","h_mm",
-                 "od_mm","id2_mm",
-                 "shell_thk_mm","shell_ht_mm","pitch_mm","bar_w_mm","bar_thk_mm",
-                 "large_id_mm","small_id_mm",
-                 "width_mm",
-                 "tube_od_mm","tube_thk_mm","tube_length_mm","n_tubes"],
-                ["Main Shell","Cylindrical shell","SHELL","SS316L",1,480,
-                 411.7,197616,
-                 1300,1500,8,
-                 "","",
-                 "","",
-                 "","",
-                 "","",
-                 "","","","","",
-                 "","",
-                 "",
-                 "","","",""],
-                ["Dish Ends","Dish end (torispherical)","DISH_ENDS","SS316L",2,480,
-                 362.5,174000,
-                 "","","",
-                 1300,10,
-                 "","",
-                 "","",
-                 "","",
-                 "","","","","",
-                 "","",
-                 "",
-                 "","","",""],
-                ["Bottom Shaft","Solid round (shaft / bush)","AGITATOR","SS316L",1,480,
-                 91.4,43872,
-                 "","","",
-                 "","",
-                 85,550,
-                 "","",
-                 "","",
-                 "","","","","",
-                 "","",
-                 "",
-                 "","","",""],
-            ]
-            buf = _io.StringIO()
-            _csv.writer(buf).writerows(audit_template)
-            st.download_button(
-                "📥 Download Audit Template CSV",
-                buf.getvalue().encode(),
-                file_name="bgeng_audit_template.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-
-            st.markdown("---")
-
-            audit_file = st.file_uploader(
-                "Upload your estimation sheet as CSV",
-                type=["csv"],
-                key="audit_csv_upload",
-            )
-
-            if audit_file is not None:
-                import io as _io2, csv as _csv2
-
-                TOLERANCE_PCT = 3.0  # within 3% is considered OK
-
-                def _fv(row, col, default=0.0):
-                    v = str(row.get(col, "")).strip()
-                    try: return float(v) if v else default
-                    except: return default
-
-                try:
-                    text = audit_file.read().decode("utf-8-sig")
-                    reader = _csv2.DictReader(_io2.StringIO(text))
-                    rows = list(reader)
-
-                    audit_results = []
-                    total_claimed_wt  = 0.0
-                    total_calc_wt     = 0.0
-                    total_claimed_amt = 0.0
-                    total_calc_amt    = 0.0
-
-                    for i, row in enumerate(rows, 1):
-                        raw_type = str(row.get("part_type","")).strip()
-                        matched_type = None
-                        for k in PART_TYPES:
-                            if raw_type.lower() in k.lower() or k.lower().startswith(raw_type.lower()[:8]):
-                                matched_type = k
-                                break
-
-                        part_name      = str(row.get("part_name","")).strip() or f"Row {i}"
-                        material       = str(row.get("material","SS316L")).strip() or "SS316L"
-                        qty            = max(1.0, _fv(row, "qty", 1.0))
-                        rate           = _fv(row, "rate_per_kg", 0.0)
-                        claimed_wt     = _fv(row, "claimed_wt_kg", 0.0)
-                        claimed_amt    = _fv(row, "claimed_amount", 0.0)
-
-                        calc_wt   = 0.0
-                        calc_amt  = 0.0
-                        wt_status = "⚠️ No dims"
-                        amt_status= "⚠️ No dims"
-                        fn        = None
-                        dims      = {}
-
-                        if matched_type:
-                            fn = PART_TYPES[matched_type]["fn"]
-                            density = DENSITY.get(material, 8000)
-
-                            if fn == "shell":
-                                dims = {"id_mm":_fv(row,"id_mm"),"ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
-                            elif fn == "dish":
-                                dims = {"shell_id_mm":_fv(row,"shell_id_mm"),"thk_mm":_fv(row,"dish_thk_mm") or _fv(row,"thk_mm")}
-                            elif fn == "annular":
-                                dims = {"od_mm":_fv(row,"od_mm"),"id_mm":_fv(row,"id2_mm") or _fv(row,"id_mm"),"thk_mm":_fv(row,"thk_mm")}
-                            elif fn == "solid":
-                                dims = {"dia_mm":_fv(row,"dia_mm"),"length_mm":_fv(row,"length_mm")}
-                            elif fn == "flat":
-                                dims = {"w_mm":_fv(row,"w_mm"),"h_mm":_fv(row,"h_mm"),"thk_mm":_fv(row,"thk_mm")}
-                            elif fn == "stiff":
-                                dims = {"shell_id_mm":_fv(row,"shell_id_mm"),"shell_thk_mm":_fv(row,"shell_thk_mm"),
-                                        "shell_ht_mm":_fv(row,"shell_ht_mm"),"pitch_mm":_fv(row,"pitch_mm") or 300,
-                                        "bar_w_mm":_fv(row,"bar_w_mm"),"thk_mm":_fv(row,"bar_thk_mm") or _fv(row,"thk_mm")}
-                            elif fn == "cone":
-                                dims = {"large_id_mm":_fv(row,"large_id_mm"),"small_id_mm":_fv(row,"small_id_mm"),
-                                        "ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
-                            elif fn == "rect":
-                                dims = {"length_mm":_fv(row,"length_mm"),"width_mm":_fv(row,"width_mm") or _fv(row,"w_mm"),"thk_mm":_fv(row,"thk_mm")}
-                            elif fn == "tube":
-                                dims = {"tube_od_mm":_fv(row,"tube_od_mm"),"tube_thk_mm":_fv(row,"tube_thk_mm"),
-                                        "tube_length_mm":_fv(row,"tube_length_mm"),"n_tubes":_fv(row,"n_tubes")}
-
-                            has_dims = any(v > 0 for v in dims.values())
-                            if has_dims:
-                                net_wt, calc_wt, used_qty = calc_weight(fn, dims, density, qty)
-                                calc_amt = round(calc_wt * rate, 2)
-
-                                # Weight check
-                                if claimed_wt > 0:
-                                    wt_diff_pct = abs(calc_wt - claimed_wt) / claimed_wt * 100
-                                    if wt_diff_pct <= TOLERANCE_PCT:
-                                        wt_status = f"✅ OK ({wt_diff_pct:.1f}%)"
-                                    elif wt_diff_pct <= 10:
-                                        wt_status = f"🟡 {wt_diff_pct:.1f}% off"
-                                    else:
-                                        wt_status = f"🔴 {wt_diff_pct:.1f}% off"
-                                else:
-                                    wt_status = "— no claim"
-
-                                # Amount check
-                                if claimed_amt > 0 and rate > 0:
-                                    amt_diff_pct = abs(calc_amt - claimed_amt) / claimed_amt * 100
-                                    if amt_diff_pct <= TOLERANCE_PCT:
-                                        amt_status = f"✅ OK ({amt_diff_pct:.1f}%)"
-                                    elif amt_diff_pct <= 10:
-                                        amt_status = f"🟡 {amt_diff_pct:.1f}% off"
-                                    else:
-                                        amt_status = f"🔴 {amt_diff_pct:.1f}% off"
-                                else:
-                                    amt_status = "— no rate/claim"
-                        else:
-                            wt_status = f"⚠️ Unknown type: {raw_type}"
-                            amt_status = "—"
-
-                        total_claimed_wt  += claimed_wt
-                        total_calc_wt     += calc_wt
-                        total_claimed_amt += claimed_amt
-                        total_calc_amt    += calc_amt
-
-                        audit_results.append({
-                            "Part":           part_name,
-                            "Type":           matched_type or raw_type,
-                            "Mat":            material,
-                            "Qty":            qty,
-                            "Rate":           rate,
-                            "Claimed Wt (kg)":round(claimed_wt,2),
-                            "Calc Wt (kg)":   round(calc_wt,2),
-                            "Wt Check":       wt_status,
-                            "Claimed ₹":      f"₹{claimed_amt:,.0f}",
-                            "Calc ₹":         f"₹{calc_amt:,.0f}",
-                            "Amt Check":      amt_status,
-                        })
-
-                    # ── Summary metrics ──────────────────────────────────────
-                    st.markdown("#### Audit Summary")
-                    am1,am2,am3,am4,am5,am6 = st.columns(6)
-                    am1.metric("Rows audited", len(audit_results))
-
-                    wt_var = total_calc_wt - total_claimed_wt
-                    amt_var = total_calc_amt - total_claimed_amt
-                    am2.metric("Claimed total wt",  f"{total_claimed_wt:,.1f} kg")
-                    am3.metric("Calc total wt",     f"{total_calc_wt:,.1f} kg",
-                               delta=f"{wt_var:+.1f} kg",
-                               delta_color="inverse" if abs(wt_var)>total_claimed_wt*0.05 else "off")
-                    am4.metric("Claimed total ₹",   f"₹{total_claimed_amt:,.0f}")
-                    am5.metric("Calc total ₹",      f"₹{total_calc_amt:,.0f}",
-                               delta=f"₹{amt_var:+,.0f}",
-                               delta_color="inverse" if abs(amt_var)>total_claimed_amt*0.05 else "off")
-
-                    n_red    = sum(1 for r in audit_results if "🔴" in r["Wt Check"] or "🔴" in r["Amt Check"])
-                    n_yellow = sum(1 for r in audit_results if "🟡" in r["Wt Check"] or "🟡" in r["Amt Check"])
-                    n_ok     = sum(1 for r in audit_results if "✅" in r["Wt Check"] and "✅" in r["Amt Check"])
-                    am6.metric("Issues found", f"🔴 {n_red}  🟡 {n_yellow}  ✅ {n_ok}")
-
-                    if n_red > 0:
-                        st.error(f"❌ {n_red} part(s) have errors >10% — review highlighted rows below.")
-                    elif n_yellow > 0:
-                        st.warning(f"⚠️ {n_yellow} part(s) differ 3–10% from formula — acceptable but worth checking.")
-                    else:
-                        st.success("✅ All parts within tolerance. Estimation sheet looks correct.")
-
-                    # ── Detail table ─────────────────────────────────────────
-                    st.markdown("#### Part-by-Part Audit")
-                    df_audit = pd.DataFrame(audit_results)
-                    st.dataframe(df_audit, use_container_width=True, hide_index=True)
-
-                    # ── Export audit report ──────────────────────────────────
-                    csv_out = _io2.StringIO()
-                    df_audit.to_csv(csv_out, index=False)
-                    st.download_button(
-                        "📤 Download Audit Report CSV",
-                        csv_out.getvalue().encode(),
-                        file_name=f"bgeng_audit_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
-
-                    # ── Import audited parts ─────────────────────────────────
-                    st.markdown("---")
-                    st.markdown("**Import audited parts into current estimation?**")
-                    imp1, imp2 = st.columns(2)
-                    # Rebuild importable parts from audit rows
-                    importable = []
-                    for i2, row in enumerate(rows):
-                        raw_type = str(row.get("part_type","")).strip()
-                        matched_type = None
-                        for k in PART_TYPES:
-                            if raw_type.lower() in k.lower() or k.lower().startswith(raw_type.lower()[:8]):
-                                matched_type = k; break
-                        if not matched_type: continue
-                        fn2 = PART_TYPES[matched_type]["fn"]
-                        material2 = str(row.get("material","SS316L")).strip() or "SS316L"
-                        density2  = DENSITY.get(material2,8000)
-                        qty2      = max(1.0,_fv(row,"qty",1.0))
-                        rate2     = _fv(row,"rate_per_kg",0.0)
-                        dims2 = {}
-                        if fn2=="shell": dims2={"id_mm":_fv(row,"id_mm"),"ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
-                        elif fn2=="dish": dims2={"shell_id_mm":_fv(row,"shell_id_mm"),"thk_mm":_fv(row,"dish_thk_mm") or _fv(row,"thk_mm")}
-                        elif fn2=="solid": dims2={"dia_mm":_fv(row,"dia_mm"),"length_mm":_fv(row,"length_mm")}
-                        elif fn2=="flat": dims2={"w_mm":_fv(row,"w_mm"),"h_mm":_fv(row,"h_mm"),"thk_mm":_fv(row,"thk_mm")}
-                        elif fn2=="stiff": dims2={"shell_id_mm":_fv(row,"shell_id_mm"),"shell_thk_mm":_fv(row,"shell_thk_mm"),"shell_ht_mm":_fv(row,"shell_ht_mm"),"pitch_mm":_fv(row,"pitch_mm") or 300,"bar_w_mm":_fv(row,"bar_w_mm"),"thk_mm":_fv(row,"bar_thk_mm") or _fv(row,"thk_mm")}
-                        elif fn2=="cone": dims2={"large_id_mm":_fv(row,"large_id_mm"),"small_id_mm":_fv(row,"small_id_mm"),"ht_mm":_fv(row,"ht_mm"),"thk_mm":_fv(row,"thk_mm")}
-                        elif fn2=="rect": dims2={"length_mm":_fv(row,"length_mm"),"width_mm":_fv(row,"width_mm") or _fv(row,"w_mm"),"thk_mm":_fv(row,"thk_mm")}
-                        elif fn2=="tube": dims2={"tube_od_mm":_fv(row,"tube_od_mm"),"tube_thk_mm":_fv(row,"tube_thk_mm"),"tube_length_mm":_fv(row,"tube_length_mm"),"n_tubes":_fv(row,"n_tubes")}
-                        elif fn2=="annular": dims2={"od_mm":_fv(row,"od_mm"),"id_mm":_fv(row,"id2_mm") or _fv(row,"id_mm"),"thk_mm":_fv(row,"thk_mm")}
-                        nwt,twt,uqty = calc_weight(fn2,dims2,density2,qty2)
-                        importable.append(dict(name=str(row.get("part_name","")).strip() or matched_type,
-                            part_type=matched_type,group=str(row.get("group","OTHER")).strip() or "OTHER",
-                            material=material2,item_code="",dims=dims2,qty=uqty,
-                            net_wt_kg=nwt,total_wt_kg=twt,rate=rate2,amount=round(twt*rate2,2)))
-                    if importable:
-                        if imp1.button("➕ Add audited parts to estimation", type="primary", use_container_width=True, key="audit_add"):
-                            st.session_state.est_parts.extend(importable)
-                            st.success(f"✅ Added {len(importable)} parts from audit sheet.")
-                        if imp2.button("🔄 Replace all parts with audited", use_container_width=True, key="audit_replace"):
-                            st.session_state.est_parts = importable
-                            st.success(f"✅ Replaced with {len(importable)} audited parts.")
-
-                except Exception as ex:
-                    st.error(f"CSV parse error: {ex}. Check column names match the template.")
-
-        st.divider()
         st.divider()
         st.markdown("##### Add / Edit Fabricated Parts")
         st.caption("Select Part Type → only the required dimension inputs appear → click Add Part.")
@@ -2396,7 +2024,6 @@ with TAB_NEW:
             fn_key     = pt_info["fn"]
             is_derived = pt_info.get("qty_derived", False)
 
-            # Scrap % input — pre-filled with default for this part type, editable
             def_scrap = float(editing_part.get("scrap_pct", DEFAULT_SCRAP.get(fn_key, 5.0))) if editing_part else DEFAULT_SCRAP.get(fn_key, 5.0)
             sc_col1, sc_col2 = st.columns([3,1])
             if is_derived:
@@ -2409,7 +2036,7 @@ with TAB_NEW:
                 value=def_scrap,
                 min_value=0.0, max_value=50.0, step=0.5,
                 key=f"{ek}scrap",
-                help=f"Default for {p_type}: {DEFAULT_SCRAP.get(fn_key,5)}%. Adjust based on actual cutting/forming losses.",
+                help=f"Default for {p_type}: {DEFAULT_SCRAP.get(fn_key,5)}%.",
             )
 
             needed   = pt_info["fields"]
@@ -2419,7 +2046,6 @@ with TAB_NEW:
                 def_val = float(editing_part.get("dims", {}).get(field, 0.0)) if editing_part else 0.0
                 dims[field] = dim_cols[i % 6].number_input(label, value=def_val, min_value=0.0, step=1.0, key=f"{ek}d_{p_type}_{field}")
 
-            # Limpet coil — extra options
             if pt_info.get("has_checkbox"):
                 lc1, lc2, lc3 = st.columns(3)
                 def_dish = bool(editing_part.get("dims", {}).get("cover_bottom_dish", False)) if editing_part else False
@@ -2427,11 +2053,9 @@ with TAB_NEW:
                     "Include bottom dish limpet",
                     value=def_dish,
                     key=f"{ek}limpet_dish",
-                    help="Adds spiral limpet coil on bottom dish end (Archimedes spiral approx, 70% dish OD coverage)",
                 )
                 dims["cover_bottom_dish"] = cover_dish
 
-                # Show computed coil length preview
                 if all(dims.get(k, 0) > 0 for k in ["shell_id_mm","shell_thk_mm","shell_ht_mm","pipe_od_mm","pipe_thk_mm","pitch_mm"]):
                     _, prev_wt, prev_len = geom_limpet_coil(
                         dims["shell_id_mm"], dims["shell_thk_mm"], dims["shell_ht_mm"],
@@ -2502,7 +2126,7 @@ with TAB_NEW:
                 st.session_state.est_parts = []; st.session_state["edit_part_idx"] = None
 
         _save_draft_bar("f2")
-
+                  
     # ── F3: PIPES & FLANGES ────────────────────────────────────────────────────
     with f3:
         st.markdown("##### Nozzle Pipes")
@@ -2556,6 +2180,112 @@ with TAB_NEW:
                 st.session_state.est_flanges = []
 
         _save_draft_bar("f3")
+
+    # ── F_STRUCT: STRUCTURAL STEEL (Angles, Channels, Beams) ───────────────────
+    with f_struct:
+        st.markdown("##### Structural Steel — Angles, Channels & Beams")
+        st.caption(
+            "For supports, lugs, saddles, lifting frames and skid structures. "
+            "Unit weights from IS 808 / IS 2062. Total weight includes 5% cutting & fitting allowance."
+        )
+
+        sc1, sc2, sc3 = st.columns(3)
+        type_filter = sc1.selectbox(
+            "Section Type", ["All", "Equal Angle", "Channel", "Beam"],
+            key="st_type_filter",
+        )
+        moc_pick = sc2.selectbox("Material", ["MS", "SS"], key="st_moc")
+
+        if type_filter == "All":
+            section_options = list(STRUCTURAL_SECTIONS.keys())
+        else:
+            section_options = [k for k, v in STRUCTURAL_SECTIONS.items()
+                               if v["type"] == type_filter]
+        sec_pick = sc3.selectbox("Section", section_options, key="st_sec")
+
+        sec_info = STRUCTURAL_SECTIONS.get(sec_pick, {})
+        unit_wt = sec_info.get("unit_wt", 0)
+        st.caption(f"Selected: **{sec_pick}** ({sec_info.get('type','')}) — Unit weight: **{unit_wt} kg/m**")
+
+        with st.container(border=True):
+            ic1, ic2, ic3, ic4, ic5 = st.columns(5)
+            st_name = ic1.text_input(
+                "Description",
+                placeholder="e.g. Bottom support lug",
+                key="st_name",
+            )
+            st_len = ic2.number_input(
+                "Length (m)", value=1.0, min_value=0.0, step=0.1, key="st_len",
+            )
+            st_qty = ic3.number_input(
+                "Qty", value=1, min_value=1, step=1, key="st_qty",
+            )
+            default_rate = STRUCT_DEFAULT_RATES.get(moc_pick, 75.0)
+            st_rate = ic4.number_input(
+                f"Rate ₹/kg (default {moc_pick}: {default_rate})",
+                value=float(default_rate), min_value=0.0, step=5.0, key="st_rate",
+            )
+            st_group = ic5.selectbox(
+                "Group",
+                ["SUPPORT", "LUGS", "FRAME", "SADDLE", "STIFFNERS", "OTHER"],
+                key="st_group",
+            )
+
+            prev_wt  = unit_wt * st_len * st_qty * 1.05
+            prev_amt = prev_wt * st_rate
+            pc1, pc2 = st.columns(2)
+            pc1.metric("Total Weight", f"{prev_wt:.2f} kg")
+            pc2.metric("Amount", f"₹{prev_amt:,.0f}")
+
+            if st.button("➕ Add Structural Item", type="primary", key="add_struct"):
+                total_wt = unit_wt * st_len * st_qty * 1.05
+                amount = total_wt * st_rate
+                st.session_state.est_struct.append(dict(
+                    name=st_name or sec_pick,
+                    section=sec_pick,
+                    type=sec_info.get("type", ""),
+                    material=moc_pick,
+                    group=st_group,
+                    unit_wt_kg_per_m=unit_wt,
+                    length_m=st_len,
+                    qty=st_qty,
+                    total_wt_kg=round(total_wt, 3),
+                    rate=st_rate,
+                    amount=round(amount, 2),
+                ))
+                st.success(f"✅ Added: {sec_pick}  |  {total_wt:.2f} kg  |  ₹{amount:,.0f}")
+
+        if st.session_state.est_struct:
+            st.divider()
+            st.markdown("**Structural items added**")
+            for idx, s in enumerate(st.session_state.est_struct):
+                lc1, lc2, lc3, lc4, lc5, lc6, lc7, lc8 = st.columns(
+                    [2.5, 2, 1, 1, 1, 1.2, 1.5, 0.7])
+                lc1.write(s.get("name", ""))
+                lc2.write(s.get("section", ""))
+                lc3.write(s.get("material", ""))
+                lc4.write(f"{s.get('length_m', 0):.2f} m")
+                lc5.write(f"× {s.get('qty', 1)}")
+                lc6.write(f"{s.get('total_wt_kg', 0):.1f} kg")
+                lc7.write(f"₹{s.get('amount', 0):,.0f}")
+                if lc8.button("🗑️", key=f"st_del_{idx}", help="Remove"):
+                    st.session_state.est_struct.pop(idx)
+                    st.rerun()
+
+            tot_wt = sum(s.get("total_wt_kg", 0) for s in st.session_state.est_struct)
+            tot_amt = sum(s.get("amount", 0) for s in st.session_state.est_struct)
+            st.success(
+                f"**Total Structural — Weight: {tot_wt:,.1f} kg  |  "
+                f"Amount: ₹{tot_amt:,.0f}**"
+            )
+
+            if st.button("🗑️ Clear All Structural", key="clr_struct"):
+                st.session_state.est_struct = []
+                st.rerun()
+        else:
+            st.info("No structural items added yet.")
+
+        _save_draft_bar("f_struct")
 
     # ── F4: FABRICATION SERVICES ───────────────────────────────────────────────
     with f4:
@@ -2703,7 +2433,6 @@ with TAB_NEW:
         lo, hi  = eq_info.get("margin_hint", (10, 18))
         st.info(f"Suggested margin for **{h['equipment_type']}**: {lo}–{hi}%  |  Labour: **{eq_info.get('labour_norm', 'Medium')}**")
 
-        # Current estimation info bar — read only, set in Tab 1
         qtn_now = h.get("qtn_number","") or ""
         cust_now = h.get("customer_name","") or "no customer"
         rev_now  = h.get("revision","R0")
@@ -2723,6 +2452,7 @@ with TAB_NEW:
 
         T = calc_totals(
             st.session_state.est_parts, st.session_state.est_pipes, st.session_state.est_flanges,
+            st.session_state.est_struct,
             st.session_state.est_fab, st.session_state.est_bo, st.session_state.est_oh,
             h["profit_margin_pct"], h["contingency_pct"],
             h["packing_amt"], h["freight_amt"], h["gst_pct"], h["engg_design_amt"],
@@ -2735,6 +2465,7 @@ with TAB_NEW:
                 ("Plates & Parts",        T["tot_plates"]),
                 ("Pipes",                 T["tot_pipes"]),
                 ("Flanges",               T["tot_flanges"]),
+                ("Structural Steel",      T["tot_struct"]),
                 ("▶ Total Raw Material",  T["tot_rm"]),
                 ("Fabrication Services",  T["tot_fab"]),
                 ("Bought-Out Items",      T["tot_bo"]),
@@ -2792,7 +2523,6 @@ with TAB_NEW:
 
         cust_data = next((c for c in clients if c["name"] == h.get("customer_name", "")), {})
 
-        # ── Download options ──────────────────────────────────────────────────
         st.divider()
         st.markdown("**📄 Download Customer Quotation**")
         dl_col1, dl_col2 = st.columns(2)
@@ -2817,13 +2547,14 @@ with TAB_NEW:
 
         st.divider()
         st.markdown("**📊 Download Internal Estimation Fact Sheet** _(for cross-checking against Excel)_")
-        st.caption("Shows all dimensions, geometry formulas used, weights, rates and cost summary across 6 sheets. Not for customers.")
+        st.caption("Shows all dimensions, geometry formulas used, weights, rates and cost summary across multiple sheets. Not for customers.")
         if OPENPYXL_OK:
             st.download_button(
                 "📊 Download Estimation Fact Sheet (.xlsx)",
                 generate_fact_sheet_xlsx(
                     h, st.session_state.est_parts, st.session_state.est_pipes,
-                    st.session_state.est_flanges, st.session_state.est_fab,
+                    st.session_state.est_flanges, st.session_state.est_struct,
+                    st.session_state.est_fab,
                     st.session_state.est_bo, st.session_state.est_oh,
                     st.session_state.fab_rates, T,
                 ),
@@ -2836,8 +2567,6 @@ with TAB_NEW:
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB: QUOTE EDITOR
-# Full control over every word that goes to the customer.
-# Engineer edits all sections here before downloading.
 # ══════════════════════════════════════════════════════════════════════════════
 with TAB_QUOTE:
     h    = st.session_state.est_hdr
@@ -2850,21 +2579,6 @@ with TAB_QUOTE:
         st.subheader(f"✍️ Quote Editor — {_qno}  |  {_cno}")
         st.caption("Edit every section below. What you see here is exactly what prints in the customer quotation. Download when ready.")
 
-        # ── helpers ──────────────────────────────────────────────────────────
-        def qe_section(label, icon=""):
-            st.markdown(f"**{icon} {label}**")
-
-        def qe_box(key, default, height=120, help_text=""):
-            """Editable text area that writes back to session state."""
-            val = st.text_area(
-                key, value=h.get(key, default), height=height,
-                label_visibility="collapsed", help=help_text,
-                key=f"qe_{key}",
-            )
-            h[key] = val
-            return val
-
-        # ── SECTION 1 — Offer & Customer (read-only, from header) ────────────
         with st.expander("📋 Section 1 — Offer & Customer Details", expanded=True):
             st.caption("Set in Tab 1 Header. Change fields there to update here.")
             si1, si2, si3 = st.columns(3)
@@ -2875,185 +2589,52 @@ with TAB_QUOTE:
             si2.markdown(f"**Status:** {h.get('status','Draft')}")
             si3.markdown(f"**Date:** {date.today().strftime('%d %B %Y')}")
 
-        # ── SECTION 2 — Technical Design Basis ───────────────────────────────
         with st.expander("🔧 Section 2 — Technical Design Basis", expanded=False):
-            st.caption("Core dimensions come from Tab 1. Edit the surface finish and any additional technical notes here.")
             t2c1, t2c2 = st.columns(2)
-            h["surface_finish"] = t2c1.text_input(
-                "Surface Finish", value=h.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed"),
-                key="qe_sf",
-            )
-            h["design_code"] = t2c2.text_input(
-                "Design Code", value=h.get("design_code","ASME Sec VIII Div 1"),
-                key="qe_dc",
-            )
-            h["design_pressure"] = t2c1.text_input(
-                "Design Pressure", value=h.get("design_pressure","FV to 4.5 Bar"),
-                key="qe_dp",
-            )
-            h["design_temp"] = t2c2.text_input(
-                "Design Temperature", value=h.get("design_temp","-50 to 250°C"),
-                key="qe_dt",
-            )
-            h["jacket_type"] = t2c1.text_input(
-                "Jacket / Heating", value=h.get("jacket_type",""),
-                key="qe_jt",
-            )
-            h["agitator_type"] = t2c2.text_input(
-                "Agitator / Drive", value=h.get("agitator_type",""),
-                key="qe_at",
-            )
+            h["surface_finish"]  = t2c1.text_input("Surface Finish", value=h.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed"), key="qe_sf")
+            h["design_code"]     = t2c2.text_input("Design Code",     value=h.get("design_code","ASME Sec VIII Div 1"), key="qe_dc")
+            h["design_pressure"] = t2c1.text_input("Design Pressure", value=h.get("design_pressure","FV to 4.5 Bar"), key="qe_dp")
+            h["design_temp"]     = t2c2.text_input("Design Temperature", value=h.get("design_temp","-50 to 250°C"), key="qe_dt")
+            h["jacket_type"]     = t2c1.text_input("Jacket / Heating", value=h.get("jacket_type",""), key="qe_jt")
+            h["agitator_type"]   = t2c2.text_input("Agitator / Drive", value=h.get("agitator_type",""), key="qe_at")
 
-        # ── SECTION 3 — Scope of Supply ───────────────────────────────────────
         with st.expander("📦 Section 3 — Scope of Supply", expanded=False):
-            qe_section("Scope items — one per line, each becomes a bullet point")
-            default_scope = (
-                "Pressure vessel / equipment fabricated as per approved GA drawing\n"
-                "All nozzles, manholes, handholes and process connections per nozzle schedule\n"
-                "Jacket / limpet coil / half-pipe with insulation jacket (where applicable)\n"
-                "Agitator complete with gearbox, motor and mechanical seal (where applicable)\n"
-                "Support structure — lugs, legs or saddles as applicable\n"
-                "Internal grinding and buffing to specified Ra surface finish\n"
-                "Equipment nameplate with tag number and serial number"
-            )
-            qe_box("scope_items", default_scope, height=200,
-                   help_text="One item per line → becomes a bullet in the quotation")
+            st.markdown("**Scope items — one per line**")
+            h["scope_items"] = st.text_area("Scope items", value=h.get("scope_items",""), height=200, label_visibility="collapsed", key="qe_scope")
+            st.markdown("**Exclusions — one per line**")
+            h["scope_exclusions"] = st.text_area("Exclusions", value=h.get("scope_exclusions",""), height=140, label_visibility="collapsed", key="qe_excl")
 
-            qe_section("Exclusions — one per line")
-            default_excl = (
-                "Civil / structural works\n"
-                "Electrical & Instrumentation\n"
-                "Erection & commissioning at site\n"
-                "DQ / IQ / OQ / PQ validation\n"
-                "Freight, insurance and unloading at site\n"
-                "Import duties if applicable"
-            )
-            qe_box("scope_exclusions", default_excl, height=140,
-                   help_text="One exclusion per line")
-
-            st.caption("💡 Add for ANFD: 'Filter plate, filter media and gaskets' | for RCVD: 'Condenser, receiver and vacuum system' | for pharma: 'cGMP compliance documentation'")
-
-        # ── SECTION 4 — Manufacturing & Quality ───────────────────────────────
         with st.expander("🔬 Section 4 — Manufacturing & Quality Assurance", expanded=False):
-            qe_section("Opening paragraph")
-            default_intro = (
-                "B&G Engineering Industries operates as an engineering-led manufacturer. "
-                "Every project is built to ASME Section VIII Division 1 requirements "
-                "with full documentation and traceability."
-            )
-            qe_box("quality_intro", default_intro, height=80)
+            st.markdown("**Opening paragraph**")
+            h["quality_intro"] = st.text_area("Quality intro", value=h.get("quality_intro",""), height=80, label_visibility="collapsed", key="qe_qi")
+            st.markdown("**Quality points — one per line**")
+            h["quality_points"] = st.text_area("Quality points", value=h.get("quality_points",""), height=300, label_visibility="collapsed", key="qe_qp")
 
-            qe_section("Quality points — one per line, each becomes a bullet point")
-            default_qp = (
-                "Raw material procurement with original Mill Test Certificates (MTC) for all pressure parts\n"
-                "100% Positive Material Identification (PMI) verification before cutting\n"
-                "Heat number and cast number traceability maintained throughout fabrication\n"
-                "Qualified welders — WPS / PQR compliant, TIG welding for all SS316L pressure joints\n"
-                "Precision plasma / laser cutting and CNC-controlled plate rolling\n"
-                "Pharma-grade internal grinding to Ra ≤ 0.8 μm and external mechanical buffing\n"
-                "Dimensional inspection against approved GA drawings at each stage\n"
-                "Hydrostatic / pneumatic / vacuum leak test as per ASME Sec VIII Div 1\n"
-                "Dye Penetrant (DP) testing on all critical welds\n"
-                "Complete QA dossier prepared and delivered with equipment\n"
-                "Factory Acceptance Test (FAT) support at works on request"
-            )
-            qe_box("quality_points", default_qp, height=300,
-                   help_text="One point per line. Add/remove based on equipment type and client URS.")
-
-            st.caption(
-                "💡 Equipment-specific points to add:\n"
-                "**ANFD** → Filter plate flatness and surface finish inspection | Filter media compatibility test\n"
-                "**RCVD** → Vacuum integrity test to -1 bar for 30 min minimum | Cone rotation and discharge test\n"
-                "**Condenser** → Tube-to-tubesheet weld DP test | Tube hydraulic test at 1.5x design pressure\n"
-                "**Pharma** → GAMP5 documentation support available | 3.1 material certs per EN 10204\n"
-                "**ATEX** → ATEX zone compliance — electrical items in customer scope | Earth continuity check"
-            )
-
-        # ── SECTION 5 — Documentation ─────────────────────────────────────────
         with st.expander("📋 Section 5 — Documentation Deliverables", expanded=False):
-            qe_section("Document list — one per line")
-            default_docs = (
-                "General Arrangement (GA) Drawing — IFC revision\n"
-                "Nozzle orientation and schedule drawing\n"
-                "Bill of Materials (BOM)\n"
-                "Mill Test Certificates (MTC) for all pressure parts\n"
-                "PMI verification records\n"
-                "Weld map and weld log\n"
-                "DP / RT inspection reports\n"
-                "Dimensional inspection report\n"
-                "Hydrostatic / leak test certificate\n"
-                "Surface finish inspection record (Ra measurement)\n"
-                "Inspection and Release Note (IRN)\n"
-                "Equipment nameplate photograph"
-            )
-            qe_box("doc_deliverables", default_docs, height=280,
-                   help_text="One document per line. Add client-specific requirements.")
+            st.markdown("**Document list — one per line**")
+            h["doc_deliverables"] = st.text_area("Documentation", value=h.get("doc_deliverables",""), height=280, label_visibility="collapsed", key="qe_dd")
 
-            st.caption(
-                "💡 Add for regulated customers:\n"
-                "ASME U-stamp data report (if U-stamp required) | EN 10204 3.1 material certs | "
-                "Radiographic (RT) test report | Positive pressure decay test record | "
-                "Passivation certificate | Calibration certificates for test instruments"
-            )
-
-        # ── SECTION 6 — Commercial Terms ─────────────────────────────────────
         with st.expander("💰 Section 6 — Commercial Terms", expanded=False):
             st.markdown("**Payment Terms**")
-            h["payment_terms"] = st.text_area(
-                "Payment Terms", height=70, label_visibility="collapsed",
-                value=h.get("payment_terms","40% advance along with Purchase Order  |  50% against Pro-forma invoice on readiness for dispatch  |  10% on delivery"),
-                key="qe_pt",
-            )
+            h["payment_terms"] = st.text_area("Payment Terms", height=70, label_visibility="collapsed", value=h.get("payment_terms",""), key="qe_pt")
             c1, c2 = st.columns(2)
-            h["delivery_weeks"] = c1.text_input(
-                "Delivery (weeks)", value=h.get("delivery_weeks","12–16"), key="qe_dw",
-            )
-            h["delivery_note"] = c2.text_input(
-                "Delivery note", value=h.get("delivery_note","Subject to availability of raw material at time of order."),
-                key="qe_dn",
-            )
-            h["offer_validity"] = st.text_area(
-                "Offer Validity", height=60, label_visibility="collapsed",
-                value=h.get("offer_validity","This offer is valid for 7 calendar days from the date above. Prices subject to change if raw material rates move by more than 3%."),
-                key="qe_ov",
-            )
+            h["delivery_weeks"] = c1.text_input("Delivery (weeks)", value=h.get("delivery_weeks","12–16"), key="qe_dw")
+            h["delivery_note"]  = c2.text_input("Delivery note",    value=h.get("delivery_note",""),       key="qe_dn")
+            h["offer_validity"] = st.text_area("Offer Validity",    height=60, label_visibility="collapsed", value=h.get("offer_validity",""), key="qe_ov")
             st.markdown("**Warranty**")
-            h["warranty_clause"] = st.text_area(
-                "Warranty", height=80, label_visibility="collapsed",
-                value=h.get("warranty_clause","12 months from date of commissioning or 18 months from date of dispatch, whichever is earlier. Covers manufacturing defects under normal operating conditions as per design basis."),
-                key="qe_wc",
-            )
+            h["warranty_clause"] = st.text_area("Warranty", height=80, label_visibility="collapsed", value=h.get("warranty_clause",""), key="qe_wc")
             st.markdown("**Inspection Rights**")
-            h["inspection_clause"] = st.text_area(
-                "Inspection", height=70, label_visibility="collapsed",
-                value=h.get("inspection_clause","Customer may depute inspector for stage and final inspection at our works. Third-party inspection (TPI) agency charges, if any, are in customer scope."),
-                key="qe_ic",
-            )
+            h["inspection_clause"] = st.text_area("Inspection", height=70, label_visibility="collapsed", value=h.get("inspection_clause",""), key="qe_ic")
             st.markdown("**Price Basis**")
-            h["price_basis"] = st.text_area(
-                "Price Basis", height=70, label_visibility="collapsed",
-                value=h.get("price_basis","Ex-Works, Pashamylaram, Hyderabad — 502307. Packing in MS crate included. Freight, insurance and unloading at site excluded."),
-                key="qe_pb",
-            )
+            h["price_basis"] = st.text_area("Price Basis", height=70, label_visibility="collapsed", value=h.get("price_basis",""), key="qe_pb")
             st.markdown("**GST / Taxes Clause**")
-            h["gst_clause"] = st.text_area(
-                "GST Clause", height=60, label_visibility="collapsed",
-                value=h.get("gst_clause","GST @ 18% (HSN 8419) as applicable at time of invoicing. Any new statutory levy introduced after offer date will be charged additionally."),
-                key="qe_gc",
-            )
-            st.markdown("**Special Notes / Additional Conditions** _(printed at end of commercial section)_")
-            h["special_notes"] = st.text_area(
-                "Special Notes", height=100, label_visibility="collapsed",
-                value=h.get("special_notes",""),
-                help="Add client-specific conditions: GAMP5, ATEX zone, clean room, specific standards, any deviations from URS.",
-                key="qe_sn",
-            )
+            h["gst_clause"] = st.text_area("GST Clause", height=60, label_visibility="collapsed", value=h.get("gst_clause",""), key="qe_gc")
+            st.markdown("**Special Notes / Additional Conditions**")
+            h["special_notes"] = st.text_area("Special Notes", height=100, label_visibility="collapsed", value=h.get("special_notes",""), key="qe_sn")
 
         st.divider()
 
-        # ── Download buttons ──────────────────────────────────────────────────
-        # ── CLAUDE AI ASSISTANT ──────────────────────────────────────────────────
-        st.divider()
+        # AI Assistant
         st.markdown("### 🤖 AI Assistant — Generate & Improve Quotation Content")
         st.caption("Claude reads your equipment parameters and generates professional content. Review and edit before downloading.")
 
@@ -3089,7 +2670,6 @@ Customer: {h.get('customer_name', '')}
                 "🔍 Review Terms",
             ])
 
-            # ── TAB 1: SCOPE ─────────────────────────────────────────────────
             with _ai_t1:
                 st.markdown("**Generate scope of supply specific to this equipment**")
                 _c1, _c2 = st.columns(2)
@@ -3128,12 +2708,10 @@ agitator/drive (if applicable), surface finish, supports, nameplate, testing.
 
                 if "ai_scope_result" in st.session_state:
                     st.markdown("**Generated Scope — edit if needed:**")
-                    _es = st.text_area("Scope", value=st.session_state["ai_scope_result"],
-                                       height=200, label_visibility="collapsed", key="ai_scope_edit")
+                    _es = st.text_area("Scope", value=st.session_state["ai_scope_result"], height=200, label_visibility="collapsed", key="ai_scope_edit")
                     if "ai_excl_result" in st.session_state:
                         st.markdown("**Generated Exclusions — edit if needed:**")
-                        _ee = st.text_area("Excl", value=st.session_state["ai_excl_result"],
-                                           height=120, label_visibility="collapsed", key="ai_excl_edit")
+                        _ee = st.text_area("Excl", value=st.session_state["ai_excl_result"], height=120, label_visibility="collapsed", key="ai_excl_edit")
                     if st.button("✅ Apply to Quotation", type="primary", key="ai_apply_scope"):
                         h["scope_items"] = st.session_state.get("ai_scope_edit", st.session_state["ai_scope_result"])
                         if "ai_excl_result" in st.session_state:
@@ -3142,7 +2720,6 @@ agitator/drive (if applicable), surface finish, supports, nameplate, testing.
                         st.session_state.pop("ai_scope_result", None)
                         st.session_state.pop("ai_excl_result", None)
 
-            # ── TAB 2: QUALITY POINTS ─────────────────────────────────────────
             with _ai_t2:
                 st.markdown("**Generate quality assurance points specific to this equipment**")
                 _qa1, _qa2 = st.columns(2)
@@ -3165,9 +2742,7 @@ Generate manufacturing and quality assurance points for this quotation.
 {'Include TPI and documentation points.' if _tpi else ''}
 
 Output ONLY a plain list — one point per line, no bullets, no numbers, no headers.
-Generate 10-14 points. Each must be specific and technical — not generic.
-Cover: raw material traceability, PMI, welding qualifications, forming,
-surface finish, dimensional inspection, pressure testing, DP testing, documentation."""}]
+Generate 10-14 points. Each must be specific and technical — not generic."""}]
                             )
                             st.session_state["ai_quality_result"] = _msg.content[0].text.strip()
                             st.success("✅ Generated — review and apply below")
@@ -3176,21 +2751,15 @@ surface finish, dimensional inspection, pressure testing, DP testing, documentat
 
                 if "ai_quality_result" in st.session_state:
                     st.markdown("**Generated Quality Points — edit if needed:**")
-                    _eq2 = st.text_area("Quality", value=st.session_state["ai_quality_result"],
-                                        height=280, label_visibility="collapsed", key="ai_quality_edit")
+                    _eq2 = st.text_area("Quality", value=st.session_state["ai_quality_result"], height=280, label_visibility="collapsed", key="ai_quality_edit")
                     if st.button("✅ Apply to Quotation", type="primary", key="ai_apply_quality"):
                         h["quality_points"] = st.session_state.get("ai_quality_edit", st.session_state["ai_quality_result"])
                         st.success("✅ Applied.")
                         st.session_state.pop("ai_quality_result", None)
 
-            # ── TAB 3: COVER NARRATIVE ────────────────────────────────────────
             with _ai_t3:
                 st.markdown("**Write a professional cover letter for this quotation**")
-                _tone = st.radio("Tone", [
-                    "Formal & Technical",
-                    "Warm & Relationship-focused",
-                    "Competitive & Value-focused"
-                ], horizontal=True, key="ai_tone")
+                _tone = st.radio("Tone", ["Formal & Technical", "Warm & Relationship-focused", "Competitive & Value-focused"], horizontal=True, key="ai_tone")
                 if st.button("⚡ Write Cover Narrative", type="primary", key="ai_gen_narrative"):
                     with st.spinner("Claude is writing..."):
                         try:
@@ -3209,14 +2778,7 @@ Design Code: {h.get('design_code', 'ASME Sec VIII Div 1')}
 MOC: {h.get('moc_shell', 'SS316L')}
 Tone: {_tone}
 
-Write 3-4 short paragraphs that:
-1. Acknowledge the inquiry and summarise what B&G is offering
-2. Highlight B&G's manufacturing capabilities and pharma experience
-3. Mention key technical differentiators for this specific equipment
-4. Close with next steps
-
-Do not mention specific prices. Do not use hollow phrases like 'we are pleased to submit'.
-Write as if you know this customer personally."""}]
+Write 3-4 short paragraphs. Do not mention specific prices. Do not use hollow phrases like 'we are pleased to submit'."""}]
                             )
                             st.session_state["ai_narrative_result"] = _msg.content[0].text.strip()
                             st.success("✅ Generated")
@@ -3225,8 +2787,7 @@ Write as if you know this customer personally."""}]
 
                 if "ai_narrative_result" in st.session_state:
                     st.markdown("**Generated Narrative — edit if needed:**")
-                    _en = st.text_area("Narrative", value=st.session_state["ai_narrative_result"],
-                                       height=250, label_visibility="collapsed", key="ai_narrative_edit")
+                    _en = st.text_area("Narrative", value=st.session_state["ai_narrative_result"], height=250, label_visibility="collapsed", key="ai_narrative_edit")
                     if st.button("✅ Add to Special Notes", type="primary", key="ai_apply_narrative"):
                         _existing = h.get("special_notes", "").strip()
                         _new_note = st.session_state.get("ai_narrative_edit", st.session_state["ai_narrative_result"])
@@ -3234,10 +2795,8 @@ Write as if you know this customer personally."""}]
                         st.success("✅ Added to Special Notes.")
                         st.session_state.pop("ai_narrative_result", None)
 
-            # ── TAB 4: REVIEW TERMS ───────────────────────────────────────────
             with _ai_t4:
                 st.markdown("**Claude reviews your commercial terms and flags issues**")
-                st.caption("Checks payment terms, delivery, warranty and flags anything needing attention.")
                 if st.button("🔍 Review My Commercial Terms", type="primary", key="ai_review_terms"):
                     with st.spinner("Claude is reviewing..."):
                         try:
@@ -3245,9 +2804,9 @@ Write as if you know this customer personally."""}]
                                 model="claude-sonnet-4-6",
                                 max_tokens=600,
                                 messages=[{"role": "user", "content": f"""You are a senior commercial manager reviewing a quotation
-for Indian pharma process equipment (ASME SS316L reactors / dryers / evaporators).
+for Indian pharma process equipment.
 
-Review these commercial terms and provide specific feedback:
+Review these commercial terms:
 Payment Terms: {h.get('payment_terms', '')}
 Delivery: {h.get('delivery_weeks', '')} weeks — {h.get('delivery_note', '')}
 Offer Validity: {h.get('offer_validity', '')}
@@ -3255,16 +2814,12 @@ Warranty: {h.get('warranty_clause', '')}
 Inspection Rights: {h.get('inspection_clause', '')}
 Price Basis: {h.get('price_basis', '')}
 GST Clause: {h.get('gst_clause', '')}
-Equipment: {h.get('equipment_desc', '')}
-Customer: {h.get('customer_name', '')}
 
 Respond with:
 1. ✅ What protects B&G well
 2. ⚠️ What needs attention or is missing
 3. 💡 Specific improvements to suggest
 
-Be specific and practical. Focus on: payment risk, delivery commitment,
-warranty exposure, inspection rights, price escalation protection.
 Maximum 250 words."""}]
                             )
                             st.session_state["ai_review_result"] = _msg.content[0].text.strip()
@@ -3281,20 +2836,13 @@ Maximum 250 words."""}]
         st.markdown("**📄 Download Final Quotation**")
         st.caption("Edits above are captured in memory. Save Draft to persist, then download.")
 
-        # Recalculate totals for download
         _qe_clients  = load_clients_full()
         _qe_cust     = next((c for c in _qe_clients if c["name"] == h.get("customer_name","")), {})
-        _rm_master_qe = load_rm_master()
-
-        _qe_parts   = st.session_state.est_parts
-        _qe_pipes   = st.session_state.est_pipes
-        _qe_flanges = st.session_state.est_flanges
-        _qe_fab     = st.session_state.est_fab
-        _qe_bo      = st.session_state.est_bo
-        _qe_oh      = st.session_state.est_oh
 
         _qe_T = calc_totals(
-            _qe_parts, _qe_pipes, _qe_flanges, _qe_fab, _qe_bo, _qe_oh,
+            st.session_state.est_parts, st.session_state.est_pipes, st.session_state.est_flanges,
+            st.session_state.est_struct,
+            st.session_state.est_fab, st.session_state.est_bo, st.session_state.est_oh,
             float(h.get("profit_margin_pct",10)), float(h.get("contingency_pct",0)),
             float(h.get("packing_amt",5000)), float(h.get("freight_amt",10000)),
             float(h.get("gst_pct",18)), float(h.get("engg_design_amt",25000)),
@@ -3303,14 +2851,14 @@ Maximum 250 words."""}]
         qe_dl1, qe_dl2, qe_dl3, qe_dl4 = st.columns(4)
         qe_dl1.download_button(
             "📄 Standard Quote",
-            generate_docx(h, _qe_cust, _qe_T, _qe_fab, show_breakup=False),
+            generate_docx(h, _qe_cust, _qe_T, st.session_state.est_fab, show_breakup=False),
             file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True, type="primary", key="qe_dl_std",
         )
         qe_dl2.download_button(
             "📋 With Scope Breakup",
-            generate_docx(h, _qe_cust, _qe_T, _qe_fab, show_breakup=True),
+            generate_docx(h, _qe_cust, _qe_T, st.session_state.est_fab, show_breakup=True),
             file_name=f"{h.get('qtn_number','QTN')}_{h.get('revision','R0')}_breakup.docx",
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             use_container_width=True, key="qe_dl_bk",
@@ -3320,7 +2868,8 @@ Maximum 250 words."""}]
                 "📊 Fact Sheet (.xlsx)",
                 generate_fact_sheet_xlsx(
                     h, st.session_state.est_parts, st.session_state.est_pipes,
-                    st.session_state.est_flanges, _qe_fab,
+                    st.session_state.est_flanges, st.session_state.est_struct,
+                    st.session_state.est_fab,
                     st.session_state.est_bo, st.session_state.est_oh,
                     st.session_state.fab_rates, _qe_T,
                 ),
@@ -3353,9 +2902,13 @@ with TAB_SIMILAR:
         if not (s_cap_lo <= cap <= s_cap_hi): continue
         if s_cust and s_cust.lower() not in (est.get("customer_name", "") or "").lower(): continue
         T = calc_totals(
-            json.loads(est.get("parts_json")   or "[]"), json.loads(est.get("pipes_json")   or "[]"),
-            json.loads(est.get("flanges_json") or "[]"), json.loads(est.get("fab_json")     or "[]"),
-            json.loads(est.get("bo_json")      or "[]"), json.loads(est.get("oh_json")      or "[]"),
+            json.loads(est.get("parts_json")   or "[]"),
+            json.loads(est.get("pipes_json")   or "[]"),
+            json.loads(est.get("flanges_json") or "[]"),
+            json.loads(est.get("struct_json")  or "[]"),
+            json.loads(est.get("fab_json")     or "[]"),
+            json.loads(est.get("bo_json")      or "[]"),
+            json.loads(est.get("oh_json")      or "[]"),
             float(est.get("profit_margin_pct") or 10), float(est.get("contingency_pct") or 0),
             float(est.get("packing_amt") or 0), float(est.get("freight_amt") or 0),
             float(est.get("gst_pct") or 18), float(est.get("engg_design_amt") or 0),
@@ -3413,4 +2966,8 @@ with TAB_MASTERS:
                 or_ = c5.number_input("Rate", min_value=0.0)
                 if st.form_submit_button("Save"):
                     if sb_insert("est_oh_master", dict(oh_code=oc, description=od, oh_type=ot, uom=ou, rate=or_, source="Internal")):
-                        st.cache_data.clear(); st.success(f"Saved {oc}"); st.rerun()
+                        st.cache_data.clear(); st.success(f"Saved {oc}"); st.rerun()    
+
+        
+
+                                  
