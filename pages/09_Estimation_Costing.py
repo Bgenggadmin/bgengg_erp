@@ -3255,15 +3255,15 @@ with TAB_NEW:
             # For UOM = "LS" : Qty fixed at 1. Show only rate (the lumpsum).
             # For others     : Show Qty and Rate normally.
             if _is_pct:
-                # Compute the % base preview (RM + Fab + BO) so the user knows
-                # what they're applying the percentage to.
+                # % base = Raw Material only (plates + pipes + flanges + structural)
+                # This is the standard base used by Indian SS fab shops — RM is the
+                # dominant cost, known first in the estimating sequence, and easy to
+                # communicate ("3% of plate cost"). Fab Services and BO are excluded.
                 _pct_base = (
                     sum(p.get("amount", 0) for p in st.session_state.est_parts) +
                     sum(p.get("amount", 0) for p in st.session_state.est_pipes) +
                     sum(p.get("amount", 0) for p in st.session_state.est_flanges) +
-                    sum(p.get("amount", 0) for p in st.session_state.est_struct) +
-                    sum(f.get("amount", 0) for f in st.session_state.est_fab) +
-                    sum(b.get("amount", 0) for b in st.session_state.est_bo)
+                    sum(p.get("amount", 0) for p in st.session_state.est_struct)
                 )
                 op1, op2 = st.columns(2)
                 oh_rov = op1.number_input(
@@ -3274,18 +3274,20 @@ with TAB_NEW:
                 )
                 _effective_pct = oh_rov if oh_rov > 0 else _master_rate
                 op2.metric(
-                    "Base (RM + Fab + BO)",
+                    "Base (RM only)",
                     f"₹{_pct_base:,.0f}",
                     delta=f"→ ₹{_pct_base * _effective_pct / 100:,.0f}  @ {_effective_pct}%",
                     delta_color="off",
                 )
+                
                 # Keep oh_qty stable for storage but it's not used in math
                 oh_qty = 1.0
                 st.caption(
                     f"Selected: **{oh_inf.get('description', '')}** | "
-                    f"Type: {oh_inf.get('oh_type', '')} | UOM: **%** (percentage on RM + Fab + BO) | "
+                    f"Type: {oh_inf.get('oh_type', '')} | UOM: **%** (percentage on Raw Material) | "
                     f"Master rate: {_master_rate}%"
                 )
+                
             elif _is_lump:
                 op1, op2 = st.columns(2)
                 oh_rov = op1.number_input(
@@ -3332,15 +3334,14 @@ with TAB_NEW:
                 rate = oh_rov if oh_rov > 0 else _master_rate
                 desc = oh_dov or oh_inf.get("description", "")
                 if _is_pct:
-                    # % base = RM + Fab + BO (everything before OH/consumables)
-                    # NOT tot_mfg — that would cause circularity.
+                    # % base = Raw Material only (plates + pipes + flanges + structural)
+                    # Matches Indian SS fab industry norm. Must match the _pct_base
+                    # preview above — keep them in sync if ever changed.
                     base = (
                         sum(p.get("amount", 0) for p in st.session_state.est_parts) +
                         sum(p.get("amount", 0) for p in st.session_state.est_pipes) +
                         sum(p.get("amount", 0) for p in st.session_state.est_flanges) +
-                        sum(p.get("amount", 0) for p in st.session_state.est_struct) +
-                        sum(f.get("amount", 0) for f in st.session_state.est_fab) +
-                        sum(b.get("amount", 0) for b in st.session_state.est_bo)
+                        sum(p.get("amount", 0) for p in st.session_state.est_struct)
                     )
                     amount = base * rate / 100
                 elif _is_lump:
