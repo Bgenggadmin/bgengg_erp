@@ -629,7 +629,8 @@ def calc_shell_volume_ltrs(dia_mm, ht_mm):
 
 def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
                 profit_pct, contingency_pct, packing, freight, gst_pct, engg_design,
-                discount_pct=0.0):
+                discount_pct=0.0,
+                factory_oh_pct=5.0, admin_oh_pct=3.0):
     """
     Compute all cost totals for an estimation.
 
@@ -653,32 +654,48 @@ def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
     tot_fab = sum(f.get("amount", 0) for f in fab_services)
     tot_bo  = sum(p.get("amount", 0) for p in bo_items)
 
-    # ── Overhead split: Factory vs Admin vs Direct Consumables ───────────────
-    # Walk each OH line, look up its oh_type in OH_BUCKET, classify into
-    # one of THREE buckets, and collect both totals AND line items for drill-down.
-    #
-    # Why three buckets now? Direct Consumables (welding gas, electrodes,
-    # grinding wheels) are traceable to a specific job — they're direct costs,
-    # not overhead. Splitting them out matches standard cost-accounting practice
-    # and stops them inflating "Factory Overhead" artificially.
-    oh_lines_factory     = []
-    oh_lines_admin       = []
-    oh_lines_direct_cons = []
-    for o in oh_items:
-        bucket = OH_BUCKET.get(o.get("oh_type", ""), OH_BUCKET_DEFAULT)
-        if bucket == "ADMIN_OH":
-            oh_lines_admin.append(o)
-        elif bucket == "DIRECT_CONSUMABLES":
-            oh_lines_direct_cons.append(o)
-        else:
-            oh_lines_factory.append(o)
+    # ── Direct Consumables — bottoms-up from OH master items ─────────────────
+    # Direct Consumables (welding gas, electrodes, grinding wheels) ARE
+    # traceable per job, so we keep them as line items. Estimator picks
+    # CONSUMABLES-type items in Tab 6.
+    oh_lines_direct_cons = [
+        o for o in oh_items
+        if OH_BUCKET.get(o.get("oh_type", ""), OH_BUCKET_DEFAULT) == "DIRECT_CONSUMABLES"
+    ]
+    tot_direct_cons = sum(o.get("amount", 0) for o in oh_lines_direct_cons)
 
-    tot_factory_oh     = sum(o.get("amount", 0) for o in oh_lines_factory)
-    tot_admin_oh       = sum(o.get("amount", 0) for o in oh_lines_admin)
-    tot_direct_cons    = sum(o.get("amount", 0) for o in oh_lines_direct_cons)
-    tot_oh             = tot_factory_oh + tot_admin_oh   # back-compat: OH sum
-    # ── Legacy sub-totals (kept so old display code still works) ─────────────
-    # These were used by the old margin_issues() check and by the Excel sheet.
+    # ── Any OTHER OH master items (legacy LABOUR/TESTING/DOCS lines) ─────────
+    # Kept for backward compatibility — if your master has labour-Hr or
+    # testing-Sq.M items you've used, they still get tallied. New estimations
+    # should use absorption rates below instead.
+    oh_lines_factory_legacy = [
+        o for o in oh_items
+        if OH_BUCKET.get(o.get("oh_type", ""), OH_BUCKET_DEFAULT) == "FACTORY_OH"
+    ]
+    oh_lines_admin_legacy = [
+        o for o in oh_items
+        if OH_BUCKET.get(o.get("oh_type", ""), OH_BUCKET_DEFAULT) == "ADMIN_OH"
+    ]
+    tot_factory_oh_legacy = sum(o.get("amount", 0) for o in oh_lines_factory_legacy)
+    tot_admin_oh_legacy   = sum(o.get("amount", 0) for o in oh_lines_admin_legacy)
+
+    # ── Factory OH — absorption rate × (RM + Fab) ────────────────────────────
+    # The absorption rate covers power, supervision, indirect labour,
+    # depreciation — costs that exist for every job and scale with conversion
+    # activity (RM + Fab). Plus any legacy line items the user added.
+    factory_oh_absorbed = (tot_rm + tot_fab) * factory_oh_pct / 100
+    tot_factory_oh      = factory_oh_absorbed + tot_factory_oh_legacy
+
+    # ── Admin OH base = everything BEFORE Admin OH itself (no circularity) ───
+    # Office, documentation, professional fees, interest on working capital.
+    # Scales with total manufacturing activity, not just conversion.
+    _admin_base = tot_rm + tot_fab + tot_bo + tot_direct_cons + tot_factory_oh + engg_design
+    admin_oh_absorbed = _admin_base * admin_oh_pct / 100
+    tot_admin_oh      = admin_oh_absorbed + tot_admin_oh_legacy
+
+    tot_oh = tot_factory_oh + tot_admin_oh   # back-compat: OH sum
+
+    # ── Legacy sub-totals (kept so old display code & Excel sheet still work) ─
     tot_lab   = sum(o.get("amount", 0) for o in oh_items
                     if o.get("oh_type") in ("LABOUR", "LABOUR_BUFF"))
     tot_cons  = sum(o.get("amount", 0) for o in oh_items
@@ -687,7 +704,8 @@ def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
                     if o.get("oh_type") not in ("LABOUR", "LABOUR_BUFF", "CONSUMABLES"))
 
     # ── Manufacturing cost build-up ──────────────────────────────────────────
-    tot_mfg    = tot_rm + tot_fab + tot_bo + tot_oh + engg_design
+    # Note: tot_direct_cons is now a top-level item, no longer inside tot_oh.
+    tot_mfg = tot_rm + tot_fab + tot_bo + tot_direct_cons + tot_oh + engg_design
     cont_amt   = tot_mfg * contingency_pct / 100
     cbm        = tot_mfg + cont_amt   # Cost Base for Margin
 
@@ -725,9 +743,14 @@ def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
         tot_factory_oh=tot_factory_oh,                # NEW (Option B)
         tot_admin_oh=tot_admin_oh,                    # NEW (Option B)
         tot_direct_cons=tot_direct_cons,              # NEW (Option 1 — direct consumables)
-        oh_lines_factory=oh_lines_factory,            # drill-down list
-        oh_lines_admin=oh_lines_admin,                # drill-down list
-        oh_lines_direct_cons=oh_lines_direct_cons,    # NEW drill-down list
+        # Drill-down lists: only Direct Consumables is bottoms-up;
+        # Factory/Admin OH now come from absorption rates plus any legacy items.
+        oh_lines_factory=oh_lines_factory_legacy,     # legacy line items only
+        oh_lines_admin=oh_lines_admin_legacy,         # legacy line items only
+        oh_lines_direct_cons=oh_lines_direct_cons,    # bottoms-up direct consumables
+        factory_oh_absorbed=factory_oh_absorbed,      # NEW: rate × (RM+Fab)
+        admin_oh_absorbed=admin_oh_absorbed,          # NEW: rate × _admin_base
+        admin_oh_base=_admin_base,                    # NEW: what the % was applied to
         # Engineering
         engg_design=engg_design,
         # Manufacturing build-up
@@ -1768,6 +1791,8 @@ def load_all_estimations():
 SPEC_FIELDS = [
     # Option B cost-structure additions
     "discount_pct",
+    # Option C — OH absorption rates (Factory + Admin)
+    "factory_oh_pct", "admin_oh_pct",
     # Detailed spec sheet fields (Part A of Spec Sheet feature)
     "service_fluid", "working_vol_ltrs",
     "design_pressure_shell", "design_pressure_jacket",
@@ -1793,6 +1818,13 @@ def _blank_hdr():
         packing_amt=5000.0, freight_amt=10000.0,
         gst_pct=18.0, engg_design_amt=25000.0, notes="",
         discount_pct=0.0,  # Discount applied on Ex-Works price (Option B cost structure)
+
+        # ── OH Absorption Rates (Option C) ───────────────────────────────────
+        # Factory OH and Admin OH are now computed as absorption rates rather
+        # than bottoms-up line items. Reflects how Indian SS fab shops actually
+        # estimate — these costs are inherently indirect and spread across jobs.
+        factory_oh_pct=5.0,   # % of (RM + Fab) — covers power, supervision, indirect labour, depreciation
+        admin_oh_pct=3.0,     # % of (Mfg cost before admin) — covers office, documentation, professional fees, interest
         # ── Detailed Specification fields (for customer Spec Sheet in Section 2) ──
         # These print in the customer-facing quotation, organised into 6 sub-blocks.
         # Leave empty to skip a row in the printed spec sheet.
@@ -3419,13 +3451,25 @@ with TAB_NEW:
         h["freight_amt"]       = s5.number_input("Freight ₹",     value=float(h["freight_amt"]),       min_value=0.0, step=500.0)
         h["gst_pct"]           = s6.number_input("GST %",         value=float(h["gst_pct"]),           min_value=0.0, max_value=28.0, step=0.5)
 
-        # Row 2: discount input (NEW — Option B)
-        d1, _d2, _d3 = st.columns([1, 4, 1])
-        h["discount_pct"] = d1.number_input(
+        # Row 2: OH absorption rates + Discount (Option C)
+        d1, d2, d3 = st.columns(3)
+        h["factory_oh_pct"] = d1.number_input(
+            "Factory OH %  (on RM + Fab)",
+            value=float(h.get("factory_oh_pct", 5.0)),
+            min_value=0.0, max_value=30.0, step=0.5,
+            help="Absorption rate for power, supervision, indirect labour, depreciation. Typical 4–7% for Indian SS pharma fab.",
+        )
+        h["admin_oh_pct"] = d2.number_input(
+            "Admin OH %  (on Mfg base)",
+            value=float(h.get("admin_oh_pct", 3.0)),
+            min_value=0.0, max_value=15.0, step=0.5,
+            help="Absorption rate for office, documentation, interest, professional fees. Typical 2–5% for SME scale.",
+        )
+        h["discount_pct"] = d3.number_input(
             "Discount %  (on Ex-Works)",
             value=float(h.get("discount_pct", 0.0)),
             min_value=0.0, max_value=50.0, step=0.5,
-            help="Commercial discount offered to customer. Reduces Ex-Works price and the GST charged on it.",
+            help="Commercial discount offered to customer. Reduces Ex-Works price and GST charged on it.",
         )
 
         T = calc_totals(
@@ -3434,9 +3478,10 @@ with TAB_NEW:
             st.session_state.est_fab, st.session_state.est_bo, st.session_state.est_oh,
             h["profit_margin_pct"], h["contingency_pct"],
             h["packing_amt"], h["freight_amt"], h["gst_pct"], h["engg_design_amt"],
-            discount_pct=h.get("discount_pct", 0.0),   # NEW for Option B
+            discount_pct=h.get("discount_pct", 0.0),
+            factory_oh_pct=h.get("factory_oh_pct", 5.0),   # NEW for Option C
+            admin_oh_pct=h.get("admin_oh_pct", 3.0),       # NEW for Option C
         )
-
         left, right = st.columns([3, 2])
         with left:
             st.markdown("**Cost Breakup**")
@@ -3491,11 +3536,20 @@ with TAB_NEW:
                     st.caption("_No direct consumables. Welding gas, electrodes, grinding wheels etc. — add in Tab 6️⃣._")
 
             with st.expander(
-                f"🔍 Factory Overhead drill-down ({len(T.get('oh_lines_factory', []))} items, "
-                f"₹{T.get('tot_factory_oh', 0):,.0f})"
+                f"🔍 Factory Overhead breakdown  "
+                f"(₹{T.get('tot_factory_oh', 0):,.0f})"
             ):
+                # Show the absorption rate calc explicitly
+                _fac_base = T["tot_rm"] + T["tot_fab"]
+                st.markdown(
+                    f"**Absorption:** ₹{_fac_base:,.0f} × {h.get('factory_oh_pct', 5.0)}% "
+                    f"= **₹{T.get('factory_oh_absorbed', 0):,.0f}**"
+                )
+                st.caption("Covers: power, supervision, indirect labour, depreciation, factory rent, maintenance.")
+
                 _fac = T.get("oh_lines_factory", [])
                 if _fac:
+                    st.markdown("**Plus legacy line items (LABOUR / TESTING / ELECTRO_POLISH):**")
                     _df_fac = pd.DataFrame([{
                         "Description": o.get("description", ""),
                         "Type":        o.get("oh_type", ""),
@@ -3504,15 +3558,24 @@ with TAB_NEW:
                         "Amount (₹)":  f"₹{o.get('amount', 0):,.0f}",
                     } for o in _fac])
                     st.dataframe(_df_fac, use_container_width=True, hide_index=True)
-                else:
-                    st.caption("_No factory overhead items. Power, supervision, indirect labour — add in Tab 6️⃣._")
-
-            with st.expander(
-                f"🔍 Admin Overhead drill-down ({len(T.get('oh_lines_admin', []))} items, "
-                f"₹{T.get('tot_admin_oh', 0):,.0f})"
+                    st.caption(
+                        "_Tip: any factory-OH line items you add in the OH form below "
+                        "are ON TOP of the absorption rate. Use only for one-off costs._"
+                    )
+           with st.expander(
+                f"🔍 Admin Overhead breakdown  "
+                f"(₹{T.get('tot_admin_oh', 0):,.0f})"
             ):
+                # Show the absorption rate calc explicitly
+                st.markdown(
+                    f"**Absorption:** ₹{T.get('admin_oh_base', 0):,.0f} × {h.get('admin_oh_pct', 3.0)}% "
+                    f"= **₹{T.get('admin_oh_absorbed', 0):,.0f}**"
+                )
+                st.caption("Covers: office salaries, professional fees, IT, interest, documentation, marketing.")
+
                 _adm = T.get("oh_lines_admin", [])
                 if _adm:
+                    st.markdown("**Plus legacy line items (DOCS / MISC):**")
                     _df_adm = pd.DataFrame([{
                         "Description": o.get("description", ""),
                         "Type":        o.get("oh_type", ""),
@@ -3521,8 +3584,10 @@ with TAB_NEW:
                         "Amount (₹)":  f"₹{o.get('amount', 0):,.0f}",
                     } for o in _adm])
                     st.dataframe(_df_adm, use_container_width=True, hide_index=True)
-                else:
-                    st.caption("_No admin overhead items. DOCS/MISC items in Tab 6 land here._")
+                    st.caption(
+                        "_Tip: any admin-OH line items you add in the OH form below "
+                        "are ON TOP of the absorption rate. Use only for one-off costs._"
+                    )
 
         with right:
             st.markdown("**Margin Health**")
