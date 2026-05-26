@@ -118,6 +118,133 @@ OH_BUCKET = {
 }
 # Default bucket for any oh_type not listed above (defensive default)
 OH_BUCKET_DEFAULT = "FACTORY_OH"
+# ─────────────────────────────────────────────────────────────────────────────
+# INDUSTRY BENCHMARK TABLE — by Equipment Type × MOC
+# ─────────────────────────────────────────────────────────────────────────────
+# Reference bands calibrated for Indian SME pharma fabrication. Each row gives
+# the expected % range of Ex-Works price for that cost head, for a given
+# (equipment_type, moc_shell) combination.
+#
+# Bands are ENGINEERING ESTIMATES grounded in:
+#   - Material cost ratios between MOC grades (SS304/316L/904L/Hastelloy/Ti)
+#   - Fabrication complexity of each equipment type
+#   - Indian SS fab labour + OH cost base (Hyderabad SME context)
+#   - Public financials from Indian peers (GMM Pfaudler, Anup, HLE Glascoat)
+#
+# After 30+ saved estimations, replace these with bands computed from
+# your own historical data — your own numbers will be more accurate.
+#
+# Schema for each row:
+#   (equipment_code, moc_pattern, label,
+#    rm_lo, rm_hi, fab_lo, fab_hi,
+#    dc_lo, dc_hi, foh_lo, foh_hi, aoh_lo, aoh_hi, p_lo, p_hi)
+#
+# moc_pattern is a list of MOC codes that match this row. The first matching
+# row wins, so put more specific MOCs before generic ones.
+
+BENCHMARK_TABLE = [
+    # ── Jacketed / Limpet SS Reactors ────────────────────────────────────
+    ("SSR", ["SS316L", "SS316"], "SS316L Reactor (jacketed/limpet)",
+        48, 58,  16, 22,   2, 4,   4, 7,   2, 4,   14, 20),
+    ("SSR", ["SS304"], "SS304 Reactor (jacketed/limpet)",
+        45, 55,  17, 23,   2, 4,   4, 7,   2, 4,   14, 20),
+    ("SSR", ["SS904L", "Duplex", "Super Duplex"], "SS904L/Duplex Reactor",
+        55, 65,  13, 19,   2, 4,   4, 6,   2, 4,   14, 20),
+    ("SSR", ["Hastelloy"], "Hastelloy Reactor",
+        65, 75,  10, 16,   2, 4,   3, 5,   2, 4,   12, 18),
+    ("SSR", ["Titanium", "Ti"], "Titanium Reactor",
+        60, 70,  12, 18,   2, 4,   3, 5,   2, 4,   12, 18),
+
+    # ── Hastelloy / exotic reactor variants ──────────────────────────────
+    ("HAR", ["Hastelloy"], "Hastelloy Reactor (HAR code)",
+        65, 75,  10, 16,   2, 4,   3, 5,   2, 4,   12, 18),
+    ("HAR", ["Titanium", "Ti"], "Titanium Reactor (HAR code)",
+        60, 70,  12, 18,   2, 4,   3, 5,   2, 4,   12, 18),
+
+    # ── Storage Tanks ────────────────────────────────────────────────────
+    ("SST", ["SS316L", "SS316", "SS304"], "SS Storage Tank",
+        60, 70,  10, 15,   2, 4,   3, 5,   2, 4,   12, 16),
+    ("SST", ["MS", "EN", "Carbon Steel"], "MS/EN Storage Tank",
+        55, 65,  12, 18,   1, 3,   3, 5,   2, 4,   12, 16),
+
+    # ── Heat Exchangers ──────────────────────────────────────────────────
+    ("HE", ["SS316L", "SS316"], "SS316L Heat Exchanger",
+        55, 65,  13, 18,   2, 4,   4, 6,   2, 4,   14, 20),
+    ("HE", ["SS304"], "SS304 Heat Exchanger",
+        53, 63,  14, 19,   2, 4,   4, 6,   2, 4,   14, 20),
+    ("HE", ["Hastelloy"], "Hastelloy Heat Exchanger",
+        65, 75,  10, 16,   2, 4,   3, 5,   2, 4,   12, 18),
+    ("HE", ["Titanium", "Ti"], "Titanium Heat Exchanger",
+        60, 70,  12, 18,   2, 4,   3, 5,   2, 4,   12, 18),
+
+    # ── Filter Dryers ────────────────────────────────────────────────────
+    ("ANFD", ["SS316L", "SS316"], "ANFD / Filter Dryer (SS316L)",
+        45, 55,  18, 24,   3, 5,   5, 8,   3, 5,   14, 22),
+
+    # ── Thin Film / Evaporators ──────────────────────────────────────────
+    ("ATFD", ["SS316L", "SS316"], "ATFD / Thin-Film Dryer (SS316L)",
+        42, 52,  20, 26,   3, 5,   5, 8,   3, 5,   16, 24),
+    ("MEE", ["SS316L", "SS316"], "MEE Body / Calandria (SS316L)",
+        50, 60,  16, 22,   2, 4,   4, 6,   2, 4,   14, 20),
+
+    # ── Columns ──────────────────────────────────────────────────────────
+    ("DC", ["SS316L", "SS316"], "Distillation Column (SS316L)",
+        50, 60,  16, 22,   2, 4,   4, 6,   2, 4,   14, 20),
+
+    # ── Skids ────────────────────────────────────────────────────────────
+    ("SKID", ["SS316L", "SS316"], "Process Skid (SS316L)",
+        45, 55,  18, 25,   3, 5,   5, 8,   3, 5,   16, 24),
+]
+
+# Fallback band when no equipment+MOC combination matches the table.
+# Uses the same generic bands used in margin_issues() — safe default.
+BENCHMARK_FALLBACK = (
+    "Generic SS316L Fabrication",
+    48, 62,  14, 22,   2, 5,   3, 7,   2, 5,   12, 20,
+)
+
+
+def _get_benchmark_row(equipment_type: str, moc_shell: str):
+    """
+    Find the benchmark row matching the current job's equipment type and MOC.
+    Returns a dict with label + all band low/high values.
+
+    Matching is permissive — moc_shell can contain extra characters
+    (e.g. "SS316L 2B finish") and still match the "SS316L" pattern.
+    Returns BENCHMARK_FALLBACK if no row matches.
+    """
+    eq = (equipment_type or "").strip().upper()
+    moc = (moc_shell or "").strip().upper()
+
+    for row in BENCHMARK_TABLE:
+        eq_code, moc_patterns, label, *bands = row
+        if eq_code.upper() != eq:
+            continue
+        # Match if any of the row's MOC patterns appears in the current moc
+        if any(p.upper() in moc for p in moc_patterns):
+            return {
+                "label": label,
+                "rm_lo": bands[0],  "rm_hi": bands[1],
+                "fab_lo": bands[2], "fab_hi": bands[3],
+                "dc_lo": bands[4],  "dc_hi": bands[5],
+                "foh_lo": bands[6], "foh_hi": bands[7],
+                "aoh_lo": bands[8], "aoh_hi": bands[9],
+                "p_lo": bands[10],  "p_hi": bands[11],
+                "matched": True,
+            }
+
+    # Fallback — no match found
+    label, *bands = BENCHMARK_FALLBACK
+    return {
+        "label": label,
+        "rm_lo": bands[0],  "rm_hi": bands[1],
+        "fab_lo": bands[2], "fab_hi": bands[3],
+        "dc_lo": bands[4],  "dc_hi": bands[5],
+        "foh_lo": bands[6], "foh_hi": bands[7],
+        "aoh_lo": bands[8], "aoh_hi": bands[9],
+        "p_lo": bands[10],  "p_hi": bands[11],
+        "matched": False,
+    }
 def _m(mm):
     return mm / 1000.0
 
