@@ -1487,6 +1487,23 @@ def load_all_estimations():
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Fields that get packed into the spec_json column on save instead of
+# becoming individual DB columns. To add more spec fields in future,
+# just add to _blank_hdr() AND append the field name here — no DB change.
+SPEC_FIELDS = [
+    # Option B cost-structure additions
+    "discount_pct",
+    # Detailed spec sheet fields (Part A of Spec Sheet feature)
+    "service_fluid", "working_vol_ltrs",
+    "design_pressure_shell", "design_pressure_jacket",
+    "corrosion_allowance_mm", "joint_efficiency", "hydrotest_pressure",
+    "heating_medium", "cooling_medium",
+    "agitator_rpm", "motor_hp", "motor_make",
+    "gearbox_make", "gearbox_ratio",
+    "seal_type", "seal_make",
+]
+
 def _blank_hdr():
     return dict(
         qtn_number="", revision="R0", customer_name="",
@@ -1601,9 +1618,23 @@ def _reset_form():
 
 def _load_est_into_form(est):
     h = _blank_hdr()
+
+    # Load regular header fields from individual DB columns
     for k in h:
         if k in est and est[k] is not None:
             h[k] = est[k]
+
+    # Unpack spec_json blob back into header fields. Any SPEC_FIELDS missing
+    # from spec_json (e.g. fields added after the row was saved) keep their
+    # default value from _blank_hdr() — so old rows don't break.
+    try:
+        spec_dict = json.loads(est.get("spec_json") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        spec_dict = {}
+    for k in SPEC_FIELDS:
+        if k in spec_dict and spec_dict[k] is not None:
+            h[k] = spec_dict[k]
+
     st.session_state.est_hdr     = h
     st.session_state.est_parts   = json.loads(est.get("parts_json")     or "[]")
     st.session_state.est_pipes   = json.loads(est.get("pipes_json")     or "[]")
@@ -1637,8 +1668,21 @@ def _do_save(reset_after=False):
             st.error(f"❌ QTN **{qtn}** belongs to a different estimation.")
             return False
 
+    # Fields that don't go to the DB at all (UI-only or computed elsewhere)
     skip = {"customer_id"}
-    clean_h = {k: v for k, v in h.items() if k not in skip and v is not None}
+
+    # Extract SPEC_FIELDS into a separate JSON blob — they live in spec_json
+    # column, not as individual DB columns. This lets us add new spec fields
+    # later without ALTER TABLE.
+    spec_dict = {k: h.get(k) for k in SPEC_FIELDS if h.get(k) is not None}
+
+    # Build the clean header for DB write: skip the UI-only fields AND the
+    # spec fields (those are already captured in spec_dict above).
+    clean_h = {
+        k: v for k, v in h.items()
+        if k not in skip and k not in SPEC_FIELDS and v is not None
+    }
+
     row = {
         **clean_h,
         "parts_json":     json.dumps(st.session_state.est_parts),
@@ -1649,6 +1693,7 @@ def _do_save(reset_after=False):
         "bo_json":        json.dumps(st.session_state.est_bo),
         "oh_json":        json.dumps(st.session_state.est_oh),
         "fab_rates_json": json.dumps(st.session_state.fab_rates),
+        "spec_json":      json.dumps(spec_dict),
         "updated_at":     datetime.now().isoformat(),
     }
 
