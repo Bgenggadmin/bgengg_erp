@@ -3443,6 +3443,68 @@ with TAB_NEW:
             ]:
                 icon = "✅" if lo_t <= val <= hi_t else "⚠️"
                 st.write(f"{icon} **{label}** {val:.1f}%  _(target {lo_t}–{hi_t}%)_")
+
+            # ── Industry Benchmark Reference Table ───────────────────────────
+            # Shows the estimator the expected band for THIS specific
+            # equipment type + MOC combination, plus the full reference table
+            # for browsing other combinations.
+            with st.expander("📊 Industry Benchmark Reference", expanded=False):
+                bm = _get_benchmark_row(h.get("equipment_type", ""), h.get("moc_shell", ""))
+
+                if bm["matched"]:
+                    st.success(
+                        f"**Your job:** {bm['label']}  \n"
+                        f"_(matched: {h.get('equipment_type','')} + {h.get('moc_shell','')})_"
+                    )
+                else:
+                    st.info(
+                        f"**No exact match found.** Showing generic SS316L bands.  \n"
+                        f"_Current job: {h.get('equipment_type','—')} + {h.get('moc_shell','—')}_"
+                    )
+
+                # Show this job's specific bands as a focused list
+                st.markdown("**Expected bands for this job:**")
+                _bm_rows = [
+                    ("RM %",            T["rm_pct"],                     bm["rm_lo"],  bm["rm_hi"]),
+                    ("Fab Svc %",       T["fab_pct"],                    bm["fab_lo"], bm["fab_hi"]),
+                    ("Direct Cons %",   T.get("direct_cons_pct", 0),     bm["dc_lo"],  bm["dc_hi"]),
+                    ("Factory OH %",    T.get("factory_oh_pct", 0),      bm["foh_lo"], bm["foh_hi"]),
+                    ("Admin OH %",      T.get("admin_oh_pct", 0),        bm["aoh_lo"], bm["aoh_hi"]),
+                    ("Profit %",        T["profit_pct_actual"],          bm["p_lo"],   bm["p_hi"]),
+                ]
+                _bm_df = pd.DataFrame([{
+                    "Head":     label,
+                    "Actual":   f"{actual:.1f}%",
+                    "Target":   f"{lo}–{hi}%",
+                    "Status":   "✅ In range" if lo <= actual <= hi else "⚠️ Out of band",
+                } for label, actual, lo, hi in _bm_rows])
+                st.dataframe(_bm_df, use_container_width=True, hide_index=True)
+
+                # Full benchmark table for browsing other combinations
+                st.markdown("**Full reference table** _(all equipment × MOC combinations)_")
+                _full_df = pd.DataFrame([{
+                    "Equipment + MOC": row[2],
+                    "RM %":   f"{row[3]}–{row[4]}",
+                    "Fab %":  f"{row[5]}–{row[6]}",
+                    "DC %":   f"{row[7]}–{row[8]}",
+                    "FOH %":  f"{row[9]}–{row[10]}",
+                    "AOH %":  f"{row[11]}–{row[12]}",
+                    "Profit %": f"{row[13]}–{row[14]}",
+                } for row in BENCHMARK_TABLE])
+
+                # Highlight the matching row by appending a marker column.
+                # We re-match here to get the exact row's label.
+                _match_label = bm["label"] if bm["matched"] else None
+                _full_df.insert(0, "  ", _full_df["Equipment + MOC"].apply(
+                    lambda x: "👉" if x == _match_label else ""
+                ))
+                st.dataframe(_full_df, use_container_width=True, hide_index=True)
+
+                st.caption(
+                    "_These are engineering-grounded estimates, not industry-published benchmarks. "
+                    "After 30+ saved estimations, your own historical data will be more accurate — "
+                    "we'll switch to computed bands at that point._"
+                )
             for iss in margin_issues(T):
                 st.warning(iss)
             if not margin_issues(T):
