@@ -1502,7 +1502,35 @@ def _blank_hdr():
         packing_amt=5000.0, freight_amt=10000.0,
         gst_pct=18.0, engg_design_amt=25000.0, notes="",
         discount_pct=0.0,  # Discount applied on Ex-Works price (Option B cost structure)
+        # ── Detailed Specification fields (for customer Spec Sheet in Section 2) ──
+        # These print in the customer-facing quotation, organised into 6 sub-blocks.
+        # Leave empty to skip a row in the printed spec sheet.
 
+        # General
+        service_fluid="",                                  # e.g. "API intermediate / Solvent"
+
+        # Vessel dimensions
+        working_vol_ltrs=0.0,                              # 0 = auto-default to 80% of capacity
+
+        # Design conditions
+        design_pressure_shell="FV to 4.5 Bar",             # Internal/External pressure for shell
+        design_pressure_jacket="6.0 Bar / FV",             # Jacket / limpet design pressure
+        corrosion_allowance_mm=1.5,
+        joint_efficiency=0.85,
+        hydrotest_pressure="1.5× Design Pressure",
+
+        # Heating / Cooling
+        heating_medium="Steam / Hot Water / Thermic Fluid",
+        cooling_medium="Chilled Water / Brine",
+
+        # Agitator & Drive
+        agitator_rpm="",                                   # e.g. "60 RPM"
+        motor_hp="",                                       # e.g. "7.5 HP / 5.5 kW"
+        motor_make="ABB / Crompton / Bharat Bijlee",
+        gearbox_make="Bonfiglioli / Premium / Elecon",
+        gearbox_ratio="",                                  # e.g. "1:25"
+        seal_type="Single mechanical seal",
+        seal_make="EagleBurgmann / John Crane / Flowserve",
         scope_items=(
             "Pressure vessel / equipment fabricated as per approved GA drawing\n"
             "All nozzles, manholes, handholes and process connections per nozzle schedule\n"
@@ -2064,6 +2092,126 @@ with TAB_NEW:
                 label_visibility="collapsed",
             )
 
+        # ── NEW: Detailed Equipment Specification ──────────────────────────────
+        # Replaces the flat key-value Section 2 with a proper engineering spec sheet.
+        # Fields left blank simply don't print — clean for storage tanks etc.
+        with st.expander("📐 Section 2 — Detailed Equipment Specification", expanded=False):
+            st.caption("This prints as the Equipment Specification Sheet in your customer quotation. Leave any field blank to skip it.")
+
+            st.markdown("**Process / Service**")
+            h["service_fluid"] = st.text_input(
+                "Service fluid / Process",
+                value=h.get("service_fluid", ""),
+                placeholder="e.g. API intermediate / Solvent / Water",
+                key="spec_service",
+            )
+
+            st.markdown("**Vessel Dimensions**")
+            wv_c1, wv_c2 = st.columns(2)
+            _cap = float(h.get("capacity_ltrs", 0) or 0)
+            _wv_default = float(h.get("working_vol_ltrs", 0) or 0)
+            if _wv_default == 0 and _cap > 0:
+                # Auto-suggest 80% of capacity if not yet set
+                _wv_default = round(_cap * 0.8, 0)
+            h["working_vol_ltrs"] = wv_c1.number_input(
+                "Working Volume (Ltrs)",
+                value=_wv_default, min_value=0.0, step=50.0,
+                help=f"Typically 80% of gross capacity. Suggested: {_cap * 0.8:.0f} L",
+                key="spec_wv",
+            )
+
+            st.markdown("**Design Conditions**")
+            dc1, dc2 = st.columns(2)
+            h["design_pressure_shell"] = dc1.text_input(
+                "Design Pressure — Shell",
+                value=h.get("design_pressure_shell", h.get("design_pressure", "FV to 4.5 Bar")),
+                placeholder="e.g. FV to 4.5 Bar(g)",
+                key="spec_dps",
+            )
+            h["design_pressure_jacket"] = dc2.text_input(
+                "Design Pressure — Jacket",
+                value=h.get("design_pressure_jacket", "6.0 Bar / FV"),
+                placeholder="e.g. 6.0 Bar(g) / FV",
+                key="spec_dpj",
+            )
+            dc3, dc4, dc5 = st.columns(3)
+            h["hydrotest_pressure"] = dc3.text_input(
+                "Hydrotest Pressure",
+                value=h.get("hydrotest_pressure", "1.5× Design Pressure"),
+                key="spec_hyd",
+            )
+            h["corrosion_allowance_mm"] = dc4.number_input(
+                "Corrosion Allowance (mm)",
+                value=float(h.get("corrosion_allowance_mm", 1.5)),
+                min_value=0.0, max_value=10.0, step=0.5,
+                key="spec_ca",
+            )
+            h["joint_efficiency"] = dc5.number_input(
+                "Joint Efficiency",
+                value=float(h.get("joint_efficiency", 0.85)),
+                min_value=0.0, max_value=1.0, step=0.05,
+                help="0.85 = spot RT, 1.00 = full RT, 0.70 = no RT",
+                key="spec_je",
+            )
+
+            st.markdown("**Heating / Cooling Medium**")
+            hc1, hc2 = st.columns(2)
+            h["heating_medium"] = hc1.text_input(
+                "Heating Medium",
+                value=h.get("heating_medium", "Steam / Hot Water / Thermic Fluid"),
+                key="spec_hm",
+            )
+            h["cooling_medium"] = hc2.text_input(
+                "Cooling Medium",
+                value=h.get("cooling_medium", "Chilled Water / Brine"),
+                key="spec_cm",
+            )
+
+            st.markdown("**Agitator & Drive Assembly**  _(leave blank for non-agitated equipment)_")
+            ag1, ag2 = st.columns(2)
+            h["agitator_rpm"] = ag1.text_input(
+                "Agitator RPM",
+                value=h.get("agitator_rpm", ""),
+                placeholder="e.g. 60 RPM",
+                key="spec_rpm",
+            )
+            h["motor_hp"] = ag2.text_input(
+                "Motor Rating",
+                value=h.get("motor_hp", ""),
+                placeholder="e.g. 7.5 HP / 5.5 kW",
+                key="spec_hp",
+            )
+            ag3, ag4 = st.columns(2)
+            h["motor_make"] = ag3.text_input(
+                "Motor Make",
+                value=h.get("motor_make", "ABB / Crompton / Bharat Bijlee"),
+                key="spec_mm",
+            )
+            h["gearbox_make"] = ag4.text_input(
+                "Gearbox Make",
+                value=h.get("gearbox_make", "Bonfiglioli / Premium / Elecon"),
+                key="spec_gm",
+            )
+            ag5, ag6 = st.columns(2)
+            h["gearbox_ratio"] = ag5.text_input(
+                "Gearbox Ratio",
+                value=h.get("gearbox_ratio", ""),
+                placeholder="e.g. 1:25",
+                key="spec_gr",
+            )
+            h["seal_type"] = ag6.text_input(
+                "Mechanical Seal Type",
+                value=h.get("seal_type", "Single mechanical seal"),
+                placeholder="e.g. Single / Double, Cartridge",
+                key="spec_st",
+            )
+            h["seal_make"] = st.text_input(
+                "Mechanical Seal Make",
+                value=h.get("seal_make", "EagleBurgmann / John Crane / Flowserve"),
+                key="spec_sk",
+            )
+
+     
         with st.expander("💰 Section 6 — Commercial Terms", expanded=False):
             h["surface_finish"]    = st.text_input("Surface Finish (shown in Tech Basis)", value=h.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed"))
             h["price_basis"]       = st.text_area("Price Basis",        value=h.get("price_basis",""),  height=60)
