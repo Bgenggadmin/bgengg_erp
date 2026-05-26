@@ -3260,10 +3260,8 @@ with TAB_NEW:
             _def_qty   = float(_editing_oh.get("qty", 1)) if _editing_oh else 1.0
             _def_rate  = float(_editing_oh.get("rate", 0)) if _editing_oh else 0.0
             _def_desc  = _editing_oh.get("description", "") if _editing_oh else ""
-
             _ohk = f"eoh{_eohi}_" if _eohi is not None else "oh_new_"
-
-           # First row: OH Code selector + Description override
+            # First row: OH Code selector + Description override
             # We split into two rows so the form can adapt to UOM type below
             ot1, ot2 = st.columns([2, 2])
             _oh_opts = oh_codes or ["—"]
@@ -3450,7 +3448,6 @@ with TAB_NEW:
         h["packing_amt"]       = s4.number_input("Packing ₹",     value=float(h["packing_amt"]),       min_value=0.0, step=500.0)
         h["freight_amt"]       = s5.number_input("Freight ₹",     value=float(h["freight_amt"]),       min_value=0.0, step=500.0)
         h["gst_pct"]           = s6.number_input("GST %",         value=float(h["gst_pct"]),           min_value=0.0, max_value=28.0, step=0.5)
-
         # Row 2: OH absorption rates + Discount (Option C)
         d1, d2, d3 = st.columns(3)
         h["factory_oh_pct"] = d1.number_input(
@@ -3562,7 +3559,8 @@ with TAB_NEW:
                         "_Tip: any factory-OH line items you add in the OH form below "
                         "are ON TOP of the absorption rate. Use only for one-off costs._"
                     )
-           with st.expander(
+
+            with st.expander(
                 f"🔍 Admin Overhead breakdown  "
                 f"(₹{T.get('tot_admin_oh', 0):,.0f})"
             ):
