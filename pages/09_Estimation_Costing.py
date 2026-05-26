@@ -3231,31 +3231,124 @@ with TAB_NEW:
 
             _ohk = f"eoh{_eohi}_" if _eohi is not None else "oh_new_"
 
-            o1, o2, o3, o4 = st.columns(4)
+           # First row: OH Code selector + Description override
+            # We split into two rows so the form can adapt to UOM type below
+            ot1, ot2 = st.columns([2, 2])
             _oh_opts = oh_codes or ["—"]
             _oh_idx  = _oh_opts.index(_def_code) if _def_code in _oh_opts else 0
-            oh_sel = o1.selectbox("OH Code", _oh_opts, index=_oh_idx, key=f"{_ohk}sel")
-            oh_qty = o2.number_input("Qty / Hours / Area", value=_def_qty, min_value=0.0, step=1.0, key=f"{_ohk}q")
-            oh_rov = o3.number_input("Rate Override (0=master)", value=_def_rate, min_value=0.0, key=f"{_ohk}r")
-            oh_dov = o4.text_input("Description override (optional)", value=_def_desc, key=f"{_ohk}d")
-            oh_inf = oh_master.get(oh_sel, {})
-            st.caption(f"Selected: **{oh_inf.get('description', '')}** | Type: {oh_inf.get('oh_type', '')} | UOM: {oh_inf.get('uom', '')} | Rate: ₹{oh_inf.get('rate', 0):,.0f}")
+            oh_sel = ot1.selectbox("OH Code", _oh_opts, index=_oh_idx, key=f"{_ohk}sel")
+            oh_dov = ot2.text_input("Description override (optional)", value=_def_desc, key=f"{_ohk}d")
+
+            # Inspect the chosen master to drive the form's UOM-aware behaviour
+            oh_inf      = oh_master.get(oh_sel, {})
+            _uom        = oh_inf.get("uom", "")
+            _master_rate = oh_inf.get("rate", 0)
+            _is_pct     = (_uom == "%")
+            _is_lump    = (_uom == "LS")
+
+            # Second row: inputs that adapt to UOM
+            #
+            # For UOM = "%"  : Qty is ignored. "Rate" is actually a percentage,
+            #                   applied to (RM + Fab + BO) base. So we hide Qty,
+            #                   show only the percentage override, and show what
+            #                   the base will be.
+            # For UOM = "LS" : Qty fixed at 1. Show only rate (the lumpsum).
+            # For others     : Show Qty and Rate normally.
+            if _is_pct:
+                # Compute the % base preview (RM + Fab + BO) so the user knows
+                # what they're applying the percentage to.
+                _pct_base = (
+                    sum(p.get("amount", 0) for p in st.session_state.est_parts) +
+                    sum(p.get("amount", 0) for p in st.session_state.est_pipes) +
+                    sum(p.get("amount", 0) for p in st.session_state.est_flanges) +
+                    sum(p.get("amount", 0) for p in st.session_state.est_struct) +
+                    sum(f.get("amount", 0) for f in st.session_state.est_fab) +
+                    sum(b.get("amount", 0) for b in st.session_state.est_bo)
+                )
+                op1, op2 = st.columns(2)
+                oh_rov = op1.number_input(
+                    "Percentage Override  (0 = use master %)",
+                    value=_def_rate, min_value=0.0, max_value=100.0, step=0.5,
+                    key=f"{_ohk}r",
+                    help=f"Master % is {_master_rate}%. This will be applied to the base shown alongside.",
+                )
+                _effective_pct = oh_rov if oh_rov > 0 else _master_rate
+                op2.metric(
+                    "Base (RM + Fab + BO)",
+                    f"₹{_pct_base:,.0f}",
+                    delta=f"→ ₹{_pct_base * _effective_pct / 100:,.0f}  @ {_effective_pct}%",
+                    delta_color="off",
+                )
+                # Keep oh_qty stable for storage but it's not used in math
+                oh_qty = 1.0
+                st.caption(
+                    f"Selected: **{oh_inf.get('description', '')}** | "
+                    f"Type: {oh_inf.get('oh_type', '')} | UOM: **%** (percentage on RM + Fab + BO) | "
+                    f"Master rate: {_master_rate}%"
+                )
+            elif _is_lump:
+                op1, op2 = st.columns(2)
+                oh_rov = op1.number_input(
+                    "Lumpsum Amount Override (₹)  (0 = use master)",
+                    value=_def_rate, min_value=0.0, step=500.0, key=f"{_ohk}r",
+                    help=f"Master lumpsum is ₹{_master_rate:,.0f}.",
+                )
+                oh_qty = 1.0
+                op2.caption("_Qty is fixed at 1 for lumpsum items._")
+                st.caption(
+                    f"Selected: **{oh_inf.get('description', '')}** | "
+                    f"Type: {oh_inf.get('oh_type', '')} | UOM: **LS** (lumpsum) | "
+                    f"Master rate: ₹{_master_rate:,.0f}"
+                )
+            else:
+                # Standard UOM (Hr, Sq.M, m, Nos, etc.) — show both Qty and Rate
+                # Use a UOM-appropriate label so the user knows what to enter
+                _qty_label_by_uom = {
+                    "Hr":   "Hours",
+                    "Sq.M": "Area (m²)",
+                    "m":    "Length (m)",
+                    "Nos":  "Number",
+                }
+                _qty_label = _qty_label_by_uom.get(_uom, "Quantity")
+                op1, op2 = st.columns(2)
+                oh_qty = op1.number_input(
+                    f"{_qty_label}",
+                    value=_def_qty, min_value=0.0, step=1.0, key=f"{_ohk}q",
+                )
+                oh_rov = op2.number_input(
+                    f"Rate ₹/{_uom or 'unit'}  (0 = use master)",
+                    value=_def_rate, min_value=0.0, key=f"{_ohk}r",
+                    help=f"Master rate is ₹{_master_rate:,.0f}/{_uom or 'unit'}.",
+                )
+                st.caption(
+                    f"Selected: **{oh_inf.get('description', '')}** | "
+                    f"Type: {oh_inf.get('oh_type', '')} | UOM: {_uom or '—'} | "
+                    f"Master rate: ₹{_master_rate:,.0f}/{_uom or 'unit'}"
+                )
 
             bcol1, bcol2 = st.columns([3, 1])
             _btn_label = "✅ Update Overhead" if _editing_oh else "➕ Add Overhead"
             if bcol1.button(_btn_label, type="primary", key=f"{_ohk}btn", use_container_width=True):
-                rate = oh_rov if oh_rov > 0 else oh_inf.get("rate", 0)
-                uom  = oh_inf.get("uom", "")
+                rate = oh_rov if oh_rov > 0 else _master_rate
                 desc = oh_dov or oh_inf.get("description", "")
-                if uom == "%":
-                    base   = sum(p.get("amount", 0) for p in st.session_state.est_parts) + \
-                             sum(p.get("amount", 0) for p in st.session_state.est_pipes) + \
-                             sum(p.get("amount", 0) for p in st.session_state.est_flanges)
+                if _is_pct:
+                    # % base = RM + Fab + BO (everything before OH/consumables)
+                    # NOT tot_mfg — that would cause circularity.
+                    base = (
+                        sum(p.get("amount", 0) for p in st.session_state.est_parts) +
+                        sum(p.get("amount", 0) for p in st.session_state.est_pipes) +
+                        sum(p.get("amount", 0) for p in st.session_state.est_flanges) +
+                        sum(p.get("amount", 0) for p in st.session_state.est_struct) +
+                        sum(f.get("amount", 0) for f in st.session_state.est_fab) +
+                        sum(b.get("amount", 0) for b in st.session_state.est_bo)
+                    )
                     amount = base * rate / 100
+                elif _is_lump:
+                    amount = rate                        # Lumpsum → rate IS the amount
                 else:
                     amount = rate * oh_qty
                 new_oh = dict(oh_code=oh_sel, description=desc,
-                              oh_type=oh_inf.get("oh_type", ""), uom=uom,
+                              oh_type=oh_inf.get("oh_type", ""), uom=_uom,
                               qty=oh_qty, rate=rate, amount=round(amount, 2))
                 if _editing_oh is not None:
                     st.session_state.est_oh[_eohi] = new_oh
