@@ -2849,6 +2849,7 @@ with TAB_NEW:
         else:
             st.warning("⚠️ No Quotation Number set — go to Tab 1️⃣ Header and enter a QTN number before saving.")
 
+        # Row 1: cost-build inputs
         s1, s2, s3, s4, s5, s6 = st.columns(6)
         h["profit_margin_pct"] = s1.number_input("Profit %",      value=float(h["profit_margin_pct"]), min_value=0.0, max_value=60.0, step=0.5)
         h["contingency_pct"]   = s2.number_input("Contingency %", value=float(h["contingency_pct"]),   min_value=0.0, max_value=20.0, step=0.5)
@@ -2857,18 +2858,31 @@ with TAB_NEW:
         h["freight_amt"]       = s5.number_input("Freight ₹",     value=float(h["freight_amt"]),       min_value=0.0, step=500.0)
         h["gst_pct"]           = s6.number_input("GST %",         value=float(h["gst_pct"]),           min_value=0.0, max_value=28.0, step=0.5)
 
+        # Row 2: discount input (NEW — Option B)
+        d1, _d2, _d3 = st.columns([1, 4, 1])
+        h["discount_pct"] = d1.number_input(
+            "Discount %  (on Ex-Works)",
+            value=float(h.get("discount_pct", 0.0)),
+            min_value=0.0, max_value=50.0, step=0.5,
+            help="Commercial discount offered to customer. Reduces Ex-Works price and the GST charged on it.",
+        )
+
         T = calc_totals(
             st.session_state.est_parts, st.session_state.est_pipes, st.session_state.est_flanges,
             st.session_state.est_struct,
             st.session_state.est_fab, st.session_state.est_bo, st.session_state.est_oh,
             h["profit_margin_pct"], h["contingency_pct"],
             h["packing_amt"], h["freight_amt"], h["gst_pct"], h["engg_design_amt"],
+            discount_pct=h.get("discount_pct", 0.0),   # NEW for Option B
         )
 
         left, right = st.columns([3, 2])
         with left:
             st.markdown("**Cost Breakup**")
-            cost_df = pd.DataFrame([
+
+            # Build cost rows — Option B structure with Factory/Admin OH split,
+            # Discount and Net Realisation lines.
+            _cost_rows = [
                 ("Plates & Parts",        T["tot_plates"]),
                 ("Pipes",                 T["tot_pipes"]),
                 ("Flanges",               T["tot_flanges"]),
@@ -2876,18 +2890,62 @@ with TAB_NEW:
                 ("▶ Total Raw Material",  T["tot_rm"]),
                 ("Fabrication Services",  T["tot_fab"]),
                 ("Bought-Out Items",      T["tot_bo"]),
-                ("Additional Overheads",  T["tot_oh"]),
+                ("Factory Overhead",      T["tot_factory_oh"]),
+                ("Admin Overhead",        T["tot_admin_oh"]),
                 ("Engg & ASME Design",    T["engg_design"]),
                 ("▶ Total Mfg Cost",      T["tot_mfg"]),
                 ("Contingency",           T["cont_amt"]),
                 ("Profit",                T["profit_amt"]),
                 ("Packing & Freight",     T["packing"] + T["freight"]),
                 ("▶ Ex-Works Price",      T["ex_works"]),
-                ("GST",                   T["gst_amt"]),
-                ("▶ FOR Price",           T["for_price"]),
-            ], columns=["Component", "Amount (₹)"])
+            ]
+            # Show Discount line only if there is a discount, to keep the table clean
+            if T.get("discount_amt", 0) > 0:
+                _cost_rows.append(("Discount",          -T["discount_amt"]))
+                _cost_rows.append(("▶ Net Realisation", T["net_realisation"]))
+            _cost_rows.append(("GST",                   T["gst_amt"]))
+            _cost_rows.append(("▶ FOR Price",           T["for_price"]))
+
+            cost_df = pd.DataFrame(_cost_rows, columns=["Component", "Amount (₹)"])
             cost_df["Amount (₹)"] = cost_df["Amount (₹)"].map(lambda x: f"₹{x:,.0f}")
             st.dataframe(cost_df, use_container_width=True, hide_index=True)
+
+            # ── Drill-down: actual line items in each OH bucket ──────────────
+            # Shows the estimator exactly what's inside Factory OH and Admin OH,
+            # solves the "Additional Overheads is opaque" problem.
+            with st.expander(
+                f"🔍 Factory Overhead drill-down ({len(T.get('oh_lines_factory', []))} items, "
+                f"₹{T.get('tot_factory_oh', 0):,.0f})"
+            ):
+                _fac = T.get("oh_lines_factory", [])
+                if _fac:
+                    _df_fac = pd.DataFrame([{
+                        "Description": o.get("description", ""),
+                        "Type":        o.get("oh_type", ""),
+                        "Qty":         o.get("qty", 0),
+                        "Rate (₹)":    f"₹{o.get('rate', 0):,.0f}",
+                        "Amount (₹)":  f"₹{o.get('amount', 0):,.0f}",
+                    } for o in _fac])
+                    st.dataframe(_df_fac, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("_No factory overhead items added. Add in Tab 6️⃣ Bought-Out & OH._")
+
+            with st.expander(
+                f"🔍 Admin Overhead drill-down ({len(T.get('oh_lines_admin', []))} items, "
+                f"₹{T.get('tot_admin_oh', 0):,.0f})"
+            ):
+                _adm = T.get("oh_lines_admin", [])
+                if _adm:
+                    _df_adm = pd.DataFrame([{
+                        "Description": o.get("description", ""),
+                        "Type":        o.get("oh_type", ""),
+                        "Qty":         o.get("qty", 0),
+                        "Rate (₹)":    f"₹{o.get('rate', 0):,.0f}",
+                        "Amount (₹)":  f"₹{o.get('amount', 0):,.0f}",
+                    } for o in _adm])
+                    st.dataframe(_df_adm, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("_No admin overhead items. DOCS/MISC items in Tab 6 land here._")
 
         with right:
             st.markdown("**Margin Health**")
@@ -2910,13 +2968,31 @@ with TAB_NEW:
             } for m in [8, 10, 12, 15, 18, 20]]), hide_index=True, use_container_width=True)
 
         st.divider()
+        # Row 1: cost build-up metrics
         k1, k2, k3, k4, k5, k6 = st.columns(6)
         k1.metric("Raw Material", f"₹{T['tot_rm']:,.0f}")
         k2.metric("Fabrication",  f"₹{T['tot_fab']:,.0f}")
-        k3.metric("Total Mfg",   f"₹{T['tot_mfg']:,.0f}")
-        k4.metric("Ex-Works",    f"₹{T['ex_works']:,.0f}")
-        k5.metric("GST",         f"₹{T['gst_amt']:,.0f}")
-        k6.metric("FOR Price",   f"₹{T['for_price']:,.0f}")
+        k3.metric("Total Mfg",    f"₹{T['tot_mfg']:,.0f}")
+        k4.metric("Ex-Works",     f"₹{T['ex_works']:,.0f}")
+        k5.metric("GST",          f"₹{T['gst_amt']:,.0f}")
+        k6.metric("FOR Price",    f"₹{T['for_price']:,.0f}")
+
+        # Row 2: realisation & profit metrics (NEW — Option B)
+        # Shows what B&G actually keeps after discount, and the gross profit.
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(
+            "Discount",
+            f"₹{T.get('discount_amt', 0):,.0f}",
+            delta=f"-{T.get('discount_pct', 0):.1f}%" if T.get('discount_amt', 0) > 0 else None,
+            delta_color="inverse",
+        )
+        m2.metric("Net Realisation", f"₹{T.get('net_realisation', T['ex_works']):,.0f}")
+        m3.metric(
+            "Gross Profit",
+            f"₹{T.get('gross_profit', 0):,.0f}",
+            delta=f"{T.get('gross_profit_pct', 0):.1f}%",
+        )
+        m4.metric("Factory OH + Admin OH", f"₹{T.get('tot_factory_oh', 0) + T.get('tot_admin_oh', 0):,.0f}")
         st.divider()
 
         b1, b2, b3 = st.columns(3)
