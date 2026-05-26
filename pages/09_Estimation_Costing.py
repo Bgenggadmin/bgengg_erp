@@ -101,11 +101,18 @@ DENSITY = {"SS316L": 8000, "SS304": 8000, "MS": 7850, "EN8": 7800, "Ti": 4500, "
 # Edit this dict any time to reclassify — no DB change needed.
 # ─────────────────────────────────────────────────────────────────────────────
 OH_BUCKET = {
-    "LABOUR":         "FACTORY_OH",
+    # FACTORY_OH = indirect production costs (cannot trace to one job)
+    "LABOUR":         "FACTORY_OH",   # supervision, indirect shop labour
     "LABOUR_BUFF":    "FACTORY_OH",
-    "CONSUMABLES":    "FACTORY_OH",
-    "TESTING":        "FACTORY_OH",
-    "ELECTRO_POLISH": "FACTORY_OH",
+    "TESTING":        "FACTORY_OH",   # hydro test consumables, calibration
+    "ELECTRO_POLISH": "FACTORY_OH",   # process consumables for EP
+
+    # DIRECT_CONSUMABLES = consumed directly on this job (traceable)
+    # Welding gas, electrodes, grinding wheels, polishing belts, etc.
+    # Moved out of FACTORY_OH per cost-accounting standards (ICMAI / CIMA).
+    "CONSUMABLES":    "DIRECT_CONSUMABLES",
+
+    # ADMIN_OH = office, documentation, miscellaneous indirect costs
     "DOCS":           "ADMIN_OH",
     "MISC":           "ADMIN_OH",
 }
@@ -519,22 +526,30 @@ def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
     tot_fab = sum(f.get("amount", 0) for f in fab_services)
     tot_bo  = sum(p.get("amount", 0) for p in bo_items)
 
-    # ── Overhead split: Factory vs Admin (NEW for Option B) ──────────────────
-    # Walk each OH line, look up its oh_type in OH_BUCKET, classify, and
-    # collect both the totals AND the line items themselves for drill-down.
-    oh_lines_factory = []
-    oh_lines_admin   = []
+    # ── Overhead split: Factory vs Admin vs Direct Consumables ───────────────
+    # Walk each OH line, look up its oh_type in OH_BUCKET, classify into
+    # one of THREE buckets, and collect both totals AND line items for drill-down.
+    #
+    # Why three buckets now? Direct Consumables (welding gas, electrodes,
+    # grinding wheels) are traceable to a specific job — they're direct costs,
+    # not overhead. Splitting them out matches standard cost-accounting practice
+    # and stops them inflating "Factory Overhead" artificially.
+    oh_lines_factory     = []
+    oh_lines_admin       = []
+    oh_lines_direct_cons = []
     for o in oh_items:
         bucket = OH_BUCKET.get(o.get("oh_type", ""), OH_BUCKET_DEFAULT)
         if bucket == "ADMIN_OH":
             oh_lines_admin.append(o)
+        elif bucket == "DIRECT_CONSUMABLES":
+            oh_lines_direct_cons.append(o)
         else:
             oh_lines_factory.append(o)
 
-    tot_factory_oh = sum(o.get("amount", 0) for o in oh_lines_factory)
-    tot_admin_oh   = sum(o.get("amount", 0) for o in oh_lines_admin)
-    tot_oh         = tot_factory_oh + tot_admin_oh   # keep for back-compat
-
+    tot_factory_oh     = sum(o.get("amount", 0) for o in oh_lines_factory)
+    tot_admin_oh       = sum(o.get("amount", 0) for o in oh_lines_admin)
+    tot_direct_cons    = sum(o.get("amount", 0) for o in oh_lines_direct_cons)
+    tot_oh             = tot_factory_oh + tot_admin_oh   # back-compat: OH sum
     # ── Legacy sub-totals (kept so old display code still works) ─────────────
     # These were used by the old margin_issues() check and by the Excel sheet.
     tot_lab   = sum(o.get("amount", 0) for o in oh_items
@@ -580,10 +595,12 @@ def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
         # Overheads — both old and new keys present
         tot_lab=tot_lab, tot_cons=tot_cons, tot_other=tot_other,
         tot_oh=tot_oh,
-        tot_factory_oh=tot_factory_oh,                # NEW
-        tot_admin_oh=tot_admin_oh,                    # NEW
-        oh_lines_factory=oh_lines_factory,            # NEW — for drill-down
-        oh_lines_admin=oh_lines_admin,                # NEW — for drill-down
+        tot_factory_oh=tot_factory_oh,                # NEW (Option B)
+        tot_admin_oh=tot_admin_oh,                    # NEW (Option B)
+        tot_direct_cons=tot_direct_cons,              # NEW (Option 1 — direct consumables)
+        oh_lines_factory=oh_lines_factory,            # drill-down list
+        oh_lines_admin=oh_lines_admin,                # drill-down list
+        oh_lines_direct_cons=oh_lines_direct_cons,    # NEW drill-down list
         # Engineering
         engg_design=engg_design,
         # Manufacturing build-up
@@ -603,17 +620,35 @@ def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
         lab_pct=tot_lab / safe * 100,
         oh_pct=(tot_cons + tot_other) / safe * 100,
         profit_pct_actual=profit_amt / safe * 100,
-        # NEW: percentages for the two new buckets
+        # NEW: percentages for the three buckets
         factory_oh_pct=tot_factory_oh / safe * 100,
         admin_oh_pct=tot_admin_oh / safe * 100,
+        direct_cons_pct=tot_direct_cons / safe * 100,   # NEW
         gross_profit_pct=gross_profit / safe * 100,
+        mfg_pct=tot_mfg / safe * 100,                   # NEW (for Total Mfg % check)
     )
 def margin_issues(t):
+    """
+    Returns a list of human-readable warnings for any cost-head that falls
+    outside its industry-standard target band for Indian SS316L pharma
+    fabrication at SME scale.
+
+    Bands updated for Option 1 cost structure (Direct Consumables separated
+    from Factory Overhead per ICMAI / CIMA cost-accounting standards).
+    """
     out = []
-    if not (45 <= t["rm_pct"]  <= 60): out.append(f"RM {t['rm_pct']:.1f}% — target 45–60%")
-    if not (15 <= t["fab_pct"] <= 25): out.append(f"Fabrication {t['fab_pct']:.1f}% — target 15–25%")
-    if not (8  <= t["oh_pct"]  <= 15): out.append(f"OH {t['oh_pct']:.1f}% — target 8–15%")
-    if t["profit_pct_actual"] < 12:    out.append(f"Profit {t['profit_pct_actual']:.1f}% — min 12%")
+    if not (48 <= t["rm_pct"] <= 62):
+        out.append(f"RM {t['rm_pct']:.1f}% — target 48–62%")
+    if not (14 <= t["fab_pct"] <= 22):
+        out.append(f"Fabrication {t['fab_pct']:.1f}% — target 14–22%")
+    if not (2 <= t.get("direct_cons_pct", 0) <= 5):
+        out.append(f"Direct Consumables {t.get('direct_cons_pct', 0):.1f}% — target 2–5%")
+    if not (3 <= t.get("factory_oh_pct", 0) <= 7):
+        out.append(f"Factory OH {t.get('factory_oh_pct', 0):.1f}% — target 3–7%")
+    if not (2 <= t.get("admin_oh_pct", 0) <= 5):
+        out.append(f"Admin OH {t.get('admin_oh_pct', 0):.1f}% — target 2–5%")
+    if t["profit_pct_actual"] < 12:
+        out.append(f"Profit {t['profit_pct_actual']:.1f}% — min 12%")
     return out
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3195,6 +3230,7 @@ with TAB_NEW:
                 ("▶ Total Raw Material",  T["tot_rm"]),
                 ("Fabrication Services",  T["tot_fab"]),
                 ("Bought-Out Items",      T["tot_bo"]),
+                ("Direct Consumables",    T.get("tot_direct_cons", 0)),  # NEW — direct cost, not OH
                 ("Factory Overhead",      T["tot_factory_oh"]),
                 ("Admin Overhead",        T["tot_admin_oh"]),
                 ("Engg & ASME Design",    T["engg_design"]),
@@ -3215,9 +3251,24 @@ with TAB_NEW:
             cost_df["Amount (₹)"] = cost_df["Amount (₹)"].map(lambda x: f"₹{x:,.0f}")
             st.dataframe(cost_df, use_container_width=True, hide_index=True)
 
-            # ── Drill-down: actual line items in each OH bucket ──────────────
-            # Shows the estimator exactly what's inside Factory OH and Admin OH,
-            # solves the "Additional Overheads is opaque" problem.
+            # ── Drill-down: actual line items in each bucket ─────────────────
+            with st.expander(
+                f"🔍 Direct Consumables drill-down ({len(T.get('oh_lines_direct_cons', []))} items, "
+                f"₹{T.get('tot_direct_cons', 0):,.0f})"
+            ):
+                _dc = T.get("oh_lines_direct_cons", [])
+                if _dc:
+                    _df_dc = pd.DataFrame([{
+                        "Description": o.get("description", ""),
+                        "Type":        o.get("oh_type", ""),
+                        "Qty":         o.get("qty", 0),
+                        "Rate (₹)":    f"₹{o.get('rate', 0):,.0f}",
+                        "Amount (₹)":  f"₹{o.get('amount', 0):,.0f}",
+                    } for o in _dc])
+                    st.dataframe(_df_dc, use_container_width=True, hide_index=True)
+                else:
+                    st.caption("_No direct consumables. Welding gas, electrodes, grinding wheels etc. — add in Tab 6️⃣._")
+
             with st.expander(
                 f"🔍 Factory Overhead drill-down ({len(T.get('oh_lines_factory', []))} items, "
                 f"₹{T.get('tot_factory_oh', 0):,.0f})"
@@ -3233,7 +3284,7 @@ with TAB_NEW:
                     } for o in _fac])
                     st.dataframe(_df_fac, use_container_width=True, hide_index=True)
                 else:
-                    st.caption("_No factory overhead items added. Add in Tab 6️⃣ Bought-Out & OH._")
+                    st.caption("_No factory overhead items. Power, supervision, indirect labour — add in Tab 6️⃣._")
 
             with st.expander(
                 f"🔍 Admin Overhead drill-down ({len(T.get('oh_lines_admin', []))} items, "
@@ -3254,11 +3305,14 @@ with TAB_NEW:
 
         with right:
             st.markdown("**Margin Health**")
+            st.caption("_Targets calibrated for Indian SS316L pharma fabrication at SME scale._")
             for label, val, lo_t, hi_t in [
-                ("RM %",      T["rm_pct"],           45, 60),
-                ("Fab Svc %", T["fab_pct"],           15, 25),
-                ("OH %",      T["oh_pct"],             8, 15),
-                ("Profit %",  T["profit_pct_actual"], 12, 20),
+                ("RM %",            T["rm_pct"],                       48, 62),
+                ("Fab Svc %",       T["fab_pct"],                      14, 22),
+                ("Direct Cons %",   T.get("direct_cons_pct", 0),        2,  5),
+                ("Factory OH %",    T.get("factory_oh_pct", 0),         3,  7),
+                ("Admin OH %",      T.get("admin_oh_pct", 0),           2,  5),
+                ("Profit %",        T["profit_pct_actual"],            12, 20),
             ]:
                 icon = "✅" if lo_t <= val <= hi_t else "⚠️"
                 st.write(f"{icon} **{label}** {val:.1f}%  _(target {lo_t}–{hi_t}%)_")
