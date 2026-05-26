@@ -494,39 +494,120 @@ def calc_shell_volume_ltrs(dia_mm, ht_mm):
     return PI * (_m(dia_mm) / 2) ** 2 * _m(ht_mm) * 1000
 
 def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
-                profit_pct, contingency_pct, packing, freight, gst_pct, engg_design):
+                profit_pct, contingency_pct, packing, freight, gst_pct, engg_design,
+                discount_pct=0.0):
+    """
+    Compute all cost totals for an estimation.
+
+    Option B cost structure (internal):
+      - Splits OH into Factory OH (shop floor) and Admin OH (office/docs)
+      - Adds Discount on Ex-Works price
+      - Adds Gross Profit line
+      - Returns drill-down line lists for Tab 6 expandable view
+
+    Backward compatibility: all original keys are preserved so existing UI,
+    DOCX generator and Excel fact sheet continue to work without changes.
+    """
+    # ── Direct Material totals (unchanged) ───────────────────────────────────
     tot_plates  = sum(p.get("amount", 0) for p in parts)
     tot_pipes   = sum(p.get("amount", 0) for p in pipes)
     tot_flanges = sum(p.get("amount", 0) for p in flanges)
     tot_struct  = sum(p.get("amount", 0) for p in struct)
     tot_rm      = tot_plates + tot_pipes + tot_flanges + tot_struct
-    tot_fab     = sum(f.get("amount", 0) for f in fab_services)
-    tot_bo      = sum(p.get("amount", 0) for p in bo_items)
-    tot_lab     = sum(o.get("amount", 0) for o in oh_items if o.get("oh_type") in ("LABOUR", "LABOUR_BUFF"))
-    tot_cons    = sum(o.get("amount", 0) for o in oh_items if o.get("oh_type") == "CONSUMABLES")
-    tot_other   = sum(o.get("amount", 0) for o in oh_items if o.get("oh_type") not in ("LABOUR", "LABOUR_BUFF", "CONSUMABLES"))
-    tot_oh      = tot_lab + tot_cons + tot_other
-    tot_mfg     = tot_rm + tot_fab + tot_bo + tot_oh + engg_design
-    cont_amt    = tot_mfg * contingency_pct / 100
-    cbm         = tot_mfg + cont_amt
-    profit_amt  = cbm * profit_pct / 100
-    ex_works    = cbm + profit_amt + packing + freight
-    gst_amt     = ex_works * gst_pct / 100
-    for_price   = ex_works + gst_amt
-    safe        = ex_works if ex_works else 1
-    return dict(
-        tot_plates=tot_plates, tot_pipes=tot_pipes, tot_flanges=tot_flanges,
-        tot_struct=tot_struct,
-        tot_rm=tot_rm, tot_fab=tot_fab, tot_bo=tot_bo, tot_lab=tot_lab,
-        tot_cons=tot_cons, tot_other=tot_other, tot_oh=tot_oh,
-        engg_design=engg_design, tot_mfg=tot_mfg, cont_amt=cont_amt,
-        cbm=cbm, profit_amt=profit_amt, packing=packing, freight=freight,
-        ex_works=ex_works, gst_amt=gst_amt, for_price=for_price,
-        rm_pct=tot_rm / safe * 100, fab_pct=tot_fab / safe * 100,
-        lab_pct=tot_lab / safe * 100, oh_pct=(tot_cons + tot_other) / safe * 100,
-        profit_pct_actual=profit_amt / safe * 100,
-    )
 
+    # ── Fabrication services & Bought-out (unchanged) ────────────────────────
+    tot_fab = sum(f.get("amount", 0) for f in fab_services)
+    tot_bo  = sum(p.get("amount", 0) for p in bo_items)
+
+    # ── Overhead split: Factory vs Admin (NEW for Option B) ──────────────────
+    # Walk each OH line, look up its oh_type in OH_BUCKET, classify, and
+    # collect both the totals AND the line items themselves for drill-down.
+    oh_lines_factory = []
+    oh_lines_admin   = []
+    for o in oh_items:
+        bucket = OH_BUCKET.get(o.get("oh_type", ""), OH_BUCKET_DEFAULT)
+        if bucket == "ADMIN_OH":
+            oh_lines_admin.append(o)
+        else:
+            oh_lines_factory.append(o)
+
+    tot_factory_oh = sum(o.get("amount", 0) for o in oh_lines_factory)
+    tot_admin_oh   = sum(o.get("amount", 0) for o in oh_lines_admin)
+    tot_oh         = tot_factory_oh + tot_admin_oh   # keep for back-compat
+
+    # ── Legacy sub-totals (kept so old display code still works) ─────────────
+    # These were used by the old margin_issues() check and by the Excel sheet.
+    tot_lab   = sum(o.get("amount", 0) for o in oh_items
+                    if o.get("oh_type") in ("LABOUR", "LABOUR_BUFF"))
+    tot_cons  = sum(o.get("amount", 0) for o in oh_items
+                    if o.get("oh_type") == "CONSUMABLES")
+    tot_other = sum(o.get("amount", 0) for o in oh_items
+                    if o.get("oh_type") not in ("LABOUR", "LABOUR_BUFF", "CONSUMABLES"))
+
+    # ── Manufacturing cost build-up ──────────────────────────────────────────
+    tot_mfg    = tot_rm + tot_fab + tot_bo + tot_oh + engg_design
+    cont_amt   = tot_mfg * contingency_pct / 100
+    cbm        = tot_mfg + cont_amt   # Cost Base for Margin
+
+    # ── Profit & Ex-Works ────────────────────────────────────────────────────
+    profit_amt = cbm * profit_pct / 100
+    ex_works   = cbm + profit_amt + packing + freight
+
+    # ── NEW: Discount applied on Ex-Works ────────────────────────────────────
+    discount_amt    = ex_works * discount_pct / 100
+    net_realisation = ex_works - discount_amt   # what B&G actually keeps
+
+    # ── NEW: Gross Profit ────────────────────────────────────────────────────
+    # Definition: Net Realisation − Total Mfg Cost − Contingency
+    # i.e. what's left after all manufacturing costs, before tax
+    gross_profit = net_realisation - tot_mfg - cont_amt
+
+    # ── GST & FOR ────────────────────────────────────────────────────────────
+    # GST is charged on Net Realisation (after discount), per standard practice
+    gst_amt   = net_realisation * gst_pct / 100
+    for_price = net_realisation + gst_amt
+
+    # ── Margin health percentages ────────────────────────────────────────────
+    safe = ex_works if ex_works else 1
+    return dict(
+        # Direct Material
+        tot_plates=tot_plates, tot_pipes=tot_pipes, tot_flanges=tot_flanges,
+        tot_struct=tot_struct, tot_rm=tot_rm,
+        # Conversion / Fab
+        tot_fab=tot_fab,
+        # Bought-out
+        tot_bo=tot_bo,
+        # Overheads — both old and new keys present
+        tot_lab=tot_lab, tot_cons=tot_cons, tot_other=tot_other,
+        tot_oh=tot_oh,
+        tot_factory_oh=tot_factory_oh,                # NEW
+        tot_admin_oh=tot_admin_oh,                    # NEW
+        oh_lines_factory=oh_lines_factory,            # NEW — for drill-down
+        oh_lines_admin=oh_lines_admin,                # NEW — for drill-down
+        # Engineering
+        engg_design=engg_design,
+        # Manufacturing build-up
+        tot_mfg=tot_mfg, cont_amt=cont_amt, cbm=cbm,
+        profit_amt=profit_amt, packing=packing, freight=freight,
+        ex_works=ex_works,
+        # NEW: Discount & Net Realisation
+        discount_pct=discount_pct,                    # NEW
+        discount_amt=discount_amt,                    # NEW
+        net_realisation=net_realisation,              # NEW
+        gross_profit=gross_profit,                    # NEW
+        # GST & FOR
+        gst_amt=gst_amt, for_price=for_price,
+        # Margin percentages (against Ex-Works as before)
+        rm_pct=tot_rm / safe * 100,
+        fab_pct=tot_fab / safe * 100,
+        lab_pct=tot_lab / safe * 100,
+        oh_pct=(tot_cons + tot_other) / safe * 100,
+        profit_pct_actual=profit_amt / safe * 100,
+        # NEW: percentages for the two new buckets
+        factory_oh_pct=tot_factory_oh / safe * 100,
+        admin_oh_pct=tot_admin_oh / safe * 100,
+        gross_profit_pct=gross_profit / safe * 100,
+    )
 def margin_issues(t):
     out = []
     if not (45 <= t["rm_pct"]  <= 60): out.append(f"RM {t['rm_pct']:.1f}% — target 45–60%")
