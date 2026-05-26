@@ -640,7 +640,128 @@ def _kv_table(doc, rows):
             c = row.cells[j]; c.text = ""
             _run(c.paragraphs[0], str(txt), bold=(j == 0), size=9)
             _shd(c, ("D6E4F7" if i % 2 == 0 else "F2F2F2") if j == 0 else ("FFFFFF" if i % 2 == 0 else "EFF5FB"))
+def _spec_sub_header(doc, text):
+    """Render a small bold sub-header within the Spec Sheet."""
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(8)
+    p.paragraph_format.space_after  = Pt(2)
+    _run(p, text, bold=True, size=10, color=(27, 58, 107))
 
+def _spec_sheet_block(doc, est):
+    """
+    Render the Equipment Specification Sheet — replaces the old flat
+    key-value Section 2. Lays out 6 sub-blocks; rows with empty values
+    are skipped automatically so e.g. storage tanks don't show empty
+    Agitator / Seal rows.
+    """
+    def _add(rows, label, value, suffix=""):
+        """Add a row to the buffer only if value is non-empty/non-zero."""
+        if value is None:
+            return
+        s = str(value).strip()
+        if not s or s in ("0", "0.0"):
+            return
+        rows.append((label, f"{s}{suffix}"))
+
+    # ── Block 1: General ─────────────────────────────────────────────────────
+    _spec_sub_header(doc, "General")
+    rows = []
+    _add(rows, "Equipment Description", est.get("equipment_desc", ""))
+    _add(rows, "Equipment Type",        est.get("equipment_type", ""))
+    _add(rows, "Tag Number",            est.get("tag_number", ""))
+    _add(rows, "Quantity",              "1 No.")
+    _add(rows, "Service / Process",     est.get("service_fluid", ""))
+    _add(rows, "Design Code",           est.get("design_code", "ASME Sec VIII Div 1"))
+    if rows:
+        _kv_table(doc, rows)
+
+    # ── Block 2: Vessel Dimensions ───────────────────────────────────────────
+    _spec_sub_header(doc, "Vessel Dimensions")
+    rows = []
+    _add(rows, "Gross Capacity",   est.get("capacity_ltrs", ""), " Litres")
+    # Working volume — defaults to 80% of capacity if not explicitly set
+    wv = est.get("working_vol_ltrs", 0) or 0
+    if wv == 0:
+        cap = float(est.get("capacity_ltrs", 0) or 0)
+        if cap > 0:
+            wv = round(cap * 0.8, 0)
+    if wv:
+        rows.append(("Working Volume", f"{wv:.0f} Litres (approx)"))
+    _add(rows, "Shell Internal Diameter", est.get("shell_dia_mm", ""), " mm")
+    _add(rows, "Shell Height (T/T)",      est.get("shell_ht_mm", ""), " mm")
+    _add(rows, "Shell Thickness",         est.get("shell_thk_mm", ""), " mm")
+    _add(rows, "Dish End Thickness",      est.get("dish_thk_mm", ""), " mm")
+    _add(rows, "Dish End Type",           "Torispherical (Crown radius = ID)")
+    if rows:
+        _kv_table(doc, rows)
+
+    # ── Block 3: Design Conditions ───────────────────────────────────────────
+    _spec_sub_header(doc, "Design Conditions")
+    rows = []
+    # Prefer new split field; fall back to old combined field for safety
+    dps = est.get("design_pressure_shell") or est.get("design_pressure", "")
+    _add(rows, "Design Pressure — Shell",  dps)
+    _add(rows, "Design Pressure — Jacket", est.get("design_pressure_jacket", ""))
+    _add(rows, "Design Temperature",       est.get("design_temp", ""))
+    _add(rows, "Hydrotest Pressure",       est.get("hydrotest_pressure", ""))
+    ca = est.get("corrosion_allowance_mm", None)
+    if ca is not None and float(ca) > 0:
+        rows.append(("Corrosion Allowance", f"{float(ca):.1f} mm"))
+    je = est.get("joint_efficiency", None)
+    if je is not None and float(je) > 0:
+        rows.append(("Joint Efficiency", f"{float(je):.2f}"))
+    if rows:
+        _kv_table(doc, rows)
+
+    # ── Block 4: Materials of Construction ───────────────────────────────────
+    _spec_sub_header(doc, "Materials of Construction")
+    rows = []
+    _add(rows, "Shell & Dish Ends",     est.get("moc_shell", "SS316L"))
+    _add(rows, "Jacket / Limpet",       est.get("moc_jacket", "SS304"))
+    _add(rows, "Nozzles & Manholes",    est.get("moc_shell", "SS316L"))
+    _add(rows, "Flanges & Forgings",    f"{est.get('moc_shell', 'SS316L')} (Forged)")
+    _add(rows, "Fasteners",             "SS304 / SS316 (as per design)")
+    _add(rows, "Gaskets",               "PTFE / Spiral wound (per service)")
+    if rows:
+        _kv_table(doc, rows)
+
+    # ── Block 5: Heating / Cooling System ────────────────────────────────────
+    # Only print this block if a jacket type is specified
+    if (est.get("jacket_type") or "").strip():
+        _spec_sub_header(doc, "Heating / Cooling System")
+        rows = []
+        _add(rows, "Jacket / Heating Type", est.get("jacket_type", ""))
+        _add(rows, "Heating Medium",        est.get("heating_medium", ""))
+        _add(rows, "Cooling Medium",        est.get("cooling_medium", ""))
+        if rows:
+            _kv_table(doc, rows)
+
+    # ── Block 6: Agitator & Drive Assembly ───────────────────────────────────
+    # Only print this block if an agitator type is specified
+    if (est.get("agitator_type") or "").strip():
+        _spec_sub_header(doc, "Agitator & Drive Assembly")
+        rows = []
+        _add(rows, "Agitator Type",       est.get("agitator_type", ""))
+        _add(rows, "Agitator Speed",      est.get("agitator_rpm", ""))
+        _add(rows, "Motor Rating",        est.get("motor_hp", ""))
+        _add(rows, "Motor Make",          est.get("motor_make", ""))
+        _add(rows, "Gearbox Make",        est.get("gearbox_make", ""))
+        _add(rows, "Gearbox Ratio",       est.get("gearbox_ratio", ""))
+        _add(rows, "Mechanical Seal",     est.get("seal_type", ""))
+        _add(rows, "Seal Make",           est.get("seal_make", ""))
+        if rows:
+            _kv_table(doc, rows)
+
+    # ── Block 7: Surface Finish & Testing ────────────────────────────────────
+    _spec_sub_header(doc, "Surface Finish & Testing")
+    rows = []
+    _add(rows, "Surface Finish",   est.get("surface_finish", ""))
+    _add(rows, "Hydrotest",        "Conducted per ASME Sec VIII Div 1")
+    _add(rows, "DP Testing",       "All critical welds")
+    _add(rows, "PMI",              "100% on pressure parts")
+    _add(rows, "MTC",              "EN 10204 Type 3.1 for pressure parts")
+    if rows:
+        _kv_table(doc, rows)
 def generate_docx(est, customer, totals, fab_services, show_breakup=False):
     """
     Generate customer-facing quotation DOCX.
@@ -666,8 +787,10 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
             for p in header.paragraphs:
                 p.clear()
 
+            # Width matches the page content width (21cm − 2cm margin × 2 = 17cm)
+            # so the header aligns flush with the body text below it.
             hdr_tbl = header.add_table(rows=1, cols=2 if _LOGO_BYTES else 1,
-                                        width=Cm(16.7))
+                                        width=Cm(17.0))
             hdr_tbl.style = "Table Grid"
             from docx.oxml.ns import qn as _qn4
             from docx.oxml import OxmlElement as _OE4
@@ -693,7 +816,9 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
                     tblGrid = _OE3("w:tblGrid"); hdr_tbl._tbl.insert(0, tblGrid)
                 for col_el in tblGrid.findall(_qn3("w:gridCol")):
                     tblGrid.remove(col_el)
-                for w_twips in [int(_Cm3(2.8).twips), int(_Cm3(13.9).twips)]:
+                # Logo cell 2.8 cm + Address cell 14.2 cm = 17.0 cm total
+                # (matches the hdr_tbl width above, which matches page body)
+                for w_twips in [int(_Cm3(2.8).twips), int(_Cm3(14.2).twips)]:
                     gc = _OE3("w:gridCol"); gc.set(_qn3("w:w"), str(w_twips)); tblGrid.append(gc)
 
             lhc = hdr_tbl.rows[0].cells[0]
@@ -809,26 +934,13 @@ def generate_docx(est, customer, totals, fab_services, show_breakup=False):
         ("Email / Web",      f"{BG_EMAIL}  |  {BG_WEB}"),
     ])
 
-    # ── SECTION 2: Technical ──────────────────────────────────────────────────
+    # ── SECTION 2: Equipment Specification Sheet ──────────────────────────────
+    # Replaces the old flat key-value list with a proper engineering data sheet
+    # organised into 7 sub-blocks (General, Dimensions, Design Conditions,
+    # MOC, Heating/Cooling, Agitator/Drive, Surface Finish & Testing).
     doc.add_paragraph()
-    sec_head("SECTION 2 — TECHNICAL DESIGN BASIS")
-    _kv_table(doc, [
-        ("Equipment Description", est.get("equipment_desc","")),
-        ("Tag Number",            est.get("tag_number","—")),
-        ("Capacity",              f"{est.get('capacity_ltrs','')} Litres"),
-        ("Design Code",           est.get("design_code","ASME Sec VIII Div 1")),
-        ("Design Pressure",       est.get("design_pressure","FV to 4.5 Bar")),
-        ("Design Temperature",    est.get("design_temp","-50°C to 250°C")),
-        ("Shell Internal Dia",    f"{est.get('shell_dia_mm','')} mm"),
-        ("Shell Height (T/T)",    f"{est.get('shell_ht_mm','')} mm"),
-        ("Shell Thickness",       f"{est.get('shell_thk_mm','')} mm"),
-        ("Dish End Thickness",    f"{est.get('dish_thk_mm','')} mm"),
-        ("Jacket / Heating",      est.get("jacket_type","") or "Not applicable"),
-        ("Agitator / Drive",      est.get("agitator_type","") or "Not applicable"),
-        ("MOC — Vessel",          est.get("moc_shell","SS316L")),
-        ("MOC — Jacket",          est.get("moc_jacket","SS304")),
-        ("Surface Finish",        est.get("surface_finish","Internal: Ra ≤ 0.8 μm  |  External: Buffed")),
-    ])
+    sec_head("SECTION 2 — EQUIPMENT SPECIFICATION SHEET")
+    _spec_sheet_block(doc, est)
 
     def bullets_from_text(text_block):
         for line in (text_block or "").split("\n"):
