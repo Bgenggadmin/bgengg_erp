@@ -2024,16 +2024,13 @@ with TAB_NEW:
             p_code     = rc5.selectbox("RM Code (for rate)", plate_rm or ["—"],
                                        index=plate_rm.index(editing_part.get("item_code", "")) if editing_part and editing_part.get("item_code", "") in plate_rm else 0,
                                        key=f"{ek}pc")
-            # Pre-fill rate override when editing: if stored rate differs from master rate,
-            # it was an override; show it so the user can see/change it.
-            _def_rate_ov = 0.0
-            if editing_part is not None:
-                _stored_rate = float(editing_part.get("rate", 0))
-                _master_rate = float(rm_master.get(editing_part.get("item_code", ""), {}).get("rate", 0))
-                if _stored_rate > 0 and abs(_stored_rate - _master_rate) > 0.01:
-                    _def_rate_ov = _stored_rate
-            p_rate_ov  = rc6.number_input("Rate Override ₹/kg  (0 = use master)", value=_def_rate_ov, min_value=0.0, key=f"{ek}pr")
-
+            # Pre-fill rate override with the actual stored rate when editing.
+            # User can leave it (uses this rate), change it, or set to 0 to fall back to master rate.
+            _def_rate_ov = float(editing_part.get("rate", 0)) if editing_part is not None else 0.0
+            p_rate_ov = rc6.number_input(
+                "Rate ₹/kg  (0 = use master rate)",
+                value=_def_rate_ov, min_value=0.0, key=f"{ek}pr",
+            )
             pt_info    = PART_TYPES[p_type]
             fn_key     = pt_info["fn"]
             is_derived = pt_info.get("qty_derived", False)
