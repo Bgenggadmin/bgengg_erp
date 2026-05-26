@@ -2114,20 +2114,29 @@ with TAB_NEW:
                 col.caption(f"**{lbl}**")
 
             for idx, p in enumerate(st.session_state.est_parts):
+                # Highlight the row currently being edited
+                _is_editing_row = (st.session_state.get("edit_part_idx") == idx)
+                _prefix = "🟡 " if _is_editing_row else ""
+                _bold   = "**" if _is_editing_row else ""
+
                 c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns(
                     [0.5, 2.5, 2, 1.5, 1, 0.8, 0.8, 1.5, 2, 0.5, 0.5])
-                c0.write(f"**{idx + 1}**")
-                c1.write(p.get("name", ""))
-                c2.write(p.get("part_type", "")[:20])
-                c3.write(p.get("group", ""))
-                c4.write(p.get("material", ""))
-                c5.write(f"{p.get('qty', 1):.1f}")
+                c0.write(f"{_prefix}**{idx + 1}**")
+                c1.write(f"{_bold}{p.get('name', '')}{_bold}")
+                c2.write(f"{_bold}{p.get('part_type', '')[:20]}{_bold}")
+                c3.write(f"{_bold}{p.get('group', '')}{_bold}")
+                c4.write(f"{_bold}{p.get('material', '')}{_bold}")
+                c5.write(f"{_bold}{p.get('qty', 1):.1f}{_bold}")
                 sc = p.get("scrap_pct", None)
-                c6.write(f"{sc:.0f}%" if sc is not None else "—")
-                c7.write(f"{p.get('total_wt_kg', 0):.1f} kg")
-                c8.write(f"₹{p.get('amount', 0):,.0f}")
+                c6.write(f"{_bold}{(f'{sc:.0f}%' if sc is not None else '—')}{_bold}")
+                c7.write(f"{_bold}{p.get('total_wt_kg', 0):.1f} kg{_bold}")
+                c8.write(f"{_bold}₹{p.get('amount', 0):,.0f}{_bold}")
                 if c9.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name', '')}"):
                     st.session_state["edit_part_idx"] = idx
+                    st.rerun()
+                if c10.button("🗑️", key=f"dp_{idx}", help=f"Delete row {idx + 1}"):
+                    st.session_state.est_parts.pop(idx)
+                    st.session_state["edit_part_idx"] = None
                     st.rerun()
                 if c10.button("🗑️", key=f"dp_{idx}", help=f"Delete row {idx + 1}"):
                     st.session_state.est_parts.pop(idx)
@@ -3234,7 +3243,14 @@ with TAB_MASTERS:
         st.subheader("Raw Material & Bought-Out Master")
         df_rm = pd.DataFrame(sb_fetch("est_rm_master", order="category"))
         if not df_rm.empty:
-            st.dataframe(df_rm[["ref_code", "description", "category", "material", "spec", "size", "uom", "rate", "unit_wt_kg_per_m", "active"]], use_container_width=True, hide_index=True)
+            # Add display-only serial number (1-based) so rows are easy to refer to
+            df_rm.insert(0, "S.No", range(1, len(df_rm) + 1))
+            st.dataframe(
+                df_rm[["S.No", "ref_code", "description", "category", "material",
+                       "spec", "size", "uom", "rate", "unit_wt_kg_per_m", "active"]],
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(f"Total items: {len(df_rm)}")
         with st.expander("➕ Add / Update Item"):
             with st.form("rm_add_form", clear_on_submit=True):
                 c1, c2 = st.columns(2)
@@ -3254,7 +3270,13 @@ with TAB_MASTERS:
         st.subheader("Overhead Master")
         df_oh = pd.DataFrame(sb_fetch("est_oh_master", order="oh_type"))
         if not df_oh.empty:
-            st.dataframe(df_oh[["oh_code", "description", "oh_type", "uom", "rate", "source"]], use_container_width=True, hide_index=True)
+            # Add display-only serial number (1-based) so rows are easy to refer to
+            df_oh.insert(0, "S.No", range(1, len(df_oh) + 1))
+            st.dataframe(
+                df_oh[["S.No", "oh_code", "description", "oh_type", "uom", "rate", "source"]],
+                use_container_width=True, hide_index=True,
+            )
+            st.caption(f"Total items: {len(df_oh)}")
         with st.expander("➕ Add / Update OH"):
             with st.form("oh_add_form", clear_on_submit=True):
                 c1, c2, c3, c4, c5 = st.columns(5)
