@@ -2138,11 +2138,7 @@ with TAB_NEW:
                     st.session_state.est_parts.pop(idx)
                     st.session_state["edit_part_idx"] = None
                     st.rerun()
-                if c10.button("🗑️", key=f"dp_{idx}", help=f"Delete row {idx + 1}"):
-                    st.session_state.est_parts.pop(idx)
-                    st.session_state["edit_part_idx"] = None
-                    st.rerun()
-
+                
             tot_wt  = sum(p.get("total_wt_kg", 0) for p in st.session_state.est_parts)
             tot_amt = sum(p.get("amount", 0) for p in st.session_state.est_parts)
             st.success(f"**Total — Weight: {tot_wt:,.1f} kg  |  Amount: ₹{tot_amt:,.0f}**")
