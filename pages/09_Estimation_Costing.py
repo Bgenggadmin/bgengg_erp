@@ -93,7 +93,24 @@ def sb_update(table, row, match_col, match_val):
 # ─────────────────────────────────────────────────────────────────────────────
 PI = math.pi
 DENSITY = {"SS316L": 8000, "SS304": 8000, "MS": 7850, "EN8": 7800, "Ti": 4500, "C22": 8690, "Hastelloy": 8890}
-
+# ─────────────────────────────────────────────────────────────────────────────
+# OH BUCKET MAPPING (Option B cost structure)
+# Maps each oh_type from the OH master into one of two buckets:
+#   FACTORY_OH = scales with production volume (shop floor)
+#   ADMIN_OH   = mostly fixed (office, documentation, misc)
+# Edit this dict any time to reclassify — no DB change needed.
+# ─────────────────────────────────────────────────────────────────────────────
+OH_BUCKET = {
+    "LABOUR":         "FACTORY_OH",
+    "LABOUR_BUFF":    "FACTORY_OH",
+    "CONSUMABLES":    "FACTORY_OH",
+    "TESTING":        "FACTORY_OH",
+    "ELECTRO_POLISH": "FACTORY_OH",
+    "DOCS":           "ADMIN_OH",
+    "MISC":           "ADMIN_OH",
+}
+# Default bucket for any oh_type not listed above (defensive default)
+OH_BUCKET_DEFAULT = "FACTORY_OH"
 def _m(mm):
     return mm / 1000.0
 
@@ -1403,6 +1420,7 @@ def _blank_hdr():
         profit_margin_pct=10.0, contingency_pct=0.0,
         packing_amt=5000.0, freight_amt=10000.0,
         gst_pct=18.0, engg_design_amt=25000.0, notes="",
+        discount_pct=0.0,  # Discount applied on Ex-Works price (Option B cost structure)
 
         scope_items=(
             "Pressure vessel / equipment fabricated as per approved GA drawing\n"
