@@ -8,12 +8,17 @@ Optionally links to process design projects via pd_project_id.
 Tables written to:
   offers           (offer_data stored as JSONB)
   customer_master  (when adding new clients inline)
+  anchor_projects  (only writes back offer_id when spawned from anchor)
 
 Save behavior:
   - INSERT a new row when no offer is loaded
-  - UPDATE the existing row when an offer is loaded (no more duplicate-key error)
-  - "💾 Save Draft" in top bar saves with status='draft'
-  - "💾 Save to DB" in Tab-9 saves with status='final'
+  - UPDATE the existing row when an offer is loaded
+  - "💾 Save Draft" saves with status='draft'
+  - "💾 Save Final to DB" saves with status='final'
+
+Anchor integration:
+  - "Spawn from Anchor Enquiry" section appears for Ammu's anchor entries
+    that have a pd_project_id but no offer_id yet
 """
 import sys, os
 _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
@@ -60,7 +65,7 @@ if not _password_gate():
 
 
 # ---------------------------------------------------------------------
-# CONNECTION + MODULE IMPORTS (after auth)
+# CONNECTION + MODULE IMPORTS
 # ---------------------------------------------------------------------
 conn = st.connection("supabase", type=SupabaseConnection)
 
@@ -152,35 +157,54 @@ def _load_pd_projects():
 
 @st.cache_data(ttl=60)
 def _load_offers_list():
-    """Light list of all saved offers, newest first, for the load dropdown."""
     try:
         res = _get_raw_client().table("offers").select(
-            "id, quote_ref, submitted_to:client_id, capacity_kld, status, "
-            "quote_date, created_at, updated_at, prepared_by, "
-            "option1_total_cr"
+            "id, quote_ref, client_id, capacity_kld, status, "
+            "quote_date, created_at, updated_at, prepared_by, option1_total_cr"
         ).order("updated_at", desc=True).execute()
         return res.data or []
-    except Exception:
-        # Fallback if joining client name fails — just use what we have
-        try:
-            res = _get_raw_client().table("offers").select(
-                "id, quote_ref, client_id, capacity_kld, status, "
-                "quote_date, created_at, updated_at, prepared_by, option1_total_cr"
-            ).order("updated_at", desc=True).execute()
-            return res.data or []
-        except Exception as e:
-            st.error(f"Failed to load offer list: {e}")
-            return []
+    except Exception as e:
+        st.error(f"Failed to load offer list: {e}")
+        return []
+
+
+@st.cache_data(ttl=60)
+def _load_anchor_enquiries_for_bridge():
+    """
+    Ammu's anchor entries that have a pd_project_id (design exists)
+    but no offer_id yet (no offer generated). These are ready to bridge.
+    """
+    try:
+        res = _get_raw_client().table("anchor_projects").select(
+            "id, client_name, project_description, job_no, status, "
+            "contact_person, contact_phone, special_notes, enquiry_date, "
+            "estimated_value, pd_project_id, offer_id"
+        ).eq("anchor_person", "Ammu").not_.is_(
+            "pd_project_id", "null"
+        ).is_("offer_id", "null").order("enquiry_date", desc=True).execute()
+        return res.data or []
+    except Exception as e:
+        st.warning(f"Could not load anchor enquiries: {e}")
+        return []
 
 
 def _load_offer_by_id(offer_id: int):
-    """Fetch the full offer_data JSON for a specific offer id."""
     try:
         res = _get_raw_client().table("offers").select("*").eq("id", offer_id).execute()
         if res.data:
             return res.data[0]
     except Exception as e:
         st.error(f"Failed to load offer #{offer_id}: {e}")
+    return None
+
+
+def _load_pd_project_by_id(pd_id: int):
+    try:
+        res = _get_raw_client().table("pd_projects").select("*").eq("id", pd_id).execute()
+        if res.data:
+            return res.data[0]
+    except Exception as e:
+        st.error(f"Failed to load pd_project #{pd_id}: {e}")
     return None
 
 
@@ -200,20 +224,29 @@ def _insert_new_client(name: str, address: str, contact: str, email: str):
     return None
 
 
+def _link_anchor_to_offer(anchor_id: int, offer_id: int) -> bool:
+    """Write offer_id back to anchor_projects.id."""
+    try:
+        _get_raw_client().table("anchor_projects").update({
+            "offer_id": offer_id,
+        }).eq("id", anchor_id).execute()
+        _load_anchor_enquiries_for_bridge.clear()
+        return True
+    except Exception as e:
+        st.warning(f"Created offer but couldn't link back to anchor entry: {e}")
+        return False
+
+
 def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
                      pd_project_id=None):
-    """
-    Smart save: UPDATE if offer_id is provided (loaded offer), INSERT otherwise.
-
-    Returns (offer_id, was_insert) on success, or (None, None) on failure.
-    """
+    """Smart upsert. Returns (offer_id, was_insert) or (None, None) on failure."""
     try:
         cov = data["cover"]
         pr = data["pricing"]
         payload = {
             "quote_ref": cov["quote_ref"],
             "client_id": data.get("_client_id"),
-            "pd_project_id": pd_project_id,
+            "pd_project_id": pd_project_id or data.get("_pd_project_id"),
             "quote_date": cov["quote_date"],
             "capacity_kld": cov["capacity_kld"],
             "prepared_by": cov["prepared_by"],
@@ -225,13 +258,11 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
         }
 
         if offer_id:
-            # UPDATE existing row
             res = _get_raw_client().table("offers").update(payload).eq("id", offer_id).execute()
             if res.data:
-                _load_offers_list.clear()  # refresh dropdown cache
+                _load_offers_list.clear()
                 return (offer_id, False)
         else:
-            # INSERT new row — but first check if quote_ref already exists
             existing = _get_raw_client().table("offers").select("id").eq(
                 "quote_ref", cov["quote_ref"]
             ).execute()
@@ -242,12 +273,16 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
                     f"exists (id={existing_id}). "
                     f"Either change the Quote Reference in Tab ① Cover & Client, "
                     f"or open that existing offer using the **Open Existing Offer** "
-                    f"section at the top of Tab ① to update it."
+                    f"section to update it."
                 )
                 return (None, None)
             res = _get_raw_client().table("offers").insert(payload).execute()
             if res.data:
                 _load_offers_list.clear()
+                # If this offer was spawned from an anchor entry, link back
+                anchor_id = data.get("_anchor_id")
+                if anchor_id:
+                    _link_anchor_to_offer(anchor_id, res.data[0]["id"])
                 return (res.data[0]["id"], True)
     except Exception as e:
         st.error(f"Failed to save offer to DB: {e}")
@@ -255,12 +290,9 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
 
 
 # ---------------------------------------------------------------------
-# DIRTY-TRACKING HELPERS
+# DIRTY-TRACKING
 # ---------------------------------------------------------------------
 def _snapshot_for_dirty_check(data: dict) -> str:
-    """Stable JSON representation for change detection. Excludes recalculated
-    fields so the user isn't told they have unsaved changes after the page
-    recomputes totals."""
     EXCLUDE_PATHS = {
         ("economics", "conventional_annual_steam_tons"),
         ("economics", "conventional_annual_cost_cr"),
@@ -288,22 +320,18 @@ def _snapshot_for_dirty_check(data: dict) -> str:
 
 
 def _mark_clean(data: dict):
-    """Capture current state as the saved baseline."""
     st.session_state.og_saved_snapshot = _snapshot_for_dirty_check(data)
     st.session_state.og_last_saved_at = datetime.now(timezone.utc)
 
 
 def _is_dirty(data: dict) -> bool:
-    """Returns True if there are unsaved changes."""
     baseline = st.session_state.get("og_saved_snapshot")
     if baseline is None:
-        # No baseline yet → treat as clean (fresh defaults, nothing to save)
         return False
     return _snapshot_for_dirty_check(data) != baseline
 
 
 def _time_since(dt: datetime) -> str:
-    """Human-readable 'X min ago' string."""
     if not dt:
         return "never"
     now = datetime.now(timezone.utc)
@@ -311,22 +339,79 @@ def _time_since(dt: datetime) -> str:
         dt = dt.replace(tzinfo=timezone.utc)
     delta = now - dt
     secs = int(delta.total_seconds())
-    if secs < 5:
-        return "just now"
-    if secs < 60:
-        return f"{secs}s ago"
+    if secs < 5: return "just now"
+    if secs < 60: return f"{secs}s ago"
     mins = secs // 60
-    if mins < 60:
-        return f"{mins} min ago"
+    if mins < 60: return f"{mins} min ago"
     hrs = mins // 60
-    if hrs < 24:
-        return f"{hrs} h {mins % 60} min ago"
+    if hrs < 24: return f"{hrs} h {mins % 60} min ago"
     days = hrs // 24
     return f"{days} day{'s' if days > 1 else ''} ago"
 
 
 # ---------------------------------------------------------------------
-# SESSION STATE INITIALIZATION
+# BRIDGE FROM ANCHOR → PD → OFFER (in-memory build, no save yet)
+# ---------------------------------------------------------------------
+def _spawn_offer_from_anchor(anchor_row: dict) -> bool:
+    """
+    Given an anchor_projects row with pd_project_id set:
+      1. Load the pd_project full export
+      2. Bridge into offer_data
+      3. Tag data with anchor_id and pd_project_id (saved later by save handler)
+      4. Load into session_state, ready for the user to edit
+
+    Returns True on success.
+    """
+    pd_id = anchor_row.get("pd_project_id")
+    if not pd_id:
+        st.error("This anchor entry has no linked process-design project.")
+        return False
+
+    try:
+        process_json = build_full_project_export_from_offer_side(pd_id)
+    except Exception as e:
+        st.error(f"Could not load process design export: {e}")
+        return False
+
+    new_data = bridge_to_offer_data(process_json, existing_data=default_offer_data())
+
+    # Tag for save handler — these get pushed into the offers row on save
+    new_data["_anchor_id"] = anchor_row["id"]
+    new_data["_pd_project_id"] = pd_id
+
+    # Pre-fill cover details from anchor entry
+    cov = new_data["cover"]
+    if anchor_row.get("client_name"):
+        cov["submitted_to"] = f"M/s. {anchor_row['client_name']}"
+    if anchor_row.get("contact_person"):
+        cov["kind_attn"] = f"Mr. {anchor_row['contact_person']}"
+    if anchor_row.get("contact_phone"):
+        cov["contact_details"] = anchor_row["contact_phone"]
+    if anchor_row.get("job_no"):
+        # Use anchor job_no in quote_ref suffix for traceability
+        cov["quote_ref"] = f"BG/ECOX-ZLD/26-27/{anchor_row['job_no']} R0"
+
+    # Recompute everything
+    _recalc_economics(new_data["economics"],
+                      technical_specs=new_data.get("technical_specs"),
+                      utilities=new_data.get("utilities"),
+                      capacity_kld=new_data["cover"].get("capacity_kld"))
+
+    st.session_state.og_offer_data = new_data
+    st.session_state.og_loaded_offer_id = None  # not yet saved → INSERT path
+    _mark_clean(new_data)
+    st.session_state.og_last_saved_at = None
+    return True
+
+
+def build_full_project_export_from_offer_side(pd_id: int):
+    """Wrapper that imports build_full_project_export only when needed."""
+    from bg_process_design.utils.export_utils import build_full_project_export
+    return build_full_project_export(conn, pd_id)
+
+
+# ---------------------------------------------------------------------
+# SESSION STATE
 # ---------------------------------------------------------------------
 if "og_offer_data" not in st.session_state:
     st.session_state.og_offer_data = default_offer_data()
@@ -335,8 +420,6 @@ if "og_loaded_offer_id" not in st.session_state:
 if "og_last_saved_at" not in st.session_state:
     st.session_state.og_last_saved_at = None
 if "og_saved_snapshot" not in st.session_state:
-    # Treat the freshly-loaded defaults as the saved baseline so users
-    # aren't shown a "unsaved changes" warning before they've done anything.
     st.session_state.og_saved_snapshot = _snapshot_for_dirty_check(
         st.session_state.og_offer_data
     )
@@ -404,7 +487,6 @@ d["technical_specs"]["mee"].setdefault("steam_economy", 4.3)
 
 d.setdefault("utilities", {})
 
-# Single canonical recalc before any tab renders
 _recalc_economics(
     d["economics"],
     technical_specs=d["technical_specs"],
@@ -414,7 +496,7 @@ _recalc_economics(
 
 
 # ---------------------------------------------------------------------
-# TOP STATUS BAR — load context, save state, dirty indicator, logout
+# TOP STATUS BAR
 # ---------------------------------------------------------------------
 dirty = _is_dirty(d)
 loaded_id = st.session_state.og_loaded_offer_id
@@ -427,6 +509,11 @@ with bar_c1:
         st.markdown(
             f"📂 **Editing offer #{loaded_id}** — "
             f"`{d['cover'].get('quote_ref', '')}`"
+        )
+    elif d.get("_anchor_id"):
+        st.markdown(
+            f"🔗 **New offer from anchor #{d['_anchor_id']}** — "
+            f"not yet saved"
         )
     else:
         st.markdown("📝 **New offer** (not yet saved)")
@@ -461,7 +548,6 @@ with bar_c4:
         st.session_state.og_authenticated = False
         st.rerun()
 
-# Unsaved-changes warning banner
 if dirty:
     st.warning(
         "⚠️ **You have unsaved changes.** Click 💾 **Save Draft** above to preserve "
@@ -489,19 +575,17 @@ tabs = st.tabs([
 # ---------- Tab 1: Cover & Client ----------
 with tabs[0]:
     # ====== OPEN EXISTING OFFER ======
-    with st.expander("📂 Open Existing Offer", expanded=not loaded_id):
+    with st.expander("📂 Open Existing Offer", expanded=not loaded_id and not d.get("_anchor_id")):
         offers_list = _load_offers_list()
         clients_map = {c["id"]: c["name"] for c in _load_clients()}
 
         if not offers_list:
             st.info("No saved offers yet. Fill in the form below and click **💾 Save Draft** to create one.")
         else:
-            # Build options list
             def _fmt_offer(o):
                 client_name = clients_map.get(o.get("client_id"), "—") if o.get("client_id") else "—"
                 status_emoji = "📝" if o.get("status") == "draft" else "✅"
                 updated = o.get("updated_at") or o.get("created_at") or ""
-                # Truncate updated_at to date+hour for readability
                 updated_short = str(updated)[:16].replace("T", " ")
                 cap = o.get("capacity_kld") or "?"
                 price = o.get("option1_total_cr")
@@ -523,8 +607,6 @@ with tabs[0]:
                 if st.button("📂 Open", type="primary", disabled=(sel_idx == 0),
                              key="og_load_open_btn", use_container_width=True):
                     if dirty:
-                        # Warn but allow — we keep this simple: if they click Open,
-                        # they accept losing unsaved changes
                         st.session_state.og_pending_load_id = offers_list[sel_idx - 1]["id"]
                         st.rerun()
                     else:
@@ -539,7 +621,7 @@ with tabs[0]:
                         else:
                             st.error("Could not load this offer.")
             with cols[1]:
-                if loaded_id:
+                if loaded_id or d.get("_anchor_id"):
                     if st.button("🆕 New Offer", disabled=False, use_container_width=True,
                                  key="og_new_offer_btn"):
                         if dirty:
@@ -552,13 +634,9 @@ with tabs[0]:
                             st.session_state.og_last_saved_at = None
                             st.rerun()
 
-            # Handle pending-load-with-dirty case
             if st.session_state.get("og_pending_load_id"):
                 pid = st.session_state.og_pending_load_id
-                st.warning(
-                    f"⚠️ You have unsaved changes. Opening offer #{pid} will "
-                    f"discard them. Continue?"
-                )
+                st.warning(f"⚠️ You have unsaved changes. Opening offer #{pid} will discard them. Continue?")
                 pc1, pc2 = st.columns(2)
                 if pc1.button("✅ Yes, discard and open", key="og_pending_yes"):
                     full_row = _load_offer_by_id(pid)
@@ -586,6 +664,54 @@ with tabs[0]:
                     st.session_state.pop("og_pending_new", None)
                     st.rerun()
 
+    # ====== SPAWN FROM ANCHOR ENQUIRY (NEW) ======
+    with st.expander("🔗 Spawn Offer from Anchor Enquiry (Ammu · MEE projects)",
+                     expanded=False):
+        st.caption(
+            "Shows Ammu's anchor enquiries that already have a Process Design "
+            "linked but no offer yet. Selecting one bridges the design data into "
+            "a new offer (not saved until you click Save Draft / Save Final)."
+        )
+        anchor_bridge_rows = _load_anchor_enquiries_for_bridge()
+        if not anchor_bridge_rows:
+            st.info(
+                "No anchor enquiries ready to bridge. "
+                "An enquiry is ready when it has a linked Process Design but no offer yet — "
+                "spawn one from Tab 🧪 Process Design first."
+            )
+        else:
+            def _fmt_anchor(r):
+                client = r.get("client_name") or "?"
+                desc = (r.get("project_description") or "")[:40]
+                job = r.get("job_no") or "—"
+                dt = str(r.get("enquiry_date") or "")[:10]
+                return (
+                    f"Anchor #{r['id']} · {client} · {desc} · "
+                    f"Job {job} · pd_project #{r['pd_project_id']} · {dt}"
+                )
+
+            opts = ["— select an enquiry —"] + [_fmt_anchor(r) for r in anchor_bridge_rows]
+            sel_idx = st.selectbox(
+                f"Ammu's enquiries ready to bridge ({len(anchor_bridge_rows)} found)",
+                range(len(opts)),
+                format_func=lambda i: opts[i],
+                key="og_anchor_bridge_sel",
+            )
+            if st.button("🔀 Bridge to Offer", type="primary",
+                         disabled=(sel_idx == 0),
+                         key="og_anchor_bridge_btn"):
+                if dirty:
+                    st.warning("⚠️ Save your current changes first, or discard them via 🆕 New Offer.")
+                else:
+                    chosen = anchor_bridge_rows[sel_idx - 1]
+                    if _spawn_offer_from_anchor(chosen):
+                        st.success(
+                            f"✅ Bridged anchor #{chosen['id']} → pd_project "
+                            f"#{chosen['pd_project_id']} into new offer. "
+                            f"Review the form, then click 💾 Save Draft."
+                        )
+                        st.rerun()
+
     st.divider()
 
     # ====== COVER & CLIENT FIELDS ======
@@ -603,7 +729,6 @@ with tabs[0]:
                     default_idx = i + 1
                     break
         elif d.get("_client_id"):
-            # If an offer was loaded, pre-select its client
             for i, c in enumerate(clients):
                 if c["id"] == d["_client_id"]:
                     default_idx = i + 1
@@ -688,23 +813,14 @@ with tabs[3]:
     st.markdown("### Overall Parameters")
     op1, op2, op3 = st.columns(3)
     with op1:
-        econ["operating_hours_day"] = st.number_input(
-            "Operating Hours per Day (h)",
-            value=float(econ["operating_hours_day"]),
-            min_value=1.0, max_value=24.0, step=1.0, key="og_e_ophrs",
-        )
+        econ["operating_hours_day"] = st.number_input("Operating Hours per Day (h)",
+            value=float(econ["operating_hours_day"]), min_value=1.0, max_value=24.0, step=1.0, key="og_e_ophrs")
     with op2:
-        econ["operating_days_year"] = st.number_input(
-            "Days of Operation per Year",
-            value=int(econ["operating_days_year"]),
-            min_value=1, max_value=365, step=1, key="og_e_days",
-        )
+        econ["operating_days_year"] = st.number_input("Days of Operation per Year",
+            value=int(econ["operating_days_year"]), min_value=1, max_value=365, step=1, key="og_e_days")
     with op3:
-        econ["effluent_treatment_cost_inr_kl"] = st.number_input(
-            "Effluent Treatment Cost (₹/KL)",
-            value=float(econ["effluent_treatment_cost_inr_kl"]),
-            min_value=0.0, step=1.0, format="%.2f", key="og_e_eff_cost",
-        )
+        econ["effluent_treatment_cost_inr_kl"] = st.number_input("Effluent Treatment Cost (₹/KL)",
+            value=float(econ["effluent_treatment_cost_inr_kl"]), min_value=0.0, step=1.0, format="%.2f", key="og_e_eff_cost")
 
     cc1, cc2, cc3 = st.columns(3)
     with cc1:
@@ -748,7 +864,7 @@ with tabs[3]:
         st.metric("Steam Savings (t/yr)", f"{econ['annual_steam_savings_tons']:,.2f}")
         st.metric("Cost Savings (Lakhs/yr)", f"₹{econ['annual_savings_lakhs']:.2f}")
 
-    st.info("💡 Total Steam/Power/CW and Annual Operational Cost are displayed at the bottom of Tab ⑤ Technical (after per-unit values are read), to keep numbers consistent.")
+    st.info("💡 Total Steam/Power/CW and Annual Operational Cost are displayed at the bottom of Tab ⑤ Technical.")
 
     with st.expander("ℹ️ Formula reference", expanded=False):
         st.markdown("""
@@ -869,7 +985,6 @@ with tabs[4]:
             a["compressed_air_nm3h"] = cc3.text_input("Compressed Air (Nm³/h)", value=str(a.get("compressed_air_nm3h", "8")), key="ts_a_ca")
             a["compressed_air_pressure"] = cc4.text_input("CA Pressure", value=a.get("compressed_air_pressure", "6 Bar-g"), key="ts_a_cap")
 
-    # Mirror steam values into legacy utilities block for DOCX
     ut = d["utilities"]
     ut["stripper_steam"] = {"param": f"{ts['stripper']['steam_pressure']}, >96% dryness", "value_kgh": ts["stripper"]["steam_kgh"]}
     ut["mee_steam"] = {"param": f"{ts['mee']['steam_pressure']}, >96% dryness", "value_kgh": ts["mee"]["steam_kgh"], "steam_economy": ts["mee"]["steam_economy"]}
@@ -1005,9 +1120,7 @@ with tabs[8]:
             if new_id:
                 st.session_state.og_loaded_offer_id = new_id
                 _mark_clean(d)
-                st.success(
-                    f"✅ Offer {'created' if was_insert else 'updated'} as FINAL (id={new_id})"
-                )
+                st.success(f"✅ Offer {'created' if was_insert else 'updated'} as FINAL (id={new_id})")
                 st.rerun()
 
     with col3:
