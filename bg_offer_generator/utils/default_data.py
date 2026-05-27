@@ -1,9 +1,17 @@
 """
 Default Offer Data Structure
 
-Provides a pre-populated dict matching the 100 KLD ZLD offer template.
+Provides a pre-populated dict matching the 150 KLD ZLD offer template
+(based on Quote BG/ECOX-ZLD/26-27/2930 R2 — MSN LS-1).
 Trainee engineers can start from these defaults and tweak only what
 varies for their specific client.
+
+Schema expansion (May 2026):
+- feed_parameters: added specific_gravity
+- technical_specs: each unit (stripper/mee/atfd) now has per-unit utility
+  fields (steam, power, cooling water, compressed air)
+- economics: added power_cost_inr_kwh, cooling_water_cost_inr_m3,
+  effluent_treatment_cost_inr_kl, plant-wide totals
 """
 from datetime import date
 from bg_offer_generator.utils.brand import (
@@ -19,7 +27,7 @@ from bg_offer_generator.utils.brand import (
 
 
 def default_offer_data() -> dict:
-    """Return default 100 KLD ZLD offer template data."""
+    """Return default 150 KLD ZLD offer template data."""
     return {
         # ----- Cover Page -----
         "cover": {
@@ -31,9 +39,9 @@ def default_offer_data() -> dict:
             "contact_details": "9154971801 / 9959477028",
             "email": "evs@bgengineeringind.com",
             "kind_attn": "Mr. Name, Designation",
-            "subject": "Proposal for 100 KLD STRIPPER, MEE & ATFD System",
+            "subject": "Proposal for 150 KLD STRIPPER, MEE & ATFD System",
             "discussion_date": "",
-            "capacity_kld": 100,
+            "capacity_kld": 150,
         },
 
         # ----- PART I: Executive Summary -----
@@ -54,82 +62,117 @@ def default_offer_data() -> dict:
             # --- User inputs: overall parameters ---
             "operating_hours_day": 20,
             "operating_days_year": 300,
-            "steam_cost_inr_kg": 2,
-            # --- User inputs: steam consumption ---
-            "conventional_steam_kgh": 1155,
-            "ecox_steam_kgh": 730,
-            # --- Computed (will be overwritten by _recalc_economics) ---
-            "conventional_annual_steam_tons": 6930,
-            "conventional_annual_cost_cr": 1.39,
-            "ecox_annual_steam_tons": 4380,
-            "ecox_annual_cost_cr": 0.88,
-            "steam_reduction_pct": 37,
-            "annual_steam_savings_tons": 2550,
-            "annual_savings_lakhs": 51,
+            "steam_cost_inr_kg": 2.0,
+            "power_cost_inr_kwh": 9.0,
+            "cooling_water_cost_inr_m3": 90.0,
+            "effluent_treatment_cost_inr_kl": 1185.0,
+            # --- User inputs: steam consumption for advantage table ---
+            "conventional_steam_kgh": 1590,
+            "ecox_steam_kgh": 1286,
+            # --- Computed steam comparison (overwritten by _recalc_economics) ---
+            "conventional_annual_steam_tons": 9540,
+            "conventional_annual_cost_cr": 1.91,
+            "ecox_annual_steam_tons": 7716,
+            "ecox_annual_cost_cr": 1.54,
+            "steam_reduction_pct": 19.12,
+            "annual_steam_savings_tons": 1824,
+            "annual_savings_lakhs": 36.48,
+            # --- Computed annual operational cost ---
+            "annual_operational_cost_inr": 53325000,
         },
 
-        # ----- PART V: Technical Details -----
+        # ----- PART V: Feed Parameters -----
         "feed_parameters": {
-            "capacity_kld": 100,
-            "feed_ph": "6.5 - 7.5",
-            "total_cod_ppm": 100000,
-            "volatile_organic_solvents_ppm": 70000,
-            "total_solids_pct": 7,
+            "capacity_kld": 150,
+            "feed_ph": "6.5 - 8.0",
+            "specific_gravity": "1.0",
+            "total_cod_ppm": 200000,
+            "volatile_organic_solvents_ppm": 100000,
+            "total_solids_pct": "5-10%",
             "suspended_solids_ppm": "<500",
             "feed_temp_c": 30,
-            "total_hardness_ppm": "<500",
+            "total_hardness_ppm": "<1000",
             "silica_ppm": "<20",
             "free_chloride_ppm": "Nil",
             "feed_nature": "Non-Foaming",
         },
 
+        # ----- PART V: Technical Specifications (per unit, including utilities) -----
         "technical_specs": {
             "stripper": {
                 "type": "Tray Type Column",
-                "feed_kgh": 5000,
-                "distillate_kgh": 490,
+                "feed_kgh": 7500,
+                "distillate_kgh": 1050,
                 "distillate_composition": "70% Solvents, 30% Water",
-                "bottoms_kgh": 4510,
+                "bottoms_kgh": 6450,
+                "reflux_kgh": 1315,
+                # Per-unit utilities
+                "steam_kgh": 1035,
+                "steam_pressure": "1.5 Bar-g",
+                "power_kwh": 9,
+                "cooling_water_m3h": 105,
+                "cooling_water_tr": 220,
+                "cooling_water_temps": "In/Out: 32 / 38 °C",
+                "compressed_air_nm3h": "8",
+                "compressed_air_pressure": "6 Bar-g",
             },
             "mee": {
                 "type": "4-Effect Multiple Effect Evaporator",
                 "configuration": "Forced Circulation Type",
-                "feed_kgh": 4510,
-                "feed_solids_pct": 7.77,
-                "evaporation_kgh": 3650,
-                "concentrate_kgh": 860,
+                "feed_kgh": 6450,
+                "feed_solids_pct": "5.8 - 11.6",
+                "evaporation_kgh": 5515,
+                "concentrate_kgh": 1870,
                 "concentrate_solids_pct": 40,
+                # Per-unit utilities
+                "steam_kgh": 1286,
+                "steam_pressure": "1.5 Bar-g",
+                "steam_economy": 4.3,
+                "power_kwh": 45,
+                "cooling_water_m3h": 130,
+                "cooling_water_tr": 270,
+                "cooling_water_temps": "In/Out: 32 / 38 °C",
+                "compressed_air_nm3h": "8-10",
+                "compressed_air_pressure": "6 Bar-g",
             },
             "atfd": {
                 "type": "Agitated Thin Film Dryer",
-                "feed_kgh": 860,
+                "feed_kgh": 1870,
                 "feed_solids_pct": 40,
-                "evaporation_kgh": 485,
-                "product_kgh": 375,
-                "product_moisture_pct": "~8-10",
+                "evaporation_kgh": 1055,
+                "product_kgh": 815,
+                "product_moisture_pct": "8-10",
+                # Per-unit utilities
+                "steam_kgh": 1320,
+                "steam_pressure": "1.5 Bar-g",
+                "power_kwh": 65,
+                "cooling_water_m3h": 60,
+                "cooling_water_tr": 120,
+                "cooling_water_temps": "In/Out: 32 / 38 °C",
+                "compressed_air_nm3h": "8",
+                "compressed_air_pressure": "6 Bar-g",
             },
         },
 
+        # ----- Plant-wide utility totals (computed; can also be entered manually) -----
         "utilities": {
-            "stripper_steam": {
-                "param": "1.5 Bar-g, >96% dryness",
-                "value_kgh": 510,
-            },
-            "mee_steam": {
-                "param": "1.0 Bar-g, >96% dryness",
-                "value_kgh": 730,
-                "steam_economy": 5.0,
-            },
-            "atfd_steam": {
-                "param": "7.0 Bar-g",
-                "value_kgh": 600,
-            },
-            "power_consumption_kwh": 85,
-            "power_installed_kw": 140,
-            "cooling_water_m3h": 190,
+            # Legacy per-unit steam blocks (kept for backward compatibility
+            # with anything else reading from here; mirrors technical_specs)
+            "stripper_steam": {"param": "1.5 Bar-g, >96% dryness", "value_kgh": 1035},
+            "mee_steam":      {"param": "1.5 Bar-g, >96% dryness", "value_kgh": 1286, "steam_economy": 4.3},
+            "atfd_steam":     {"param": "1.5 Bar-g, >96% dryness", "value_kgh": 1320},
+            # Plant-wide totals (overwritten by _recalc_economics)
+            "total_steam_kgh": 3641,
+            "total_power_kwh": 119,
+            "total_cooling_water_m3h": 295,
+            "total_cooling_water_tr": 610,
+            # Legacy keys kept so docx_generator and any historic readers don't break
+            "power_consumption_kwh": 119,
+            "power_installed_kw": 180,
+            "cooling_water_m3h": 295,
             "cooling_water_temps": "In/Out: 32 / 38 Deg. C",
             "seal_water": "DDE",
-            "compressed_air_nm3h": "6-8",
+            "compressed_air_nm3h": "8-10",
             "compressed_air_pressure": "6 Bar-g",
             "cip_solutions": "1.5% HNO3 Solution / 3.0% Caustic Solution 1 Bar, 75-85 Deg.C",
         },
