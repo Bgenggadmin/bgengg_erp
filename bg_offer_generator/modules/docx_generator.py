@@ -6,6 +6,11 @@ matching B&G brand colors (red/pink), logo, and table formatting.
 
 Structure mirrors the 11-part offer template:
   Cover → TOC → PART I..PART XI
+
+Updated May 2026:
+  - Part IV now includes "Overall System Operational Cost" block
+  - Part V rewritten with per-unit tables (Stripper / MEE / ATFD)
+    matching the offer template (Feed Parameters + 3 system tables)
 """
 import io
 from pathlib import Path
@@ -28,7 +33,6 @@ from bg_offer_generator.utils.brand import (
 # HELPERS
 # ---------------------------------------------------------------------
 def _set_cell_bg(cell, hex_color: str):
-    """Set table cell background color."""
     tc_pr = cell._tc.get_or_add_tcPr()
     shd = OxmlElement('w:shd')
     shd.set(qn('w:fill'), hex_color)
@@ -37,7 +41,6 @@ def _set_cell_bg(cell, hex_color: str):
 
 
 def _set_cell_borders(cell, color: str = DOCX_COLORS["border_gray"]):
-    """Set cell borders."""
     tc_pr = cell._tc.get_or_add_tcPr()
     tc_borders = OxmlElement('w:tcBorders')
     for border_name in ['top', 'left', 'bottom', 'right']:
@@ -65,7 +68,6 @@ def _add_paragraph(doc, text: str, bold: bool = False, size: int = 11,
 
 
 def _add_heading(doc, text: str, level: int = 1):
-    """Add a branded heading."""
     h = doc.add_paragraph()
     if level == 1:
         h.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -96,9 +98,7 @@ def _add_heading(doc, text: str, level: int = 1):
 
 
 def _add_section_title(doc, part_label: str, part_title: str):
-    """Big branded part banner."""
     doc.add_page_break()
-    # Small label
     p1 = doc.add_paragraph()
     p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r1 = p1.add_run(part_label)
@@ -106,7 +106,6 @@ def _add_section_title(doc, part_label: str, part_title: str):
     r1.bold = True
     r1.font.color.rgb = RGBColor.from_string(DOCX_COLORS["accent_pink"])
     r1.font.name = FONT_HEADING
-    # Big title
     p2 = doc.add_paragraph()
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r2 = p2.add_run(part_title)
@@ -115,12 +114,10 @@ def _add_section_title(doc, part_label: str, part_title: str):
     r2.font.color.rgb = RGBColor.from_string(DOCX_COLORS["primary_red"])
     r2.font.name = FONT_HEADING
     p2.paragraph_format.space_after = Pt(24)
-    # Red underline
     _add_horizontal_line(doc, color=DOCX_COLORS["primary_red"])
 
 
 def _add_horizontal_line(doc, color: str = None):
-    """Insert a thin horizontal rule."""
     p = doc.add_paragraph()
     p_pr = p._p.get_or_add_pPr()
     p_bdr = OxmlElement('w:pBdr')
@@ -132,23 +129,45 @@ def _add_horizontal_line(doc, color: str = None):
     p_pr.append(p_bdr)
 
 
-def _make_table(doc, data: list, header: list = None, col_widths: list = None):
+def _make_table(doc, data: list, header: list = None, col_widths: list = None,
+                title_row: str = None):
     """
     Create a table with B&G styling.
-    data: list of rows (each row is a list of cell text)
-    header: optional header row
-    col_widths: optional list of widths in inches
+    title_row: optional single-cell title spanning the table width
+               (used for offer-style block titles like "FEED PARAMETERS")
     """
-    n_rows = len(data) + (1 if header else 0)
+    n_extra = (1 if title_row else 0) + (1 if header else 0)
+    n_rows = len(data) + n_extra
     n_cols = len(data[0]) if data else (len(header) if header else 1)
     table = doc.add_table(rows=n_rows, cols=n_cols)
     table.autofit = False
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
     row_idx = 0
+
+    # Title row (merged across all columns)
+    if title_row:
+        title_cells = table.rows[0].cells
+        first = title_cells[0]
+        for other in title_cells[1:]:
+            first.merge(other)
+        _set_cell_bg(first, DOCX_COLORS["primary_red"])
+        _set_cell_borders(first)
+        first.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        first.text = ""
+        p = first.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(title_row)
+        run.font.bold = True
+        run.font.size = Pt(11)
+        run.font.color.rgb = RGBColor.from_string("FFFFFF")
+        run.font.name = FONT_PRIMARY
+        row_idx = 1
+
+    # Header row
     if header:
         for col_idx, h_text in enumerate(header):
-            cell = table.cell(0, col_idx)
+            cell = table.cell(row_idx, col_idx)
             _set_cell_bg(cell, DOCX_COLORS["table_header"])
             _set_cell_borders(cell)
             cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
@@ -160,8 +179,9 @@ def _make_table(doc, data: list, header: list = None, col_widths: list = None):
             run.font.size = Pt(10)
             run.font.color.rgb = RGBColor.from_string("FFFFFF")
             run.font.name = FONT_PRIMARY
-        row_idx = 1
+        row_idx += 1
 
+    # Data rows
     for r_i, row in enumerate(data):
         alt_bg = (r_i % 2 == 1)
         for col_idx, value in enumerate(row):
@@ -179,18 +199,44 @@ def _make_table(doc, data: list, header: list = None, col_widths: list = None):
     if col_widths:
         for col_idx, width_in in enumerate(col_widths):
             for row in table.rows:
-                row.cells[col_idx].width = Inches(width_in)
+                if col_idx < len(row.cells):
+                    row.cells[col_idx].width = Inches(width_in)
     return table
 
 
+def _fmt_int(value):
+    """Format value as comma-separated int when possible, else as-is."""
+    try:
+        return f"{int(float(value)):,}"
+    except (TypeError, ValueError):
+        return str(value) if value is not None else "-"
+
+
+def _fmt_inr_lakh(value_inr):
+    """Format ₹ amount in Indian-style: 5,33,25,000."""
+    try:
+        n = int(float(value_inr))
+    except (TypeError, ValueError):
+        return str(value_inr)
+    s = str(abs(n))
+    if len(s) <= 3:
+        return f"{'-' if n < 0 else ''}{s}"
+    last3 = s[-3:]
+    rest = s[:-3]
+    # Group rest by twos from the right
+    groups = []
+    while len(rest) > 2:
+        groups.insert(0, rest[-2:])
+        rest = rest[:-2]
+    if rest:
+        groups.insert(0, rest)
+    return f"{'-' if n < 0 else ''}{','.join(groups)},{last3}"
 
 
 # ---------------------------------------------------------------------
-# Image insertion helper — accepts file path OR bytes OR BytesIO
+# Image insertion helper
 # ---------------------------------------------------------------------
 def _add_picture_flexible(run, source, width_inches):
-    """Insert a picture from a file path, bytes, or BytesIO object."""
-    import io
     if source is None:
         return False
     try:
@@ -200,7 +246,6 @@ def _add_picture_flexible(run, source, width_inches):
         if isinstance(source, io.IOBase) or hasattr(source, "read"):
             run.add_picture(source, width=Inches(width_inches))
             return True
-        # Treat as file path
         p = Path(str(source))
         if p.exists():
             run.add_picture(str(p), width=Inches(width_inches))
@@ -209,33 +254,25 @@ def _add_picture_flexible(run, source, width_inches):
         pass
     return False
 
+
 # ---------------------------------------------------------------------
 # MAIN GENERATOR
 # ---------------------------------------------------------------------
 def generate_offer_docx(data: dict, logo_path: str = None,
                           tagline_path: str = None,
                           hero_path: str = None) -> bytes:
-    """
-    Generate a branded offer DOCX and return as bytes.
-
-    data: full offer data dict (see default_data.py for structure)
-    logo_path / tagline_path / hero_path: paths to brand assets
-    """
     doc = Document()
 
-    # Page setup
     for section in doc.sections:
         section.top_margin = Cm(2.0)
         section.bottom_margin = Cm(2.0)
         section.left_margin = Cm(2.0)
         section.right_margin = Cm(2.0)
 
-    # Default font
     style = doc.styles['Normal']
     style.font.name = FONT_PRIMARY
     style.font.size = Pt(11)
 
-    # Headers/footers
     _add_header_footer(doc, data, logo_path)
 
     # ============================================
@@ -249,13 +286,12 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     _build_cover_letter(doc, data)
 
     # ============================================
-    # TABLE OF CONTENTS (simple bulleted)
+    # TABLE OF CONTENTS
     # ============================================
     doc.add_page_break()
     _add_heading(doc, "OFFER INDEX", level=1)
     toc_data = [[toc[0], toc[1]] for toc in OFFER_TOC]
-    _make_table(doc, toc_data, header=["PART", "CONTENT"],
-                 col_widths=[1.2, 5.0])
+    _make_table(doc, toc_data, header=["PART", "CONTENT"], col_widths=[1.2, 5.0])
 
     # ============================================
     # PART I: EXECUTIVE SUMMARY
@@ -297,101 +333,12 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     # ============================================
     # PART IV: PLANT ECONOMICS & OPEX
     # ============================================
-    _add_section_title(doc, "PART – IV", "ESTIMATED PLANT ECONOMICS & OPEX")
-    _add_heading(doc, "BG ECOX-ZLD SYSTEM ADVANTAGE", level=3)
-    econ = data["economics"]
-    econ_data = [
-        ["MEE Steam Consumption",
-         f"{econ['conventional_steam_kgh']} Kg/h",
-         f"{econ['ecox_steam_kgh']} Kg/h",
-         f"Steam reduction up to ~{econ['steam_reduction_pct']}%"],
-        ["Annual Steam Usage",
-         f"{econ['conventional_annual_steam_tons']} tons/year",
-         f"{econ['ecox_annual_steam_tons']} tons/year",
-         f"{econ['annual_steam_savings_tons']} tons/year (Savings)"],
-        ["Operating Cost",
-         f"₹{econ['conventional_annual_cost_cr']} Cr/year",
-         f"₹{econ['ecox_annual_cost_cr']} Cr/year",
-         f"~₹{econ['annual_savings_lakhs']} Lakhs/Year (Savings)"],
-    ]
-    _make_table(doc, econ_data,
-                 header=["Method", "Conventional Evaporation", "BG ECOX-ZLD", "Benefit"],
-                 col_widths=[1.5, 1.8, 1.5, 2.0])
-    _add_paragraph(doc,
-        f"Note: The above figures are based on {econ['operating_hours_day']} hrs/Day Operation, "
-        f"{econ['operating_days_year']} Days/Year, and Steam cost of ₹{econ['steam_cost_inr_kg']}/Kg. "
-        "Figures are tentative and indicative.",
-        size=9, color_hex="666666")
+    _build_part_iv_economics(doc, data)
 
     # ============================================
     # PART V: TECHNICAL DETAILS & UTILITIES
     # ============================================
-    _add_section_title(doc, "PART – V", "TECHNICAL DETAILS & UTILITIES")
-
-    _add_heading(doc, "Feed Parameters", level=3)
-    fp = data["feed_parameters"]
-    feed_rows = [
-        ["Feed / Capacity", "KLD", fp["capacity_kld"]],
-        ["Feed pH", "-", fp["feed_ph"]],
-        ["Total COD", "PPM", f"{fp['total_cod_ppm']:,}"],
-        ["Volatile Organic Solvents", "PPM", f"{fp['volatile_organic_solvents_ppm']:,}"],
-        ["Total Solids", "% w/w", fp["total_solids_pct"]],
-        ["Suspended Solids", "PPM", fp["suspended_solids_ppm"]],
-        ["Feed Temperature", "°C", fp["feed_temp_c"]],
-        ["Total Hardness", "PPM", fp["total_hardness_ppm"]],
-        ["Silica", "PPM", fp["silica_ppm"]],
-        ["Free Chloride", "PPM", fp["free_chloride_ppm"]],
-        ["Feed Nature", "-", fp["feed_nature"]],
-    ]
-    _make_table(doc, feed_rows, header=["Parameter", "UOM", "Value"],
-                 col_widths=[2.8, 1.0, 2.7])
-
-    _add_heading(doc, "System Technical Specifications", level=3)
-    ts = data["technical_specs"]
-    spec_rows = [
-        ["Stripper System", "Type", ts["stripper"]["type"]],
-        ["", "Feed Inlet (Kg/h)", ts["stripper"]["feed_kgh"]],
-        ["", "Top Distillate Out (Kg/h)",
-         f'{ts["stripper"]["distillate_kgh"]} ({ts["stripper"]["distillate_composition"]})'],
-        ["", "Stripper Bottom Out (Kg/h)", ts["stripper"]["bottoms_kgh"]],
-        ["Evaporator", "Type", f'{ts["mee"]["type"]} ({ts["mee"]["configuration"]})'],
-        ["", "Feed Inlet (Kg/h)", ts["mee"]["feed_kgh"]],
-        ["", "Feed Solids (%)", ts["mee"]["feed_solids_pct"]],
-        ["", "Water Evaporation (Kg/h)", ts["mee"]["evaporation_kgh"]],
-        ["", "Concentrate Out (Kg/h)",
-         f'{ts["mee"]["concentrate_kgh"]} ({ts["mee"]["concentrate_solids_pct"]}%)'],
-        ["ATFD", "Type", ts["atfd"]["type"]],
-        ["", "Feed Inlet (Kg/h)", ts["atfd"]["feed_kgh"]],
-        ["", "Feed Solids (%)", ts["atfd"]["feed_solids_pct"]],
-        ["", "Water Evaporation (Kg/h)", ts["atfd"]["evaporation_kgh"]],
-        ["", "ATFD Product Out (Kg/h)", ts["atfd"]["product_kgh"]],
-        ["", "Moisture in Product (%)", ts["atfd"]["product_moisture_pct"]],
-    ]
-    _make_table(doc, spec_rows, header=["Section", "Parameter", "Value"],
-                 col_widths=[1.5, 2.5, 2.5])
-
-    _add_heading(doc, "Utilities Specification", level=3)
-    ut = data["utilities"]
-    util_rows = [
-        ["Steam — Stripper", ut["stripper_steam"]["param"], "Kg/h", ut["stripper_steam"]["value_kgh"]],
-        ["Steam — MEE", ut["mee_steam"]["param"], "Kg/h", ut["mee_steam"]["value_kgh"]],
-        ["Steam Economy for MEE", "", "Kg/Kg", f'~{ut["mee_steam"]["steam_economy"]}'],
-        ["Steam — ATFD", ut["atfd_steam"]["param"], "Kg/h", ut["atfd_steam"]["value_kgh"]],
-        ["Power Consumption", "415V, 50 Hz, 3 Phase", "kWh", ut["power_consumption_kwh"]],
-        ["Power Installed (incl. standby)", "415V, 50 Hz, 3 Phase", "kW", ut["power_installed_kw"]],
-        ["Cooling Water (closed loop)", ut["cooling_water_temps"], "m³/h", ut["cooling_water_m3h"]],
-        ["Seal Water Re-circulation", "In/Out: 30 / 32 °C", "m³/h", ut["seal_water"]],
-        ["Compressed Air", ut["compressed_air_pressure"], "Nm³/h", ut["compressed_air_nm3h"]],
-        ["CIP Solutions", ut["cip_solutions"], "m³", "DDE"],
-    ]
-    _make_table(doc, util_rows,
-                 header=["Utility", "Operating Parameter", "Unit", "Consumption"],
-                 col_widths=[1.8, 2.2, 0.6, 1.1])
-
-    _add_heading(doc, "Performance Guarantee", level=3)
-    for bullet in data["performance_guarantee"]:
-        p = doc.add_paragraph(style='List Bullet')
-        p.add_run(bullet).font.size = Pt(10)
+    _build_part_v_technical(doc, data)
 
     # ============================================
     # PART VI: SCOPE OF SUPPLY
@@ -531,13 +478,197 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     _add_paragraph(doc, COMPANY["managing_partner"], bold=True)
     _add_paragraph(doc, COMPANY["managing_partner_title"], size=10)
 
-    # ---- Save to bytes ----
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
     return buf.read()
 
 
+# ---------------------------------------------------------------------
+# PART IV — Plant Economics & OPEX
+# ---------------------------------------------------------------------
+def _build_part_iv_economics(doc, data: dict):
+    _add_section_title(doc, "PART – IV", "ESTIMATED PLANT ECONOMICS & OPEX")
+
+    econ = data["economics"]
+    ut = data.get("utilities", {})
+    cap = data["cover"].get("capacity_kld", 0)
+
+    # ---- Overall System Operational Cost table ----
+    _add_heading(doc, "Overall System Operational Cost", level=3)
+    op_rows = [
+        ["Plant Capacity",         "KLD",      _fmt_int(cap)],
+        ["Operating Hours",        "Hrs/Day",  _fmt_int(econ.get("operating_hours_day", 20))],
+        ["Annual Operation",       "Days/Year",_fmt_int(econ.get("operating_days_year", 300))],
+        ["Total Steam Consumption (Stripper + MEE + ATFD)",
+            "Kg/h", _fmt_int(ut.get("total_steam_kgh", 0))],
+        ["Total Power Consumption (For all Pump Motors & ATFD Motors, Excl. Cooling tower pumps)",
+            "kWh",  _fmt_int(ut.get("total_power_kwh", 0))],
+        ["Total Cooling Water (Stripper + MEE + ATFD)",
+            "m³/h",
+            f"{_fmt_int(ut.get('total_cooling_water_m3h', 0))} "
+            f"({_fmt_int(ut.get('total_cooling_water_tr', 0))} TR)"],
+        [f"Effluent Treatment Cost ({_fmt_int(cap)} KL)",
+            "INR/KL", f"₹{_fmt_int(econ.get('effluent_treatment_cost_inr_kl', 0))} /-"],
+        [f"Annual Operational Cost ({_fmt_int(cap)} KL)",
+            "INR/Year", f"₹{_fmt_inr_lakh(econ.get('annual_operational_cost_inr', 0))} /-"],
+    ]
+    _make_table(doc, op_rows, header=["Utility", "UOM", "Value"],
+                 col_widths=[4.0, 1.0, 1.7],
+                 title_row="OVERALL SYSTEM OPERATIONAL COST")
+
+    _add_paragraph(doc, "", size=6)
+
+    # ---- BG ECOX-ZLD System Advantage table ----
+    _add_heading(doc, "BG ECOX-ZLD System Advantage", level=3)
+    econ_data = [
+        ["MEE Steam Consumption",
+         f"{_fmt_int(econ['conventional_steam_kgh'])} Kg/h",
+         f"{_fmt_int(econ['ecox_steam_kgh'])} Kg/h",
+         f"Steam reduction up to ~{econ['steam_reduction_pct']:.1f}%"],
+        ["Annual Steam Usage",
+         f"{_fmt_int(econ['conventional_annual_steam_tons'])} tons/year",
+         f"{_fmt_int(econ['ecox_annual_steam_tons'])} tons/year",
+         f"{_fmt_int(econ['annual_steam_savings_tons'])} tons/year (Savings)"],
+        ["Operating Cost",
+         f"₹{econ['conventional_annual_cost_cr']:.2f} Cr/year",
+         f"₹{econ['ecox_annual_cost_cr']:.2f} Cr/year",
+         f"~₹{econ['annual_savings_lakhs']:.0f} Lakhs/Year (Savings)"],
+    ]
+    _make_table(doc, econ_data,
+                 header=["Method", "Conventional Evaporation", "BG ECOX-ZLD", "Benefit"],
+                 col_widths=[1.5, 1.8, 1.5, 2.0],
+                 title_row="BG ECOX-ZLD SYSTEM ADVANTAGE")
+    _add_paragraph(doc,
+        f"Note: The above figures are based on {econ.get('operating_hours_day', 20):g} hrs/Day Operation, "
+        f"{econ.get('operating_days_year', 300)} Days/Year, "
+        f"Steam cost of ₹{econ.get('steam_cost_inr_kg', 2):g}/Kg, "
+        f"Power cost of ₹{econ.get('power_cost_inr_kwh', 9):g}/kWh, "
+        f"Cooling water cost of ₹{econ.get('cooling_water_cost_inr_m3', 90):g}/m³. "
+        "Figures are tentative and indicative only.",
+        size=9, color_hex="666666")
+
+
+# ---------------------------------------------------------------------
+# PART V — Technical Details & Utilities  (offer-style per-unit tables)
+# ---------------------------------------------------------------------
+def _build_part_v_technical(doc, data: dict):
+    _add_section_title(doc, "PART – V", "TECHNICAL DETAILS & UTILITIES")
+
+    # ---- Feed Parameters ----
+    fp = data["feed_parameters"]
+    feed_rows = [
+        ["1",  "Feed / Capacity",            "KLD",      _fmt_int(fp["capacity_kld"])],
+        ["2",  "Feed pH",                    "-",        fp.get("feed_ph", "-")],
+        ["3",  "Specific Gravity",           "-",        fp.get("specific_gravity", "1.0")],
+        ["4",  "Total COD",                  "PPM",      _fmt_int(fp.get("total_cod_ppm", 0))],
+        ["5",  "Volatile Organic Solvents",  "PPM",      _fmt_int(fp.get("volatile_organic_solvents_ppm", 0))],
+        ["6",  "Total Solids",               "% w/w",    str(fp.get("total_solids_pct", "-"))],
+        ["7",  "Suspended Solids",           "PPM",      str(fp.get("suspended_solids_ppm", "-"))],
+        ["8",  "Feed Temperature",           "Deg.C",    _fmt_int(fp.get("feed_temp_c", 30))],
+        ["9",  "Total Hardness",             "PPM",      str(fp.get("total_hardness_ppm", "-"))],
+        ["10", "Silica",                     "PPM",      str(fp.get("silica_ppm", "-"))],
+        ["11", "Free Chloride",              "PPM",      str(fp.get("free_chloride_ppm", "-"))],
+        ["12", "Feed Nature",                "-",        str(fp.get("feed_nature", "-"))],
+    ]
+    _make_table(doc, feed_rows,
+                 header=["S.No", "Parameter", "UOM", "Value"],
+                 col_widths=[0.6, 3.2, 1.0, 1.9],
+                 title_row="FEED PARAMETERS")
+    _add_paragraph(doc, "Note: The above parameters are considered as per customer suggestion during discussions.",
+                   size=9, color_hex="666666")
+
+    # ---- Stripper System ----
+    s = data["technical_specs"]["stripper"]
+    stripper_rows = [
+        ["Type",                                         "-",     s.get("type", "-")],
+        ["Inlet Feed Rate",                              "Kg/h",  _fmt_int(s.get("feed_kgh", 0))],
+        ["Top Distillate Out",                           "Kg/h",  f"{_fmt_int(s.get('distillate_kgh', 0))} ({s.get('distillate_composition', '')})"],
+        ["Stripper Bottom Out",                          "Kg/h",  _fmt_int(s.get("bottoms_kgh", 0))],
+        ["Reflux Rate",                                  "Kg/h",  _fmt_int(s.get("reflux_kgh", 0))],
+        [f"Dry & Saturated Steam ({s.get('steam_pressure', '1.5 Bar-g')})",
+                                                          "Kg/h",  _fmt_int(s.get("steam_kgh", 0))],
+        ["Power Consumption (415V, 50 Hz, 3 Phase)",     "kWh",   _fmt_int(s.get("power_kwh", 0))],
+        [f"Cooling Water ({s.get('cooling_water_temps', 'In/Out: 32 / 38 °C')})",
+                                                          "m³/h",  f"{_fmt_int(s.get('cooling_water_m3h', 0))} ({_fmt_int(s.get('cooling_water_tr', 0))} TR)"],
+        [f"Compressed Air at {s.get('compressed_air_pressure', '6 Bar-g')}",
+                                                          "Nm³/h", str(s.get("compressed_air_nm3h", "-"))],
+    ]
+    _make_table(doc, stripper_rows,
+                 header=["Section", "UOM", "Value"],
+                 col_widths=[3.5, 1.0, 2.2],
+                 title_row="STRIPPER SYSTEM")
+
+    # ---- MEE System ----
+    m = data["technical_specs"]["mee"]
+    mee_rows = [
+        ["Type",                                          "-",     f"{m.get('type', '4-Effects')}, {m.get('configuration', 'Forced Circulation Type')}"],
+        ["Feed Inlet (Stripper Bottom)",                  "Kg/h",  _fmt_int(m.get("feed_kgh", 0))],
+        ["Feed Solids",                                   "%",     str(m.get("feed_solids_pct", "-"))],
+        ["Water Evaporation Rate",                        "Kg/h",  f"{_fmt_int(m.get('evaporation_kgh', 0))} (Max)"],
+        ["MEE Concentrate Out",                           "Kg/h",  f"{_fmt_int(m.get('concentrate_kgh', 0))} (Max)"],
+        ["MEE Concentrate Out",                           "%",     _fmt_int(m.get("concentrate_solids_pct", 40))],
+        [f"Dry & Saturated Steam ({m.get('steam_pressure', '1.5 Bar-g')})",
+                                                           "Kg/h",  _fmt_int(m.get("steam_kgh", 0))],
+        ["Steam Economy",                                 "Kg/Kg", f"{m.get('steam_economy', 4.3):.1f}" if isinstance(m.get('steam_economy'), (int, float)) else str(m.get('steam_economy', '-'))],
+        ["Power Consumption (415V, 50 Hz, 3 Phase)",      "kWh",   _fmt_int(m.get("power_kwh", 0))],
+        [f"Cooling Water ({m.get('cooling_water_temps', 'In/Out: 32 / 38 °C')})",
+                                                           "m³/h",  f"{_fmt_int(m.get('cooling_water_m3h', 0))} ({_fmt_int(m.get('cooling_water_tr', 0))} TR)"],
+        [f"Compressed Air at {m.get('compressed_air_pressure', '6 Bar-g')}",
+                                                           "Nm³/h", str(m.get("compressed_air_nm3h", "-"))],
+    ]
+    _make_table(doc, mee_rows,
+                 header=["Section", "UOM", "Value"],
+                 col_widths=[3.5, 1.0, 2.2],
+                 title_row="MULTIPLE EFFECT EVAPORATOR SYSTEM")
+
+    # ---- ATFD System ----
+    a = data["technical_specs"]["atfd"]
+    atfd_rows = [
+        ["Feed Inlet (MEE Concentrate)",                  "Kg/h",  f"{_fmt_int(a.get('feed_kgh', 0))} (Designed for Max flow)"],
+        ["Feed Solids",                                   "%",     _fmt_int(a.get("feed_solids_pct", 40))],
+        ["Water Evaporation Rate",                        "Kg/h",  _fmt_int(a.get("evaporation_kgh", 0))],
+        ["ATFD Product Out",                              "Kg/h",  _fmt_int(a.get("product_kgh", 0))],
+        ["Moisture in ATFD Product",                      "%",     str(a.get("product_moisture_pct", "8-10"))],
+        [f"Dry & Saturated Steam ({a.get('steam_pressure', '1.5 Bar-g')})",
+                                                           "Kg/h",  _fmt_int(a.get("steam_kgh", 0))],
+        ["Power Consumption (415V, 50 Hz, 3 Phase)",      "kWh",   _fmt_int(a.get("power_kwh", 0))],
+        [f"Cooling Water ({a.get('cooling_water_temps', 'In/Out: 32 / 38 °C')})",
+                                                           "m³/h",  f"{_fmt_int(a.get('cooling_water_m3h', 0))} ({_fmt_int(a.get('cooling_water_tr', 0))} TR)"],
+        [f"Compressed Air at {a.get('compressed_air_pressure', '6 Bar-g')}",
+                                                           "Nm³/h", str(a.get("compressed_air_nm3h", "-"))],
+    ]
+    _make_table(doc, atfd_rows,
+                 header=["Section", "UOM", "Value"],
+                 col_widths=[3.5, 1.0, 2.2],
+                 title_row="AGITATED THIN FILM DRYER (ATFD)")
+
+    # ---- Performance Guarantee ----
+    _add_heading(doc, "Performance Guarantee Parameters", level=3)
+    for bullet in data.get("performance_guarantee", []):
+        p = doc.add_paragraph(style='List Bullet')
+        p.add_run(bullet).font.size = Pt(10)
+
+    _add_heading(doc, "Notes", level=3)
+    notes = [
+        "System shall be cleaned as suggested by supplier during commissioning process.",
+        "Above mentioned energy consumption and performance are based on timely CIP of system.",
+        "Any change in feed parameters and utility shall impact the system performance.",
+        "Plant performance will depend on regular CIP and maintenance as per plant operation manual.",
+        "In case of variation in initial solids of feed on lower side, ATFD feed will be reduced, "
+        "thereby vapor generation in ATFD will also be reduced. In such case ATFD vapor which is being "
+        "used in evaporator as a heating medium will be reduced and fresh steam consumption will "
+        "increase based on inlet solid.",
+    ]
+    for n in notes:
+        p = doc.add_paragraph(style='List Bullet')
+        p.add_run(n).font.size = Pt(10)
+
+
+# ---------------------------------------------------------------------
+# Scope tables, cover page, cover letter, header/footer, general terms
+# (unchanged from prior version)
+# ---------------------------------------------------------------------
 def _make_scope_table(doc, scope_items: list):
     rows = [[i["equipment"], i["specification"], i["qty"],
              "✓" if i["bg_scope"] else "✗",
@@ -546,33 +677,27 @@ def _make_scope_table(doc, scope_items: list):
     _make_table(doc, rows,
                  header=["Equipment", "Specification", "Qty", "B&G Scope", "Buyer Scope"],
                  col_widths=[1.6, 3.0, 0.6, 0.7, 0.7])
-    # Note below the table
     _add_paragraph(doc, "Note: W = Working, SB = Working Standby, SSB = Store Standby. "
                          "Motors/Instruments per specification above.",
                     size=9, color_hex="666666")
 
 
 def _build_cover_page(doc, data: dict, logo_path, tagline_path, hero_path):
-    """First page — branded cover with logo, tagline, title, quote table."""
-    # Logo (top-left)
     if logo_path:
         p_logo = doc.add_paragraph()
         p_logo.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p_logo.add_run()
         _add_picture_flexible(run, logo_path, 2.0)
 
-    # Tagline
     if tagline_path:
         p_tag = doc.add_paragraph()
         p_tag.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p_tag.add_run()
         _add_picture_flexible(run, tagline_path, 3.5)
 
-    # Spacer
     doc.add_paragraph()
     doc.add_paragraph()
 
-    # Title
     _add_paragraph(doc, "TECHNO-COMMERCIAL OFFER", bold=True, size=22,
                    color_hex=DOCX_COLORS["primary_red"],
                    alignment=WD_ALIGN_PARAGRAPH.CENTER)
@@ -587,14 +712,12 @@ def _build_cover_page(doc, data: dict, logo_path, tagline_path, hero_path):
     doc.add_paragraph()
     _add_horizontal_line(doc, color=DOCX_COLORS["primary_red"])
 
-    # Hero image (plant photo)
     if hero_path:
         p_hero = doc.add_paragraph()
         p_hero.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p_hero.add_run()
         _add_picture_flexible(run, hero_path, 4.0)
 
-    # Quote info table
     doc.add_paragraph()
     cov = data["cover"]
     info_rows = [
@@ -610,7 +733,6 @@ def _build_cover_page(doc, data: dict, logo_path, tagline_path, hero_path):
 
 
 def _build_cover_letter(doc, data: dict):
-    """Page 2 — cover letter with 'To', 'Attn', 'Subject', intro paragraph."""
     doc.add_page_break()
     cov = data["cover"]
 
@@ -641,9 +763,7 @@ def _build_cover_letter(doc, data: dict):
 
 
 def _add_header_footer(doc, data: dict, logo_path: str = None):
-    """Add repeating header/footer to all pages."""
     section = doc.sections[0]
-    # Header
     header = section.header
     h_para = header.paragraphs[0]
     h_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
@@ -651,7 +771,6 @@ def _add_header_footer(doc, data: dict, logo_path: str = None):
     run.font.size = Pt(8)
     run.font.color.rgb = RGBColor.from_string("888888")
 
-    # Footer
     footer = section.footer
     f_para = footer.paragraphs[0]
     f_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -661,7 +780,6 @@ def _add_header_footer(doc, data: dict, logo_path: str = None):
 
 
 def _add_general_terms(doc):
-    """Add full text of PART XI general terms (verbatim from offer)."""
     terms = [
         ("Buyer's Responsibilities",
          "The Buyer shall supply all items and materials not specified as the responsibility of the Seller but which are necessary for the Seller to comply with its obligations under the contract. The Buyer shall provide access to the site suitable for the transport of the Equipment. The Seller shall not commence the Installation work unless the civil works are completed by Buyer and facilities like power, water and other essential utilities are made available at the Site by the Buyer. The Buyer shall be responsible for obtaining all licenses, permits, and approvals necessary."),
