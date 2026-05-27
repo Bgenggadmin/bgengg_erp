@@ -116,7 +116,6 @@ def _recalc_economics(econ: dict, technical_specs: dict = None,
     econ["annual_savings_lakhs"]           = round(savings_lakhs, 2)
 
     # ----- Annual operational cost (₹/year) -----
-    # = effluent_cost (₹/KL) × capacity (KLD) × days_per_year
     effluent_cost = float(econ.get("effluent_treatment_cost_inr_kl", 0) or 0)
     cap = float(capacity_kld or 0)
     econ["annual_operational_cost_inr"] = round(effluent_cost * cap * days)
@@ -247,6 +246,72 @@ if c_logout.button("🚪 Logout"):
     st.rerun()
 
 
+# =====================================================================
+# IMPORTANT: schema backfill BEFORE any tab renders.
+# Older offer_data dicts in session_state (loaded from DB or saved by a
+# previous version of the code) may be missing the new keys. Backfilling
+# here means every tab sees a consistent dict and number_input widgets
+# always have valid `value=` defaults.
+# =====================================================================
+d = st.session_state.og_offer_data
+
+# Cover defaults
+d.setdefault("cover", {})
+d["cover"].setdefault("capacity_kld", 150)
+
+# Economics defaults
+econ_defaults = {
+    "operating_hours_day": 20,
+    "operating_days_year": 300,
+    "steam_cost_inr_kg": 2.0,
+    "power_cost_inr_kwh": 9.0,
+    "cooling_water_cost_inr_m3": 90.0,
+    "effluent_treatment_cost_inr_kl": 1185.0,
+    "conventional_steam_kgh": 0,
+    "ecox_steam_kgh": 0,
+}
+d.setdefault("economics", {})
+for k, v in econ_defaults.items():
+    d["economics"].setdefault(k, v)
+
+# Feed parameters defaults
+d.setdefault("feed_parameters", {})
+d["feed_parameters"].setdefault("specific_gravity", "1.0")
+
+# Per-unit technical specs defaults
+d.setdefault("technical_specs", {})
+for unit in ("stripper", "mee", "atfd"):
+    d["technical_specs"].setdefault(unit, {})
+    unit_defaults = {
+        "steam_kgh": 0, "steam_pressure": "1.5 Bar-g",
+        "power_kwh": 0,
+        "cooling_water_m3h": 0, "cooling_water_tr": 0,
+        "cooling_water_temps": "In/Out: 32 / 38 °C",
+        "compressed_air_nm3h": "8", "compressed_air_pressure": "6 Bar-g",
+    }
+    for k, v in unit_defaults.items():
+        d["technical_specs"][unit].setdefault(k, v)
+d["technical_specs"]["stripper"].setdefault("reflux_kgh", 0)
+d["technical_specs"]["mee"].setdefault("steam_economy", 4.3)
+
+# Utilities defaults
+d.setdefault("utilities", {})
+
+
+# =====================================================================
+# CRITICAL: do a SINGLE recalc at the top of the page, BEFORE any tab
+# renders. Both Tab-4 and Tab-5 then DISPLAY the same precomputed totals
+# from `d["utilities"]`. This prevents the read-before-write race where
+# Tab-4 would show stale totals because Tab-5's widgets hadn't run yet.
+# =====================================================================
+_recalc_economics(
+    d["economics"],
+    technical_specs=d["technical_specs"],
+    utilities=d["utilities"],
+    capacity_kld=d["cover"].get("capacity_kld"),
+)
+
+
 # ---------------------------------------------------------------------
 # TABS
 # ---------------------------------------------------------------------
@@ -262,8 +327,6 @@ tabs = st.tabs([
     "🚀 Generate",
     "📥 Import / Bridge",
 ])
-
-d = st.session_state.og_offer_data
 
 
 # ---------- Tab 1: Cover & Client ----------
@@ -323,7 +386,7 @@ with tabs[0]:
         cov["quote_date"] = st.text_input("Quote Date (YYYY-MM-DD)", value=str(cov["quote_date"]), key="11_Offer_Generator_text_input_3")
         cov["submitted_to"] = st.text_input("Submitted to", value=cov["submitted_to"], key="11_Offer_Generator_text_input_4")
         cov["location"] = st.text_input("Location", value=cov["location"], key="11_Offer_Generator_text_input_5")
-        cov["capacity_kld"] = st.number_input("Capacity (KLD)", value=int(cov["capacity_kld"]), min_value=1, max_value=5000, step=10, key="11_Offer_Generator_number_input_6")
+        cov["capacity_kld"] = st.number_input("Capacity (KLD)", value=int(cov["capacity_kld"]), min_value=1, max_value=5000, step=1, key="11_Offer_Generator_number_input_6")
     with c2:
         cov["prepared_by"] = st.text_input("Prepared By", value=cov["prepared_by"], key="11_Offer_Generator_text_input_7")
         cov["contact_details"] = st.text_input("Contact", value=cov["contact_details"], key="11_Offer_Generator_text_input_8")
@@ -358,16 +421,6 @@ with tabs[3]:
     st.subheader("PART IV — Economics / OPEX")
     econ = d["economics"]
 
-    # Backfill defaults for older offer_data dicts
-    econ.setdefault("operating_hours_day", 20)
-    econ.setdefault("operating_days_year", 300)
-    econ.setdefault("steam_cost_inr_kg", 2.0)
-    econ.setdefault("power_cost_inr_kwh", 9.0)
-    econ.setdefault("cooling_water_cost_inr_m3", 90.0)
-    econ.setdefault("effluent_treatment_cost_inr_kl", 1185.0)
-    econ.setdefault("conventional_steam_kgh", 0)
-    econ.setdefault("ecox_steam_kgh", 0)
-
     # ----- Overall Parameters -----
     st.markdown("### Overall Parameters")
     op1, op2, op3 = st.columns(3)
@@ -389,7 +442,7 @@ with tabs[3]:
         econ["effluent_treatment_cost_inr_kl"] = st.number_input(
             "Effluent Treatment Cost (₹/KL)",
             value=float(econ["effluent_treatment_cost_inr_kl"]),
-            min_value=0.0, step=10.0, format="%.2f",
+            min_value=0.0, step=1.0, format="%.2f",
             key="og_e_eff_cost",
         )
 
@@ -426,20 +479,22 @@ with tabs[3]:
         econ["conventional_steam_kgh"] = st.number_input(
             "Conventional — MEE Steam (kg/h)",
             value=float(econ.get("conventional_steam_kgh", 0) or 0),
-            min_value=0.0, step=10.0,
+            min_value=0.0, step=1.0,
             key="og_e_conv_kgh",
         )
     with si2:
         econ["ecox_steam_kgh"] = st.number_input(
             "ECOX-ZLD — MEE Steam (kg/h)",
             value=float(econ.get("ecox_steam_kgh", 0) or 0),
-            min_value=0.0, step=10.0,
+            min_value=0.0, step=1.0,
             key="og_e_ecox_kgh",
         )
 
-    # Live recalculation (also fills plant-wide totals from per-unit specs)
-    _recalc_economics(econ, technical_specs=d.get("technical_specs"),
-                      utilities=d.get("utilities"),
+    # Recalc after parameter changes captured above (totals from per-unit
+    # come from the top-of-page recalc; the user can also edit per-unit
+    # values in Tab-5 in the same rerun, and that will be picked up below.)
+    _recalc_economics(econ, technical_specs=d["technical_specs"],
+                      utilities=d["utilities"],
                       capacity_kld=d["cover"].get("capacity_kld"))
 
     st.divider()
@@ -461,20 +516,14 @@ with tabs[3]:
 
     st.divider()
     st.markdown("### Overall System Operational Cost")
-    ut = d.get("utilities", {})
-    cap = d["cover"].get("capacity_kld", 0)
-    osc1, osc2, osc3, osc4 = st.columns(4)
-    osc1.metric("Plant Capacity", f"{cap} KLD")
-    osc2.metric("Total Steam", f"{ut.get('total_steam_kgh', 0)} kg/h")
-    osc3.metric("Total Power", f"{ut.get('total_power_kwh', 0)} kWh")
-    osc4.metric("Total CW",
-                f"{ut.get('total_cooling_water_m3h', 0)} m³/h",
-                f"{ut.get('total_cooling_water_tr', 0)} TR")
-    osc5, osc6 = st.columns(2)
-    osc5.metric("Effluent Treatment Cost",
-                f"₹{econ['effluent_treatment_cost_inr_kl']:,.0f}/KL")
-    osc6.metric("Annual Operational Cost",
-                f"₹{econ['annual_operational_cost_inr']:,.0f}/yr")
+    # NOTE: these metrics are placeholders here — they will be re-rendered
+    # at the BOTTOM of the page (below Tab-5) using the freshest totals
+    # so the values always match between Tab-4 and Tab-5.
+    st.info(
+        "💡 Total Steam / Power / Cooling Water and Annual Operational Cost "
+        "are shown below Tab ⑤ Technical (after per-unit values are read) "
+        "to ensure consistency. Scroll to Tab ⑤ to see them."
+    )
 
     with st.expander("ℹ️ Formula reference", expanded=False):
         st.markdown("""
@@ -495,40 +544,24 @@ with tabs[3]:
 with tabs[4]:
     st.subheader("PART V — Technical Details & Utilities")
 
-    # Backfill defaults for older offer_data
     fp = d["feed_parameters"]
-    fp.setdefault("specific_gravity", "1.0")
-
     ts = d["technical_specs"]
-    for u in ("stripper", "mee", "atfd"):
-        ts.setdefault(u, {})
-        unit_defaults = {
-            "steam_kgh": 0, "steam_pressure": "1.5 Bar-g",
-            "power_kwh": 0,
-            "cooling_water_m3h": 0, "cooling_water_tr": 0,
-            "cooling_water_temps": "In/Out: 32 / 38 °C",
-            "compressed_air_nm3h": "8", "compressed_air_pressure": "6 Bar-g",
-        }
-        for k, v in unit_defaults.items():
-            ts[u].setdefault(k, v)
-    ts["stripper"].setdefault("reflux_kgh", 0)
-    ts["mee"].setdefault("steam_economy", 4.3)
 
     # ---------- Feed Parameters ----------
     with st.expander("📋 Feed Parameters", expanded=True):
         c1, c2 = st.columns(2)
         with c1:
             fp["capacity_kld"] = st.number_input("Feed / Capacity (KLD)",
-                value=int(fp["capacity_kld"]), min_value=1, max_value=5000, step=10, key="t_cap")
+                value=int(fp["capacity_kld"]), min_value=1, max_value=5000, step=1, key="t_cap")
             fp["feed_ph"] = st.text_input("Feed pH", value=str(fp["feed_ph"]), key="t_ph")
             fp["specific_gravity"] = st.text_input("Specific Gravity",
                 value=str(fp.get("specific_gravity", "1.0")), key="t_sg")
             fp["total_cod_ppm"] = st.number_input("Total COD (PPM)",
-                value=int(fp["total_cod_ppm"]), step=1000, key="t_cod")
+                value=int(fp["total_cod_ppm"]), step=1, key="t_cod")
             fp["volatile_organic_solvents_ppm"] = st.number_input(
                 "Volatile Organic Solvents (PPM)",
                 value=int(fp.get("volatile_organic_solvents_ppm", 0)),
-                step=1000, key="t_vos")
+                step=1, key="t_vos")
             fp["total_solids_pct"] = st.text_input(
                 "Total Solids (% w/w)",
                 value=str(fp["total_solids_pct"]), key="t_ts")
@@ -536,7 +569,7 @@ with tabs[4]:
             fp["suspended_solids_ppm"] = st.text_input("Suspended Solids (PPM)",
                 value=str(fp.get("suspended_solids_ppm", "")), key="t_ss")
             fp["feed_temp_c"] = st.number_input("Feed Temperature (°C)",
-                value=int(fp["feed_temp_c"]), key="t_T")
+                value=int(fp["feed_temp_c"]), step=1, key="t_T")
             fp["total_hardness_ppm"] = st.text_input("Total Hardness (PPM)",
                 value=str(fp.get("total_hardness_ppm", "")), key="t_th")
             fp["silica_ppm"] = st.text_input("Silica (PPM)",
@@ -554,27 +587,27 @@ with tabs[4]:
         with c1:
             st.markdown("**Process Flows**")
             s["feed_kgh"] = st.number_input("Inlet Feed Rate (kg/h)",
-                value=int(s.get("feed_kgh", 0)), step=10, key="ts_s_feed")
+                value=int(s.get("feed_kgh", 0)), step=1, key="ts_s_feed")
             s["distillate_kgh"] = st.number_input("Top Distillate Out (kg/h)",
-                value=int(s.get("distillate_kgh", 0)), step=10, key="ts_s_dist")
+                value=int(s.get("distillate_kgh", 0)), step=1, key="ts_s_dist")
             s["distillate_composition"] = st.text_input("Distillate Composition",
                 value=s.get("distillate_composition", ""), key="ts_s_dc")
             s["bottoms_kgh"] = st.number_input("Stripper Bottom Out (kg/h)",
-                value=int(s.get("bottoms_kgh", 0)), step=10, key="ts_s_bot")
+                value=int(s.get("bottoms_kgh", 0)), step=1, key="ts_s_bot")
             s["reflux_kgh"] = st.number_input("Reflux Rate (kg/h)",
-                value=int(s.get("reflux_kgh", 0)), step=10, key="ts_s_ref")
+                value=int(s.get("reflux_kgh", 0)), step=1, key="ts_s_ref")
         with c2:
             st.markdown("**Utilities**")
             s["steam_pressure"] = st.text_input("Steam Pressure", value=s.get("steam_pressure", "1.5 Bar-g"), key="ts_s_sp")
             s["steam_kgh"] = st.number_input("Dry & Saturated Steam (kg/h)",
-                value=int(s.get("steam_kgh", 0)), step=10, key="ts_s_st")
+                value=int(s.get("steam_kgh", 0)), step=1, key="ts_s_st")
             s["power_kwh"] = st.number_input("Power Consumption (kWh)",
                 value=int(s.get("power_kwh", 0)), step=1, key="ts_s_pw")
             cc1, cc2 = st.columns(2)
             s["cooling_water_m3h"] = cc1.number_input("Cooling Water (m³/h)",
-                value=int(s.get("cooling_water_m3h", 0)), step=5, key="ts_s_cw")
+                value=int(s.get("cooling_water_m3h", 0)), step=1, key="ts_s_cw")
             s["cooling_water_tr"] = cc2.number_input("Cooling Water (TR)",
-                value=int(s.get("cooling_water_tr", 0)), step=10, key="ts_s_cw_tr")
+                value=int(s.get("cooling_water_tr", 0)), step=1, key="ts_s_cw_tr")
             s["cooling_water_temps"] = st.text_input("Cooling Water Temps",
                 value=s.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key="ts_s_cwt")
             cc3, cc4 = st.columns(2)
@@ -594,29 +627,29 @@ with tabs[4]:
         with c1:
             st.markdown("**Process Flows**")
             m["feed_kgh"] = st.number_input("Feed Inlet — Stripper Bottom (kg/h)",
-                value=int(m.get("feed_kgh", 0)), step=10, key="ts_m_feed")
+                value=int(m.get("feed_kgh", 0)), step=1, key="ts_m_feed")
             m["feed_solids_pct"] = st.text_input("Feed Solids (%)",
                 value=str(m.get("feed_solids_pct", "")), key="ts_m_fs")
             m["evaporation_kgh"] = st.number_input("Water Evaporation Rate (kg/h)",
-                value=int(m.get("evaporation_kgh", 0)), step=10, key="ts_m_evap")
+                value=int(m.get("evaporation_kgh", 0)), step=1, key="ts_m_evap")
             m["concentrate_kgh"] = st.number_input("MEE Concentrate Out (kg/h)",
-                value=int(m.get("concentrate_kgh", 0)), step=10, key="ts_m_conc")
+                value=int(m.get("concentrate_kgh", 0)), step=1, key="ts_m_conc")
             m["concentrate_solids_pct"] = st.number_input("Concentrate Out (%)",
-                value=int(m.get("concentrate_solids_pct", 40)), min_value=0, max_value=100, key="ts_m_cs")
+                value=int(m.get("concentrate_solids_pct", 40)), min_value=0, max_value=100, step=1, key="ts_m_cs")
         with c2:
             st.markdown("**Utilities**")
             m["steam_pressure"] = st.text_input("Steam Pressure", value=m.get("steam_pressure", "1.5 Bar-g"), key="ts_m_sp")
             m["steam_kgh"] = st.number_input("Dry & Saturated Steam (kg/h)",
-                value=int(m.get("steam_kgh", 0)), step=10, key="ts_m_st")
+                value=int(m.get("steam_kgh", 0)), step=1, key="ts_m_st")
             m["steam_economy"] = st.number_input("Steam Economy (kg/kg)",
                 value=float(m.get("steam_economy", 4.3)), min_value=0.0, step=0.1, format="%.2f", key="ts_m_se")
             m["power_kwh"] = st.number_input("Power Consumption (kWh)",
                 value=int(m.get("power_kwh", 0)), step=1, key="ts_m_pw")
             cc1, cc2 = st.columns(2)
             m["cooling_water_m3h"] = cc1.number_input("Cooling Water (m³/h)",
-                value=int(m.get("cooling_water_m3h", 0)), step=5, key="ts_m_cw")
+                value=int(m.get("cooling_water_m3h", 0)), step=1, key="ts_m_cw")
             m["cooling_water_tr"] = cc2.number_input("Cooling Water (TR)",
-                value=int(m.get("cooling_water_tr", 0)), step=10, key="ts_m_cw_tr")
+                value=int(m.get("cooling_water_tr", 0)), step=1, key="ts_m_cw_tr")
             m["cooling_water_temps"] = st.text_input("Cooling Water Temps",
                 value=m.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key="ts_m_cwt")
             cc3, cc4 = st.columns(2)
@@ -633,27 +666,27 @@ with tabs[4]:
         with c1:
             st.markdown("**Process Flows**")
             a["feed_kgh"] = st.number_input("Feed Inlet — MEE Concentrate (kg/h)",
-                value=int(a.get("feed_kgh", 0)), step=10, key="ts_a_feed")
+                value=int(a.get("feed_kgh", 0)), step=1, key="ts_a_feed")
             a["feed_solids_pct"] = st.number_input("Feed Solids (%)",
-                value=int(a.get("feed_solids_pct", 40)), min_value=0, max_value=100, key="ts_a_fs")
+                value=int(a.get("feed_solids_pct", 40)), min_value=0, max_value=100, step=1, key="ts_a_fs")
             a["evaporation_kgh"] = st.number_input("Water Evaporation Rate (kg/h)",
-                value=int(a.get("evaporation_kgh", 0)), step=10, key="ts_a_evap")
+                value=int(a.get("evaporation_kgh", 0)), step=1, key="ts_a_evap")
             a["product_kgh"] = st.number_input("ATFD Product Out (kg/h)",
-                value=int(a.get("product_kgh", 0)), step=10, key="ts_a_prod")
+                value=int(a.get("product_kgh", 0)), step=1, key="ts_a_prod")
             a["product_moisture_pct"] = st.text_input("Moisture in ATFD Product (%)",
                 value=str(a.get("product_moisture_pct", "8-10")), key="ts_a_pm")
         with c2:
             st.markdown("**Utilities**")
             a["steam_pressure"] = st.text_input("Steam Pressure", value=a.get("steam_pressure", "1.5 Bar-g"), key="ts_a_sp")
             a["steam_kgh"] = st.number_input("Dry & Saturated Steam (kg/h)",
-                value=int(a.get("steam_kgh", 0)), step=10, key="ts_a_st")
+                value=int(a.get("steam_kgh", 0)), step=1, key="ts_a_st")
             a["power_kwh"] = st.number_input("Power Consumption (kWh)",
                 value=int(a.get("power_kwh", 0)), step=1, key="ts_a_pw")
             cc1, cc2 = st.columns(2)
             a["cooling_water_m3h"] = cc1.number_input("Cooling Water (m³/h)",
-                value=int(a.get("cooling_water_m3h", 0)), step=5, key="ts_a_cw")
+                value=int(a.get("cooling_water_m3h", 0)), step=1, key="ts_a_cw")
             a["cooling_water_tr"] = cc2.number_input("Cooling Water (TR)",
-                value=int(a.get("cooling_water_tr", 0)), step=10, key="ts_a_cw_tr")
+                value=int(a.get("cooling_water_tr", 0)), step=1, key="ts_a_cw_tr")
             a["cooling_water_temps"] = st.text_input("Cooling Water Temps",
                 value=a.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key="ts_a_cwt")
             cc3, cc4 = st.columns(2)
@@ -662,10 +695,13 @@ with tabs[4]:
             a["compressed_air_pressure"] = cc4.text_input("CA Pressure",
                 value=a.get("compressed_air_pressure", "6 Bar-g"), key="ts_a_cap")
 
-    # Mirror per-unit steam values into the legacy `utilities` block so the
-    # existing DOCX generator (which reads from utilities.{stripper,mee,atfd}_steam)
-    # continues to render the correct numbers.
+    # =================================================================
+    # AFTER all per-unit widgets have written their values into ts,
+    # do the FINAL recalc. The totals computed here are the canonical
+    # ones — Tab-4's display block below mirrors this.
+    # =================================================================
     ut = d["utilities"]
+    # Mirror per-unit steam values into legacy utilities block for DOCX
     ut["stripper_steam"] = {
         "param": f"{ts['stripper']['steam_pressure']}, >96% dryness",
         "value_kgh": ts["stripper"]["steam_kgh"],
@@ -680,11 +716,10 @@ with tabs[4]:
         "value_kgh": ts["atfd"]["steam_kgh"],
     }
 
-    # Recompute totals + economics in case the user changed per-unit values
     _recalc_economics(d["economics"], technical_specs=ts, utilities=ut,
                       capacity_kld=d["cover"].get("capacity_kld"))
 
-    # ---------- Plant-Wide Totals (read-only display) ----------
+    # ---------- Plant-Wide Totals (read-only display, fresh values) ----------
     st.divider()
     st.markdown("### Plant-Wide Totals (computed from per-unit values above)")
     tc1, tc2, tc3 = st.columns(3)
@@ -695,6 +730,23 @@ with tabs[4]:
     tc3.metric("Total Cooling Water",
                f"{ut['total_cooling_water_m3h']} m³/h",
                f"{ut['total_cooling_water_tr']} TR")
+
+    # ---------- Overall System Operational Cost (re-displayed here for consistency with Tab-4) ----------
+    st.markdown("### Overall System Operational Cost")
+    cap = d["cover"].get("capacity_kld", 0)
+    e = d["economics"]
+    osc1, osc2, osc3, osc4 = st.columns(4)
+    osc1.metric("Plant Capacity", f"{cap} KLD")
+    osc2.metric("Total Steam", f"{ut['total_steam_kgh']} kg/h")
+    osc3.metric("Total Power", f"{ut['total_power_kwh']} kWh")
+    osc4.metric("Total CW",
+                f"{ut['total_cooling_water_m3h']} m³/h",
+                f"{ut['total_cooling_water_tr']} TR")
+    osc5, osc6 = st.columns(2)
+    osc5.metric("Effluent Treatment Cost",
+                f"₹{e['effluent_treatment_cost_inr_kl']:,.0f}/KL")
+    osc6.metric("Annual Operational Cost",
+                f"₹{e['annual_operational_cost_inr']:,.0f}/yr")
 
     # ---------- Performance Guarantee ----------
     with st.expander("🎯 Performance Guarantee (bullet points)", expanded=False):
