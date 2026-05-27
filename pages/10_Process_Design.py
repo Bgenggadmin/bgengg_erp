@@ -7,8 +7,12 @@ Password-gated. Uses ERP's Supabase connection + customer_master for clients.
 Tables written to:
   pd_projects, pd_stripper_designs, pd_mee_designs,
   pd_atfd_designs, pd_salt_routing, pd_audit_log
+
+Updated: integration with Anchor Portal (Ammu's MEE enquiries).
+  - New "Open from Anchor Enquiry" section spawns a pd_project from
+    an anchor_projects row, auto-creates the customer_master entry if
+    needed, and writes the new pd_project_id back to anchor_projects.
 """
-# Ensure repo root is on sys.path so sibling modules (bg_process_design/, bg_offer_generator/) import correctly
 import sys, os
 _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _repo_root not in sys.path:
@@ -32,10 +36,8 @@ st.set_page_config(
 _TEAM_PASSWORD = "BG@Design2026"
 
 def _password_gate() -> bool:
-    """Return True if user has entered correct password."""
     if st.session_state.get("pd_authenticated"):
         return True
-
     st.title("🔒 Process Design — Restricted")
     st.caption("Enter team password to access B&G process design tools.")
     pwd = st.text_input("Password", type="password", key="pd_pwd_input")
@@ -48,7 +50,6 @@ def _password_gate() -> bool:
     return False
 
 
-# Block if not authenticated
 if not _password_gate():
     st.stop()
 
@@ -58,7 +59,6 @@ if not _password_gate():
 # ---------------------------------------------------------------------
 conn = st.connection("supabase", type=SupabaseConnection)
 
-# Import here so failed imports don't break password gate
 from bg_process_design.db import (
     create_project, list_projects, get_project,
     update_project, delete_project, log_action,
@@ -71,14 +71,21 @@ from bg_process_design.utils.excel_export import build_review_workbook
 
 
 # ---------------------------------------------------------------------
+# RAW SUPABASE CLIENT (for tables not wrapped by bg_process_design.db)
+# ---------------------------------------------------------------------
+def _raw_client():
+    return conn.client if hasattr(conn, "client") else conn
+
+
+# ---------------------------------------------------------------------
 # CLIENT PICKER (uses customer_master)
 # ---------------------------------------------------------------------
 @st.cache_data(ttl=300)
 def _load_clients():
-    """Fetch list of clients from customer_master."""
     try:
-        client = conn.client if hasattr(conn, "client") else conn
-        res = client.table("customer_master").select("id, name").order("name").execute()
+        res = _raw_client().table("customer_master").select(
+            "id, name, address, contact, email"
+        ).order("name").execute()
         return res.data or []
     except Exception as e:
         st.error(f"Failed to load clients: {e}")
@@ -86,7 +93,6 @@ def _load_clients():
 
 
 def _client_picker(label="Client", key=None, current_id=None):
-    """Render a dropdown of customers from customer_master. Returns (id, name)."""
     clients = _load_clients()
     if not clients:
         st.warning("No clients found in customer_master. Add clients via the ERP first.")
@@ -106,10 +112,83 @@ def _client_picker(label="Client", key=None, current_id=None):
 
 
 # ---------------------------------------------------------------------
+# ANCHOR ENQUIRY INTEGRATION
+# ---------------------------------------------------------------------
+@st.cache_data(ttl=60)
+def _load_unlinked_anchor_enquiries():
+    """
+    Fetch Ammu's anchor_projects rows that don't yet have a pd_project linked.
+    These are MEE enquiries ready to spawn a process design from.
+    """
+    try:
+        res = _raw_client().table("anchor_projects").select(
+            "id, client_name, project_description, job_no, status, "
+            "contact_person, contact_phone, special_notes, enquiry_date, "
+            "estimated_value, anchor_person, pd_project_id"
+        ).eq("anchor_person", "Ammu").is_("pd_project_id", "null").order(
+            "enquiry_date", desc=True
+        ).execute()
+        return res.data or []
+    except Exception as e:
+        st.warning(f"Could not load anchor enquiries: {e}")
+        return []
+
+
+def _find_or_create_customer(client_name: str, contact: str = None, email: str = None):
+    """
+    Case-insensitive trimmed match on customer_master.name.
+    If a match is found, return that row. Otherwise create a new one.
+    Returns the customer_master row dict (with id) or None on failure.
+    """
+    if not client_name or not client_name.strip():
+        return None
+    needle = client_name.strip().lower()
+
+    # First try a fuzzy match against the cached list
+    for c in _load_clients():
+        if (c.get("name") or "").strip().lower() == needle:
+            return c
+
+    # Not found → create
+    try:
+        payload = {
+            "name": client_name.strip(),
+            "contact": (contact or "").strip() or None,
+            "email":   (email or "").strip() or None,
+        }
+        res = _raw_client().table("customer_master").insert(payload).execute()
+        if res.data:
+            _load_clients.clear()  # bust cache
+            return res.data[0]
+    except Exception as e:
+        st.error(f"Failed to create customer_master entry: {e}")
+    return None
+
+
+def _link_anchor_to_pd_project(anchor_id: int, pd_project_id: int) -> bool:
+    """Write pd_project_id back into anchor_projects.id."""
+    try:
+        _raw_client().table("anchor_projects").update({
+            "pd_project_id": pd_project_id,
+        }).eq("id", anchor_id).execute()
+        _load_unlinked_anchor_enquiries.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to link anchor entry to pd_project: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------
 # PROJECT SELECTION STATE
 # ---------------------------------------------------------------------
 if "pd_active_project" not in st.session_state:
     st.session_state.pd_active_project = None
+if "pd_show_new_project" not in st.session_state:
+    st.session_state.pd_show_new_project = False
+if "pd_show_anchor_spawn" not in st.session_state:
+    st.session_state.pd_show_anchor_spawn = False
+if "pd_anchor_selected_row" not in st.session_state:
+    st.session_state.pd_anchor_selected_row = None
 
 
 # ---------------------------------------------------------------------
@@ -118,7 +197,145 @@ if "pd_active_project" not in st.session_state:
 st.title("🧪 Process Design — Stripper · MEE · ATFD")
 st.caption("B&G Engineering ZLD Design Tool")
 
-# Top bar: project selector
+
+# =====================================================================
+# OPEN FROM ANCHOR ENQUIRY  (new section)
+# =====================================================================
+with st.expander("📂 Open from Anchor Enquiry (Ammu · MEE projects)", expanded=False):
+    anchor_rows = _load_unlinked_anchor_enquiries()
+    if not anchor_rows:
+        st.info(
+            "No unlinked MEE enquiries from Ammu's anchor portal. "
+            "Either all of Ammu's enquiries already have a process-design "
+            "project, or no enquiries have been logged yet."
+        )
+    else:
+        def _fmt_anchor(r):
+            client = r.get("client_name") or "?"
+            desc = (r.get("project_description") or "")[:40]
+            status = r.get("status") or ""
+            job = r.get("job_no") or "—"
+            dt = str(r.get("enquiry_date") or "")[:10]
+            return f"#{r['id']} · {client} · {desc} · Job {job} · {status} · {dt}"
+
+        opts = ["— select an enquiry —"] + [_fmt_anchor(r) for r in anchor_rows]
+        sel_idx = st.selectbox(
+            f"Ammu's unlinked enquiries ({len(anchor_rows)} found)",
+            range(len(opts)),
+            format_func=lambda i: opts[i],
+            key="pd_anchor_sel",
+        )
+        c1, c2 = st.columns([1, 4])
+        if c1.button("🚀 Start Design", type="primary", disabled=(sel_idx == 0),
+                     key="pd_anchor_spawn_btn", use_container_width=True):
+            st.session_state.pd_anchor_selected_row = anchor_rows[sel_idx - 1]
+            st.session_state.pd_show_anchor_spawn = True
+            st.rerun()
+
+
+# Spawn-from-anchor dialog
+if st.session_state.pd_show_anchor_spawn and st.session_state.pd_anchor_selected_row:
+    anc = st.session_state.pd_anchor_selected_row
+    with st.form("anchor_spawn_form"):
+        st.subheader("🧪 Spawn Process Design from Anchor Enquiry")
+        st.caption(
+            f"Anchor entry #{anc['id']} · {anc.get('client_name')} · "
+            f"{anc.get('project_description', '')[:60]}"
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            # Pre-fill project_code: use job_no if available, else ANC<id>
+            default_code = (
+                str(anc.get("job_no") or "").strip().upper()
+                or f"ANC{anc['id']}"
+            )
+            project_code = st.text_input(
+                "Project Code *", value=default_code,
+                help="Editable. Pre-filled from anchor job_no or ANC+id.",
+            )
+            default_name = (
+                anc.get("project_description")
+                or f"MEE Project — {anc.get('client_name')}"
+            )
+            project_name = st.text_input("Project Name *", value=default_name)
+            plant_location = st.text_input("Plant Location", value="Hyderabad")
+        with c2:
+            st.text_input(
+                "Client (auto-linked)",
+                value=anc.get("client_name", ""),
+                disabled=True,
+                help="Will be matched against customer_master, "
+                     "or auto-created if no match.",
+            )
+            capacity_kld = st.number_input(
+                "Capacity (KLD) *", min_value=1, max_value=5000, value=100, step=10,
+                help="Not captured in anchor portal — please enter.",
+            )
+            scheme = st.selectbox("Scheme",
+                ["Stripper+MEE+ATFD", "MEE+ATFD", "MEE only", "Stripper only"])
+
+        designed_by = st.text_input("Designed By", value="Ammu")
+        notes = st.text_area(
+            "Notes",
+            value=(anc.get("special_notes") or ""),
+            help="Pre-filled with anchor entry's special_notes. Edit as needed.",
+        )
+
+        col_a, col_b = st.columns(2)
+        if col_a.form_submit_button("🚀 Create & Link", type="primary"):
+            if not project_code.strip() or not project_name.strip():
+                st.error("Project Code and Project Name are required.")
+            else:
+                # 1. Find or create customer_master entry
+                cust = _find_or_create_customer(
+                    anc.get("client_name", ""),
+                    contact=anc.get("contact_phone"),
+                    email=None,
+                )
+                if not cust:
+                    st.error("Could not resolve customer. Aborted.")
+                else:
+                    # 2. Create pd_project
+                    data = {
+                        "project_code": project_code.strip(),
+                        "project_name": project_name.strip(),
+                        "client_id": cust["id"],
+                        "plant_location": plant_location.strip(),
+                        "capacity_kld": capacity_kld,
+                        "scheme": scheme,
+                        "designed_by": designed_by.strip(),
+                        "notes": notes,
+                        "status": "active",
+                    }
+                    result = create_project(conn, data)
+                    if result:
+                        # 3. Link anchor → pd_project
+                        _link_anchor_to_pd_project(anc["id"], result["id"])
+                        # 4. Log + set active
+                        log_action(
+                            conn, result["id"], "project", "create_from_anchor",
+                            designed_by.strip() or "admin",
+                            {"anchor_id": anc["id"], "code": project_code},
+                        )
+                        st.session_state.pd_active_project = result
+                        st.session_state.pd_show_anchor_spawn = False
+                        st.session_state.pd_anchor_selected_row = None
+                        st.success(
+                            f"✅ Created project {project_code} (id={result['id']}), "
+                            f"linked customer #{cust['id']} ({cust['name']}), "
+                            f"linked anchor #{anc['id']}"
+                        )
+                        st.rerun()
+        if col_b.form_submit_button("Cancel"):
+            st.session_state.pd_show_anchor_spawn = False
+            st.session_state.pd_anchor_selected_row = None
+            st.rerun()
+
+
+# =====================================================================
+# Existing project selector (unchanged)
+# =====================================================================
 with st.container():
     c1, c2, c3 = st.columns([3, 2, 1])
     with c1:
@@ -143,7 +360,7 @@ with st.container():
             st.session_state.pd_authenticated = False
             st.rerun()
 
-# New project dialog
+# New project dialog (unchanged)
 if st.session_state.get("pd_show_new_project"):
     with st.form("new_proj_form"):
         st.subheader("Create New Project")
@@ -241,7 +458,7 @@ with tabs[4]:
             import traceback
             st.code(traceback.format_exc())
 
-    # --- PDF CLIENT DECK (v5 auto-added) ---
+    # --- PDF CLIENT DECK ---
     st.divider()
     st.markdown("#### 📑 Client Presentation Deck")
     st.caption(
@@ -249,7 +466,6 @@ with tabs[4]:
         "saved designs. Ready to share with clients — no external tools needed."
     )
 
-    # Build export data on demand so the button reflects current DB state
     try:
         _pdf_data = build_full_project_export(conn, proj["id"])
     except Exception as _e:
@@ -284,13 +500,12 @@ with tabs[4]:
     if _gen_pdf:
         with st.spinner("Building PDF deck…"):
             try:
-                # Try to fetch logo from Supabase (same loader the Offer Generator uses)
                 _logo_bytes = None
                 try:
                     from bg_offer_generator.utils.assets import load_brand_assets
                     _logo_bytes, _, _ = load_brand_assets()
                 except Exception:
-                    pass  # fall back to text wordmark
+                    pass
 
                 _designer = (proj.get("designed_by") or "Design Team").upper()
                 _pdf_bytes = build_client_deck_pdf(
@@ -320,9 +535,8 @@ with tabs[4]:
             key="pd_export_pdf_download_btn",
             use_container_width=True,
         )
-    # --- end PDF CLIENT DECK block ---
 
-    # --- REVIEW EXCEL (v6 auto-added) ---
+    # --- REVIEW EXCEL ---
     st.divider()
     st.markdown("#### 📊 Design Review Excel")
     st.caption(
@@ -330,8 +544,6 @@ with tabs[4]:
         "Static values only — read-only summary of what has been calculated."
     )
 
-    # Reuse the same _pdf_data if it was built by the PDF section above;
-    # otherwise build it here.
     try:
         _xlsx_source = _pdf_data
     except NameError:
@@ -393,5 +605,3 @@ with tabs[4]:
             key="pd_export_xlsx_download_btn",
             use_container_width=True,
         )
-    # --- end REVIEW EXCEL block ---
-
