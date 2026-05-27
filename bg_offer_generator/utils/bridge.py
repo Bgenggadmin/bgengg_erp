@@ -16,6 +16,112 @@ def parse_process_design_json(json_content: str) -> dict:
     return json.loads(json_content)
 
 
+def _extract_economics_overall(process_json: dict, fallback: dict) -> dict:
+    """
+    Pull overall economics parameters from the process design JSON.
+
+    Looks in several common locations and accepts multiple field-name aliases
+    because the process design schema may evolve over time. Returns the three
+    canonical keys used everywhere in the offer generator. Missing values
+    fall back to the value already present in `fallback` (i.e. whatever was
+    in offer["economics"] before the bridge ran).
+
+    Override priority (first hit wins for each field):
+        1. process_json["economics"][<key>]
+        2. process_json["plant_wide"]["economics"][<key>]
+        3. process_json["project"]["operating"][<key>]
+        4. process_json["operating_parameters"][<key>]
+        5. process_json["project"][<key>]
+        6. fallback[<key>]
+    """
+    # Candidate source dicts in priority order
+    sources = []
+    sources.append(process_json.get("economics") or {})
+    plant_wide = process_json.get("plant_wide") or {}
+    sources.append(plant_wide.get("economics") or {})
+    proj = process_json.get("project") or {}
+    sources.append(proj.get("operating") or {})
+    sources.append(process_json.get("operating_parameters") or {})
+    sources.append(proj)
+
+    # Field aliases — process_design might use different names
+    aliases = {
+        "operating_hours_day": [
+            "operating_hours_day", "operating_hours_per_day", "operating_hours",
+            "op_hours_per_day", "hours_per_day", "daily_operating_hours",
+        ],
+        "operating_days_year": [
+            "operating_days_year", "operating_days_per_year", "days_per_year",
+            "annual_operating_days", "days_of_operation", "operating_days",
+        ],
+        "steam_cost_inr_kg": [
+            "steam_cost_inr_kg", "steam_cost_rs_per_kg", "steam_cost",
+            "steam_rate_rs_per_kg", "steam_price_per_kg", "steam_unit_cost",
+        ],
+    }
+
+    out = {}
+    for canonical, alias_list in aliases.items():
+        value = None
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            for alias in alias_list:
+                if alias in src and src[alias] not in (None, ""):
+                    value = src[alias]
+                    break
+            if value is not None:
+                break
+        out[canonical] = value if value is not None else fallback.get(canonical)
+
+    # Coerce types
+    try:
+        out["operating_hours_day"] = float(out["operating_hours_day"])
+    except (TypeError, ValueError):
+        out["operating_hours_day"] = float(fallback.get("operating_hours_day", 20))
+    try:
+        out["operating_days_year"] = int(out["operating_days_year"])
+    except (TypeError, ValueError):
+        out["operating_days_year"] = int(fallback.get("operating_days_year", 300))
+    try:
+        out["steam_cost_inr_kg"] = float(out["steam_cost_inr_kg"])
+    except (TypeError, ValueError):
+        out["steam_cost_inr_kg"] = float(fallback.get("steam_cost_inr_kg", 2.0))
+
+    return out
+
+
+def _recalc_economics_inplace(econ: dict) -> None:
+    """
+    Compute derived economics fields from raw inputs, writing back into `econ`.
+
+    Mirrors _recalc_economics() in pages/11_Offer_Generator.py so a freshly
+    bridged offer has correct derived values even before the user opens Tab 4.
+    """
+    hours = float(econ.get("operating_hours_day", 20) or 0)
+    days  = float(econ.get("operating_days_year", 300) or 0)
+    cost_per_kg = float(econ.get("steam_cost_inr_kg", 2.0) or 0)
+
+    conv_kgh = float(econ.get("conventional_steam_kgh", 0) or 0)
+    ecox_kgh = float(econ.get("ecox_steam_kgh", 0) or 0)
+
+    conv_annual_t = (conv_kgh * hours * days) / 1000.0
+    ecox_annual_t = (ecox_kgh * hours * days) / 1000.0
+    conv_cost_cr = (conv_annual_t * cost_per_kg) / 10000.0
+    ecox_cost_cr = (ecox_annual_t * cost_per_kg) / 10000.0
+    reduction_pct = ((conv_kgh - ecox_kgh) / conv_kgh * 100.0) if conv_kgh > 0 else 0.0
+    savings_tons  = conv_annual_t - ecox_annual_t
+    savings_lakhs = (conv_cost_cr - ecox_cost_cr) * 100.0
+
+    econ["conventional_annual_steam_tons"] = round(conv_annual_t, 2)
+    econ["conventional_annual_cost_cr"]    = round(conv_cost_cr, 4)
+    econ["ecox_annual_steam_tons"]         = round(ecox_annual_t, 2)
+    econ["ecox_annual_cost_cr"]            = round(ecox_cost_cr, 4)
+    econ["steam_reduction_pct"]            = round(reduction_pct, 2)
+    econ["annual_steam_savings_tons"]      = round(savings_tons, 2)
+    econ["annual_savings_lakhs"]           = round(savings_lakhs, 2)
+
+
 def bridge_to_offer_data(process_json: dict, existing_data: dict = None) -> dict:
     """
     Convert process design export JSON into offer data structure.
@@ -116,42 +222,37 @@ def bridge_to_offer_data(process_json: dict, existing_data: dict = None) -> dict
         offer["utilities"]["cooling_water_m3h"] = round(totals["cw_m3h"])
 
     # --- Economics ---
-    econ = plant_wide.get("economics", {})
-    if econ:
-        if econ.get("operating_hours_day"):
-            offer["economics"]["operating_hours_day"] = econ["operating_hours_day"]
-        if econ.get("operating_days_year"):
-            offer["economics"]["operating_days_year"] = econ["operating_days_year"]
-        # Compute conventional vs ECOX comparison (conventional SE ~ 1.0, ECOX uses actual)
-        mee_res = mee.get("results", {})
-        if mee_res.get("steam_consumption_kgh"):
-            ecox_steam = mee_res["steam_consumption_kgh"]
-            ecox_se = mee_res.get("steam_economy", 4.0)
-            conventional_steam = mee_res.get("total_evap_kgh", ecox_steam * ecox_se)  # SE=1 conventional
-            offer["economics"]["conventional_steam_kgh"] = round(conventional_steam)
-            offer["economics"]["ecox_steam_kgh"] = round(ecox_steam)
-            if conventional_steam > 0:
-                offer["economics"]["steam_reduction_pct"] = round(
-                    (conventional_steam - ecox_steam) / conventional_steam * 100
-                )
-            # Annual comparisons
-            hours_year = offer["economics"]["operating_hours_day"] * offer["economics"]["operating_days_year"]
-            conv_annual_tons = round(conventional_steam * hours_year / 1000)
-            ecox_annual_tons = round(ecox_steam * hours_year / 1000)
-            offer["economics"]["conventional_annual_steam_tons"] = conv_annual_tons
-            offer["economics"]["ecox_annual_steam_tons"] = ecox_annual_tons
-            offer["economics"]["annual_steam_savings_tons"] = conv_annual_tons - ecox_annual_tons
-            # Cost savings
-            steam_cost = offer["economics"]["steam_cost_inr_kg"]
-            offer["economics"]["conventional_annual_cost_cr"] = round(
-                conv_annual_tons * 1000 * steam_cost / 1e7, 2
-            )
-            offer["economics"]["ecox_annual_cost_cr"] = round(
-                ecox_annual_tons * 1000 * steam_cost / 1e7, 2
-            )
-            savings_cr = (offer["economics"]["conventional_annual_cost_cr"]
-                           - offer["economics"]["ecox_annual_cost_cr"])
-            offer["economics"]["annual_savings_lakhs"] = round(savings_cr * 100)
+    econ = offer.setdefault("economics", {})
+
+    # 1. Overall parameters (operating hours, days, steam cost) — pulled from
+    #    process design JSON if available, otherwise keep whatever's already
+    #    in the offer (which itself defaults to 20 / 300 / ₹2).
+    overall = _extract_economics_overall(process_json, fallback=econ)
+    econ["operating_hours_day"] = overall["operating_hours_day"]
+    econ["operating_days_year"] = overall["operating_days_year"]
+    econ["steam_cost_inr_kg"]   = overall["steam_cost_inr_kg"]
+
+    # 2. Steam consumption (kg/h) — derived from MEE design results.
+    #    Conventional steam = total evaporation (assumes steam economy 1.0,
+    #    i.e. each kg of water evaporated needs ~1 kg of steam).
+    #    ECOX steam = actual MEE steam consumption from the design.
+    mee_res = mee.get("results", {}) if mee else {}
+    if mee_res.get("steam_consumption_kgh") is not None:
+        ecox_steam = float(mee_res["steam_consumption_kgh"])
+        # Prefer total_evap_kgh as the conventional baseline; fall back to
+        # ecox * steam_economy if total_evap_kgh isn't present.
+        if mee_res.get("total_evap_kgh"):
+            conv_steam = float(mee_res["total_evap_kgh"])
+        else:
+            ecox_se = float(mee_res.get("steam_economy") or 4.0)
+            conv_steam = ecox_steam * ecox_se
+        econ["conventional_steam_kgh"] = round(conv_steam)
+        econ["ecox_steam_kgh"]         = round(ecox_steam)
+
+    # 3. Derived fields (annual tons, cost Cr/yr, savings %, t, lakhs).
+    #    Single source of truth = _recalc_economics_inplace, which uses the
+    #    exact formulas specified by the team.
+    _recalc_economics_inplace(econ)
 
     return offer
 
@@ -177,6 +278,15 @@ def summarize_bridge_result(process_json: dict, offer: dict) -> list:
             lines.append(f"✅ {unit.upper()} design imported")
         else:
             lines.append(f"⚠️ {unit.upper()} — no design in source JSON, using defaults")
+
+    # Economics summary
+    econ = offer.get("economics", {})
+    if econ.get("conventional_steam_kgh") and econ.get("ecox_steam_kgh"):
+        lines.append(
+            f"✅ Economics: {econ['conventional_steam_kgh']} → {econ['ecox_steam_kgh']} kg/h steam "
+            f"({econ.get('steam_reduction_pct', 0):.1f}% reduction, "
+            f"₹{econ.get('annual_savings_lakhs', 0):.1f} Lakhs/yr savings)"
+        )
 
     lines.append("")
     lines.append("👉 Now review the form below, edit commercial terms (pricing, "
