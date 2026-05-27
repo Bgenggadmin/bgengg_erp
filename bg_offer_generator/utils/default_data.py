@@ -48,19 +48,24 @@ def default_offer_data() -> dict:
         },
 
         # ----- PART IV: Economics & OPEX -----
+        # User-input keys are listed first; the rest are computed live by
+        # _recalc_economics() in pages/11_Offer_Generator.py.
         "economics": {
-            "conventional_steam_kgh": 1155,
-            "ecox_steam_kgh": 730,
-            "steam_reduction_pct": 37,
-            "conventional_annual_steam_tons": 6930,
-            "ecox_annual_steam_tons": 4380,
-            "annual_steam_savings_tons": 2550,
-            "conventional_annual_cost_cr": 1.39,
-            "ecox_annual_cost_cr": 0.88,
-            "annual_savings_lakhs": 51,
+            # --- User inputs: overall parameters ---
             "operating_hours_day": 20,
             "operating_days_year": 300,
             "steam_cost_inr_kg": 2,
+            # --- User inputs: steam consumption ---
+            "conventional_steam_kgh": 1155,
+            "ecox_steam_kgh": 730,
+            # --- Computed (will be overwritten by _recalc_economics) ---
+            "conventional_annual_steam_tons": 6930,
+            "conventional_annual_cost_cr": 1.39,
+            "ecox_annual_steam_tons": 4380,
+            "ecox_annual_cost_cr": 0.88,
+            "steam_reduction_pct": 37,
+            "annual_steam_savings_tons": 2550,
+            "annual_savings_lakhs": 51,
         },
 
         # ----- PART V: Technical Details -----
