@@ -9,7 +9,6 @@ Tables written to:
   offers           (offer_data stored as JSONB)
   customer_master  (when adding new clients inline)
 """
-# Ensure repo root is on sys.path so sibling modules import correctly
 import sys, os
 _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _repo_root not in sys.path:
@@ -71,39 +70,39 @@ from bg_offer_generator.modules.docx_generator import generate_offer_docx
 # ---------------------------------------------------------------------
 # ECONOMICS CALCULATION HELPERS
 # ---------------------------------------------------------------------
-def _recalc_economics(econ: dict) -> dict:
+def _recalc_economics(econ: dict, technical_specs: dict = None,
+                      utilities: dict = None, capacity_kld: float = None) -> dict:
     """
-    Recalculate annual tonnage, cost, and savings from raw inputs.
+    Recalculate annual tonnage, cost, savings, plant-wide totals, and
+    annual operational cost from raw inputs.
 
-    Inputs (user-entered):
-        operating_hours_day, operating_days_year, steam_cost_inr_kg
+    User-entered keys:
+        operating_hours_day, operating_days_year
+        steam_cost_inr_kg, power_cost_inr_kwh, cooling_water_cost_inr_m3
+        effluent_treatment_cost_inr_kl
         conventional_steam_kgh, ecox_steam_kgh
 
-    Outputs (computed, written back into the same dict):
+    Computed keys:
         conventional_annual_steam_tons, conventional_annual_cost_cr
-        ecox_annual_steam_tons,         ecox_annual_cost_cr
+        ecox_annual_steam_tons, ecox_annual_cost_cr
         steam_reduction_pct, annual_steam_savings_tons, annual_savings_lakhs
+        annual_operational_cost_inr
 
-    Formulas:
-        Annual (t/yr)      = (kg/h × h/day × days/yr) / 1000
-        Cost (Cr/yr)       = (Annual t/yr × ₹/kg) / 10000
-        Reduction %        = ((conv_kgh - ecox_kgh) / conv_kgh) × 100
-        Savings (t/yr)     = conv_annual - ecox_annual
-        Savings (Lakhs/yr) = (conv_cost_cr - ecox_cost_cr) × 100
+    If technical_specs / utilities / capacity_kld passed, also computes
+    plant-wide totals (total_steam_kgh, etc.) by summing per-unit values.
     """
     hours = float(econ.get("operating_hours_day", 20) or 0)
     days  = float(econ.get("operating_days_year", 300) or 0)
-    cost_per_kg = float(econ.get("steam_cost_inr_kg", 2.0) or 0)
+    steam_cost = float(econ.get("steam_cost_inr_kg", 2.0) or 0)
 
+    # ----- Steam comparison (Conventional vs ECOX) -----
     conv_kgh = float(econ.get("conventional_steam_kgh", 0) or 0)
     ecox_kgh = float(econ.get("ecox_steam_kgh", 0) or 0)
 
     conv_annual_t = (conv_kgh * hours * days) / 1000.0
     ecox_annual_t = (ecox_kgh * hours * days) / 1000.0
-
-    conv_cost_cr = (conv_annual_t * cost_per_kg) / 10000.0
-    ecox_cost_cr = (ecox_annual_t * cost_per_kg) / 10000.0
-
+    conv_cost_cr  = (conv_annual_t * steam_cost) / 10000.0
+    ecox_cost_cr  = (ecox_annual_t * steam_cost) / 10000.0
     reduction_pct = ((conv_kgh - ecox_kgh) / conv_kgh * 100.0) if conv_kgh > 0 else 0.0
     savings_tons  = conv_annual_t - ecox_annual_t
     savings_lakhs = (conv_cost_cr - ecox_cost_cr) * 100.0  # 1 Cr = 100 Lakhs
@@ -115,6 +114,34 @@ def _recalc_economics(econ: dict) -> dict:
     econ["steam_reduction_pct"]            = round(reduction_pct, 2)
     econ["annual_steam_savings_tons"]      = round(savings_tons, 2)
     econ["annual_savings_lakhs"]           = round(savings_lakhs, 2)
+
+    # ----- Annual operational cost (₹/year) -----
+    # = effluent_cost (₹/KL) × capacity (KLD) × days_per_year
+    effluent_cost = float(econ.get("effluent_treatment_cost_inr_kl", 0) or 0)
+    cap = float(capacity_kld or 0)
+    econ["annual_operational_cost_inr"] = round(effluent_cost * cap * days)
+
+    # ----- Plant-wide utility totals (sum of per-unit) -----
+    if technical_specs and utilities is not None:
+        def _f(v):
+            try: return float(v)
+            except (TypeError, ValueError): return 0.0
+
+        units = ["stripper", "mee", "atfd"]
+        total_steam = sum(_f(technical_specs.get(u, {}).get("steam_kgh", 0)) for u in units)
+        total_power = sum(_f(technical_specs.get(u, {}).get("power_kwh", 0)) for u in units)
+        total_cw_m3 = sum(_f(technical_specs.get(u, {}).get("cooling_water_m3h", 0)) for u in units)
+        total_cw_tr = sum(_f(technical_specs.get(u, {}).get("cooling_water_tr", 0)) for u in units)
+
+        utilities["total_steam_kgh"]         = round(total_steam)
+        utilities["total_power_kwh"]         = round(total_power)
+        utilities["total_cooling_water_m3h"] = round(total_cw_m3)
+        utilities["total_cooling_water_tr"]  = round(total_cw_tr)
+
+        # Keep legacy keys aligned (used by docx_generator's utilities table)
+        utilities["power_consumption_kwh"] = round(total_power)
+        utilities["cooling_water_m3h"]     = round(total_cw_m3)
+
     return econ
 
 
@@ -148,7 +175,6 @@ def _load_pd_projects():
 
 
 def _insert_new_client(name: str, address: str, contact: str, email: str):
-    """Insert new client into customer_master. Returns new row dict or None."""
     try:
         payload = {
             "name": name.strip(),
@@ -165,7 +191,6 @@ def _insert_new_client(name: str, address: str, contact: str, email: str):
 
 
 def _save_offer_to_db(data: dict, pd_project_id=None) -> int:
-    """Save offer to `offers` table, return new offer ID."""
     try:
         cov = data["cover"]
         pr = data["pricing"]
@@ -216,7 +241,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Top bar: logout
 c_logout = st.columns([6, 1])[1]
 if c_logout.button("🚪 Logout"):
     st.session_state.og_authenticated = False
@@ -247,18 +271,15 @@ with tabs[0]:
     st.subheader("Cover Page & Client Details")
     cov = d["cover"]
 
-    # ----- Client picker from customer_master -----
     clients = _load_clients()
     if clients:
         names = ["— select client —"] + [f"{c['name']} (id={c['id']})" for c in clients]
-
-        # If a freshly-added client should be auto-selected, prefer it
         default_idx = 0
         new_id = st.session_state.pop("og_new_client_id", None)
         if new_id is not None:
             for i, c in enumerate(clients):
                 if c["id"] == new_id:
-                    default_idx = i + 1  # +1 for the "— select —" placeholder
+                    default_idx = i + 1
                     break
 
         sel = st.selectbox("Client", names, index=default_idx, key="og_client_sel")
@@ -266,7 +287,6 @@ with tabs[0]:
             chosen = clients[names.index(sel) - 1]
             d["_client_id"] = chosen["id"]
             cov["submitted_to"] = f"M/s. {chosen['name']}"
-            # Auto-populate contact fields from master (only if currently blank)
             if chosen.get("address") and not cov.get("location"):
                 cov["location"] = chosen["address"]
             if chosen.get("contact") and not cov.get("contact_details"):
@@ -276,7 +296,6 @@ with tabs[0]:
     else:
         st.info("No clients in customer_master yet. Add one below.")
 
-    # ----- Inline "Add new client" form -----
     with st.expander("➕ Add new client", expanded=not clients):
         with st.form("og_new_client_form", clear_on_submit=True):
             nc_name = st.text_input("Client Name *", key="og_nc_name")
@@ -291,14 +310,13 @@ with tabs[0]:
                 else:
                     new_row = _insert_new_client(nc_name, nc_address, nc_contact, nc_email)
                     if new_row:
-                        st.cache_data.clear()  # refresh client list
+                        st.cache_data.clear()
                         st.session_state.og_new_client_id = new_row["id"]
                         st.success(f"✅ Added '{new_row['name']}' (id={new_row['id']})")
                         st.rerun()
 
     st.divider()
 
-    # ----- Existing cover fields -----
     c1, c2 = st.columns(2)
     with c1:
         cov["quote_ref"] = st.text_input("Quote Reference", value=cov["quote_ref"], key="11_Offer_Generator_text_input_2")
@@ -340,10 +358,13 @@ with tabs[3]:
     st.subheader("PART IV — Economics / OPEX")
     econ = d["economics"]
 
-    # Backfill defaults for older offer_data dicts that may be missing keys
+    # Backfill defaults for older offer_data dicts
     econ.setdefault("operating_hours_day", 20)
     econ.setdefault("operating_days_year", 300)
     econ.setdefault("steam_cost_inr_kg", 2.0)
+    econ.setdefault("power_cost_inr_kwh", 9.0)
+    econ.setdefault("cooling_water_cost_inr_m3", 90.0)
+    econ.setdefault("effluent_treatment_cost_inr_kl", 1185.0)
     econ.setdefault("conventional_steam_kgh", 0)
     econ.setdefault("ecox_steam_kgh", 0)
 
@@ -365,41 +386,64 @@ with tabs[3]:
             key="og_e_days",
         )
     with op3:
+        econ["effluent_treatment_cost_inr_kl"] = st.number_input(
+            "Effluent Treatment Cost (₹/KL)",
+            value=float(econ["effluent_treatment_cost_inr_kl"]),
+            min_value=0.0, step=10.0, format="%.2f",
+            key="og_e_eff_cost",
+        )
+
+    cc1, cc2, cc3 = st.columns(3)
+    with cc1:
         econ["steam_cost_inr_kg"] = st.number_input(
             "Steam Cost (₹/kg)",
             value=float(econ["steam_cost_inr_kg"]),
             min_value=0.0, step=0.1, format="%.2f",
-            key="og_e_rate",
+            key="og_e_steam_rate",
+        )
+    with cc2:
+        econ["power_cost_inr_kwh"] = st.number_input(
+            "Power Cost (₹/kWh)",
+            value=float(econ["power_cost_inr_kwh"]),
+            min_value=0.0, step=0.5, format="%.2f",
+            key="og_e_pwr_rate",
+        )
+    with cc3:
+        econ["cooling_water_cost_inr_m3"] = st.number_input(
+            "Cooling Water Cost (₹/m³)",
+            value=float(econ["cooling_water_cost_inr_m3"]),
+            min_value=0.0, step=1.0, format="%.2f",
+            key="og_e_cw_rate",
         )
 
     st.divider()
 
-    # ----- Steam Inputs -----
-    st.markdown("### Steam Consumption (only Steam kg/h is user input)")
+    # ----- Steam Comparison (Conventional vs ECOX) -----
+    st.markdown("### Steam Comparison — BG ECOX-ZLD Advantage")
+    st.caption("Enter MEE steam consumption for conventional and ECOX-ZLD systems. Annual usage, cost, and savings are calculated automatically.")
     si1, si2 = st.columns(2)
     with si1:
         econ["conventional_steam_kgh"] = st.number_input(
-            "Conventional — Steam (kg/h)",
+            "Conventional — MEE Steam (kg/h)",
             value=float(econ.get("conventional_steam_kgh", 0) or 0),
             min_value=0.0, step=10.0,
             key="og_e_conv_kgh",
         )
     with si2:
         econ["ecox_steam_kgh"] = st.number_input(
-            "ECOX-ZLD — Steam (kg/h)",
+            "ECOX-ZLD — MEE Steam (kg/h)",
             value=float(econ.get("ecox_steam_kgh", 0) or 0),
             min_value=0.0, step=10.0,
             key="og_e_ecox_kgh",
         )
 
-    # Live recalculation
-    econ = _recalc_economics(econ)
-    d["economics"] = econ  # write back
+    # Live recalculation (also fills plant-wide totals from per-unit specs)
+    _recalc_economics(econ, technical_specs=d.get("technical_specs"),
+                      utilities=d.get("utilities"),
+                      capacity_kld=d["cover"].get("capacity_kld"))
 
     st.divider()
-
-    # ----- Computed Outputs (read-only metrics) -----
-    st.markdown("### Calculated Results")
+    st.markdown("### Calculated Results — Steam Advantage")
     res_c1, res_c2, res_c3 = st.columns(3)
     with res_c1:
         st.markdown("**Conventional**")
@@ -415,28 +459,248 @@ with tabs[3]:
         st.metric("Steam Savings (t/yr)", f"{econ['annual_steam_savings_tons']:,.2f}")
         st.metric("Cost Savings (Lakhs/yr)", f"₹{econ['annual_savings_lakhs']:.2f}")
 
+    st.divider()
+    st.markdown("### Overall System Operational Cost")
+    ut = d.get("utilities", {})
+    cap = d["cover"].get("capacity_kld", 0)
+    osc1, osc2, osc3, osc4 = st.columns(4)
+    osc1.metric("Plant Capacity", f"{cap} KLD")
+    osc2.metric("Total Steam", f"{ut.get('total_steam_kgh', 0)} kg/h")
+    osc3.metric("Total Power", f"{ut.get('total_power_kwh', 0)} kWh")
+    osc4.metric("Total CW",
+                f"{ut.get('total_cooling_water_m3h', 0)} m³/h",
+                f"{ut.get('total_cooling_water_tr', 0)} TR")
+    osc5, osc6 = st.columns(2)
+    osc5.metric("Effluent Treatment Cost",
+                f"₹{econ['effluent_treatment_cost_inr_kl']:,.0f}/KL")
+    osc6.metric("Annual Operational Cost",
+                f"₹{econ['annual_operational_cost_inr']:,.0f}/yr")
+
     with st.expander("ℹ️ Formula reference", expanded=False):
         st.markdown("""
-- **Annual (t/yr)** = (Steam kg/h × Operating hours × Days per year) ÷ 1000
-- **Cost (Cr/yr)** = (Annual t/yr × Steam Cost ₹/kg) ÷ 10,000
-- **Reduction %** = ((Conv. steam − ECOX steam) ÷ Conv. steam) × 100
-- **Savings (t/yr)** = Conv. annual − ECOX annual
-- **Savings (Lakhs/yr)** = (Conv. cost Cr − ECOX cost Cr) × 100
+**Steam comparison:**
+- Annual (t/yr) = (Steam kg/h × Operating hours × Days per year) ÷ 1000
+- Cost (Cr/yr) = (Annual t/yr × Steam Cost ₹/kg) ÷ 10,000
+- Reduction % = ((Conv. steam − ECOX steam) ÷ Conv. steam) × 100
+- Savings (t/yr) = Conv. annual − ECOX annual
+- Savings (Lakhs/yr) = (Conv. cost Cr − ECOX cost Cr) × 100
+
+**Plant-wide totals** are summed from per-unit values in Tab ⑤ Technical.
+
+**Annual Operational Cost (₹/yr)** = Effluent Treatment Cost (₹/KL) × Capacity (KLD) × Days/year
 """)
 
 
 # ---------- Tab 5: Technical ----------
 with tabs[4]:
     st.subheader("PART V — Technical Details & Utilities")
-    with st.expander("Feed Parameters", expanded=True):
-        fp = d["feed_parameters"]
+
+    # Backfill defaults for older offer_data
+    fp = d["feed_parameters"]
+    fp.setdefault("specific_gravity", "1.0")
+
+    ts = d["technical_specs"]
+    for u in ("stripper", "mee", "atfd"):
+        ts.setdefault(u, {})
+        unit_defaults = {
+            "steam_kgh": 0, "steam_pressure": "1.5 Bar-g",
+            "power_kwh": 0,
+            "cooling_water_m3h": 0, "cooling_water_tr": 0,
+            "cooling_water_temps": "In/Out: 32 / 38 °C",
+            "compressed_air_nm3h": "8", "compressed_air_pressure": "6 Bar-g",
+        }
+        for k, v in unit_defaults.items():
+            ts[u].setdefault(k, v)
+    ts["stripper"].setdefault("reflux_kgh", 0)
+    ts["mee"].setdefault("steam_economy", 4.3)
+
+    # ---------- Feed Parameters ----------
+    with st.expander("📋 Feed Parameters", expanded=True):
         c1, c2 = st.columns(2)
-        fp["capacity_kld"] = c1.number_input("Capacity KLD", value=int(fp["capacity_kld"]), key="t_cap")
-        fp["feed_ph"] = c1.text_input("pH", value=str(fp["feed_ph"]), key="t_ph")
-        fp["total_cod_ppm"] = c1.number_input("COD ppm", value=int(fp["total_cod_ppm"]), key="t_cod")
-        fp["total_solids_pct"] = c2.number_input("TS %", value=float(fp["total_solids_pct"]), step=0.1, key="t_ts")
-        fp["feed_temp_c"] = c2.number_input("Temp °C", value=int(fp["feed_temp_c"]), key="t_T")
-        fp["feed_nature"] = c2.text_input("Nature", value=fp["feed_nature"], key="t_nat")
+        with c1:
+            fp["capacity_kld"] = st.number_input("Feed / Capacity (KLD)",
+                value=int(fp["capacity_kld"]), min_value=1, max_value=5000, step=10, key="t_cap")
+            fp["feed_ph"] = st.text_input("Feed pH", value=str(fp["feed_ph"]), key="t_ph")
+            fp["specific_gravity"] = st.text_input("Specific Gravity",
+                value=str(fp.get("specific_gravity", "1.0")), key="t_sg")
+            fp["total_cod_ppm"] = st.number_input("Total COD (PPM)",
+                value=int(fp["total_cod_ppm"]), step=1000, key="t_cod")
+            fp["volatile_organic_solvents_ppm"] = st.number_input(
+                "Volatile Organic Solvents (PPM)",
+                value=int(fp.get("volatile_organic_solvents_ppm", 0)),
+                step=1000, key="t_vos")
+            fp["total_solids_pct"] = st.text_input(
+                "Total Solids (% w/w)",
+                value=str(fp["total_solids_pct"]), key="t_ts")
+        with c2:
+            fp["suspended_solids_ppm"] = st.text_input("Suspended Solids (PPM)",
+                value=str(fp.get("suspended_solids_ppm", "")), key="t_ss")
+            fp["feed_temp_c"] = st.number_input("Feed Temperature (°C)",
+                value=int(fp["feed_temp_c"]), key="t_T")
+            fp["total_hardness_ppm"] = st.text_input("Total Hardness (PPM)",
+                value=str(fp.get("total_hardness_ppm", "")), key="t_th")
+            fp["silica_ppm"] = st.text_input("Silica (PPM)",
+                value=str(fp.get("silica_ppm", "")), key="t_si")
+            fp["free_chloride_ppm"] = st.text_input("Free Chloride (PPM)",
+                value=str(fp.get("free_chloride_ppm", "")), key="t_cl")
+            fp["feed_nature"] = st.text_input("Feed Nature",
+                value=fp["feed_nature"], key="t_nat")
+
+    # ---------- Stripper System ----------
+    with st.expander("⚙️ Stripper System", expanded=True):
+        s = ts["stripper"]
+        s["type"] = st.text_input("Type", value=s.get("type", "Tray Type Column"), key="ts_s_type")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Process Flows**")
+            s["feed_kgh"] = st.number_input("Inlet Feed Rate (kg/h)",
+                value=int(s.get("feed_kgh", 0)), step=10, key="ts_s_feed")
+            s["distillate_kgh"] = st.number_input("Top Distillate Out (kg/h)",
+                value=int(s.get("distillate_kgh", 0)), step=10, key="ts_s_dist")
+            s["distillate_composition"] = st.text_input("Distillate Composition",
+                value=s.get("distillate_composition", ""), key="ts_s_dc")
+            s["bottoms_kgh"] = st.number_input("Stripper Bottom Out (kg/h)",
+                value=int(s.get("bottoms_kgh", 0)), step=10, key="ts_s_bot")
+            s["reflux_kgh"] = st.number_input("Reflux Rate (kg/h)",
+                value=int(s.get("reflux_kgh", 0)), step=10, key="ts_s_ref")
+        with c2:
+            st.markdown("**Utilities**")
+            s["steam_pressure"] = st.text_input("Steam Pressure", value=s.get("steam_pressure", "1.5 Bar-g"), key="ts_s_sp")
+            s["steam_kgh"] = st.number_input("Dry & Saturated Steam (kg/h)",
+                value=int(s.get("steam_kgh", 0)), step=10, key="ts_s_st")
+            s["power_kwh"] = st.number_input("Power Consumption (kWh)",
+                value=int(s.get("power_kwh", 0)), step=1, key="ts_s_pw")
+            cc1, cc2 = st.columns(2)
+            s["cooling_water_m3h"] = cc1.number_input("Cooling Water (m³/h)",
+                value=int(s.get("cooling_water_m3h", 0)), step=5, key="ts_s_cw")
+            s["cooling_water_tr"] = cc2.number_input("Cooling Water (TR)",
+                value=int(s.get("cooling_water_tr", 0)), step=10, key="ts_s_cw_tr")
+            s["cooling_water_temps"] = st.text_input("Cooling Water Temps",
+                value=s.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key="ts_s_cwt")
+            cc3, cc4 = st.columns(2)
+            s["compressed_air_nm3h"] = cc3.text_input("Compressed Air (Nm³/h)",
+                value=str(s.get("compressed_air_nm3h", "8")), key="ts_s_ca")
+            s["compressed_air_pressure"] = cc4.text_input("CA Pressure",
+                value=s.get("compressed_air_pressure", "6 Bar-g"), key="ts_s_cap")
+
+    # ---------- MEE System ----------
+    with st.expander("⚙️ Multiple Effect Evaporator System", expanded=True):
+        m = ts["mee"]
+        c0a, c0b = st.columns(2)
+        m["type"] = c0a.text_input("Type", value=m.get("type", "4-Effect Multiple Effect Evaporator"), key="ts_m_type")
+        m["configuration"] = c0b.text_input("Configuration",
+            value=m.get("configuration", "Forced Circulation Type"), key="ts_m_cfg")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Process Flows**")
+            m["feed_kgh"] = st.number_input("Feed Inlet — Stripper Bottom (kg/h)",
+                value=int(m.get("feed_kgh", 0)), step=10, key="ts_m_feed")
+            m["feed_solids_pct"] = st.text_input("Feed Solids (%)",
+                value=str(m.get("feed_solids_pct", "")), key="ts_m_fs")
+            m["evaporation_kgh"] = st.number_input("Water Evaporation Rate (kg/h)",
+                value=int(m.get("evaporation_kgh", 0)), step=10, key="ts_m_evap")
+            m["concentrate_kgh"] = st.number_input("MEE Concentrate Out (kg/h)",
+                value=int(m.get("concentrate_kgh", 0)), step=10, key="ts_m_conc")
+            m["concentrate_solids_pct"] = st.number_input("Concentrate Out (%)",
+                value=int(m.get("concentrate_solids_pct", 40)), min_value=0, max_value=100, key="ts_m_cs")
+        with c2:
+            st.markdown("**Utilities**")
+            m["steam_pressure"] = st.text_input("Steam Pressure", value=m.get("steam_pressure", "1.5 Bar-g"), key="ts_m_sp")
+            m["steam_kgh"] = st.number_input("Dry & Saturated Steam (kg/h)",
+                value=int(m.get("steam_kgh", 0)), step=10, key="ts_m_st")
+            m["steam_economy"] = st.number_input("Steam Economy (kg/kg)",
+                value=float(m.get("steam_economy", 4.3)), min_value=0.0, step=0.1, format="%.2f", key="ts_m_se")
+            m["power_kwh"] = st.number_input("Power Consumption (kWh)",
+                value=int(m.get("power_kwh", 0)), step=1, key="ts_m_pw")
+            cc1, cc2 = st.columns(2)
+            m["cooling_water_m3h"] = cc1.number_input("Cooling Water (m³/h)",
+                value=int(m.get("cooling_water_m3h", 0)), step=5, key="ts_m_cw")
+            m["cooling_water_tr"] = cc2.number_input("Cooling Water (TR)",
+                value=int(m.get("cooling_water_tr", 0)), step=10, key="ts_m_cw_tr")
+            m["cooling_water_temps"] = st.text_input("Cooling Water Temps",
+                value=m.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key="ts_m_cwt")
+            cc3, cc4 = st.columns(2)
+            m["compressed_air_nm3h"] = cc3.text_input("Compressed Air (Nm³/h)",
+                value=str(m.get("compressed_air_nm3h", "8-10")), key="ts_m_ca")
+            m["compressed_air_pressure"] = cc4.text_input("CA Pressure",
+                value=m.get("compressed_air_pressure", "6 Bar-g"), key="ts_m_cap")
+
+    # ---------- ATFD ----------
+    with st.expander("⚙️ Agitated Thin Film Dryer (ATFD)", expanded=True):
+        a = ts["atfd"]
+        a["type"] = st.text_input("Type", value=a.get("type", "Agitated Thin Film Dryer"), key="ts_a_type")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Process Flows**")
+            a["feed_kgh"] = st.number_input("Feed Inlet — MEE Concentrate (kg/h)",
+                value=int(a.get("feed_kgh", 0)), step=10, key="ts_a_feed")
+            a["feed_solids_pct"] = st.number_input("Feed Solids (%)",
+                value=int(a.get("feed_solids_pct", 40)), min_value=0, max_value=100, key="ts_a_fs")
+            a["evaporation_kgh"] = st.number_input("Water Evaporation Rate (kg/h)",
+                value=int(a.get("evaporation_kgh", 0)), step=10, key="ts_a_evap")
+            a["product_kgh"] = st.number_input("ATFD Product Out (kg/h)",
+                value=int(a.get("product_kgh", 0)), step=10, key="ts_a_prod")
+            a["product_moisture_pct"] = st.text_input("Moisture in ATFD Product (%)",
+                value=str(a.get("product_moisture_pct", "8-10")), key="ts_a_pm")
+        with c2:
+            st.markdown("**Utilities**")
+            a["steam_pressure"] = st.text_input("Steam Pressure", value=a.get("steam_pressure", "1.5 Bar-g"), key="ts_a_sp")
+            a["steam_kgh"] = st.number_input("Dry & Saturated Steam (kg/h)",
+                value=int(a.get("steam_kgh", 0)), step=10, key="ts_a_st")
+            a["power_kwh"] = st.number_input("Power Consumption (kWh)",
+                value=int(a.get("power_kwh", 0)), step=1, key="ts_a_pw")
+            cc1, cc2 = st.columns(2)
+            a["cooling_water_m3h"] = cc1.number_input("Cooling Water (m³/h)",
+                value=int(a.get("cooling_water_m3h", 0)), step=5, key="ts_a_cw")
+            a["cooling_water_tr"] = cc2.number_input("Cooling Water (TR)",
+                value=int(a.get("cooling_water_tr", 0)), step=10, key="ts_a_cw_tr")
+            a["cooling_water_temps"] = st.text_input("Cooling Water Temps",
+                value=a.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key="ts_a_cwt")
+            cc3, cc4 = st.columns(2)
+            a["compressed_air_nm3h"] = cc3.text_input("Compressed Air (Nm³/h)",
+                value=str(a.get("compressed_air_nm3h", "8")), key="ts_a_ca")
+            a["compressed_air_pressure"] = cc4.text_input("CA Pressure",
+                value=a.get("compressed_air_pressure", "6 Bar-g"), key="ts_a_cap")
+
+    # Mirror per-unit steam values into the legacy `utilities` block so the
+    # existing DOCX generator (which reads from utilities.{stripper,mee,atfd}_steam)
+    # continues to render the correct numbers.
+    ut = d["utilities"]
+    ut["stripper_steam"] = {
+        "param": f"{ts['stripper']['steam_pressure']}, >96% dryness",
+        "value_kgh": ts["stripper"]["steam_kgh"],
+    }
+    ut["mee_steam"] = {
+        "param": f"{ts['mee']['steam_pressure']}, >96% dryness",
+        "value_kgh": ts["mee"]["steam_kgh"],
+        "steam_economy": ts["mee"]["steam_economy"],
+    }
+    ut["atfd_steam"] = {
+        "param": f"{ts['atfd']['steam_pressure']}, >96% dryness",
+        "value_kgh": ts["atfd"]["steam_kgh"],
+    }
+
+    # Recompute totals + economics in case the user changed per-unit values
+    _recalc_economics(d["economics"], technical_specs=ts, utilities=ut,
+                      capacity_kld=d["cover"].get("capacity_kld"))
+
+    # ---------- Plant-Wide Totals (read-only display) ----------
+    st.divider()
+    st.markdown("### Plant-Wide Totals (computed from per-unit values above)")
+    tc1, tc2, tc3 = st.columns(3)
+    tc1.metric("Total Steam Consumption", f"{ut['total_steam_kgh']} kg/h",
+               help="Stripper + MEE + ATFD")
+    tc2.metric("Total Power Consumption", f"{ut['total_power_kwh']} kWh",
+               help="Sum of per-unit power")
+    tc3.metric("Total Cooling Water",
+               f"{ut['total_cooling_water_m3h']} m³/h",
+               f"{ut['total_cooling_water_tr']} TR")
+
+    # ---------- Performance Guarantee ----------
+    with st.expander("🎯 Performance Guarantee (bullet points)", expanded=False):
+        txt = "\n".join(d.get("performance_guarantee", []))
+        new_pg = st.text_area("One bullet per line", value=txt, height=120, key="og_pg")
+        d["performance_guarantee"] = [l.strip() for l in new_pg.split("\n") if l.strip()]
 
 
 # ---------- Tab 6: Scope of Supply ----------
@@ -511,7 +775,10 @@ with tabs[8]:
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         if st.button("🔨 Generate Offer DOCX", type="primary", use_container_width=True, key="11_Offer_Generator_button_15"):
-            d["economics"] = _recalc_economics(d["economics"])
+            _recalc_economics(d["economics"],
+                              technical_specs=d.get("technical_specs"),
+                              utilities=d.get("utilities"),
+                              capacity_kld=d["cover"].get("capacity_kld"))
             with st.spinner("Loading brand assets from Supabase..."):
                 logo_bytes, tagline_bytes, hero_bytes = load_brand_assets()
             if logo_bytes:
@@ -535,7 +802,10 @@ with tabs[8]:
 
     with col2:
         if st.button("💾 Save to DB", use_container_width=True, key="11_Offer_Generator_button_16"):
-            d["economics"] = _recalc_economics(d["economics"])
+            _recalc_economics(d["economics"],
+                              technical_specs=d.get("technical_specs"),
+                              utilities=d.get("utilities"),
+                              capacity_kld=d["cover"].get("capacity_kld"))
             offer_id = _save_offer_to_db(d)
             if offer_id:
                 st.success(f"Saved offer #{offer_id}")
@@ -582,7 +852,10 @@ with tabs[9]:
                         from bg_process_design.utils.export_utils import build_full_project_export
                         process_json = build_full_project_export(conn, chosen_proj["id"])
                         new_data = bridge_to_offer_data(process_json, existing_data=d)
-                        new_data["economics"] = _recalc_economics(new_data["economics"])
+                        _recalc_economics(new_data["economics"],
+                                          technical_specs=new_data.get("technical_specs"),
+                                          utilities=new_data.get("utilities"),
+                                          capacity_kld=new_data["cover"].get("capacity_kld"))
                         st.session_state.og_offer_data = new_data
                         st.session_state.og_linked_pd_id = chosen_proj["id"]
                         st.success("✅ Imported from process design project")
@@ -601,7 +874,10 @@ with tabs[9]:
                 process_json = parse_process_design_json(content)
                 if st.button("🔀 Import", key="og_up_btn"):
                     new_data = bridge_to_offer_data(process_json, existing_data=d)
-                    new_data["economics"] = _recalc_economics(new_data["economics"])
+                    _recalc_economics(new_data["economics"],
+                                      technical_specs=new_data.get("technical_specs"),
+                                      utilities=new_data.get("utilities"),
+                                      capacity_kld=new_data["cover"].get("capacity_kld"))
                     st.session_state.og_offer_data = new_data
                     st.success("✅ Imported from JSON")
                     st.rerun()
