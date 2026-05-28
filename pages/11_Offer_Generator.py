@@ -302,18 +302,27 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
                 _load_offers_list.clear()
                 return (offer_id, False)
         else:
+            # No offer_id in session — check if a row with this quote_ref exists.
+            # If it does, UPDATE it (adopt it) instead of erroring. This recovers
+            # gracefully when the session lost track of og_loaded_offer_id
+            # (e.g. after a refresh) but the offer really does already exist.
             existing = _get_raw_client().table("offers").select("id").eq(
                 "quote_ref", cov["quote_ref"]
             ).execute()
             if existing.data:
                 existing_id = existing.data[0]["id"]
-                st.error(
-                    f"❌ An offer with quote_ref **{cov['quote_ref']}** already "
-                    f"exists (id={existing_id}). "
-                    f"Either change the Quote Reference in Tab ① Cover & Client, "
-                    f"or open that existing offer using the **Open Existing Offer** "
-                    f"section to update it."
-                )
+                res = _get_raw_client().table("offers").update(payload).eq(
+                    "id", existing_id
+                ).execute()
+                if res.data:
+                    _load_offers_list.clear()
+                    st.info(
+                        f"ℹ️ An offer with quote_ref **{cov['quote_ref']}** already "
+                        f"existed (id={existing_id}); updated it instead of creating "
+                        f"a duplicate. (Tip: change the Quote Reference in Tab ① if "
+                        f"you intended this to be a separate offer.)"
+                    )
+                    return (existing_id, False)
                 return (None, None)
             res = _get_raw_client().table("offers").insert(payload).execute()
             if res.data:
@@ -1061,27 +1070,39 @@ with tabs[5]:
     import pandas as pd
     st.subheader("PART VI — Scope of Supply")
 
-    def _editor_records(dataframe, key):
-        """Run a data_editor and return NaN-free records (blank cells → '')."""
-        edited = st.data_editor(dataframe, use_container_width=True,
+    def _editor_records(records, key, col_order):
+        """
+        Render a data_editor with stable column order + index so the first
+        edit registers immediately (avoids the one-rerun lag where edits
+        appear to revert). Returns NaN-free records.
+        """
+        df = pd.DataFrame(records)
+        # Ensure every expected column exists and in a fixed order
+        for c in col_order:
+            if c not in df.columns:
+                df[c] = ""
+        if not df.empty:
+            df = df[col_order]
+        else:
+            df = pd.DataFrame(columns=col_order)
+        df = df.reset_index(drop=True)
+        edited = st.data_editor(df, use_container_width=True,
                                 num_rows="dynamic", key=key)
-        # Replace NaN/NaT with empty string so the dict is JSON-safe
         cleaned = edited.where(pd.notnull(edited), "")
         return cleaned.to_dict("records")
 
+    _SCOPE_COLS = ["equipment", "specification", "qty", "bg_scope", "buyer_scope"]
+    _INSTR_COLS = ["item", "qty", "scope"]
+
     sub = st.tabs(["Stripper", "MEE", "ATFD", "Instruments"])
     with sub[0]:
-        df = pd.DataFrame(d["scope_stripper"])
-        d["scope_stripper"] = _editor_records(df, "og_sc_s")
+        d["scope_stripper"] = _editor_records(d["scope_stripper"], "og_sc_s", _SCOPE_COLS)
     with sub[1]:
-        df = pd.DataFrame(d["scope_mee"])
-        d["scope_mee"] = _editor_records(df, "og_sc_m")
+        d["scope_mee"] = _editor_records(d["scope_mee"], "og_sc_m", _SCOPE_COLS)
     with sub[2]:
-        df = pd.DataFrame(d["scope_atfd"])
-        d["scope_atfd"] = _editor_records(df, "og_sc_a")
+        d["scope_atfd"] = _editor_records(d["scope_atfd"], "og_sc_a", _SCOPE_COLS)
     with sub[3]:
-        df = pd.DataFrame(d["instruments"])
-        d["instruments"] = _editor_records(df, "og_sc_i")
+        d["instruments"] = _editor_records(d["instruments"], "og_sc_i", _INSTR_COLS)
 
 
 # ---------- Tab 7: Scope Matrix ----------
@@ -1089,19 +1110,29 @@ with tabs[6]:
     import pandas as pd
     st.subheader("PART VII & VIII")
 
-    def _editor_records_sm(dataframe, key):
-        edited = st.data_editor(dataframe, use_container_width=True,
+    def _editor_records_sm(records, key, col_order):
+        df = pd.DataFrame(records)
+        for c in col_order:
+            if c not in df.columns:
+                df[c] = ""
+        if not df.empty:
+            df = df[col_order]
+        else:
+            df = pd.DataFrame(columns=col_order)
+        df = df.reset_index(drop=True)
+        edited = st.data_editor(df, use_container_width=True,
                                 num_rows="dynamic", key=key)
         cleaned = edited.where(pd.notnull(edited), "")
         return cleaned.to_dict("records")
+
+    _MATRIX_COLS = ["description", "bg", "client"]
 
     with st.expander("Battery Limits", expanded=True):
         txt = "\n".join(d["battery_limits"])
         new = st.text_area("One item per line", value=txt, height=300, key="og_bl")
         d["battery_limits"] = [l.strip() for l in new.split("\n") if l.strip()]
     with st.expander("Scope Matrix", expanded=True):
-        df = pd.DataFrame(d["scope_matrix"])
-        d["scope_matrix"] = _editor_records_sm(df, "og_sm")
+        d["scope_matrix"] = _editor_records_sm(d["scope_matrix"], "og_sm", _MATRIX_COLS)
 
 
 # ---------- Tab 8: Pricing ----------
