@@ -30,6 +30,7 @@ from st_supabase_connection import SupabaseConnection
 from datetime import date, datetime, timezone
 import json
 import copy
+import math
 
 # ---------------------------------------------------------------------
 # PAGE CONFIG
@@ -124,6 +125,42 @@ def _recalc_economics(econ: dict, technical_specs: dict = None,
         utilities["power_consumption_kwh"] = round(total_power)
         utilities["cooling_water_m3h"]     = round(total_cw_m3)
     return econ
+
+
+# ---------------------------------------------------------------------
+# JSON SANITIZER — strip NaN / Infinity which JSONB rejects
+# ---------------------------------------------------------------------
+def _json_safe(obj):
+    """
+    Recursively replace NaN / +Inf / -Inf with None so the payload is
+    valid JSON for Supabase's JSONB column.
+
+    NaN typically sneaks in from st.data_editor (pandas) when a user adds
+    a blank row or clears a numeric cell. pandas stores those as float NaN,
+    which json.dumps(allow_nan=False) — used by the Supabase client — rejects.
+    """
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    # pandas / numpy scalars sometimes report as float-like; catch by duck-typing
+    try:
+        # numpy floats
+        import numpy as np  # local import; numpy is already a pandas dep
+        if isinstance(obj, np.floating):
+            f = float(obj)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+    except Exception:
+        pass
+    return obj
 
 
 # ---------------------------------------------------------------------
@@ -241,6 +278,8 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
                      pd_project_id=None):
     """Smart upsert. Returns (offer_id, was_insert) or (None, None) on failure."""
     try:
+        # Strip NaN/Inf anywhere in the dict (e.g. blank rows from data_editor)
+        data = _json_safe(copy.deepcopy(data))
         cov = data["cover"]
         pr = data["pricing"]
         payload = {
@@ -1021,32 +1060,48 @@ with tabs[4]:
 with tabs[5]:
     import pandas as pd
     st.subheader("PART VI — Scope of Supply")
+
+    def _editor_records(dataframe, key):
+        """Run a data_editor and return NaN-free records (blank cells → '')."""
+        edited = st.data_editor(dataframe, use_container_width=True,
+                                num_rows="dynamic", key=key)
+        # Replace NaN/NaT with empty string so the dict is JSON-safe
+        cleaned = edited.where(pd.notnull(edited), "")
+        return cleaned.to_dict("records")
+
     sub = st.tabs(["Stripper", "MEE", "ATFD", "Instruments"])
     with sub[0]:
         df = pd.DataFrame(d["scope_stripper"])
-        d["scope_stripper"] = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="og_sc_s").to_dict("records")
+        d["scope_stripper"] = _editor_records(df, "og_sc_s")
     with sub[1]:
         df = pd.DataFrame(d["scope_mee"])
-        d["scope_mee"] = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="og_sc_m").to_dict("records")
+        d["scope_mee"] = _editor_records(df, "og_sc_m")
     with sub[2]:
         df = pd.DataFrame(d["scope_atfd"])
-        d["scope_atfd"] = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="og_sc_a").to_dict("records")
+        d["scope_atfd"] = _editor_records(df, "og_sc_a")
     with sub[3]:
         df = pd.DataFrame(d["instruments"])
-        d["instruments"] = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="og_sc_i").to_dict("records")
+        d["instruments"] = _editor_records(df, "og_sc_i")
 
 
 # ---------- Tab 7: Scope Matrix ----------
 with tabs[6]:
     import pandas as pd
     st.subheader("PART VII & VIII")
+
+    def _editor_records_sm(dataframe, key):
+        edited = st.data_editor(dataframe, use_container_width=True,
+                                num_rows="dynamic", key=key)
+        cleaned = edited.where(pd.notnull(edited), "")
+        return cleaned.to_dict("records")
+
     with st.expander("Battery Limits", expanded=True):
         txt = "\n".join(d["battery_limits"])
         new = st.text_area("One item per line", value=txt, height=300, key="og_bl")
         d["battery_limits"] = [l.strip() for l in new.split("\n") if l.strip()]
     with st.expander("Scope Matrix", expanded=True):
         df = pd.DataFrame(d["scope_matrix"])
-        d["scope_matrix"] = st.data_editor(df, use_container_width=True, num_rows="dynamic", key="og_sm").to_dict("records")
+        d["scope_matrix"] = _editor_records_sm(df, "og_sm")
 
 
 # ---------- Tab 8: Pricing ----------
