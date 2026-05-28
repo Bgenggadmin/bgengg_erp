@@ -225,6 +225,25 @@ def _load_anchor_enquiries_for_bridge():
         return []
 
 
+@st.cache_data(ttl=60)
+def _load_anchor_enquiries_already_linked():
+    """
+    Ammu's anchor entries that ALREADY have an offer linked. Shown so users
+    can jump straight back to their saved offer after logout, instead of
+    re-spawning fresh defaults.
+    """
+    try:
+        res = _get_raw_client().table("anchor_projects").select(
+            "id, client_name, project_description, job_no, enquiry_date, "
+            "pd_project_id, offer_id"
+        ).eq("anchor_person", "Ammu").not_.is_(
+            "offer_id", "null"
+        ).order("enquiry_date", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
 def _load_offer_by_id(offer_id: int):
     try:
         res = _get_raw_client().table("offers").select("*").eq("id", offer_id).execute()
@@ -233,6 +252,23 @@ def _load_offer_by_id(offer_id: int):
     except Exception as e:
         st.error(f"Failed to load offer #{offer_id}: {e}")
     return None
+
+
+def _delete_offer(offer_id: int) -> bool:
+    """
+    Permanently delete an offer row. The anchor_projects.offer_id FK is
+    ON DELETE SET NULL, so any linked anchor entry has its link cleared
+    automatically (it becomes available to bridge again). No orphan rows.
+    """
+    try:
+        _get_raw_client().table("offers").delete().eq("id", offer_id).execute()
+        _load_offers_list.clear()
+        _load_anchor_enquiries_for_bridge.clear()
+        _load_anchor_enquiries_already_linked.clear()
+        return True
+    except Exception as e:
+        st.error(f"Failed to delete offer #{offer_id}: {e}")
+        return False
 
 
 def _load_pd_project_by_id(pd_id: int):
@@ -268,6 +304,7 @@ def _link_anchor_to_offer(anchor_id: int, offer_id: int) -> bool:
             "offer_id": offer_id,
         }).eq("id", anchor_id).execute()
         _load_anchor_enquiries_for_bridge.clear()
+        _load_anchor_enquiries_already_linked.clear()
         return True
     except Exception as e:
         st.warning(f"Created offer but couldn't link back to anchor entry: {e}")
@@ -282,8 +319,22 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
         data = _json_safe(copy.deepcopy(data))
         cov = data["cover"]
         pr = data["pricing"]
+
+        # GUARD: block placeholder quote_ref. Saving multiple offers with the
+        # same "XXXX" placeholder causes them to collide and overwrite each
+        # other. Force a real, unique reference first.
+        qref = (cov.get("quote_ref") or "").strip()
+        if (not qref) or ("XXXX" in qref.upper()):
+            st.error(
+                "❌ Please set a real **Quote Reference** in Tab ① Cover & Client "
+                "before saving. It still contains the placeholder `XXXX`. "
+                "Each offer needs its own unique reference (e.g. "
+                "`BG/ECOX-ZLD/26-27/2948 R0`), otherwise offers overwrite each other."
+            )
+            return (None, None)
+
         payload = {
-            "quote_ref": cov["quote_ref"],
+            "quote_ref": qref,
             "client_id": data.get("_client_id"),
             "pd_project_id": pd_project_id or data.get("_pd_project_id"),
             "quote_date": cov["quote_date"],
@@ -302,12 +353,13 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
                 _load_offers_list.clear()
                 return (offer_id, False)
         else:
-            # No offer_id in session — check if a row with this quote_ref exists.
-            # If it does, UPDATE it (adopt it) instead of erroring. This recovers
-            # gracefully when the session lost track of og_loaded_offer_id
-            # (e.g. after a refresh) but the offer really does already exist.
+            # No offer_id in session — check if a row with this exact quote_ref
+            # exists. If it does, that means the user is re-saving an offer whose
+            # session lost track of its id (e.g. after a refresh). Adopt + update
+            # it. Because we now block placeholder XXXX refs above, a quote_ref
+            # match here is a genuine same-offer match, not an accidental collision.
             existing = _get_raw_client().table("offers").select("id").eq(
-                "quote_ref", cov["quote_ref"]
+                "quote_ref", qref
             ).execute()
             if existing.data:
                 existing_id = existing.data[0]["id"]
@@ -317,11 +369,14 @@ def _save_offer_to_db(data: dict, status: str = "final", offer_id: int = None,
                 if res.data:
                     _load_offers_list.clear()
                     st.info(
-                        f"ℹ️ An offer with quote_ref **{cov['quote_ref']}** already "
-                        f"existed (id={existing_id}); updated it instead of creating "
-                        f"a duplicate. (Tip: change the Quote Reference in Tab ① if "
-                        f"you intended this to be a separate offer.)"
+                        f"ℹ️ Found an existing offer with this exact reference "
+                        f"(id={existing_id}) and updated it. If you meant to create "
+                        f"a *new* offer, change the Quote Reference in Tab ① first."
                     )
+                    # Re-link anchor if applicable
+                    anchor_id = data.get("_anchor_id")
+                    if anchor_id:
+                        _link_anchor_to_offer(anchor_id, existing_id)
                     return (existing_id, False)
                 return (None, None)
             res = _get_raw_client().table("offers").insert(payload).execute()
@@ -435,9 +490,11 @@ def _spawn_offer_from_anchor(anchor_row: dict) -> bool:
         cov["kind_attn"] = f"Mr. {anchor_row['contact_person']}"
     if anchor_row.get("contact_phone"):
         cov["contact_details"] = anchor_row["contact_phone"]
-    if anchor_row.get("job_no"):
-        # Use anchor job_no in quote_ref suffix for traceability
-        cov["quote_ref"] = f"BG/ECOX-ZLD/26-27/{anchor_row['job_no']} R0"
+    # Generate a unique quote_ref so two spawns never collide on the XXXX
+    # placeholder. Prefer the anchor job_no; fall back to the anchor id.
+    job = str(anchor_row.get("job_no") or "").strip()
+    suffix = job if job else f"ANC{anchor_row['id']}"
+    cov["quote_ref"] = f"BG/ECOX-ZLD/26-27/{suffix} R0"
 
     # Recompute everything
     _recalc_economics(new_data["economics"],
@@ -650,7 +707,7 @@ with tabs[0]:
                 format_func=lambda i: options[i],
                 key="og_load_sel",
             )
-            cols = st.columns([1, 1, 4])
+            cols = st.columns([1, 1, 1, 3])
             with cols[0]:
                 if st.button("📂 Open", type="primary", disabled=(sel_idx == 0),
                              key="og_load_open_btn", use_container_width=True):
@@ -681,6 +738,30 @@ with tabs[0]:
                             _mark_clean(st.session_state.og_offer_data)
                             st.session_state.og_last_saved_at = None
                             st.rerun()
+            with cols[2]:
+                # Delete with a two-click confirm popover so it can't fire by accident
+                with st.popover("🗑️ Delete", disabled=(sel_idx == 0),
+                                use_container_width=True):
+                    if sel_idx != 0:
+                        target = offers_list[sel_idx - 1]
+                        st.warning(
+                            f"Permanently delete offer **#{target['id']}** "
+                            f"(`{target['quote_ref']}`)? This cannot be undone. "
+                            f"If it's linked to an anchor enquiry, that link will be "
+                            f"cleared and the enquiry becomes available to bridge again."
+                        )
+                        if st.button("⚠️ Yes, delete permanently",
+                                     type="primary", key="og_delete_confirm_btn"):
+                            del_id = target["id"]
+                            if _delete_offer(del_id):
+                                # If we were editing the deleted offer, reset to a fresh form
+                                if st.session_state.og_loaded_offer_id == del_id:
+                                    st.session_state.og_offer_data = default_offer_data()
+                                    st.session_state.og_loaded_offer_id = None
+                                    _mark_clean(st.session_state.og_offer_data)
+                                    st.session_state.og_last_saved_at = None
+                                st.success(f"🗑️ Deleted offer #{del_id}")
+                                st.rerun()
 
             if st.session_state.get("og_pending_load_id"):
                 pid = st.session_state.og_pending_load_id
@@ -756,9 +837,50 @@ with tabs[0]:
                         st.success(
                             f"✅ Bridged anchor #{chosen['id']} → pd_project "
                             f"#{chosen['pd_project_id']} into new offer. "
-                            f"Review the form, then click 💾 Save Draft."
+                            f"Review the form, then set a Quote Reference and click 💾 Save Draft."
                         )
                         st.rerun()
+
+        # ----- Already-generated offers (re-open saved work) -----
+        linked_rows = _load_anchor_enquiries_already_linked()
+        if linked_rows:
+            st.divider()
+            st.markdown("**↩️ Already generated an offer? Re-open your saved work:**")
+            st.caption(
+                "After logout, anchor enquiries that already have an offer no longer "
+                "appear in the bridge list above (to avoid duplicates). Open the saved "
+                "offer directly here — it has all your Scope of Supply data."
+            )
+            def _fmt_linked(r):
+                client = r.get("client_name") or "?"
+                desc = (r.get("project_description") or "")[:35]
+                return f"Anchor #{r['id']} · {client} · {desc} · → offer #{r['offer_id']}"
+
+            lopts = ["— select —"] + [_fmt_linked(r) for r in linked_rows]
+            lsel = st.selectbox(
+                f"Linked offers ({len(linked_rows)})",
+                range(len(lopts)),
+                format_func=lambda i: lopts[i],
+                key="og_anchor_linked_sel",
+            )
+            if st.button("📂 Open Saved Offer", disabled=(lsel == 0),
+                         key="og_anchor_linked_open"):
+                if dirty:
+                    st.warning("⚠️ Save or discard current changes first (🆕 New Offer).")
+                else:
+                    target = linked_rows[lsel - 1]
+                    full_row = _load_offer_by_id(target["offer_id"])
+                    if full_row and full_row.get("offer_data"):
+                        st.session_state.og_offer_data = full_row["offer_data"]
+                        st.session_state.og_loaded_offer_id = full_row["id"]
+                        _mark_clean(st.session_state.og_offer_data)
+                        st.success(f"✅ Opened saved offer #{full_row['id']}")
+                        st.rerun()
+                    else:
+                        st.error(
+                            f"Anchor #{target['id']} points to offer "
+                            f"#{target['offer_id']} but it couldn't be loaded."
+                        )
 
     st.divider()
 
