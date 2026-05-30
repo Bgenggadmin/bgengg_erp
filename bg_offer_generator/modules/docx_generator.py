@@ -423,20 +423,18 @@ def generate_offer_docx(data: dict, logo_path: str = None,
 
     price_rows = [
         ["1", "Design, Engineering & Supply of Stripper, MEE & ATFD System",
-         f"Rs. {pr['option1_equipment_price_cr']:.2f} Cr",
-         f"Rs. {pr['option2_equipment_price_cr']:.2f} Cr"],
+         f"Rs. {pr.get('option1_equipment_price_cr', 0):.2f} Cr"],
         ["2", "Installation & Commissioning",
-         f"Rs. {pr['option1_install_lakhs']:.0f} Lakhs",
-         f"Rs. {pr['option2_install_lakhs']:.0f} Lakhs"],
+         f"Rs. {pr.get('option1_install_lakhs', 0):.0f} Lakhs"],
+        ["3", "MS Structure",
+         f"Rs. {pr.get('option1_ms_structure_lakhs', 0):.0f} Lakhs"],
         ["", "TOTAL PRICE",
-         f"Rs. {pr['option1_total_cr']:.2f} Cr",
-         f"Rs. {pr['option2_total_cr']:.2f} Cr"],
+         f"Rs. {pr.get('option1_total_cr', 0):.2f} Cr"],
     ]
     _make_table(doc, price_rows,
                  header=["S.N", "Item / Equipment / Service",
-                         f"Option 1 — {pr['option1_moc']}",
-                         f"Option 2 — {pr['option2_moc']}"],
-                 col_widths=[0.4, 2.6, 1.9, 1.9])
+                         f"Option 1 — {pr.get('option1_moc', '')}"],
+                 col_widths=[0.4, 4.0, 2.4])
 
     _add_paragraph(doc, "", size=6)
     _add_paragraph(doc,
@@ -456,10 +454,9 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     _add_heading(doc, "Delivery Timeline (INCOTERMS 2020)", level=3)
     delivery = pr["delivery_timeline"]
     delivery_rows = [
-        [f"Supply (DAP, {pr['location_dap']}) – Option 1", delivery["supply_option1"]],
-        [f"Supply (DAP, {pr['location_dap']}) – Option 2", delivery["supply_option2"]],
-        ["Installation", delivery["installation"]],
-        ["Commissioning", delivery["commissioning"]],
+        [f"Supply (DAP, {pr.get('location_dap', 'Hyderabad')})", delivery.get("supply_option1", "")],
+        ["Installation",  delivery.get("installation", "")],
+        ["Commissioning", delivery.get("commissioning", "")],
     ]
     _make_table(doc, delivery_rows, header=["Activity", "Timeline"],
                  col_widths=[3.0, 3.8])
