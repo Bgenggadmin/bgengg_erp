@@ -425,6 +425,11 @@ def _snapshot_for_dirty_check(data: dict) -> str:
 def _mark_clean(data: dict):
     st.session_state.og_saved_snapshot = _snapshot_for_dirty_check(data)
     st.session_state.og_last_saved_at = datetime.now(timezone.utc)
+  def _clear_scope_editor_cache():
+    """Clear cached DataFrames so data_editor reloads from the new offer."""
+    for key in ["_df_src_og_sc_s", "_df_src_og_sc_m",
+                "_df_src_og_sc_a", "_df_src_og_sc_i", "_df_src_og_sm"]:
+        st.session_state.pop(key, None)
 
 
 def _is_dirty(data: dict) -> bool:
@@ -794,6 +799,8 @@ with tabs[0]:
                 if pn1.button("✅ Yes, discard and start new", key="og_new_yes"):
                     st.session_state.og_offer_data = default_offer_data()
                     st.session_state.og_loaded_offer_id = None
+                    st.session_state.og_form_version += 1
+                    _clear_scope_editor_cache()
                     _mark_clean(st.session_state.og_offer_data)
                     st.session_state.og_last_saved_at = None
                     st.session_state.pop("og_pending_new", None)
@@ -1258,29 +1265,32 @@ with tabs[6]:
     st.subheader("PART VII & VIII")
 
     def _editor_records_sm(records, key, col_order):
-        df = pd.DataFrame(records)
-        for c in col_order:
-            if c not in df.columns:
-                df[c] = ""
-        if not df.empty:
-            df = df[col_order]
+        ss_key = f"_df_src_{key}"
+        if ss_key not in st.session_state:
+            df = pd.DataFrame(records)
+            for c in col_order:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[col_order] if not df.empty else pd.DataFrame(columns=col_order)
+            df = df.reset_index(drop=True)
+            st.session_state[ss_key] = df
         else:
-            df = pd.DataFrame(columns=col_order)
-        df = df.reset_index(drop=True)
-        edited = st.data_editor(df, use_container_width=True,
+            existing = st.session_state[ss_key]
+            if len(existing) != len(records):
+                df = pd.DataFrame(records)
+                for c in col_order:
+                    if c not in df.columns:
+                        df[c] = ""
+                df = df[col_order] if not df.empty else pd.DataFrame(columns=col_order)
+                df = df.reset_index(drop=True)
+                st.session_state[ss_key] = df
+
+        edited = st.data_editor(st.session_state[ss_key], use_container_width=True,
                                 num_rows="dynamic", key=key)
         cleaned = edited.where(pd.notnull(edited), "")
-        return cleaned.to_dict("records")
-
-    _MATRIX_COLS = ["description", "bg", "client"]
-
-    with st.expander("Battery Limits", expanded=True):
-        txt = "\n".join(d["battery_limits"])
-        new = st.text_area("One item per line", value=txt, height=300, key="og_bl")
-        d["battery_limits"] = [l.strip() for l in new.split("\n") if l.strip()]
-    with st.expander("Scope Matrix", expanded=True):
-        d["scope_matrix"] = _editor_records_sm(d["scope_matrix"], "og_sm", _MATRIX_COLS)
-
+        result = cleaned.to_dict("records")
+        st.session_state[ss_key] = cleaned.reset_index(drop=True)
+        return result
 
 # ---------- Tab 8: Pricing ----------
 with tabs[7]:
