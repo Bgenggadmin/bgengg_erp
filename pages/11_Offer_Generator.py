@@ -65,7 +65,7 @@ if not _password_gate():
 # ─────────────────────────────────────────────────────────────────────
 conn = st.connection("supabase", type=SupabaseConnection)
 
-from bg_offer_generator.utils.brand import BRAND, COMPANY, OFFER_TOC
+from bg_offer_generator.utils.brand import BRAND, COMPANY, OFFER_TOC, COMMISSIONING_BASIS_DEFAULT
 from bg_offer_generator.utils.default_data import default_offer_data, _default_engg_services
 from bg_offer_generator.utils.form_template import generate_form_template_xlsx
 from bg_offer_generator.utils.bridge import (
@@ -555,6 +555,7 @@ d["technical_specs"]["stripper"].setdefault("reflux_kgh", 0)
 d["technical_specs"]["mee"].setdefault("steam_economy", 4.3)
 d.setdefault("utilities", {})
 d.setdefault("engg_services", _default_engg_services())
+d.setdefault("commissioning_basis", list(COMMISSIONING_BASIS_DEFAULT))
 
 # Normalise bool columns in scope tables (DB may return "True"/"False" strings)
 
@@ -639,7 +640,8 @@ tabs = st.tabs([
     "⑤ Technical",
     "⑥ Scope of Supply",
     "⑦ Scope Matrix",
-    "⑧ Pricing & Terms",
+    "⑧ Commissioning Basis",   # ← ADD (shifts old ⑧ to ⑨)
+    "⑨ Pricing & Terms",
     "🚀 Generate",
     "📥 Import / Bridge",
 ])
@@ -1249,11 +1251,20 @@ with tabs[6]:
             d.get("scope_matrix", []), "og_sm", _MATRIX_COLS)
 
 
-
 # ══════════════════════════════════════════════════════════════════════
-# TAB 8 — Pricing & Terms
+# TAB 8 — Commissioning Basis
 # ══════════════════════════════════════════════════════════════════════
 with tabs[7]:
+    st.subheader("PART IX — Basis of Commissioning / Take-Over")
+    st.caption("One bullet point per line. These appear as bullet points in the generated offer.")
+    cb_txt = "\n".join(d.get("commissioning_basis", []))
+    new_cb = st.text_area("Commissioning basis bullets", value=cb_txt,
+                          height=400, key="og_cb")
+    d["commissioning_basis"] = [l.strip() for l in new_cb.split("\n") if l.strip()]
+# ══════════════════════════════════════════════════════════════════════
+# TAB 9 — Pricing & Terms
+# ══════════════════════════════════════════════════════════════════════
+with tabs[8]:
     st.subheader("PART X — Price & Terms")
     pr = d["pricing"]
 
@@ -1309,9 +1320,9 @@ with tabs[7]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 9 — Generate
+# TAB 10 — Generate
 # ══════════════════════════════════════════════════════════════════════
-with tabs[8]:
+with tabs[9]:
     st.subheader("🚀 Generate Offer DOCX")
     m1, m2, m3 = st.columns(3)
     m1.metric("Client",   d["cover"].get("submitted_to", "—"))
@@ -1376,9 +1387,9 @@ with tabs[8]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 10 — Import / Bridge
+# TAB 11 — Import / Bridge
 # ══════════════════════════════════════════════════════════════════════
-with tabs[9]:
+with tabs[10]:
     st.subheader("📥 Templates & Process Design Bridge")
 
     with st.expander("📋 Excel Form Template", expanded=True):
