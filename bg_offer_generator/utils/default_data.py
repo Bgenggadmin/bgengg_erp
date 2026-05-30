@@ -329,19 +329,35 @@ def _default_atfd_scope():
 
 def _default_instruments():
     return [
+        # ── Instruments ──
+        {"item": "Steam Control Valve", "qty": "3 No", "scope": "B&G"},
+        {"item": "Vortex Flow Meter (Steam)", "qty": "3 No", "scope": "B&G"},
         {"item": "Level Control Valve", "qty": "2 No", "scope": "B&G"},
         {"item": "Magnetic Flow Meter", "qty": "4 No", "scope": "B&G"},
+        {"item": "pH Meter", "qty": "1 No", "scope": "B&G"},
         {"item": "Temperature Transmitter", "qty": "1 Lot", "scope": "B&G"},
         {"item": "Pressure Transmitter", "qty": "3 No", "scope": "B&G"},
         {"item": "Level Transmitter", "qty": "2 No", "scope": "B&G"},
         {"item": "Vacuum Transmitter", "qty": "5 No", "scope": "B&G"},
+        {"item": "VFD", "qty": "9 No", "scope": "B&G"},
         {"item": "Rota-meter", "qty": "2 No", "scope": "B&G"},
         {"item": "Pressure Gauges / Temperature Gauges / Vacuum Gauges", "qty": "1 Lot each", "scope": "B&G"},
-        {"item": "Control Panel: PLC with SCADA", "qty": "1 Set", "scope": "B&G"},
-        {"item": "MCC / Electrical Panel (NFLP)", "qty": "1 Set", "scope": "B&G"},
-        {"item": "Instrument Cables", "qty": "1 Lot", "scope": "B&G"},
-        {"item": "Power / Control / Data Cables between Motors / MCC / PLC", "qty": "1 Lot", "scope": "Customer"},
-        {"item": "Cable laying, Trays, Supports, Junction Boxes", "qty": "1 Lot", "scope": "Customer"},
+        # ── MCC Panel ──
+        {"item": "MCC Panel: Non-Compartmental Type, Floor mounting, IP 54, MS CRCA powder coated, 2mm Thk doors", "qty": "1 Set", "scope": "B&G"},
+        {"item": "MCC Panel — Mains incoming MCCB, rated for all feeder loads. Busbars: Electrolytic Aluminium. Earth bus: Aluminium.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "MCC Panel — Outgoing feeders: DOL up to 15 kW, Star-Delta from 18.5 kW & above, VFD feeders as per P&ID. Feeders with field power & control cable termination.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "MCC Panel — Mains incoming section with Energy Meter (kWh), Voltmeter & Ammeter", "qty": "1 Set", "scope": "B&G"},
+        # ── PLC & SCADA ──
+        {"item": "Control Panel: PLC with SCADA — Make: ABB/Siemens/Reputed. MS Cabinet, powder coated. CPU module, Licensed SCADA software.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "PLC/SCADA — Computer: Latest Windows, 21\" screen, 64-bit. Analogue/Digital I/O modules, power supply, communication module. On/Off Switches, Relays, MCBs. IP 52, non-FLP area. Without redundancy.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "PLC/SCADA — Parameters monitored/controlled: Feed Flow, Steam Flow, Levels, Steam Pressure, CW in/out, Valve on/off, Temperatures, Pressures etc.", "qty": "1 Set", "scope": "B&G"},
+        # ── Engineering Services ──
+        {"item": "Basic & Detail Engineering, Software Development, PFD/P&ID, GA Drawings, Layout, 3D Drawings, Project Management", "qty": "1 Lot", "scope": "B&G"},
+        {"item": "Installation, Pre-Commissioning, Commissioning & Training of system operators", "qty": "1 Lot", "scope": "B&G"},
+        {"item": "Material Test Certificates, Hydro Test Certificates, Operating Manual", "qty": "1 Lot", "scope": "B&G"},
+        # ── Cables (Customer scope) ──
+        {"item": "Instrument Cables, Cable trays, Cable laying between panel, instruments and valves", "qty": "1 Lot", "scope": "Customer"},
+        {"item": "Power / Control / Data Cables between Motors / MCC / PLC. Cable laying, Trays, Supports, Junction Boxes", "qty": "1 Lot", "scope": "Customer"},
     ]
 
 
