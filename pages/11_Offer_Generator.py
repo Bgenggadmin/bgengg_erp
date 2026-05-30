@@ -726,6 +726,7 @@ with tabs[0]:
                             st.session_state.og_offer_data = full_row["offer_data"]
                             st.session_state.og_loaded_offer_id = full_row["id"]
                             st.session_state.og_form_version += 1
+                            _clear_scope_editor_cache()
                             _mark_clean(st.session_state.og_offer_data)
                             st.success(f"✅ Opened offer #{full_row['id']}")
                             st.rerun()
@@ -779,6 +780,7 @@ with tabs[0]:
                         st.session_state.og_offer_data = full_row["offer_data"]
                         st.session_state.og_loaded_offer_id = full_row["id"]
                         st.session_state.og_form_version += 1
+                        _clear_scope_editor_cache()
                         _mark_clean(st.session_state.og_offer_data)
                     st.session_state.pop("og_pending_load_id", None)
                     st.rerun()
@@ -881,6 +883,7 @@ with tabs[0]:
                         st.session_state.og_offer_data = full_row["offer_data"]
                         st.session_state.og_loaded_offer_id = full_row["id"]
                         st.session_state.og_form_version += 1
+                        _clear_scope_editor_cache()
                         _mark_clean(st.session_state.og_offer_data)
                         st.success(f"✅ Opened saved offer #{full_row['id']}")
                         st.rerun()
@@ -1363,6 +1366,7 @@ with tabs[8]:
                 st.session_state.og_offer_data = default_offer_data()
                 st.session_state.og_loaded_offer_id = None
                 st.session_state.og_form_version += 1
+                _clear_scope_editor_cache()
                 _mark_clean(st.session_state.og_offer_data)
                 st.session_state.og_last_saved_at = None
                 st.rerun()
