@@ -356,16 +356,47 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     _make_scope_table(doc, data["scope_atfd"])
 
     _add_heading(doc, "II. Instruments & Automation Items", level=2)
-    inst_rows = [[i.get("item", ""), i.get("qty", ""), i.get("scope", "")] for i in data.get("instruments", [])]
+
+    # ── Instruments table with section grouping (matches original offer format) ──
+    instr_data = data.get("instruments", [])
+    inst_rows = [[i.get("item", ""), i.get("qty", ""), i.get("scope", "")]
+                 for i in instr_data]
     _make_table(doc, inst_rows, header=["Item Description", "Quantity", "Scope"],
                 col_widths=[3.8, 1.2, 1.5])
 
-    _add_heading(doc, "III. Engineering & Executive Services", level=2)
-    for svc in data.get("engg_services", []):
-        p = doc.add_paragraph(style='List Bullet')
-        p.add_run(svc.get("item", "")).font.size = Pt(10)
+    # ── MCC Panel Details (separate specification table, matches pg 17-18) ──
+    _add_paragraph(doc, "", size=4)
+    mcc_rows = [
+        ["MCC Panel: Non-Compartmental Type, Floor mounting, Ambient temperature"],
+        ["IP 54 protection for indoor installation."],
+        ["MCC panel with MS CRCA and powder coated. 2 mm Thk for Main doors, frame."],
+        ["MCC Panel Mains incoming circuit breaker shall be MCCB type. MCCB Ampere rating suitable for all electrical feeder loads."],
+        ["MCC Panel busbar shall be of Electrolytic Aluminium Grade. Earth bus: Aluminium Grade."],
+        ["MCC Panel outgoing feeders:\n  • Direct on Line (DOL) starter type up to 15 kW\n  • Star Delta starter from 18.5 kW and above\n  • VFD feeder as per final P&ID and tech details provided by B&G"],
+        ["Feeders will be provided with termination with field power and control cable."],
+        ["Mains incoming section shall be provided with Energy Meter (kWh), Voltmeter & Ammeter."],
+    ]
+    _make_table(doc, mcc_rows,
+                col_widths=[6.7],
+                title_row="MCC PANEL DETAILS")
 
-    
+    # ── PLC & SCADA System Details (separate table, matches pg 18-19) ──
+    _add_paragraph(doc, "", size=4)
+    plc_rows = [
+        ["Plant shall be provided with PLC & SCADA based automation and control system."],
+        ["PLC Make: ABB / Siemens / Reputed. Enclosure: MS Cabinet with powder coated."],
+        ["Computer: Latest Windows, 21\" screen, 64-bit."],
+        ["CPU module. Control system for monitoring and controlling various process parameters and automatic operation of various sections of plant."],
+        ["SCADA software with Licensed version."],
+        ["On/Off Switches, DO's, I/O's, Relays, MCB's shall be included."],
+        ["Analogue/Digital Input-Output modules, power supply module and communication module."],
+        ["System will be without redundancy. IP 52 protected."],
+        ["To be installed in Non-Flame proof area with proper ventilation, louvers, lightening."],
+        ["Note: Parameters monitored/controlled: Feed Flow, Steam Flow, Levels, Steam Pressure, CW in/out, Valve on/off, Temperatures, Pressures etc. B&G reserves right to choose different quantities, type, make, granted that system functionality shall remain same or better."],
+    ]
+    _make_table(doc, plc_rows,
+                col_widths=[6.7],
+                title_row="PLC AND SCADA SYSTEM DETAILS")
     # ============================================
     # PART VII: BATTERY LIMITS
     # ============================================
@@ -390,15 +421,7 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     # PART IX: BASIS OF COMMISSIONING
     # ============================================
     _add_section_title(doc, "PART – IX", "BASIS OF COMMISSIONING / TAKE-OVER")
-    commissioning_bullets = [
-        "To Carry out the Commissioning and Take-over of the Equipment/Plant, Buyer shall provide Operators/Supervisors, Sufficient quality and quantity of Materials, Utilities and necessary Consumables and continuous supply of Feed.",
-        "The Commissioning procedure by which the seller shall demonstrate that the equipment has met the take-over criteria shall be carried out by Buyer under the supervision of seller as per Operation Manuals provided by seller.",
-        "Seller shall demonstrate performance trial of Equipment/Plant maximum up to 48 hrs. This is Buyer's responsibility to provide continuous and uninterrupted supply of Feed, Utilities and Consumables.",
-        "When the commissioning of Equipment/Plant is completed or demonstrated, the Buyer shall take-over the equipment for the operation and maintenance thereof.",
-        "The Seller and the Buyer shall sign the takeover certificate thereafter Buyer shall be solely responsible for the safety, operation, service, maintenance of the equipment.",
-        "In the event of delay in completion of commissioning due to reasons not attributed to Seller from the period of 3 months from the date of mechanical completion, the Equipment/Plant shall be deemed to have been commissioned.",
-        "In case the performance guarantee doesn't achieve in the performance trial for the reason attributed to seller, allowing tolerance under performance guarantee, the seller shall be liable to pay liquidated damage subject to a maximum of 2.5% of Purchase order / Contract price.",
-    ]
+    
     for b in data.get("commissioning_basis", []):
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(b).font.size = Pt(10)
@@ -661,9 +684,9 @@ def _build_part_v_technical(doc, data: dict):
 # (unchanged from prior version)
 # ---------------------------------------------------------------------
 def _make_scope_table(doc, scope_items: list):
-    rows = [[i["equipment"], i["specification"], i["qty"],
-             "✓" if i["bg_scope"] else "✗",
-             "✓" if i["buyer_scope"] else "✗"]
+    rows = [[i.get("equipment", ""), i.get("specification", ""), i.get("qty", ""),
+             "✓" if i.get("bg_scope") else "✗",
+             "✓" if i.get("buyer_scope") else "✗"]
              for i in scope_items]
     _make_table(doc, rows,
                  header=["Equipment", "Specification", "Qty", "B&G Scope", "Buyer Scope"],
