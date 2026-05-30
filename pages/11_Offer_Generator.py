@@ -520,6 +520,8 @@ def build_full_project_export_from_offer_side(pd_id: int):
 # ---------------------------------------------------------------------
 if "og_offer_data" not in st.session_state:
     st.session_state.og_offer_data = default_offer_data()
+if "og_form_version" not in st.session_state:
+    st.session_state.og_form_version = 0
 if "og_loaded_offer_id" not in st.session_state:
     st.session_state.og_loaded_offer_id = None
 if "og_last_saved_at" not in st.session_state:
@@ -679,6 +681,9 @@ tabs = st.tabs([
 
 # ---------- Tab 1: Cover & Client ----------
 with tabs[0]:
+    fv = st.session_state.og_form_version  # ← ADD THIS LINE HERE
+    d = st.session_state.og_offer_data
+    cov = d["cover"]
     # ====== OPEN EXISTING OFFER ======
     with st.expander("📂 Open Existing Offer", expanded=not loaded_id and not d.get("_anchor_id")):
         offers_list = _load_offers_list()
@@ -720,6 +725,7 @@ with tabs[0]:
                         if full_row and full_row.get("offer_data"):
                             st.session_state.og_offer_data = full_row["offer_data"]
                             st.session_state.og_loaded_offer_id = full_row["id"]
+                            st.session_state.og_form_version += 1
                             _mark_clean(st.session_state.og_offer_data)
                             st.success(f"✅ Opened offer #{full_row['id']}")
                             st.rerun()
@@ -772,6 +778,7 @@ with tabs[0]:
                     if full_row and full_row.get("offer_data"):
                         st.session_state.og_offer_data = full_row["offer_data"]
                         st.session_state.og_loaded_offer_id = full_row["id"]
+                        st.session_state.og_form_version += 1
                         _mark_clean(st.session_state.og_offer_data)
                     st.session_state.pop("og_pending_load_id", None)
                     st.rerun()
@@ -873,6 +880,7 @@ with tabs[0]:
                     if full_row and full_row.get("offer_data"):
                         st.session_state.og_offer_data = full_row["offer_data"]
                         st.session_state.og_loaded_offer_id = full_row["id"]
+                        st.session_state.og_form_version += 1
                         _mark_clean(st.session_state.og_offer_data)
                         st.success(f"✅ Opened saved offer #{full_row['id']}")
                         st.rerun()
@@ -939,21 +947,22 @@ with tabs[0]:
 
     st.divider()
 
+ 
     c1, c2 = st.columns(2)
     with c1:
-        cov["quote_ref"] = st.text_input("Quote Reference", value=cov["quote_ref"], key="11_Offer_Generator_text_input_2")
-        cov["quote_date"] = st.text_input("Quote Date (YYYY-MM-DD)", value=str(cov["quote_date"]), key="11_Offer_Generator_text_input_3")
-        cov["submitted_to"] = st.text_input("Submitted to", value=cov["submitted_to"], key="11_Offer_Generator_text_input_4")
-        cov["location"] = st.text_input("Location", value=cov["location"], key="11_Offer_Generator_text_input_5")
-        cov["capacity_kld"] = st.number_input("Capacity (KLD)", value=int(cov["capacity_kld"]), min_value=1, max_value=5000, step=1, key="11_Offer_Generator_number_input_6")
+        cov["quote_ref"] = st.text_input("Quote Reference", value=cov["quote_ref"], key=f"11_Offer_Generator_text_input_2_{fv}")
+        cov["quote_date"] = st.text_input("Quote Date (YYYY-MM-DD)", value=str(cov["quote_date"]), key=f"11_Offer_Generator_text_input_3_{fv}")
+        cov["submitted_to"] = st.text_input("Submitted to", value=cov["submitted_to"], key=f"11_Offer_Generator_text_input_4_{fv}")
+        cov["location"] = st.text_input("Location", value=cov["location"], key=f"11_Offer_Generator_text_input_5_{fv}")
+        cov["capacity_kld"] = st.number_input("Capacity (KLD)", value=int(cov["capacity_kld"]), min_value=1, max_value=5000, step=1, key=f"11_Offer_Generator_number_input_6_{fv}")
     with c2:
-        cov["prepared_by"] = st.text_input("Prepared By", value=cov["prepared_by"], key="11_Offer_Generator_text_input_7")
-        cov["contact_details"] = st.text_input("Contact", value=cov["contact_details"], key="11_Offer_Generator_text_input_8")
-        cov["email"] = st.text_input("E-mail", value=cov["email"], key="11_Offer_Generator_text_input_9")
-        cov["kind_attn"] = st.text_input("Kind Attention", value=cov["kind_attn"], key="11_Offer_Generator_text_input_10")
-        cov["discussion_date"] = st.text_input("Discussion Date", value=cov["discussion_date"], key="11_Offer_Generator_text_input_11")
+        cov["prepared_by"] = st.text_input("Prepared By", value=cov["prepared_by"], key=f"11_Offer_Generator_text_input_7_{fv}")
+        cov["contact_details"] = st.text_input("Contact", value=cov["contact_details"], key=f"11_Offer_Generator_text_input_8_{fv}")
+        cov["email"] = st.text_input("E-mail", value=cov["email"], key=f"11_Offer_Generator_text_input_9_{fv}")
+        cov["kind_attn"] = st.text_input("Kind Attention", value=cov["kind_attn"], key=f"11_Offer_Generator_text_input_10_{fv}")
+        cov["discussion_date"] = st.text_input("Discussion Date", value=cov["discussion_date"], key=f"11_Offer_Generator_text_input_11_{fv}")
 
-    cov["subject"] = st.text_input("Subject Line", value=cov["subject"], key="11_Offer_Generator_text_input_12")
+    cov["subject"] = st.text_input("Subject Line", value=cov["subject"], key=f"11_Offer_Generator_text_input_12_{fv}")
 
 
 # ---------- Tab 2: Executive Summary ----------
@@ -1340,6 +1349,7 @@ with tabs[8]:
             else:
                 st.session_state.og_offer_data = default_offer_data()
                 st.session_state.og_loaded_offer_id = None
+                st.session_state.og_form_version += 1
                 _mark_clean(st.session_state.og_offer_data)
                 st.session_state.og_last_saved_at = None
                 st.rerun()
