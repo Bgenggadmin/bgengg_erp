@@ -208,13 +208,13 @@ def default_offer_data() -> dict:
         # ----- PART X: Pricing -----
         "pricing": {
             "option1_moc": "Titanium & Duplex 2205",
-            "option2_moc": "SS 316Ti & SS 316L",
+            
             "option1_equipment_price_cr": 5.00,
-            "option2_equipment_price_cr": 4.85,
+           
             "option1_install_lakhs": 25,
-            "option2_install_lakhs": 25,
+            
             "option1_total_cr": 5.25,
-            "option2_total_cr": 5.10,
+            
             "payment_terms": list(PAYMENT_TERMS_DEFAULT),
             "delivery_terms": [
                 "Supply (DAP, Hyderabad) — Option 1 (Ti & Duplex): 6-7 Months from date of PO and receipt of advance payment.",
