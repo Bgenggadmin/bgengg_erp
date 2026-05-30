@@ -296,7 +296,7 @@ def _save_offer_to_db(data: dict, status: str = "final",
             "prepared_by":      cov["prepared_by"],
             "offer_data":       data,
             "option1_total_cr": pr["option1_total_cr"],
-            "option2_total_cr": pr["option2_total_cr"],
+            
             "price_validity_days": pr["price_validity_days"],
             "status":           status,
         }
@@ -1241,6 +1241,7 @@ with tabs[6]:
             d.get("scope_matrix", []), "og_sm", _MATRIX_COLS)
 
 
+
 # ══════════════════════════════════════════════════════════════════════
 # TAB 8 — Pricing & Terms
 # ══════════════════════════════════════════════════════════════════════
@@ -1248,25 +1249,32 @@ with tabs[7]:
     st.subheader("PART X — Price & Terms")
     pr = d["pricing"]
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**Option 1**")
-        pr["option1_moc"]                 = st.text_input("MOC", value=pr.get("option1_moc", ""), key="og_p1m")
-        pr["option1_equipment_price_cr"]  = st.number_input("Equipment Cr", value=float(pr.get("option1_equipment_price_cr", 0)), step=0.01, key="og_p1e")
-        pr["option1_install_lakhs"]       = st.number_input("Install Lakhs", value=float(pr.get("option1_install_lakhs", 0)), step=1.0, key="og_p1i")
-        pr["option1_total_cr"]            = st.number_input("Total Cr", value=float(pr.get("option1_total_cr", 0)), step=0.01, key="og_p1t")
-    with c2:
-        st.markdown("**Option 2**")
-        pr["option2_moc"]                 = st.text_input("MOC", value=pr.get("option2_moc", ""), key="og_p2m")
-        pr["option2_equipment_price_cr"]  = st.number_input("Equipment Cr", value=float(pr.get("option2_equipment_price_cr", 0)), step=0.01, key="og_p2e")
-        pr["option2_install_lakhs"]       = st.number_input("Install Lakhs", value=float(pr.get("option2_install_lakhs", 0)), step=1.0, key="og_p2i")
-        pr["option2_total_cr"]            = st.number_input("Total Cr", value=float(pr.get("option2_total_cr", 0)), step=0.01, key="og_p2t")
+    st.markdown("### Price Summary")
+    p1, p2, p3 = st.columns(3)
+    pr["option1_moc"] = p1.text_input(
+        "MOC", value=pr.get("option1_moc", ""), key="og_p1m")
+    pr["option1_equipment_price_cr"] = p2.number_input(
+        "Equipment (Cr)", value=float(pr.get("option1_equipment_price_cr", 0)),
+        step=0.01, key="og_p1e")
+    pr["option1_install_lakhs"] = p3.number_input(
+        "Installation (Lakhs)", value=float(pr.get("option1_install_lakhs", 0)),
+        step=1.0, key="og_p1i")
 
-    c1, c2 = st.columns(2)
-    pr["location_dap"]        = c1.text_input("Location DAP", value=pr.get("location_dap", ""), key="og_ploc")
-    pr["price_validity_days"] = c2.number_input("Validity Days", value=int(pr.get("price_validity_days", 15)),
-                                                min_value=1, max_value=365, key="og_pval")
+    p4, p5, p6 = st.columns(3)
+    pr["option1_ms_structure_lakhs"] = p4.number_input(
+        "MS Structure (Lakhs)", value=float(pr.get("option1_ms_structure_lakhs", 0)),
+        step=1.0, key="og_p1ms")
+    pr["option1_total_cr"] = p5.number_input(
+        "Total (Cr)", value=float(pr.get("option1_total_cr", 0)),
+        step=0.01, key="og_p1t")
+    pr["location_dap"] = p6.text_input(
+        "Location DAP", value=pr.get("location_dap", ""), key="og_ploc")
 
+    pr["price_validity_days"] = st.number_input(
+        "Price Validity (Days)", value=int(pr.get("price_validity_days", 15)),
+        min_value=1, max_value=365, key="og_pval")
+
+    st.divider()
     st.markdown("**Payment Terms**")
     pt_txt = "\n".join(pr.get("payment_terms", []))
     new_pt = st.text_area("One per line", value=pt_txt, height=180, key="og_pt")
@@ -1274,15 +1282,20 @@ with tabs[7]:
 
     st.markdown("**Delivery Terms**")
     dt_txt = "\n".join(pr.get("delivery_terms", []))
-    new_dt = st.text_area("One per line", value=dt_txt, height=120, key="og_dt")
+    new_dt = st.text_area("One per line", value=dt_txt, height=150, key="og_dt")
     pr["delivery_terms"] = [l.strip() for l in new_dt.split("\n") if l.strip()]
 
     st.markdown("**Delivery Timeline**")
     tl = pr.get("delivery_timeline", {})
-    tl1, tl2, tl3 = st.columns(3)
-    tl["supply"]        = tl1.text_input("Supply (DAP)",    value=tl.get("supply", ""),        key="og_tl_sup")
-    tl["installation"]  = tl2.text_input("Installation",    value=tl.get("installation", ""),  key="og_tl_inst")
-    tl["commissioning"] = tl3.text_input("Commissioning",   value=tl.get("commissioning", ""), key="og_tl_comm")
+    tl1, tl2 = st.columns(2)
+    tl["supply_option1"] = tl1.text_input(
+        "Supply (DAP)", value=tl.get("supply_option1", ""), key="og_tl_s1")
+    tl["installation"] = tl2.text_input(
+        "Installation", value=tl.get("installation", ""), key="og_tl_inst")
+    tl3, tl4 = st.columns(2)
+    tl["commissioning"] = tl3.text_input(
+        "Commissioning", value=tl.get("commissioning", ""), key="og_tl_comm")
+    tl4.empty()
     pr["delivery_timeline"] = tl
     
 
