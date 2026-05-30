@@ -116,6 +116,16 @@ PAYMENT_TERMS_DEFAULT = [
     "65% of order value with applicable taxes & duties on Prorata basis against submission of proforma invoice after readiness of material but prior to dispatch.",
     "5% remaining order value with applicable taxes & duties within 15 days after commissioning. In case of any delay in commissioning for reason not attributed to B&G Engineering, remaining amount shall be paid within 60 days from the date of last major supply.",
 ]
+COMMISSIONING_BASIS_DEFAULT = [
+    "To Carry out the Commissioning and Take-over of the Equipment/Plant, Buyer shall provide Operators/Supervisors, Sufficient quality and quantity of Materials, Utilities and necessary Consumables and continuous supply of Feed.",
+    "The Commissioning procedure by which the seller shall demonstrate that the equipment has met the take-over criteria shall be carried out by Buyer under the supervision of seller as per Operation Manuals provided by seller.",
+    "Seller shall demonstrate performance trial of Equipment/Plant maximum up to 48 hrs. This is Buyer's responsibility to provide continuous and uninterrupted supply of Feed, Utilities and Consumables.",
+    "When the commissioning of Equipment/Plant is completed or demonstrated, the Buyer shall take-over the equipment for the operation and maintenance thereof.",
+    "The Seller and the Buyer shall sign the takeover certificate thereafter Buyer shall be solely responsible for the safety, operation, service, maintenance of the equipment.",
+    "In the event of delay in completion of commissioning due to reasons not attributed to Seller from the period of 3 months from the date of mechanical completion, the Equipment/Plant shall be deemed to have been commissioned.",
+    "In case the performance guarantee doesn't achieve in the performance trial for the reason attributed to seller, allowing tolerance mentioned under performance guarantee, the seller shall be liable to pay liquidated damage for Equipment/Plant capacity, Electrical power consumption, Steam consumption combined, subject to a maximum of 2.5% of Purchase order/Contract price.",
+]
+
 
 DELIVERY_TIMELINE_DEFAULT = {
     "supply_option1": "6-7 Month from the date of PO and receipt of advance payment.",
