@@ -66,7 +66,7 @@ if not _password_gate():
 conn = st.connection("supabase", type=SupabaseConnection)
 
 from bg_offer_generator.utils.brand import BRAND, COMPANY, OFFER_TOC
-from bg_offer_generator.utils.default_data import default_offer_data
+from bg_offer_generator.utils.default_data import default_offer_data, _default_engg_services
 from bg_offer_generator.utils.form_template import generate_form_template_xlsx
 from bg_offer_generator.utils.bridge import (
     parse_process_design_json, bridge_to_offer_data, summarize_bridge_result,
@@ -403,9 +403,9 @@ _SCOPE_CACHE_KEYS = [
     "_df_src_og_sc_m",
     "_df_src_og_sc_a",
     "_df_src_og_sc_i",
+    "_df_src_og_sc_e",   # ← ADD THIS
     "_df_src_og_sm",
 ]
-
 def _clear_scope_editor_cache():
     """Call whenever og_offer_data is replaced wholesale."""
     for k in _SCOPE_CACHE_KEYS:
@@ -554,8 +554,11 @@ for unit in ("stripper", "mee", "atfd"):
 d["technical_specs"]["stripper"].setdefault("reflux_kgh", 0)
 d["technical_specs"]["mee"].setdefault("steam_economy", 4.3)
 d.setdefault("utilities", {})
+d.setdefault("engg_services", _default_engg_services())
 
 # Normalise bool columns in scope tables (DB may return "True"/"False" strings)
+
+
 def _norm_bool(records: list, bool_cols: list) -> list:
     out = []
     for row in records:
@@ -1188,7 +1191,10 @@ with tabs[5]:
 
         d[data_key] = _editor_records(records, ss_key_base, col_order)
 
-    sub = st.tabs(["Stripper", "MEE", "ATFD", "Instruments"])
+    
+    _ENGG_COLS = ["item", "scope"]
+
+    sub = st.tabs(["Stripper", "MEE", "ATFD", "Instruments", "ENGG & EXE"])
     with sub[0]:
         _scope_tab_with_move("scope_stripper", "og_sc_s", _SCOPE_COLS)
     with sub[1]:
@@ -1197,6 +1203,8 @@ with tabs[5]:
         _scope_tab_with_move("scope_atfd",     "og_sc_a", _SCOPE_COLS)
     with sub[3]:
         _scope_tab_with_move("instruments",    "og_sc_i", _INSTR_COLS)
+    with sub[4]:
+        _scope_tab_with_move("engg_services",  "og_sc_e", _ENGG_COLS)
 
 
 # ══════════════════════════════════════════════════════════════════════
