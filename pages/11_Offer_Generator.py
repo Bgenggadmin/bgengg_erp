@@ -1272,6 +1272,20 @@ with tabs[7]:
     new_pt = st.text_area("One per line", value=pt_txt, height=180, key="og_pt")
     pr["payment_terms"] = [l.strip() for l in new_pt.split("\n") if l.strip()]
 
+    st.markdown("**Delivery Terms**")
+    dt_txt = "\n".join(pr.get("delivery_terms", []))
+    new_dt = st.text_area("One per line", value=dt_txt, height=120, key="og_dt")
+    pr["delivery_terms"] = [l.strip() for l in new_dt.split("\n") if l.strip()]
+
+    st.markdown("**Delivery Timeline**")
+    tl = pr.get("delivery_timeline", {})
+    tl1, tl2, tl3 = st.columns(3)
+    tl["supply"]        = tl1.text_input("Supply (DAP)",    value=tl.get("supply", ""),        key="og_tl_sup")
+    tl["installation"]  = tl2.text_input("Installation",    value=tl.get("installation", ""),  key="og_tl_inst")
+    tl["commissioning"] = tl3.text_input("Commissioning",   value=tl.get("commissioning", ""), key="og_tl_comm")
+    pr["delivery_timeline"] = tl
+    
+
 
 # ══════════════════════════════════════════════════════════════════════
 # TAB 9 — Generate
