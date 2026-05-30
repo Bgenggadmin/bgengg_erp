@@ -205,20 +205,15 @@ def default_offer_data() -> dict:
         "scope_matrix": _default_scope_matrix(),
 
         # ----- PART X: Pricing -----
-        # ----- PART X: Pricing -----
         "pricing": {
             "option1_moc": "Titanium & Duplex 2205",
-            
             "option1_equipment_price_cr": 5.00,
-           
             "option1_install_lakhs": 25,
-            
+            "option1_ms_structure_lakhs": 0,
             "option1_total_cr": 5.25,
-            
             "payment_terms": list(PAYMENT_TERMS_DEFAULT),
             "delivery_terms": [
-                "Supply (DAP, Hyderabad) — Option 1 (Ti & Duplex): 6-7 Months from date of PO and receipt of advance payment.",
-                "Supply (DAP, Hyderabad) — Option 2 (SS 316Ti & 316L): 3-4 Months from date of PO and receipt of advance payment.",
+                "Supply (DAP, Hyderabad): 6-7 Months from date of PO and receipt of advance payment.",
                 "Installation: 1.5 Months (subject to site readiness).",
                 "Commissioning: 15-20 Days.",
                 "Note: For additional Man-days other than specified above & reason not attributed to B&G, INR 10,000/- per Man-day shall be charged extra.",
