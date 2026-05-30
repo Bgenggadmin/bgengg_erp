@@ -556,6 +556,22 @@ d["technical_specs"]["mee"].setdefault("steam_economy", 4.3)
 d.setdefault("utilities", {})
 d.setdefault("engg_services", _default_engg_services())
 d.setdefault("commissioning_basis", list(COMMISSIONING_BASIS_DEFAULT))
+d.setdefault("instruments", [])
+
+# Force-upgrade: append MCC/PLC rows to older saved offers that don't have them
+_existing_items = [r.get("item", "") for r in d.get("instruments", [])]
+if not any("MCC Panel" in item for item in _existing_items):
+    d["instruments"].extend([
+        {"item": "MCC Panel: Non-Compartmental Type, Floor mounting, IP 54, MS CRCA powder coated, 2mm Thk doors", "qty": "1 Set", "scope": "B&G"},
+        {"item": "MCC Panel — Mains incoming MCCB, rated for all feeder loads. Busbars: Electrolytic Aluminium. Earth bus: Aluminium.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "MCC Panel — Outgoing feeders: DOL up to 15 kW, Star-Delta from 18.5 kW & above, VFD feeders as per P&ID. Feeders with field power & control cable termination.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "MCC Panel — Mains incoming section with Energy Meter (kWh), Voltmeter & Ammeter", "qty": "1 Set", "scope": "B&G"},
+        {"item": "Control Panel: PLC with SCADA — Make: ABB/Siemens/Reputed. MS Cabinet, powder coated. CPU module, Licensed SCADA software.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "PLC/SCADA — Computer: Latest Windows, 21\" screen, 64-bit. Analogue/Digital I/O modules, power supply, communication module. On/Off Switches, Relays, MCBs. IP 52, non-FLP area. Without redundancy.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "PLC/SCADA — Parameters monitored/controlled: Feed Flow, Steam Flow, Levels, Steam Pressure, CW in/out, Valve on/off, Temperatures, Pressures etc.", "qty": "1 Set", "scope": "B&G"},
+        {"item": "Instrument Cables, Cable trays, Cable laying between panel, instruments and valves", "qty": "1 Lot", "scope": "Customer"},
+        {"item": "Power / Control / Data Cables between Motors / MCC / PLC. Cable laying, Trays, Supports, Junction Boxes", "qty": "1 Lot", "scope": "Customer"},
+    ])
 
 # Normalise bool columns in scope tables (DB may return "True"/"False" strings)
 
