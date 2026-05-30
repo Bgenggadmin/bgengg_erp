@@ -23,6 +23,7 @@ from bg_offer_generator.utils.brand import (
     PAYMENT_TERMS_DEFAULT,
     DELIVERY_TIMELINE_DEFAULT,
     PRICE_VALIDITY_DAYS_DEFAULT,
+    COMMISSIONING_BASIS_DEFAULT,
 )
 
 
@@ -178,6 +179,7 @@ def default_offer_data() -> dict:
         },
 
         "performance_guarantee": list(PERFORMANCE_GUARANTEE),
+        "commissioning_basis": list(COMMISSIONING_BASIS_DEFAULT),
 
         # ----- PART VI: Scope of Supply -----
         "scope_stripper": _default_stripper_scope(),
