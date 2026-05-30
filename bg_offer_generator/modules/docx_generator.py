@@ -356,22 +356,16 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     _make_scope_table(doc, data["scope_atfd"])
 
     _add_heading(doc, "II. Instruments & Automation Items", level=2)
-    inst_rows = [[i["item"], i["qty"], i["scope"]] for i in data["instruments"]]
+    inst_rows = [[i.get("item", ""), i.get("qty", ""), i.get("scope", "")] for i in data.get("instruments", [])]
     _make_table(doc, inst_rows, header=["Item Description", "Quantity", "Scope"],
-                 col_widths=[3.8, 1.2, 1.5])
+                col_widths=[3.8, 1.2, 1.5])
 
     _add_heading(doc, "III. Engineering & Executive Services", level=2)
-    services = [
-        "Basic Engineering", "Detail Engineering", "Software development",
-        "PFD / P&ID", "GA Drawings and Layout", "3D Drawing of Plant",
-        "Project Management", "Installation", "Pre-Commissioning",
-        "Commissioning & Training of system operators",
-        "Material Test Certificates", "Hydro Test Certificates", "Operating Manual",
-    ]
-    for s in services:
+    for svc in data.get("engg_services", []):
         p = doc.add_paragraph(style='List Bullet')
-        p.add_run(s).font.size = Pt(10)
+        p.add_run(svc.get("item", "")).font.size = Pt(10)
 
+    
     # ============================================
     # PART VII: BATTERY LIMITS
     # ============================================
@@ -405,7 +399,7 @@ def generate_offer_docx(data: dict, logo_path: str = None,
         "In the event of delay in completion of commissioning due to reasons not attributed to Seller from the period of 3 months from the date of mechanical completion, the Equipment/Plant shall be deemed to have been commissioned.",
         "In case the performance guarantee doesn't achieve in the performance trial for the reason attributed to seller, allowing tolerance under performance guarantee, the seller shall be liable to pay liquidated damage subject to a maximum of 2.5% of Purchase order / Contract price.",
     ]
-    for b in commissioning_bullets:
+    for b in data.get("commissioning_basis", []):
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(b).font.size = Pt(10)
 
