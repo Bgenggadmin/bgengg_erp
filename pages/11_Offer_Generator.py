@@ -697,7 +697,7 @@ with tabs[0]:
                 key="og_load_sel",
             )
 
-            cols = st.columns([1, 1, 1, 3])
+            cols = st.columns([1, 1, 1, 1, 2])
             with cols[0]:
                 if st.button("📂 Open", type="primary", disabled=(sel_idx == 0),
                              key="og_load_open_btn", use_container_width=True):
@@ -714,6 +714,36 @@ with tabs[0]:
                             st.error("Could not load this offer.")
 
             with cols[1]:
+                if st.button("🔁 Clone", disabled=(sel_idx == 0),
+                             key="og_clone_btn", use_container_width=True,
+                             help="Clone this offer as a new unsaved offer"):
+                    if dirty:
+                        st.warning("⚠️ Save your current changes before cloning.")
+                    else:
+                        row = _load_offer_by_id(offers_list[sel_idx - 1]["id"])
+                        if row and row.get("offer_data"):
+                            cloned = copy.deepcopy(row["offer_data"])
+                            # Reset identity fields so it saves as a new offer
+                            cloned["cover"]["quote_ref"] = cloned["cover"]["quote_ref"] + " (Copy)"
+                            cloned["cover"]["quote_date"] = str(datetime.today().date())
+                            cloned.pop("_anchor_id", None)
+                            cloned.pop("_pd_project_id", None)
+                            cloned.pop("_client_id", None)
+                            st.session_state.og_offer_data      = cloned
+                            st.session_state.og_loaded_offer_id = None  # new offer, not saved yet
+                            st.session_state.og_form_version    += 1
+                            st.session_state.og_last_saved_at   = None
+                            _clear_scope_editor_cache()
+                            _mark_clean(cloned)
+                            st.success(
+                                f"✅ Cloned offer #{row['id']} — update the Quote Reference "
+                                f"and click 💾 Save Draft to save as a new offer."
+                            )
+                            st.rerun()
+                        else:
+                            st.error("Could not load this offer.")
+
+            with cols[2]:
                 if loaded_id or d.get("_anchor_id"):
                     if st.button("🆕 New Offer", use_container_width=True,
                                  key="og_new_offer_btn"):
@@ -724,7 +754,7 @@ with tabs[0]:
                             _apply_new_offer()
                             st.rerun()
 
-            with cols[2]:
+            with cols[3]:
                 with st.popover("🗑️ Delete", disabled=(sel_idx == 0),
                                 use_container_width=True):
                     if sel_idx != 0:
@@ -741,7 +771,6 @@ with tabs[0]:
                                     _apply_new_offer()
                                 st.success(f"🗑️ Deleted offer #{del_id}")
                                 st.rerun()
-
             # Pending-load (dirty guard)
             if st.session_state.get("og_pending_load_id"):
                 pid = st.session_state.og_pending_load_id
