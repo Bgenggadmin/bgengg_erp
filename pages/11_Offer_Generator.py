@@ -1202,25 +1202,38 @@ with tabs[5]:
     st.subheader("PART VI — Scope of Supply")
 
     def _editor_records(records, key, col_order):
-        """
-        Render a data_editor with stable column order + index so the first
-        edit registers immediately (avoids the one-rerun lag where edits
-        appear to revert). Returns NaN-free records.
-        """
-        df = pd.DataFrame(records)
-        # Ensure every expected column exists and in a fixed order
-        for c in col_order:
-            if c not in df.columns:
-                df[c] = ""
-        if not df.empty:
-            df = df[col_order]
+        # Use session_state as the source of truth once the widget exists.
+        # This prevents the DataFrame being rebuilt from the dict on every
+        # rerun, which is what causes the first-edit revert.
+        ss_key = f"_df_src_{key}"
+        if ss_key not in st.session_state:
+            df = pd.DataFrame(records)
+            for c in col_order:
+                if c not in df.columns:
+                    df[c] = ""
+            df = df[col_order] if not df.empty else pd.DataFrame(columns=col_order)
+            df = df.reset_index(drop=True)
+            st.session_state[ss_key] = df
         else:
-            df = pd.DataFrame(columns=col_order)
-        df = df.reset_index(drop=True)
-        edited = st.data_editor(df, use_container_width=True,
+            # Only rebuild from records if the number of rows changed
+            # (e.g. a new offer was loaded), not on every widget interaction.
+            existing = st.session_state[ss_key]
+            if len(existing) != len(records):
+                df = pd.DataFrame(records)
+                for c in col_order:
+                    if c not in df.columns:
+                        df[c] = ""
+                df = df[col_order] if not df.empty else pd.DataFrame(columns=col_order)
+                df = df.reset_index(drop=True)
+                st.session_state[ss_key] = df
+
+        edited = st.data_editor(st.session_state[ss_key], use_container_width=True,
                                 num_rows="dynamic", key=key)
         cleaned = edited.where(pd.notnull(edited), "")
-        return cleaned.to_dict("records")
+        result = cleaned.to_dict("records")
+        # Keep session_state in sync with edits
+        st.session_state[ss_key] = cleaned.reset_index(drop=True)
+        return result
 
     _SCOPE_COLS = ["equipment", "specification", "qty", "bg_scope", "buyer_scope"]
     _INSTR_COLS = ["item", "qty", "scope"]
