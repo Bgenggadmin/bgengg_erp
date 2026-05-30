@@ -184,6 +184,7 @@ def default_offer_data() -> dict:
         "scope_mee": _default_mee_scope(),
         "scope_atfd": _default_atfd_scope(),
         "instruments": _default_instruments(),
+        "engg_services": _default_engg_services(),
 
         # ----- PART VII: Battery Limits -----
         "battery_limits": [
@@ -388,3 +389,20 @@ def _default_scope_matrix():
         {"description": "Plant lightning and any internal works.", "bg": cust, "client": bg},
         {"description": "Item/Service not mentioned in above scope of supply.", "bg": cust, "client": bg},
     ]
+def _default_engg_services():
+    return [
+        {"item": "Basic Engineering",                                          "scope": "B&G"},
+        {"item": "Detail Engineering",                                         "scope": "B&G"},
+        {"item": "Software Development",                                       "scope": "B&G"},
+        {"item": "PFD / P&ID",                                                 "scope": "B&G"},
+        {"item": "GA Drawings and Layout",                                     "scope": "B&G"},
+        {"item": "3D Drawings of Plant",                                       "scope": "B&G"},
+        {"item": "Project Management",                                         "scope": "B&G"},
+        {"item": "Installation",                                               "scope": "B&G"},
+        {"item": "Pre-Commissioning",                                          "scope": "B&G"},
+        {"item": "Commissioning & Training of system operators",               "scope": "B&G"},
+        {"item": "Material Test Certificates",                                 "scope": "B&G"},
+        {"item": "Hydro Test Certificates",                                    "scope": "B&G"},
+        {"item": "Operating Manual",                                           "scope": "B&G"},
+        {"item": "Note: Any Documentation and Services other than above are not considered and shall be chargeable if required.", "scope": "—"},
+    ]  
