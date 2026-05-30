@@ -425,7 +425,7 @@ def _snapshot_for_dirty_check(data: dict) -> str:
 def _mark_clean(data: dict):
     st.session_state.og_saved_snapshot = _snapshot_for_dirty_check(data)
     st.session_state.og_last_saved_at = datetime.now(timezone.utc)
-  def _clear_scope_editor_cache():
+def _clear_scope_editor_cache():
     """Clear cached DataFrames so data_editor reloads from the new offer."""
     for key in ["_df_src_og_sc_s", "_df_src_og_sc_m",
                 "_df_src_og_sc_a", "_df_src_og_sc_i", "_df_src_og_sm"]:
