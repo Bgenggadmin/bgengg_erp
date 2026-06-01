@@ -627,7 +627,7 @@ def calc_dish_area(shell_id_mm):
 def calc_shell_volume_ltrs(dia_mm, ht_mm):
     return PI * (_m(dia_mm) / 2) ** 2 * _m(ht_mm) * 1000
 
-def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
+def (parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
                 profit_pct, contingency_pct, packing, freight, gst_pct, engg_design,
                 discount_pct=0.0,
                 factory_oh_pct=5.0, admin_oh_pct=3.0):
@@ -2136,11 +2136,20 @@ with TAB_LIST:
                 fab_s   = json.loads(est.get("fab_json")     or "[]")
                 bo      = json.loads(est.get("bo_json")      or "[]")
                 oh      = json.loads(est.get("oh_json")      or "[]")
+                
+                # NEW — unpack spec_json so OH rates match the Summary tab
+                try:
+                    _spec = json.loads(est.get("spec_json") or "{}")
+                except Exception:
+                    _spec = {}
                 T = calc_totals(
                     parts, pipes, flanges, struct_l, fab_s, bo, oh,
                     float(est.get("profit_margin_pct") or 10), float(est.get("contingency_pct") or 0),
                     float(est.get("packing_amt") or 0), float(est.get("freight_amt") or 0),
                     float(est.get("gst_pct") or 18), float(est.get("engg_design_amt") or 0),
+                    discount_pct=float(_spec.get("discount_pct", 0)),
+                    factory_oh_pct=float(_spec.get("factory_oh_pct", 5.0)),
+                    admin_oh_pct=float(_spec.get("admin_oh_pct", 3.0)),
                 )
                 st.markdown("---")
                 d1, d2, d3 = st.columns(3)
@@ -4089,6 +4098,10 @@ with TAB_SIMILAR:
         cap = float(est.get("capacity_ltrs") or 0)
         if not (s_cap_lo <= cap <= s_cap_hi): continue
         if s_cust and s_cust.lower() not in (est.get("customer_name", "") or "").lower(): continue
+        try:
+            _spec = json.loads(est.get("spec_json") or "{}")
+        except Exception:
+            _spec = {}
         T = calc_totals(
             json.loads(est.get("parts_json")   or "[]"),
             json.loads(est.get("pipes_json")   or "[]"),
@@ -4100,6 +4113,9 @@ with TAB_SIMILAR:
             float(est.get("profit_margin_pct") or 10), float(est.get("contingency_pct") or 0),
             float(est.get("packing_amt") or 0), float(est.get("freight_amt") or 0),
             float(est.get("gst_pct") or 18), float(est.get("engg_design_amt") or 0),
+            discount_pct=float(_spec.get("discount_pct", 0)),
+            factory_oh_pct=float(_spec.get("factory_oh_pct", 5.0)),
+            admin_oh_pct=float(_spec.get("admin_oh_pct", 3.0)),
         )
         results.append({
             "QTN":      est.get("qtn_number", ""), "Customer": est.get("customer_name", ""),
