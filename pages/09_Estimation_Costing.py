@@ -627,7 +627,7 @@ def calc_dish_area(shell_id_mm):
 def calc_shell_volume_ltrs(dia_mm, ht_mm):
     return PI * (_m(dia_mm) / 2) ** 2 * _m(ht_mm) * 1000
 
-def (parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
+def calc_totals(parts, pipes, flanges, struct, fab_services, bo_items, oh_items,
                 profit_pct, contingency_pct, packing, freight, gst_pct, engg_design,
                 discount_pct=0.0,
                 factory_oh_pct=5.0, admin_oh_pct=3.0):
