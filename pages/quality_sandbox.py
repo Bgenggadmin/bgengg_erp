@@ -1398,18 +1398,17 @@ with main_tabs[5]:
                 except Exception as e:
                     st.error(f"Load error: {e}")
 
-            # Auto-number Sl_No before rendering so new rows always get correct numbers
-            _dir_df_render = st.session_state.get(dir_key, pd.DataFrame()).copy()
-            if not _dir_df_render.empty:
-                _dir_df_render["Sl_No"] = range(1, len(_dir_df_render) + 1)
-                st.session_state[dir_key] = _dir_df_render
+            # Drop Sl_No from display — computed at save time to avoid
+            # session_state conflicts that cause data_editor to lose typed values
+            _dir_display = st.session_state.get(dir_key, pd.DataFrame()).copy()
+            if "Sl_No" in _dir_display.columns:
+                _dir_display = _dir_display.drop(columns=["Sl_No"])
 
             dim_grid = st.data_editor(
-                st.session_state.get(dir_key, pd.DataFrame()),
+                _dir_display,
                 num_rows="dynamic", use_container_width=True,
-                hide_index=True, key=f"dir_editor_{sel_job}",
+                hide_index=False, key=f"dir_editor_{sel_job}",
                 column_config={
-                    "Sl_No":               st.column_config.NumberColumn("Sl", width="small", disabled=True),
                     "Description":         st.column_config.TextColumn("Description", width="large"),
                     "Specified_Dimension": st.column_config.TextColumn("Specified Dimension", width="large"),
                     "Measured_Dimension":  st.column_config.TextColumn("Measured Dimension",  width="large"),
@@ -1544,7 +1543,6 @@ with main_tabs[7]:
     if sel_job != "-- Select --":
         proj = get_proj(df_anchor, sel_job)
         if proj is not None:
-            job_header(proj)
             # Pre-load last calibration record
             _cal_prev = {}
             try:
