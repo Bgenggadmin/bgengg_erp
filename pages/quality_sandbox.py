@@ -446,8 +446,11 @@ def generate_master_data_book(job_no, project_info, df_plan):
                 _row_band(pdf, i)
                 pdf.cell(10, 6, str(row.get('Sl_No', '')),                              border=1, align='C', fill=True, ln=0)
                 pdf.cell(55, 6, _pdf_safe(str(row.get('Description', '')))[:32],        border=1, fill=True, ln=0)
-                pdf.cell(55, 6, _pdf_safe(str(row.get('Specified_Dimension', '')))[:28], border=1, fill=True, ln=0)
-                pdf.cell(55, 6, _pdf_safe(str(row.get('Measured_Dimension', '')))[:28], border=1, fill=True, ln=0)
+                # Handle both old (Actual/Design) and new (Specified_Dimension/Measured_Dimension) column names
+                _spec = row.get('Specified_Dimension') or row.get('Design', '')
+                _meas = row.get('Measured_Dimension') or row.get('Actual', '')
+                pdf.cell(55, 6, _pdf_safe(str(_spec))[:28], border=1, fill=True, ln=0)
+                pdf.cell(55, 6, _pdf_safe(str(_meas))[:28], border=1, fill=True, ln=0)
                 pdf.cell(15, 6, _pdf_safe(str(row.get('MOC', ''))),                     border=1, align='C', fill=True, ln=1)
     except Exception as e:
         st.warning(f"DIR section skipped: {e}")
@@ -1378,6 +1381,12 @@ with main_tabs[5]:
                     if _dir_prev.get("dim_grid_data") and len(_dir_prev["dim_grid_data"]) > 0:
                         _dir_df = pd.DataFrame(_dir_prev["dim_grid_data"])
                         # Ensure SelectboxColumn cols have valid strings
+                        # Rename old column names to new ones
+                        if "Actual" in _dir_df.columns and "Specified_Dimension" not in _dir_df.columns:
+                            _dir_df = _dir_df.rename(columns={
+                                "Actual": "Measured_Dimension",
+                                "Design": "Specified_Dimension"
+                            })
                         for _col in _dir_df.columns:
                             _dir_df[_col] = _dir_df[_col].fillna("").astype(str)
                         st.session_state[dir_key] = _dir_df
