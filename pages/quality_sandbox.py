@@ -64,7 +64,9 @@ def clean_rows(rows: list) -> list:
         cleaned = {}
         for k, v in row.items():
             if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
-                cleaned[k] = None
+                cleaned[k] = ""
+            elif v is None:
+                cleaned[k] = ""
             elif k in ('Sl', 'Sl_No', 'QTY') and v is not None:
                 try:    cleaned[k] = int(v)
                 except: cleaned[k] = v
@@ -453,7 +455,7 @@ def generate_master_data_book(job_no, project_info, df_plan):
     # SECTION 6: HYDRO TEST REPORT
     try:
         hydro_res = conn.table("hydro_test_reports").select("*") \
-            .eq("job_no", job_no).order("created_at", desc=True).execute()
+            .eq("job_no", job_no).order("created_at", desc=True).limit(1).execute()
         if hydro_res.data:
             add_section_header("6. HYDROSTATIC / PNEUMATIC TEST REPORT")
             for idx, report in enumerate(hydro_res.data):
@@ -463,8 +465,8 @@ def generate_master_data_book(job_no, project_info, df_plan):
                     pdf.line(MARGIN, pdf.get_y(), MARGIN + PAGE_W, pdf.get_y())
                     pdf.ln(3)
                 kv_row("Equipment",       report.get('equipment_name', 'N/A'))
-                kv_row("Test Pressure",   f"{report.get('test_pressure', 'N/A')} Kg/cm2")
-                kv_row("Design Pressure", f"{report.get('design_pressure', 'N/A')} Kg/cm2")
+                kv_row("Test Pressure",   str(report.get("test_pressure","N/A")).replace(" Kg/cm2","").replace("Kg/cm2","") + " Kg/cm2")
+                kv_row("Design Pressure", str(report.get("design_pressure","N/A")).replace(" Kg/cm2","").replace("Kg/cm2","") + " Kg/cm2")
                 kv_row("Holding Time",    report.get('holding_time', 'N/A'))
                 kv_row("Test Medium",     report.get('test_medium', 'N/A'))
                 kv_row("Gauge No(s)",     report.get('gauge_nos', 'N/A'))
@@ -1376,9 +1378,8 @@ with main_tabs[5]:
                     if _dir_prev.get("dim_grid_data") and len(_dir_prev["dim_grid_data"]) > 0:
                         _dir_df = pd.DataFrame(_dir_prev["dim_grid_data"])
                         # Ensure SelectboxColumn cols have valid strings
-                        for _col in ["Description","MOC"]:
-                            if _col in _dir_df.columns:
-                                _dir_df[_col] = _dir_df[_col].fillna("").astype(str)
+                        for _col in _dir_df.columns:
+                            _dir_df[_col] = _dir_df[_col].fillna("").astype(str)
                         st.session_state[dir_key] = _dir_df
                     else:
                         st.session_state[dir_key] = pd.DataFrame([
