@@ -1,22 +1,25 @@
 """
 Page 11 — B&G Offer Generator  (fully audited & optimised build)
 
-Fixes applied vs previous version
-──────────────────────────────────
-1.  _clear_scope_editor_cache defined at MODULE level (was causing NameError).
-2.  og_form_version increment + _clear_scope_editor_cache called in EVERY
-    load / new-offer path (4 places).
-3.  _editor_records uses session_state as source-of-truth → first-edit revert fixed.
-4.  _editor_records_sm given the same treatment → Scope Matrix no longer blank.
-5.  bg_scope / buyer_scope stored as bool in DB but displayed as ✅/❌ checkbox;
-    normalised on load so data_editor receives actual booleans.
-6.  Row move-up / move-down buttons added to Scope-of-Supply tabs.
-7.  og_client_sel key versioned with fv so it reinitialises on offer load.
-8.  "New Offer" button in Tab 9 also clears scope cache & bumps fv.
-9.  "Yes, discard and start new" (pending_new path) also bumps fv & clears cache.
-10. Tab 7 scope_matrix row-count rebuild guard applied (was always rebuilding).
-11. Import/Bridge paths also clear cache after replacing og_offer_data.
-12. Redundant double _recalc_economics calls collapsed to one per tab.
+Changes vs previous version
+──────────────────────────────────────────────────────────────────────
+FIX-1  MCC/PLC instrument rows re-appearing after delete
+       Root cause: the schema backfill block ran on EVERY rerun and
+       re-appended the 9 MCC/PLC rows whenever they were missing from
+       d["instruments"] — even after the user had deleted them. Because
+       _editor_records rebuilds the cached dataframe when the row-count
+       changes, those rows immediately reappeared on screen.
+       Fix: the MCC/PLC upgrade is now guarded by a one-shot session
+       flag "og_mcc_upgrade_done" that is set exactly once per offer
+       (on first load or when a new offer is started). It never fires
+       again during editing reruns.
+
+FIX-2  General Terms & Conditions added as new Tab ⑩
+       A full editable text area (pre-populated with B&G standard T&C
+       clauses from the MSN LS-1 offer) has been inserted between
+       Pricing & Terms (⑨) and Generate (🚀). Users can freely edit the
+       text; it is stored in d["general_terms"] and rendered by the DOCX
+       generator as Part XI.
 """
 
 import sys, os
@@ -73,6 +76,104 @@ from bg_offer_generator.utils.bridge import (
 )
 from bg_offer_generator.utils.assets import load_brand_assets
 from bg_offer_generator.modules.docx_generator import generate_offer_docx
+
+
+# ─────────────────────────────────────────────────────────────────────
+# DEFAULT GENERAL T&C TEXT  (Part XI of offer)
+# ─────────────────────────────────────────────────────────────────────
+_DEFAULT_GENERAL_TERMS = """\
+BUYER'S RESPONSIBILITIES:
+The Buyer shall supply all items and materials not specified as the responsibility of the Seller but which are necessary for the Seller to comply with its obligations under the contract. The Buyer shall provide access to the site from a convenient point on the road. Such access shall be suitable for the transport of the Equipment and the materials required for Installation. The Seller shall not commence the Installation work unless the civil works are completed by Buyer and facilities like power, water and other essential utilities are made available at the Site by the Buyer. These facilities shall continue to be available till the completion of Installation and commissioning of the Equipment. The Buyer shall provide office space free of charge, adequate telephone and other communication facilities at the site for use by the Seller.
+
+The Buyer shall be responsible for obtaining all licenses, permits, and approvals necessary for the installation of the Equipment and for the execution and completion of the related services. The Buyer shall perform its obligations as set forth in the quotation and these General Conditions in a timely manner. The Buyer shall ensure that the Seller is granted unobstructed access to the site and shall provide all necessary tools, utilities, connections and operating personnel required for the proper installation, start-up, and testing of the Equipment at the site.
+
+CONTRACT PRICE:
+The contract price quoted is Ex Works and exclusive of packing and forwarding charges, freight and insurance, taxes, duties and/or other levies or charges unless otherwise stated. All taxes, duties, levies and charges shall be billed at the rates in force at the time of dispatch. Unless specifically precluded to do so in writing in the contract, the Seller reserves its right to revise the contract price consequent upon any change in the specifications of the Equipment and/or any of the terms and conditions of supply and services. The Seller shall be entitled to revise the contract price during the currency of the contract if the project is delayed considerably or put on hold for a sufficiently long time for reasons attributable to the Buyer or due to a substantial revision in the prices of materials and components during the scheduled execution of the contract.
+
+STATUTORY VARIATIONS:
+Our prices are firm but subject to statutory variations. Any increase in Excise Duty, taxes etc. at the time of delivery shall be charged extra to your account (Required proofs/documents will be furnished for the same). However, if there is a reversal in excise duty the same will be passed on to your account.
+
+DELIVERY:
+Unless otherwise stated in the quotation, all supplies of the Equipment shall be Ex-works at Seller's works at Hyderabad as per Incoterms 2020. The time of delivery of the Equipment and for execution and completion of services shall start to run from the receipt of final Purchase order and receipt of downpayment.
+
+TRANSPORTATION AND INSURANCE:
+The Seller may arrange for transportation of Equipment for and on behalf of the Buyer, by Road/Sea/Air as per the location of the Buyer on "freight to pay basis" or on "freight paid" basis. Service Tax and Education Cess on such freight, if applicable, shall be extra to the Buyer's account. Unless otherwise stated, the Buyer shall arrange insurance on the Equipment from the time the goods leave the Seller's/Sub-supplier's works until their commissioning at the Buyer's factory site. The Seller shall arrange only for transit insurance if the terms and conditions of the order so require the Seller to do. In the event of damage during transit, the claim process shall be handled by the Buyer.
+
+MECHANICAL COMPLETION:
+As soon as the Equipment is substantially erected, the Buyer shall so notify in writing, to the Seller by means of a mechanical completion report stating that the Buyer is proposing to demonstrate the intended mechanical function of the Equipment or any appropriate section thereof. Upon the completion of the demonstration, the Seller and the Buyer shall sign the Mechanical Completion Certificate issued by the Buyer. If the Buyer does not attend the scheduled demonstration after appropriate notification, the Seller shall carry out such demonstration in the absence of the Buyer and shall notify the results thereof to the Buyer. These results shall constitute mechanical completion and the Seller shall not be obliged to carry out any further mechanical completion procedure.
+
+The Seller shall be entitled to schedule repeat demonstration under the same terms and conditions as the first if any major defects or faults appear which prevent the signing of the Mechanical Completion Certificate provided however that the appearance of any defect or fault which does not unduly hinder the use of the Equipment for its intended mechanical function shall not prevent the issue of Mechanical Completion Certificate though an appropriate remark may appear therein. The Seller shall be obliged to remedy such defects thereafter without undue delay, upon which the milestone of Mechanical Completion is considered achieved.
+
+COMMISSIONING / HANDOVER:
+To carry out the Commissioning and Take-over of the Equipment/Plant, Buyer shall provide Operators/Supervisors, sufficient quality and quantity of Materials, Utilities and necessary Consumables and continuous supply of Feed. The Commissioning procedure by which the seller shall demonstrate that the equipment has met the take-over criteria shall be carried out by Buyer under the supervision of seller as per Operation Manuals provided by seller. Seller shall demonstrate performance trial of Equipment/Plant maximum up to 48 hrs. This is Buyer's responsibility to provide continuous and uninterrupted supply of Feed, Utilities and Consumables. In case of any interruption during performance trial like power failure, discontinuity in steam or any other utility supply, minor mechanical/electrical issue etc., shall be deducted from the performance trial duration, however, will not be considered as discontinuity in performance trial. Total of 48 hrs of performance trial excluding stoppage with average readings shall be considered as completion of the performance trial.
+
+When the commissioning of Equipment/Plant is completed or demonstrated, the Buyer shall take-over the equipment for the operation and maintenance thereof. The Seller and the Buyer shall sign the takeover certificate thereafter Buyer shall be solely responsible for the safety, operation, service, maintenance of the equipment.
+
+In the event of delay in completion of commissioning of Equipment/Plant due to reasons not attributed to Seller from the period of 3 months from the date of mechanical completion, the Equipment/Plant shall be deemed to have been commissioned and Seller shall be discharged from its further obligations in relation to commissioning of the Equipment/Plant.
+
+In case the performance guarantee is not achieved in the performance trial for the reason attributed to seller, allowing tolerance mentioned under performance guarantee, the seller shall be liable to pay liquidated damage for Equipment/Plant capacity, Electrical power consumption, Steam consumption combined, subject to a maximum of 2.5% of Purchase order/Contract price.
+
+MECHANICAL WARRANTY ON EQUIPMENT:
+The Seller warrants that each item of the Equipment sold shall be as specified in the quotation. The Seller further warrants that each item of the Equipment shall be free from defects in design, materials and workmanship for a period of 12 months from the date of mechanical completion of the Equipment or 18 months from the date of last major supply whichever is earlier. This warranty is based on normal operation of the Equipment. This warranty also extends to repairs or replacements of defective Equipment during the warranty period.
+
+Any manufacturing defect found and intimated to the Seller within a reasonable period during the warranty period shall be made good by the Seller by repair or replacement at its option. This shall be the Buyer's sole and exclusive remedy for the Equipment which does not meet the specified mechanical warranty specified in the quotation. The Buyer must notify in writing of the claimed defect promptly after the appearance thereof and in no event later than 15 days after the expiry of the warranty period.
+
+The Seller shall not have any liability for damage caused to the Equipment by normal wear and tear, unintended use, misuse, abuse or improper storage, maintenance, operation or repairs or change in Control systems by Buyer or by persons not under the Seller's supervision. Corrosion guarantee is not covered unless specified in the offer. Any defective items of the Equipment which are replaced by the Seller shall thereupon become the Seller's property. The Seller makes no other warranties differing from those contained herein and, in the quotation, or any implied warranties, whether of merchantability, suitability, fitness for a particular purpose or otherwise.
+
+DELAY IN COMPLETION:
+If the completion of dispatch is delayed beyond the contractual date for reasons beyond Seller control as listed out hereunder but not limited to them, Seller shall be entitled to suitable re-adjustment in the period of completion by mutual consent and the contract will stand amended to that extent:
+a. Delay in inspection beyond the appointed date or delay in approval of test certificates, whichever required, beyond a period of 7 days from the date of submission by Seller.
+b. Delay in release of dispatch clearance or hold up of work due to Buyer specific instructions or lack of instruction.
+c. Delay attributable for Force Majeure conditions, more particularly detailed under appropriate clause hereunder.
+
+FORCE MAJEURE CLAUSE:
+Force Majeure shall include but not be restricted to Acts of God or enemy, action of the government in its sovereign capacity including changes in law or policies, strikes or shortage, floods, fires, earthquakes, explosions, accidents, epidemics, COVID-19, civil commotions, insurgency, war, riots etc. includes any factor or event beyond the reasonable control of parties.
+
+In the event of any Force Majeure circumstances affecting the ability of either party to perform in accordance with this Proposal for extended periods of time exceeding 3 weeks, the parties hereto shall meet and jointly decide the future course of action including but not limited to amendment or recession of this Proposal. In the event that any occurrence referred to above hereof causes a delay exceeding 3 (three) months, either party shall have the right to terminate this Proposal without giving rise to any claim for additional compensation except for the payments defined hereinabove plus any costs and expenses reasonably incurred by Seller as a result of such termination.
+
+TERMINATION AND SUSPENSION:
+In the event of the Buyer desiring to terminate the contract at any time without assigning reason or for any reason other than the Seller's default, the Seller shall stop the performance of the Contract from the date of termination.
+
+In such an event, the Buyer shall pay to the Seller the aggregate amount due under the Contract for the Works executed prior to the date of termination; the aggregate amount due for the work-in-progress; the aggregate amount due to the Seller in respect of any irrevocable commitments that the Seller has undertaken in pursuance of the Contract and in addition an incidental charge of 5% of the contract price for the disturbance caused to the Seller as a result of termination of the contract.
+
+TERMS OF PAYMENT:
+The Buyer shall pay the Seller the contract price in accordance with the payment schedule set forth in the quotation or as mutually agreed. In case of delayed payment, the Seller shall be entitled to impose and receive interest on the amount delayed at the rate of 15% or at such other rate as may be decided by the Seller.
+
+In the event the Buyer does not strictly comply with the terms and conditions of payment set out in the quotation or as may be agreed, the Seller may, in addition to any other remedies available to it, including enforcing a lien on Equipment already supplied and suspend all performance until Buyer has so complied.
+
+SECRECY AND CONFIDENTIALITY:
+Any data, information, designs, drawings, process know-how and other such documentation pertaining to design, manufacture, operation and maintenance of the PLANT, which Seller may discuss/exchange/elaborate/hand over to Buyer or their Consultants from time to time, are of proprietary nature and are to be kept confidential by Buyer or their Consultants subject to the disclosures of such information to regulatory authorities in India and compulsory disclosure under order of court.
+
+Buyer or their Consultants shall neither disclose such data, information, designs, drawings, process know-how, and other such documentation to any other third party nor use it for any other purpose other than its intended use, without the written permission from Seller.
+
+Seller will not share any of the design data, which is specific to Buyer's project, to third party companies operating in India. However, this Article shall not preclude the necessity of sharing the relevant information with Buyer's Contractors and representatives as may be reasonably necessary in connection with the construction, maintenance and operation of the plant.
+
+Whenever Buyer makes any disclosure of proprietary information to its Consultants or to its subcontractors, having a need to be informed pursuant to this Offer, then Buyer shall obtain a signed Confidentiality Agreement, prior to making such disclosures, for Consultants/subcontractors and provides a copy of such confidentiality agreement to Seller prior to making such disclosures.
+
+RIGHTS TO IMPROVE DESIGN:
+Seller reserves the right to modify, alter the specifications & designs of equipment with a constant aim to improve the same without affecting guaranteed performance & without claiming extra charge therefrom.
+
+CHANGE IN TECHNICAL SPECIFICATIONS:
+Any change in specifications as required by Buyer will be discussed by Seller with Buyer and the technical/commercial implications of such changes will be mutually accepted before incorporating such changes.
+
+INTELLECTUAL PROPERTY RIGHTS:
+Seller shall provide necessary back up support to Buyer to defend any law suits filed or injunction moved against Buyer by any third party for any alleged infringement or violation of a trademark or any other intellectual property rights during the continuance of this Offer or thereafter, with respect to this Offer, by providing necessary technical documents/technical evidences etc.
+
+The term Intellectual Property Rights for the purpose of this clause shall mean all intellectual property rights related to the Services to be provided by seller in terms of this offer, whether current or future, whether registered or not, whether capable of being registered or not, including patents, copyrights, trademarks, designs, proprietary information, know-how, design rights, owned, acquired, developed or otherwise held by Seller as a licensee.
+
+LIABILITY:
+Notwithstanding any other provision in this Proposal, Seller shall not be liable, whether in contract, under statute, tort (including negligence) or otherwise, for any loss of use (whether partial or total), loss of profits, loss of revenue, loss of contracts or indirect or consequential loss or damage whatsoever and howsoever arising which is suffered or incurred by the Buyer and/or directly or indirectly connected with this Proposal.
+
+Seller shall not be liable to Buyer or the subcontractors of Buyer for any consequential losses of any kind or nature arising out of or alleged to arise out of furnishing of any services, personnel information or other assistance by Seller.
+
+The maximum cumulative liability of Seller to Buyer with respect to this Proposal whether based on contract, tort, negligence, strict liability or otherwise, shall not exceed 5% of the Contract Price and Buyer shall hold harmless Seller from any liability in excess thereof.
+
+Seller agrees to indemnify and hold Buyer harmless from and against liability for injury to or death of any personnel of Seller (except as set forth in the following sentence) or for loss or damage to any equipment or property owned by Seller. Buyer agrees to indemnify and hold Seller harmless from and against any liability for injury to or death of any personnel of Seller occurring on Buyer's premises. Buyer shall indemnify and hold Seller harmless from and against liability for injury to or death of any personnel of Buyer or any third parties and for loss or damage to any equipment or property owned by Buyer or any third party.
+
+WAIVER:
+No waiver by either party of any default by the other in the strict and literal performance of compliance with any provision, condition or requirement of this AGREEMENT shall be deemed to be a waiver of strict, literal performance of and compliance with any other provision, condition or requirement hereof, not to be a waiver of or in any manner release such other party from strict compliance with any provisions, condition or requirement in the future; nor shall any delay or omission of either party to exercise any right under this Proposal in any manner impair the exercise of any such right accruing to it thereafter.
+
+Seller retains title to all equipment delivered until realization of full payment of the amounts invoiced. Seller shall be entitled to have registered retention of title or have secured it in any other applicable form without Buyer's consent."""
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -296,7 +397,6 @@ def _save_offer_to_db(data: dict, status: str = "final",
             "prepared_by":      cov["prepared_by"],
             "offer_data":       data,
             "option1_total_cr": pr["option1_total_cr"],
-            
             "price_validity_days": pr["price_validity_days"],
             "status":           status,
         }
@@ -396,14 +496,14 @@ def _time_since(dt: datetime) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# SCOPE EDITOR CACHE  (fix for first-edit revert in data_editor)
+# SCOPE EDITOR CACHE
 # ─────────────────────────────────────────────────────────────────────
 _SCOPE_CACHE_KEYS = [
     "_df_src_og_sc_s",
     "_df_src_og_sc_m",
     "_df_src_og_sc_a",
     "_df_src_og_sc_i",
-    "_df_src_og_sc_e",   # ← ADD THIS
+    "_df_src_og_sc_e",
     "_df_src_og_sm",
 ]
 def _clear_scope_editor_cache():
@@ -413,22 +513,70 @@ def _clear_scope_editor_cache():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# LOAD OFFER HELPER  (single point that does all 4 side-effects)
+# MCC/PLC UPGRADE — ONE-SHOT PER OFFER LOAD, NEVER DURING EDITING
+#
+# Root cause of the "rows come back after delete" bug:
+#   The old code ran the upgrade block on EVERY rerun (top-of-script
+#   schema backfill). When the user deleted the MCC rows, d["instruments"]
+#   was updated — but on the next rerun the backfill re-appended them,
+#   triggering a row-count mismatch in _editor_records which then rebuilt
+#   the dataframe showing the re-added rows.
+#
+# Fix: use a session flag "og_mcc_upgrade_done" that is set to False only
+#   when a new/loaded/bridged offer is first applied. It is set to True
+#   after the first run of _apply_mcc_upgrade_once, and stays True for
+#   the rest of the session regardless of reruns. Deletions by the user
+#   are therefore permanent within the session.
+# ─────────────────────────────────────────────────────────────────────
+_MCC_PLC_ROWS = [
+    {"item": "MCC Panel: Non-Compartmental Type, Floor mounting, IP 54, MS CRCA powder coated, 2mm Thk doors", "qty": "1 Set", "scope": "B&G"},
+    {"item": "MCC Panel — Mains incoming MCCB, rated for all feeder loads. Busbars: Electrolytic Aluminium. Earth bus: Aluminium.", "qty": "1 Set", "scope": "B&G"},
+    {"item": "MCC Panel — Outgoing feeders: DOL up to 15 kW, Star-Delta from 18.5 kW & above, VFD feeders as per P&ID. Feeders with field power & control cable termination.", "qty": "1 Set", "scope": "B&G"},
+    {"item": "MCC Panel — Mains incoming section with Energy Meter (kWh), Voltmeter & Ammeter", "qty": "1 Set", "scope": "B&G"},
+    {"item": "Control Panel: PLC with SCADA — Make: ABB/Siemens/Reputed. MS Cabinet, powder coated. CPU module, Licensed SCADA software.", "qty": "1 Set", "scope": "B&G"},
+    {"item": 'PLC/SCADA — Computer: Latest Windows, 21" screen, 64-bit. Analogue/Digital I/O modules, power supply, communication module. On/Off Switches, Relays, MCBs. IP 52, non-FLP area. Without redundancy.', "qty": "1 Set", "scope": "B&G"},
+    {"item": "PLC/SCADA — Parameters monitored/controlled: Feed Flow, Steam Flow, Levels, Steam Pressure, CW in/out, Valve on/off, Temperatures, Pressures etc.", "qty": "1 Set", "scope": "B&G"},
+    {"item": "Instrument Cables, Cable trays, Cable laying between panel, instruments and valves", "qty": "1 Lot", "scope": "Customer"},
+    {"item": "Power / Control / Data Cables between Motors / MCC / PLC. Cable laying, Trays, Supports, Junction Boxes", "qty": "1 Lot", "scope": "Customer"},
+]
+
+def _apply_mcc_upgrade_once(data: dict):
+    """
+    Append MCC/PLC rows to instruments list ONLY if:
+      1. The one-shot flag has not yet fired this session, AND
+      2. The offer genuinely has no MCC Panel row already.
+    Once the flag is True it never fires again — edits (including deletions)
+    made by the user are preserved for the rest of the session.
+    """
+    if st.session_state.get("og_mcc_upgrade_done"):
+        return
+    existing_items = [r.get("item", "") for r in data.get("instruments", [])]
+    if not any("MCC Panel" in item for item in existing_items):
+        data.setdefault("instruments", [])
+        data["instruments"].extend(_MCC_PLC_ROWS)
+    # Mark done regardless — even if rows were already present
+    st.session_state["og_mcc_upgrade_done"] = True
+
+
+# ─────────────────────────────────────────────────────────────────────
+# LOAD / NEW OFFER HELPERS  (single authoritative point for side-effects)
 # ─────────────────────────────────────────────────────────────────────
 def _apply_loaded_offer(row: dict):
     """Replace session state with a freshly-loaded offer row."""
-    st.session_state.og_offer_data      = row["offer_data"]
-    st.session_state.og_loaded_offer_id = row["id"]
-    st.session_state.og_form_version   += 1
+    st.session_state.og_offer_data       = row["offer_data"]
+    st.session_state.og_loaded_offer_id  = row["id"]
+    st.session_state.og_form_version    += 1
+    st.session_state.og_mcc_upgrade_done = False   # permit one-shot upgrade on next render
     _clear_scope_editor_cache()
     _mark_clean(row["offer_data"])
 
 def _apply_new_offer():
     """Reset to a blank offer."""
-    st.session_state.og_offer_data      = default_offer_data()
-    st.session_state.og_loaded_offer_id = None
-    st.session_state.og_form_version   += 1
-    st.session_state.og_last_saved_at   = None
+    st.session_state.og_offer_data       = default_offer_data()
+    st.session_state.og_loaded_offer_id  = None
+    st.session_state.og_form_version    += 1
+    st.session_state.og_last_saved_at    = None
+    st.session_state.og_mcc_upgrade_done = False   # permit one-shot upgrade on next render
     _clear_scope_editor_cache()
     _mark_clean(st.session_state.og_offer_data)
 
@@ -452,7 +600,7 @@ def _spawn_offer_from_anchor(anchor_row: dict) -> bool:
         return False
 
     new_data = bridge_to_offer_data(process_json, existing_data=default_offer_data())
-    new_data["_anchor_id"]    = anchor_row["id"]
+    new_data["_anchor_id"]     = anchor_row["id"]
     new_data["_pd_project_id"] = pd_id
 
     cov = new_data["cover"]
@@ -471,10 +619,11 @@ def _spawn_offer_from_anchor(anchor_row: dict) -> bool:
                       utilities=new_data.get("utilities"),
                       capacity_kld=new_data["cover"].get("capacity_kld"))
 
-    st.session_state.og_offer_data      = new_data
-    st.session_state.og_loaded_offer_id = None
-    st.session_state.og_form_version   += 1
-    st.session_state.og_last_saved_at   = None
+    st.session_state.og_offer_data       = new_data
+    st.session_state.og_loaded_offer_id  = None
+    st.session_state.og_form_version    += 1
+    st.session_state.og_last_saved_at    = None
+    st.session_state.og_mcc_upgrade_done = False   # permit one-shot upgrade on next render
     _clear_scope_editor_cache()
     _mark_clean(new_data)
     return True
@@ -483,18 +632,21 @@ def _spawn_offer_from_anchor(anchor_row: dict) -> bool:
 # ─────────────────────────────────────────────────────────────────────
 # SESSION STATE INIT
 # ─────────────────────────────────────────────────────────────────────
-if "og_offer_data"      not in st.session_state:
+if "og_offer_data"        not in st.session_state:
     st.session_state.og_offer_data = default_offer_data()
-if "og_form_version"    not in st.session_state:
+if "og_form_version"      not in st.session_state:
     st.session_state.og_form_version = 0
-if "og_loaded_offer_id" not in st.session_state:
+if "og_loaded_offer_id"   not in st.session_state:
     st.session_state.og_loaded_offer_id = None
-if "og_last_saved_at"   not in st.session_state:
+if "og_last_saved_at"     not in st.session_state:
     st.session_state.og_last_saved_at = None
-if "og_saved_snapshot"  not in st.session_state:
+if "og_saved_snapshot"    not in st.session_state:
     st.session_state.og_saved_snapshot = _snapshot_for_dirty_check(
         st.session_state.og_offer_data
     )
+# MCC upgrade flag: False on first run so the upgrade fires once immediately
+if "og_mcc_upgrade_done"  not in st.session_state:
+    st.session_state.og_mcc_upgrade_done = False
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -518,6 +670,8 @@ st.markdown(f"""
 
 # ─────────────────────────────────────────────────────────────────────
 # SCHEMA BACKFILL  (before any tab renders)
+# NOTE: The MCC/PLC rows are NOT included here — they are applied via
+#       _apply_mcc_upgrade_once() which runs exactly once per offer load.
 # ─────────────────────────────────────────────────────────────────────
 d = st.session_state.og_offer_data
 
@@ -558,24 +712,13 @@ d.setdefault("engg_services", _default_engg_services())
 d.setdefault("commissioning_basis", list(COMMISSIONING_BASIS_DEFAULT))
 d.setdefault("instruments", [])
 
-# Force-upgrade: append MCC/PLC rows to older saved offers that don't have them
-_existing_items = [r.get("item", "") for r in d.get("instruments", [])]
-if not any("MCC Panel" in item for item in _existing_items):
-    d["instruments"].extend([
-        {"item": "MCC Panel: Non-Compartmental Type, Floor mounting, IP 54, MS CRCA powder coated, 2mm Thk doors", "qty": "1 Set", "scope": "B&G"},
-        {"item": "MCC Panel — Mains incoming MCCB, rated for all feeder loads. Busbars: Electrolytic Aluminium. Earth bus: Aluminium.", "qty": "1 Set", "scope": "B&G"},
-        {"item": "MCC Panel — Outgoing feeders: DOL up to 15 kW, Star-Delta from 18.5 kW & above, VFD feeders as per P&ID. Feeders with field power & control cable termination.", "qty": "1 Set", "scope": "B&G"},
-        {"item": "MCC Panel — Mains incoming section with Energy Meter (kWh), Voltmeter & Ammeter", "qty": "1 Set", "scope": "B&G"},
-        {"item": "Control Panel: PLC with SCADA — Make: ABB/Siemens/Reputed. MS Cabinet, powder coated. CPU module, Licensed SCADA software.", "qty": "1 Set", "scope": "B&G"},
-        {"item": "PLC/SCADA — Computer: Latest Windows, 21\" screen, 64-bit. Analogue/Digital I/O modules, power supply, communication module. On/Off Switches, Relays, MCBs. IP 52, non-FLP area. Without redundancy.", "qty": "1 Set", "scope": "B&G"},
-        {"item": "PLC/SCADA — Parameters monitored/controlled: Feed Flow, Steam Flow, Levels, Steam Pressure, CW in/out, Valve on/off, Temperatures, Pressures etc.", "qty": "1 Set", "scope": "B&G"},
-        {"item": "Instrument Cables, Cable trays, Cable laying between panel, instruments and valves", "qty": "1 Lot", "scope": "Customer"},
-        {"item": "Power / Control / Data Cables between Motors / MCC / PLC. Cable laying, Trays, Supports, Junction Boxes", "qty": "1 Lot", "scope": "Customer"},
-    ])
+# Backfill general_terms for offers that pre-date this field
+d.setdefault("general_terms", _DEFAULT_GENERAL_TERMS)
+
+# ── MCC/PLC upgrade — ONE-SHOT, never re-fires during editing reruns ──
+_apply_mcc_upgrade_once(d)
 
 # Normalise bool columns in scope tables (DB may return "True"/"False" strings)
-
-
 def _norm_bool(records: list, bool_cols: list) -> list:
     out = []
     for row in records:
@@ -604,8 +747,8 @@ _recalc_economics(
 # ─────────────────────────────────────────────────────────────────────
 # TOP STATUS BAR
 # ─────────────────────────────────────────────────────────────────────
-dirty     = _is_dirty(d)
-loaded_id = st.session_state.og_loaded_offer_id
+dirty      = _is_dirty(d)
+loaded_id  = st.session_state.og_loaded_offer_id
 last_saved = st.session_state.og_last_saved_at
 
 bar_c1, bar_c2, bar_c3, bar_c4 = st.columns([3, 2, 2, 1])
@@ -656,13 +799,14 @@ tabs = st.tabs([
     "⑤ Technical",
     "⑥ Scope of Supply",
     "⑦ Scope Matrix",
-    "⑧ Commissioning Basis",   # ← ADD (shifts old ⑧ to ⑨)
+    "⑧ Commissioning Basis",
     "⑨ Pricing & Terms",
+    "⑩ Gen. T&C",        # ← NEW: General Terms & Conditions (Part XI)
     "🚀 Generate",
     "📥 Import / Bridge",
 ])
 
-fv = st.session_state.og_form_version  # version prefix for all versioned widget keys
+fv = st.session_state.og_form_version
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -672,7 +816,6 @@ with tabs[0]:
     d   = st.session_state.og_offer_data
     cov = d["cover"]
 
-    # ── Open Existing Offer ──────────────────────────────────────────
     with st.expander("📂 Open Existing Offer",
                      expanded=not loaded_id and not d.get("_anchor_id")):
         offers_list = _load_offers_list()
@@ -682,11 +825,11 @@ with tabs[0]:
             st.info("No saved offers yet. Fill in the form and click 💾 Save Draft.")
         else:
             def _fmt_offer(o):
-                cname      = clients_map.get(o.get("client_id"), "—") if o.get("client_id") else "—"
-                emoji      = "📝" if o.get("status") == "draft" else "✅"
-                updated    = str(o.get("updated_at") or o.get("created_at") or "")[:16].replace("T", " ")
-                price      = o.get("option1_total_cr")
-                price_str  = f" · ₹{price:.2f}Cr" if price else ""
+                cname     = clients_map.get(o.get("client_id"), "—") if o.get("client_id") else "—"
+                emoji     = "📝" if o.get("status") == "draft" else "✅"
+                updated   = str(o.get("updated_at") or o.get("created_at") or "")[:16].replace("T", " ")
+                price     = o.get("option1_total_cr")
+                price_str = f" · ₹{price:.2f}Cr" if price else ""
                 return f"{emoji} #{o['id']} · {o['quote_ref']} · {cname} · {o.get('capacity_kld','?')} KLD{price_str} · {updated}"
 
             options = ["— select an offer to open —"] + [_fmt_offer(o) for o in offers_list]
@@ -723,16 +866,16 @@ with tabs[0]:
                         row = _load_offer_by_id(offers_list[sel_idx - 1]["id"])
                         if row and row.get("offer_data"):
                             cloned = copy.deepcopy(row["offer_data"])
-                            # Reset identity fields so it saves as a new offer
-                            cloned["cover"]["quote_ref"] = cloned["cover"]["quote_ref"] + " (Copy)"
+                            cloned["cover"]["quote_ref"]  = cloned["cover"]["quote_ref"] + " (Copy)"
                             cloned["cover"]["quote_date"] = str(datetime.today().date())
                             cloned.pop("_anchor_id", None)
                             cloned.pop("_pd_project_id", None)
                             cloned.pop("_client_id", None)
-                            st.session_state.og_offer_data      = cloned
-                            st.session_state.og_loaded_offer_id = None  # new offer, not saved yet
+                            st.session_state.og_offer_data       = cloned
+                            st.session_state.og_loaded_offer_id  = None
                             st.session_state.og_form_version    += 1
-                            st.session_state.og_last_saved_at   = None
+                            st.session_state.og_last_saved_at    = None
+                            st.session_state.og_mcc_upgrade_done = True  # clone already has MCC rows
                             _clear_scope_editor_cache()
                             _mark_clean(cloned)
                             st.success(
@@ -771,7 +914,7 @@ with tabs[0]:
                                     _apply_new_offer()
                                 st.success(f"🗑️ Deleted offer #{del_id}")
                                 st.rerun()
-            # Pending-load (dirty guard)
+
             if st.session_state.get("og_pending_load_id"):
                 pid = st.session_state.og_pending_load_id
                 st.warning(f"⚠️ You have unsaved changes. Opening offer #{pid} will discard them. Continue?")
@@ -786,7 +929,6 @@ with tabs[0]:
                     st.session_state.pop("og_pending_load_id", None)
                     st.rerun()
 
-            # Pending-new (dirty guard)
             if st.session_state.get("og_pending_new"):
                 st.warning("⚠️ You have unsaved changes. Starting a new offer will discard them. Continue?")
                 pn1, pn2 = st.columns(2)
@@ -798,7 +940,6 @@ with tabs[0]:
                     st.session_state.pop("og_pending_new", None)
                     st.rerun()
 
-    # ── Spawn from Anchor ────────────────────────────────────────────
     with st.expander("🔗 Spawn Offer from Anchor Enquiry (Ammu · MEE projects)",
                      expanded=False):
         st.caption(
@@ -866,8 +1007,6 @@ with tabs[0]:
                         st.error(f"Could not load offer #{target['offer_id']}.")
 
     st.divider()
-
-    # ── Cover & Client fields ────────────────────────────────────────
     st.subheader("Cover Page & Client Details")
     cov = d["cover"]
 
@@ -921,15 +1060,14 @@ with tabs[0]:
                         st.rerun()
 
     st.divider()
-
     c1, c2 = st.columns(2)
     with c1:
-        cov["quote_ref"]     = st.text_input("Quote Reference",       value=cov.get("quote_ref", ""),     key=f"og_cov_qr_{fv}")
-        cov["quote_date"]    = st.text_input("Quote Date (YYYY-MM-DD)", value=str(cov.get("quote_date", "")), key=f"og_cov_qd_{fv}")
-        cov["submitted_to"]  = st.text_input("Submitted to",          value=cov.get("submitted_to", ""),  key=f"og_cov_st_{fv}")
-        cov["location"]      = st.text_input("Location",              value=cov.get("location", ""),      key=f"og_cov_loc_{fv}")
-        cov["capacity_kld"]  = st.number_input("Capacity (KLD)",      value=int(cov.get("capacity_kld", 150)),
-                                               min_value=1, max_value=5000, step=1, key=f"og_cov_cap_{fv}")
+        cov["quote_ref"]      = st.text_input("Quote Reference",          value=cov.get("quote_ref", ""),      key=f"og_cov_qr_{fv}")
+        cov["quote_date"]     = st.text_input("Quote Date (YYYY-MM-DD)", value=str(cov.get("quote_date", "")), key=f"og_cov_qd_{fv}")
+        cov["submitted_to"]   = st.text_input("Submitted to",             value=cov.get("submitted_to", ""),   key=f"og_cov_st_{fv}")
+        cov["location"]       = st.text_input("Location",                 value=cov.get("location", ""),       key=f"og_cov_loc_{fv}")
+        cov["capacity_kld"]   = st.number_input("Capacity (KLD)",         value=int(cov.get("capacity_kld", 150)),
+                                                min_value=1, max_value=5000, step=1, key=f"og_cov_cap_{fv}")
     with c2:
         cov["prepared_by"]    = st.text_input("Prepared By",    value=cov.get("prepared_by", ""),    key=f"og_cov_pb_{fv}")
         cov["contact_details"]= st.text_input("Contact",        value=cov.get("contact_details", ""),key=f"og_cov_cd_{fv}")
@@ -981,13 +1119,11 @@ with tabs[3]:
     op1, op2, op3 = st.columns(3)
     with op1:
         econ["operating_hours_day"] = st.number_input(
-            "Operating Hours per Day (h)",
-            value=float(econ["operating_hours_day"]),
+            "Operating Hours per Day (h)", value=float(econ["operating_hours_day"]),
             min_value=1.0, max_value=24.0, step=1.0, key="og_e_ophrs")
     with op2:
         econ["operating_days_year"] = st.number_input(
-            "Days of Operation per Year",
-            value=int(econ["operating_days_year"]),
+            "Days of Operation per Year", value=int(econ["operating_days_year"]),
             min_value=1, max_value=365, step=1, key="og_e_days")
     with op3:
         econ["effluent_treatment_cost_inr_kl"] = st.number_input(
@@ -1006,8 +1142,7 @@ with tabs[3]:
             min_value=0.0, step=0.5, format="%.2f", key="og_e_pwr_rate")
     with cc3:
         econ["cooling_water_cost_inr_m3"] = st.number_input(
-            "Cooling Water Cost (₹/m³)",
-            value=float(econ["cooling_water_cost_inr_m3"]),
+            "Cooling Water Cost (₹/m³)", value=float(econ["cooling_water_cost_inr_m3"]),
             min_value=0.0, step=1.0, format="%.2f", key="og_e_cw_rate")
 
     st.divider()
@@ -1041,8 +1176,8 @@ with tabs[3]:
         st.metric("Annual Cost (Cr/yr)", f"₹{econ['ecox_annual_cost_cr']:.4f}")
     with rc3:
         st.markdown("**Savings**")
-        st.metric("Steam Reduction (%)",   f"{econ['steam_reduction_pct']:.2f}%")
-        st.metric("Steam Savings (t/yr)", f"{econ['annual_steam_savings_tons']:,.2f}")
+        st.metric("Steam Reduction (%)",     f"{econ['steam_reduction_pct']:.2f}%")
+        st.metric("Steam Savings (t/yr)",    f"{econ['annual_steam_savings_tons']:,.2f}")
         st.metric("Cost Savings (Lakhs/yr)", f"₹{econ['annual_savings_lakhs']:.2f}")
 
     st.info("💡 Total Steam/Power/CW and Annual Operational Cost are at the bottom of Tab ⑤ Technical.")
@@ -1059,19 +1194,19 @@ with tabs[4]:
     with st.expander("📋 Feed Parameters", expanded=True):
         c1, c2 = st.columns(2)
         with c1:
-            fp["capacity_kld"]               = st.number_input("Feed / Capacity (KLD)", value=int(fp.get("capacity_kld", 150)), min_value=1, max_value=5000, step=1, key="t_cap")
-            fp["feed_ph"]                    = st.text_input("Feed pH", value=str(fp.get("feed_ph", "")), key="t_ph")
-            fp["specific_gravity"]           = st.text_input("Specific Gravity", value=str(fp.get("specific_gravity", "1.0")), key="t_sg")
-            fp["total_cod_ppm"]              = st.number_input("Total COD (PPM)", value=int(fp.get("total_cod_ppm", 0)), step=1, key="t_cod")
+            fp["capacity_kld"]                  = st.number_input("Feed / Capacity (KLD)", value=int(fp.get("capacity_kld", 150)), min_value=1, max_value=5000, step=1, key="t_cap")
+            fp["feed_ph"]                       = st.text_input("Feed pH", value=str(fp.get("feed_ph", "")), key="t_ph")
+            fp["specific_gravity"]              = st.text_input("Specific Gravity", value=str(fp.get("specific_gravity", "1.0")), key="t_sg")
+            fp["total_cod_ppm"]                 = st.number_input("Total COD (PPM)", value=int(fp.get("total_cod_ppm", 0)), step=1, key="t_cod")
             fp["volatile_organic_solvents_ppm"] = st.number_input("Volatile Organic Solvents (PPM)", value=int(fp.get("volatile_organic_solvents_ppm", 0)), step=1, key="t_vos")
-            fp["total_solids_pct"]           = st.text_input("Total Solids (% w/w)", value=str(fp.get("total_solids_pct", "")), key="t_ts")
+            fp["total_solids_pct"]              = st.text_input("Total Solids (% w/w)", value=str(fp.get("total_solids_pct", "")), key="t_ts")
         with c2:
-            fp["suspended_solids_ppm"]  = st.text_input("Suspended Solids (PPM)", value=str(fp.get("suspended_solids_ppm", "")), key="t_ss")
-            fp["feed_temp_c"]           = st.number_input("Feed Temperature (°C)", value=int(fp.get("feed_temp_c", 30)), step=1, key="t_T")
-            fp["total_hardness_ppm"]    = st.text_input("Total Hardness (PPM)", value=str(fp.get("total_hardness_ppm", "")), key="t_th")
-            fp["silica_ppm"]            = st.text_input("Silica (PPM)", value=str(fp.get("silica_ppm", "")), key="t_si")
-            fp["free_chloride_ppm"]     = st.text_input("Free Chloride (PPM)", value=str(fp.get("free_chloride_ppm", "")), key="t_cl")
-            fp["feed_nature"]           = st.text_input("Feed Nature", value=fp.get("feed_nature", ""), key="t_nat")
+            fp["suspended_solids_ppm"] = st.text_input("Suspended Solids (PPM)", value=str(fp.get("suspended_solids_ppm", "")), key="t_ss")
+            fp["feed_temp_c"]          = st.number_input("Feed Temperature (°C)", value=int(fp.get("feed_temp_c", 30)), step=1, key="t_T")
+            fp["total_hardness_ppm"]   = st.text_input("Total Hardness (PPM)", value=str(fp.get("total_hardness_ppm", "")), key="t_th")
+            fp["silica_ppm"]           = st.text_input("Silica (PPM)", value=str(fp.get("silica_ppm", "")), key="t_si")
+            fp["free_chloride_ppm"]    = st.text_input("Free Chloride (PPM)", value=str(fp.get("free_chloride_ppm", "")), key="t_cl")
+            fp["feed_nature"]          = st.text_input("Feed Nature", value=fp.get("feed_nature", ""), key="t_nat")
 
     def _unit_expander(label: str, u: dict, pfx: str, default_type: str):
         with st.expander(label, expanded=True):
@@ -1079,41 +1214,42 @@ with tabs[4]:
             c1, c2    = st.columns(2)
             with c1:
                 st.markdown("**Process Flows**")
-                u["feed_kgh"]       = st.number_input("Inlet Feed Rate (kg/h)",        value=int(u.get("feed_kgh", 0)),       step=1, key=f"{pfx}_feed")
-                u["distillate_kgh"] = st.number_input("Top Distillate Out (kg/h)",     value=int(u.get("distillate_kgh", 0)), step=1, key=f"{pfx}_dist")
+                u["feed_kgh"]       = st.number_input("Inlet Feed Rate (kg/h)",    value=int(u.get("feed_kgh", 0)),       step=1, key=f"{pfx}_feed")
+                u["distillate_kgh"] = st.number_input("Top Distillate Out (kg/h)", value=int(u.get("distillate_kgh", 0)), step=1, key=f"{pfx}_dist")
                 if pfx == "ts_s":
                     u["distillate_composition"] = st.text_input("Distillate Composition", value=u.get("distillate_composition", ""), key=f"{pfx}_dc")
-                u["bottoms_kgh"]    = st.number_input("Stripper Bottom Out (kg/h)" if pfx == "ts_s" else "Concentrate Out (kg/h)",
-                                                      value=int(u.get("bottoms_kgh", u.get("concentrate_kgh", 0))), step=1, key=f"{pfx}_bot")
+                u["bottoms_kgh"] = st.number_input(
+                    "Stripper Bottom Out (kg/h)" if pfx == "ts_s" else "Concentrate Out (kg/h)",
+                    value=int(u.get("bottoms_kgh", u.get("concentrate_kgh", 0))), step=1, key=f"{pfx}_bot")
                 if pfx == "ts_s":
                     u["reflux_kgh"] = st.number_input("Reflux Rate (kg/h)", value=int(u.get("reflux_kgh", 0)), step=1, key=f"{pfx}_ref")
                 if pfx in ("ts_m", "ts_a"):
-                    u["feed_solids_pct"]    = st.text_input("Feed Solids (%)", value=str(u.get("feed_solids_pct", "")), key=f"{pfx}_fs")
-                    u["evaporation_kgh"]    = st.number_input("Water Evaporation Rate (kg/h)", value=int(u.get("evaporation_kgh", 0)), step=1, key=f"{pfx}_evap")
-                    u["concentrate_kgh"]    = st.number_input("Concentrate Out (kg/h)", value=int(u.get("concentrate_kgh", 0)), step=1, key=f"{pfx}_conc")
+                    u["feed_solids_pct"]  = st.text_input("Feed Solids (%)", value=str(u.get("feed_solids_pct", "")), key=f"{pfx}_fs")
+                    u["evaporation_kgh"]  = st.number_input("Water Evaporation Rate (kg/h)", value=int(u.get("evaporation_kgh", 0)), step=1, key=f"{pfx}_evap")
+                    u["concentrate_kgh"]  = st.number_input("Concentrate Out (kg/h)", value=int(u.get("concentrate_kgh", 0)), step=1, key=f"{pfx}_conc")
                     if pfx == "ts_m":
                         u["concentrate_solids_pct"] = st.number_input("Concentrate Out (%)", value=int(u.get("concentrate_solids_pct", 40)), min_value=0, max_value=100, step=1, key=f"{pfx}_cs")
                     if pfx == "ts_a":
-                        u["product_kgh"]            = st.number_input("ATFD Product Out (kg/h)", value=int(u.get("product_kgh", 0)), step=1, key=f"{pfx}_prod")
-                        u["product_moisture_pct"]   = st.text_input("Moisture in ATFD Product (%)", value=str(u.get("product_moisture_pct", "8-10")), key=f"{pfx}_pm")
+                        u["product_kgh"]          = st.number_input("ATFD Product Out (kg/h)", value=int(u.get("product_kgh", 0)), step=1, key=f"{pfx}_prod")
+                        u["product_moisture_pct"] = st.text_input("Moisture in ATFD Product (%)", value=str(u.get("product_moisture_pct", "8-10")), key=f"{pfx}_pm")
             with c2:
                 st.markdown("**Utilities**")
-                u["steam_pressure"]         = st.text_input("Steam Pressure", value=u.get("steam_pressure", "1.5 Bar-g"), key=f"{pfx}_sp")
-                u["steam_kgh"]              = st.number_input("Steam (kg/h)", value=int(u.get("steam_kgh", 0)), step=1, key=f"{pfx}_st")
+                u["steam_pressure"]      = st.text_input("Steam Pressure", value=u.get("steam_pressure", "1.5 Bar-g"), key=f"{pfx}_sp")
+                u["steam_kgh"]           = st.number_input("Steam (kg/h)", value=int(u.get("steam_kgh", 0)), step=1, key=f"{pfx}_st")
                 if pfx == "ts_m":
-                    u["steam_economy"]      = st.number_input("Steam Economy (kg/kg)", value=float(u.get("steam_economy", 4.3)), min_value=0.0, step=0.1, format="%.2f", key=f"{pfx}_se")
-                u["power_kwh"]              = st.number_input("Power (kWh)", value=int(u.get("power_kwh", 0)), step=1, key=f"{pfx}_pw")
+                    u["steam_economy"]   = st.number_input("Steam Economy (kg/kg)", value=float(u.get("steam_economy", 4.3)), min_value=0.0, step=0.1, format="%.2f", key=f"{pfx}_se")
+                u["power_kwh"]           = st.number_input("Power (kWh)", value=int(u.get("power_kwh", 0)), step=1, key=f"{pfx}_pw")
                 cw1, cw2 = st.columns(2)
-                u["cooling_water_m3h"]      = cw1.number_input("CW (m³/h)", value=int(u.get("cooling_water_m3h", 0)), step=1, key=f"{pfx}_cw")
-                u["cooling_water_tr"]       = cw2.number_input("CW (TR)", value=int(u.get("cooling_water_tr", 0)), step=1, key=f"{pfx}_cwtr")
-                u["cooling_water_temps"]    = st.text_input("CW Temps", value=u.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key=f"{pfx}_cwt")
+                u["cooling_water_m3h"]   = cw1.number_input("CW (m³/h)", value=int(u.get("cooling_water_m3h", 0)), step=1, key=f"{pfx}_cw")
+                u["cooling_water_tr"]    = cw2.number_input("CW (TR)",   value=int(u.get("cooling_water_tr", 0)),   step=1, key=f"{pfx}_cwtr")
+                u["cooling_water_temps"] = st.text_input("CW Temps", value=u.get("cooling_water_temps", "In/Out: 32 / 38 °C"), key=f"{pfx}_cwt")
                 ca1, ca2 = st.columns(2)
-                u["compressed_air_nm3h"]    = ca1.text_input("CA (Nm³/h)", value=str(u.get("compressed_air_nm3h", "8")), key=f"{pfx}_ca")
-                u["compressed_air_pressure"]= ca2.text_input("CA Pressure", value=u.get("compressed_air_pressure", "6 Bar-g"), key=f"{pfx}_cap")
+                u["compressed_air_nm3h"]     = ca1.text_input("CA (Nm³/h)",  value=str(u.get("compressed_air_nm3h", "8")),     key=f"{pfx}_ca")
+                u["compressed_air_pressure"] = ca2.text_input("CA Pressure", value=u.get("compressed_air_pressure", "6 Bar-g"), key=f"{pfx}_cap")
 
-    _unit_expander("⚙️ Stripper System",                ts["stripper"], "ts_s", "Tray Type Column")
-    _unit_expander("⚙️ Multiple Effect Evaporator System", ts["mee"],  "ts_m", "4-Effect Forced Circulation")
-    _unit_expander("⚙️ Agitated Thin Film Dryer (ATFD)",  ts["atfd"], "ts_a", "Agitated Thin Film Dryer")
+    _unit_expander("⚙️ Stripper System",                   ts["stripper"], "ts_s", "Tray Type Column")
+    _unit_expander("⚙️ Multiple Effect Evaporator System", ts["mee"],      "ts_m", "4-Effect Forced Circulation")
+    _unit_expander("⚙️ Agitated Thin Film Dryer (ATFD)",  ts["atfd"],     "ts_a", "Agitated Thin Film Dryer")
 
     ut = d["utilities"]
     ut["stripper_steam"] = {"param": f"{ts['stripper']['steam_pressure']}, >96% dryness", "value_kgh": ts["stripper"]["steam_kgh"]}
@@ -1126,9 +1262,9 @@ with tabs[4]:
     st.divider()
     st.markdown("### Plant-Wide Totals")
     tc1, tc2, tc3 = st.columns(3)
-    tc1.metric("Total Steam",        f"{ut['total_steam_kgh']} kg/h",      help="Stripper + MEE + ATFD")
-    tc2.metric("Total Power",        f"{ut['total_power_kwh']} kWh")
-    tc3.metric("Total Cooling Water",f"{ut['total_cooling_water_m3h']} m³/h", f"{ut['total_cooling_water_tr']} TR")
+    tc1.metric("Total Steam",         f"{ut['total_steam_kgh']} kg/h", help="Stripper + MEE + ATFD")
+    tc2.metric("Total Power",         f"{ut['total_power_kwh']} kWh")
+    tc3.metric("Total Cooling Water", f"{ut['total_cooling_water_m3h']} m³/h", f"{ut['total_cooling_water_tr']} TR")
 
     st.markdown("### Overall System Operational Cost")
     cap = d["cover"].get("capacity_kld", 0)
@@ -1139,8 +1275,8 @@ with tabs[4]:
     o3.metric("Total Power",    f"{ut['total_power_kwh']} kWh")
     o4.metric("Total CW",       f"{ut['total_cooling_water_m3h']} m³/h", f"{ut['total_cooling_water_tr']} TR")
     o5, o6 = st.columns(2)
-    o5.metric("Effluent Treatment Cost",  f"₹{e['effluent_treatment_cost_inr_kl']:,.0f}/KL")
-    o6.metric("Annual Operational Cost",  f"₹{e['annual_operational_cost_inr']:,.0f}/yr")
+    o5.metric("Effluent Treatment Cost", f"₹{e['effluent_treatment_cost_inr_kl']:,.0f}/KL")
+    o6.metric("Annual Operational Cost", f"₹{e['annual_operational_cost_inr']:,.0f}/yr")
 
     with st.expander("🎯 Performance Guarantee", expanded=False):
         pg_txt = "\n".join(d.get("performance_guarantee", []))
@@ -1157,13 +1293,13 @@ with tabs[5]:
 
     _SCOPE_COLS = ["equipment", "specification", "qty", "bg_scope", "buyer_scope"]
     _INSTR_COLS = ["item", "qty", "scope"]
+    _ENGG_COLS  = ["item", "scope"]
 
     def _build_df(records: list, col_order: list) -> pd.DataFrame:
         df = pd.DataFrame(records) if records else pd.DataFrame(columns=col_order)
         for c in col_order:
             if c not in df.columns:
                 df[c] = False if c in ("bg_scope", "buyer_scope") else ""
-        # Ensure bool columns are actual booleans
         for c in ("bg_scope", "buyer_scope"):
             if c in col_order and c in df.columns:
                 df[c] = df[c].apply(
@@ -1173,18 +1309,16 @@ with tabs[5]:
 
     def _editor_records(records: list, ss_key_base: str, col_order: list):
         """
-        Stable data_editor that does NOT rebuild from records on every rerun.
-        This prevents the first-edit revert bug.
-        Cache is keyed to ss_key_base and cleared when a new offer is loaded.
+        Stable data_editor: session-state cache is source of truth.
+        Rebuilds only when _clear_scope_editor_cache() has been called
+        (i.e. a new offer was loaded). Never rebuilds during editing reruns.
         """
         ss_key = f"_df_src_{ss_key_base}"
         if ss_key not in st.session_state:
-            # First render: build from records
             st.session_state[ss_key] = _build_df(records, col_order)
         else:
             existing = st.session_state[ss_key]
             if len(existing) != len(records):
-                # Row count changed (new offer loaded) → rebuild
                 st.session_state[ss_key] = _build_df(records, col_order)
 
         edited  = st.data_editor(
@@ -1198,7 +1332,6 @@ with tabs[5]:
             } if "bg_scope" in col_order else {},
         )
         cleaned = edited.where(pd.notnull(edited), "")
-        # Keep bool columns as booleans after where() call
         for c in ("bg_scope", "buyer_scope"):
             if c in col_order and c in cleaned.columns:
                 cleaned[c] = cleaned[c].astype(bool)
@@ -1206,30 +1339,26 @@ with tabs[5]:
         return cleaned.to_dict("records")
 
     def _scope_tab_with_move(data_key: str, ss_key_base: str, col_order: list):
-        """Renders editor + ↑↓ move row buttons for a scope sub-tab."""
         records = d.get(data_key, [])
         ss_key  = f"_df_src_{ss_key_base}"
 
-        # Move buttons above the editor
         if ss_key in st.session_state and len(st.session_state[ss_key]) > 1:
             df_cur = st.session_state[ss_key]
             n = len(df_cur)
             mv_col1, mv_col2, mv_col3 = st.columns([1, 1, 6])
             sel_row = mv_col1.number_input("Row #", min_value=1, max_value=n, step=1,
                                            key=f"mv_row_{ss_key_base}", label_visibility="collapsed")
-            with mv_col1:
-                pass
             b1, b2 = mv_col2.columns(2)
             if b1.button("↑", key=f"mv_up_{ss_key_base}",
                          disabled=(sel_row <= 1), help="Move row up"):
-                idx = int(sel_row) - 1
+                idx  = int(sel_row) - 1
                 rows = df_cur.to_dict("records")
                 rows[idx - 1], rows[idx] = rows[idx], rows[idx - 1]
                 st.session_state[ss_key] = pd.DataFrame(rows).reset_index(drop=True)
                 st.rerun()
             if b2.button("↓", key=f"mv_dn_{ss_key_base}",
                          disabled=(sel_row >= n), help="Move row down"):
-                idx = int(sel_row) - 1
+                idx  = int(sel_row) - 1
                 rows = df_cur.to_dict("records")
                 rows[idx], rows[idx + 1] = rows[idx + 1], rows[idx]
                 st.session_state[ss_key] = pd.DataFrame(rows).reset_index(drop=True)
@@ -1237,9 +1366,6 @@ with tabs[5]:
             mv_col3.caption(f"Select row number and use ↑ ↓ to reorder  ({n} rows total)")
 
         d[data_key] = _editor_records(records, ss_key_base, col_order)
-
-    
-    _ENGG_COLS = ["item", "scope"]
 
     sub = st.tabs(["Stripper", "MEE", "ATFD", "Instruments", "ENGG & EXE"])
     with sub[0]:
@@ -1306,6 +1432,8 @@ with tabs[7]:
     new_cb = st.text_area("Commissioning basis bullets", value=cb_txt,
                           height=400, key="og_cb")
     d["commissioning_basis"] = [l.strip() for l in new_cb.split("\n") if l.strip()]
+
+
 # ══════════════════════════════════════════════════════════════════════
 # TAB 9 — Pricing & Terms
 # ══════════════════════════════════════════════════════════════════════
@@ -1315,24 +1443,14 @@ with tabs[8]:
 
     st.markdown("### Price Summary")
     p1, p2, p3 = st.columns(3)
-    pr["option1_moc"] = p1.text_input(
-        "MOC", value=pr.get("option1_moc", ""), key="og_p1m")
-    pr["option1_equipment_price_cr"] = p2.number_input(
-        "Equipment (Cr)", value=float(pr.get("option1_equipment_price_cr", 0)),
-        step=0.01, key="og_p1e")
-    pr["option1_install_lakhs"] = p3.number_input(
-        "Installation (Lakhs)", value=float(pr.get("option1_install_lakhs", 0)),
-        step=1.0, key="og_p1i")
+    pr["option1_moc"]                  = p1.text_input("MOC",                  value=pr.get("option1_moc", ""),                                        key="og_p1m")
+    pr["option1_equipment_price_cr"]   = p2.number_input("Equipment (Cr)",     value=float(pr.get("option1_equipment_price_cr", 0)),   step=0.01,       key="og_p1e")
+    pr["option1_install_lakhs"]        = p3.number_input("Installation (Lakhs)",value=float(pr.get("option1_install_lakhs", 0)),        step=1.0,       key="og_p1i")
 
     p4, p5, p6 = st.columns(3)
-    pr["option1_ms_structure_lakhs"] = p4.number_input(
-        "MS Structure (Lakhs)", value=float(pr.get("option1_ms_structure_lakhs", 0)),
-        step=1.0, key="og_p1ms")
-    pr["option1_total_cr"] = p5.number_input(
-        "Total (Cr)", value=float(pr.get("option1_total_cr", 0)),
-        step=0.01, key="og_p1t")
-    pr["location_dap"] = p6.text_input(
-        "Location DAP", value=pr.get("location_dap", ""), key="og_ploc")
+    pr["option1_ms_structure_lakhs"]   = p4.number_input("MS Structure (Lakhs)",value=float(pr.get("option1_ms_structure_lakhs", 0)),  step=1.0,        key="og_p1ms")
+    pr["option1_total_cr"]             = p5.number_input("Total (Cr)",         value=float(pr.get("option1_total_cr", 0)),             step=0.01,       key="og_p1t")
+    pr["location_dap"]                 = p6.text_input("Location DAP",         value=pr.get("location_dap", ""),                                        key="og_ploc")
 
     pr["price_validity_days"] = st.number_input(
         "Price Validity (Days)", value=int(pr.get("price_validity_days", 15)),
@@ -1352,22 +1470,53 @@ with tabs[8]:
     st.markdown("**Delivery Timeline**")
     tl = pr.get("delivery_timeline", {})
     tl1, tl2 = st.columns(2)
-    tl["supply_option1"] = tl1.text_input(
-        "Supply (DAP)", value=tl.get("supply_option1", ""), key="og_tl_s1")
-    tl["installation"] = tl2.text_input(
-        "Installation", value=tl.get("installation", ""), key="og_tl_inst")
+    tl["supply_option1"] = tl1.text_input("Supply (DAP)",  value=tl.get("supply_option1", ""), key="og_tl_s1")
+    tl["installation"]   = tl2.text_input("Installation",  value=tl.get("installation", ""),   key="og_tl_inst")
     tl3, tl4 = st.columns(2)
-    tl["commissioning"] = tl3.text_input(
-        "Commissioning", value=tl.get("commissioning", ""), key="og_tl_comm")
+    tl["commissioning"]  = tl3.text_input("Commissioning", value=tl.get("commissioning", ""),  key="og_tl_comm")
     tl4.empty()
     pr["delivery_timeline"] = tl
-    
 
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 10 — Generate
+# TAB 10 — General Terms & Conditions  ← NEW
 # ══════════════════════════════════════════════════════════════════════
 with tabs[9]:
+    st.subheader("PART XI — General Terms & Conditions")
+    st.caption(
+        "Full legal terms rendered in the generated offer as Part XI. "
+        "Clause headings (ALL-CAPS lines ending with ':') become bold sub-headings "
+        "in the DOCX. Edit freely — changes are saved with the offer."
+    )
+    st.info(
+        "💡 Each ALL-CAPS line (e.g. `BUYER'S RESPONSIBILITIES:`) is rendered as a "
+        "bold clause heading in the DOCX. Body text follows as normal paragraphs."
+    )
+
+    d["general_terms"] = st.text_area(
+        "General Terms & Conditions text",
+        value=d.get("general_terms", _DEFAULT_GENERAL_TERMS),
+        height=700,
+        key=f"og_gtc_{fv}",
+        help="Edit the standard terms as required for each offer.",
+    )
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("↩️ Reset to B&G Standard T&C", key="og_gtc_reset"):
+            d["general_terms"] = _DEFAULT_GENERAL_TERMS
+            st.success("✅ Reset to standard B&G terms. Click 💾 Save Draft to preserve.")
+            st.rerun()
+    with col_b:
+        word_count = len(d.get("general_terms", "").split())
+        char_count = len(d.get("general_terms", ""))
+        st.caption(f"~{word_count:,} words · {char_count:,} chars")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB 11 — Generate
+# ══════════════════════════════════════════════════════════════════════
+with tabs[10]:
     st.subheader("🚀 Generate Offer DOCX")
     m1, m2, m3 = st.columns(3)
     m1.metric("Client",   d["cover"].get("submitted_to", "—"))
@@ -1432,9 +1581,9 @@ with tabs[9]:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 11 — Import / Bridge
+# TAB 12 — Import / Bridge
 # ══════════════════════════════════════════════════════════════════════
-with tabs[10]:
+with tabs[11]:
     st.subheader("📥 Templates & Process Design Bridge")
 
     with st.expander("📋 Excel Form Template", expanded=True):
@@ -1468,9 +1617,10 @@ with tabs[10]:
                                           technical_specs=new_data.get("technical_specs"),
                                           utilities=new_data.get("utilities"),
                                           capacity_kld=new_data["cover"].get("capacity_kld"))
-                        st.session_state.og_offer_data    = new_data
-                        st.session_state.og_linked_pd_id  = chosen_proj["id"]
-                        st.session_state.og_form_version += 1
+                        st.session_state.og_offer_data       = new_data
+                        st.session_state.og_linked_pd_id     = chosen_proj["id"]
+                        st.session_state.og_form_version    += 1
+                        st.session_state.og_mcc_upgrade_done = False  # allow one-shot upgrade
                         _clear_scope_editor_cache()
                         st.success("✅ Imported from process design project")
                         for line in summarize_bridge_result(process_json, new_data):
@@ -1490,8 +1640,9 @@ with tabs[10]:
                                       technical_specs=new_data.get("technical_specs"),
                                       utilities=new_data.get("utilities"),
                                       capacity_kld=new_data["cover"].get("capacity_kld"))
-                    st.session_state.og_offer_data    = new_data
-                    st.session_state.og_form_version += 1
+                    st.session_state.og_offer_data       = new_data
+                    st.session_state.og_form_version    += 1
+                    st.session_state.og_mcc_upgrade_done = False  # allow one-shot upgrade
                     _clear_scope_editor_cache()
                     st.success("✅ Imported from JSON")
                     st.rerun()
