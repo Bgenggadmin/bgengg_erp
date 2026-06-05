@@ -395,6 +395,26 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     ]
     _make_table(doc, plc_rows, col_widths=[6.7], title_row="PLC AND SCADA SYSTEM DETAILS")
 
+    # ── III. Engineering & Executive Services ──
+    engg_items = data.get("engg_services", [])
+    if engg_items:
+        _add_heading(doc, "III. Engineering & Executive Services", level=2)
+        engg_rows = [
+            [i.get("item", ""), i.get("scope", "")]
+            for i in engg_items
+        ]
+        _make_table(
+            doc, engg_rows,
+            header=["Engineering / Service / Documentation", "Scope"],
+            col_widths=[5.2, 1.5],
+        )
+        _add_paragraph(
+            doc,
+            "Note: Any Documentation and Services other than above are not considered "
+            "and shall be chargeable if required.",
+            size=9, color_hex="666666",
+        )
+
     # ============================================
     # PART VII: BATTERY LIMITS
     # ============================================
