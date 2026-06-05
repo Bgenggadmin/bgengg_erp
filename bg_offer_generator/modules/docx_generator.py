@@ -11,6 +11,11 @@ Updated May 2026:
   - Part IV now includes "Overall System Operational Cost" block
   - Part V rewritten with per-unit tables (Stripper / MEE / ATFD)
     matching the offer template (Feed Parameters + 3 system tables)
+
+FIX Jun 2026:
+  - _add_general_terms now reads data["general_terms"] instead of
+    hardcoded text. ALL-CAPS lines (ending with ':') become bold
+    sub-headings; remaining lines are normal paragraphs.
 """
 import io
 from pathlib import Path
@@ -223,7 +228,6 @@ def _fmt_inr_lakh(value_inr):
         return f"{'-' if n < 0 else ''}{s}"
     last3 = s[-3:]
     rest = s[:-3]
-    # Group rest by twos from the right
     groups = []
     while len(rest) > 2:
         groups.insert(0, rest[-2:])
@@ -357,14 +361,12 @@ def generate_offer_docx(data: dict, logo_path: str = None,
 
     _add_heading(doc, "II. Instruments & Automation Items", level=2)
 
-    # ── Instruments table with section grouping (matches original offer format) ──
     instr_data = data.get("instruments", [])
     inst_rows = [[i.get("item", ""), i.get("qty", ""), i.get("scope", "")]
                  for i in instr_data]
     _make_table(doc, inst_rows, header=["Item Description", "Quantity", "Scope"],
                 col_widths=[3.8, 1.2, 1.5])
 
-    # ── MCC Panel Details (separate specification table, matches pg 17-18) ──
     _add_paragraph(doc, "", size=4)
     mcc_rows = [
         ["MCC Panel: Non-Compartmental Type, Floor mounting, Ambient temperature"],
@@ -376,11 +378,8 @@ def generate_offer_docx(data: dict, logo_path: str = None,
         ["Feeders will be provided with termination with field power and control cable."],
         ["Mains incoming section shall be provided with Energy Meter (kWh), Voltmeter & Ammeter."],
     ]
-    _make_table(doc, mcc_rows,
-                col_widths=[6.7],
-                title_row="MCC PANEL DETAILS")
+    _make_table(doc, mcc_rows, col_widths=[6.7], title_row="MCC PANEL DETAILS")
 
-    # ── PLC & SCADA System Details (separate table, matches pg 18-19) ──
     _add_paragraph(doc, "", size=4)
     plc_rows = [
         ["Plant shall be provided with PLC & SCADA based automation and control system."],
@@ -394,9 +393,8 @@ def generate_offer_docx(data: dict, logo_path: str = None,
         ["To be installed in Non-Flame proof area with proper ventilation, louvers, lightening."],
         ["Note: Parameters monitored/controlled: Feed Flow, Steam Flow, Levels, Steam Pressure, CW in/out, Valve on/off, Temperatures, Pressures etc. B&G reserves right to choose different quantities, type, make, granted that system functionality shall remain same or better."],
     ]
-    _make_table(doc, plc_rows,
-                col_widths=[6.7],
-                title_row="PLC AND SCADA SYSTEM DETAILS")
+    _make_table(doc, plc_rows, col_widths=[6.7], title_row="PLC AND SCADA SYSTEM DETAILS")
+
     # ============================================
     # PART VII: BATTERY LIMITS
     # ============================================
@@ -421,7 +419,6 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     # PART IX: BASIS OF COMMISSIONING
     # ============================================
     _add_section_title(doc, "PART – IX", "BASIS OF COMMISSIONING / TAKE-OVER")
-    
     for b in data.get("commissioning_basis", []):
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(b).font.size = Pt(10)
@@ -482,7 +479,7 @@ def generate_offer_docx(data: dict, logo_path: str = None,
     # PART XI: GENERAL TERMS & CONDITIONS
     # ============================================
     _add_section_title(doc, "PART – XI", "GENERAL TERMS & CONDITIONS")
-    _add_general_terms(doc)
+    _add_general_terms(doc, data)   # ← now receives data; renders data["general_terms"]
 
     # Signature
     doc.add_paragraph()
@@ -508,7 +505,6 @@ def _build_part_iv_economics(doc, data: dict):
     ut = data.get("utilities", {})
     cap = data["cover"].get("capacity_kld", 0)
 
-    # ---- Overall System Operational Cost table ----
     _add_heading(doc, "Overall System Operational Cost", level=3)
     op_rows = [
         ["Plant Capacity",         "KLD",      _fmt_int(cap)],
@@ -533,7 +529,6 @@ def _build_part_iv_economics(doc, data: dict):
 
     _add_paragraph(doc, "", size=6)
 
-    # ---- BG ECOX-ZLD System Advantage table ----
     _add_heading(doc, "BG ECOX-ZLD System Advantage", level=3)
     econ_data = [
         ["MEE Steam Consumption",
@@ -564,12 +559,11 @@ def _build_part_iv_economics(doc, data: dict):
 
 
 # ---------------------------------------------------------------------
-# PART V — Technical Details & Utilities  (offer-style per-unit tables)
+# PART V — Technical Details & Utilities
 # ---------------------------------------------------------------------
 def _build_part_v_technical(doc, data: dict):
     _add_section_title(doc, "PART – V", "TECHNICAL DETAILS & UTILITIES")
 
-    # ---- Feed Parameters ----
     fp = data["feed_parameters"]
     feed_rows = [
         ["1",  "Feed / Capacity",            "KLD",      _fmt_int(fp["capacity_kld"])],
@@ -592,7 +586,6 @@ def _build_part_v_technical(doc, data: dict):
     _add_paragraph(doc, "Note: The above parameters are considered as per customer suggestion during discussions.",
                    size=9, color_hex="666666")
 
-    # ---- Stripper System ----
     s = data["technical_specs"]["stripper"]
     stripper_rows = [
         ["Type",                                         "-",     s.get("type", "-")],
@@ -613,7 +606,6 @@ def _build_part_v_technical(doc, data: dict):
                  col_widths=[3.5, 1.0, 2.2],
                  title_row="STRIPPER SYSTEM")
 
-    # ---- MEE System ----
     m = data["technical_specs"]["mee"]
     mee_rows = [
         ["Type",                                          "-",     f"{m.get('type', '4-Effects')}, {m.get('configuration', 'Forced Circulation Type')}"],
@@ -636,7 +628,6 @@ def _build_part_v_technical(doc, data: dict):
                  col_widths=[3.5, 1.0, 2.2],
                  title_row="MULTIPLE EFFECT EVAPORATOR SYSTEM")
 
-    # ---- ATFD System ----
     a = data["technical_specs"]["atfd"]
     atfd_rows = [
         ["Feed Inlet (MEE Concentrate)",                  "Kg/h",  f"{_fmt_int(a.get('feed_kgh', 0))} (Designed for Max flow)"],
@@ -657,7 +648,6 @@ def _build_part_v_technical(doc, data: dict):
                  col_widths=[3.5, 1.0, 2.2],
                  title_row="AGITATED THIN FILM DRYER (ATFD)")
 
-    # ---- Performance Guarantee ----
     _add_heading(doc, "Performance Guarantee Parameters", level=3)
     for bullet in data.get("performance_guarantee", []):
         p = doc.add_paragraph(style='List Bullet')
@@ -680,8 +670,7 @@ def _build_part_v_technical(doc, data: dict):
 
 
 # ---------------------------------------------------------------------
-# Scope tables, cover page, cover letter, header/footer, general terms
-# (unchanged from prior version)
+# Scope tables, cover page, cover letter, header/footer
 # ---------------------------------------------------------------------
 def _make_scope_table(doc, scope_items: list):
     rows = [[i.get("equipment", ""), i.get("specification", ""), i.get("qty", ""),
@@ -793,33 +782,52 @@ def _add_header_footer(doc, data: dict, logo_path: str = None):
     run.font.color.rgb = RGBColor.from_string("888888")
 
 
-def _add_general_terms(doc):
-    terms = [
-        ("Buyer's Responsibilities",
-         "The Buyer shall supply all items and materials not specified as the responsibility of the Seller but which are necessary for the Seller to comply with its obligations under the contract. The Buyer shall provide access to the site suitable for the transport of the Equipment. The Seller shall not commence the Installation work unless the civil works are completed by Buyer and facilities like power, water and other essential utilities are made available at the Site by the Buyer. The Buyer shall be responsible for obtaining all licenses, permits, and approvals necessary."),
-        ("Contract Price",
-         "The contract price quoted is Ex Works and exclusive of packing and forwarding charges, freight and insurance, taxes, duties and/or other levies or charges unless otherwise stated. All taxes, duties, levies and charges shall be billed at the rates in force at the time of dispatch."),
-        ("Statutory Variations",
-         "Our prices are firm but subject to statutory variations. Any increase in Excise Duty, taxes etc. at the time of delivery shall be charged extra to your account."),
-        ("Delivery",
-         "Unless otherwise stated, all supplies of the Equipment shall be Ex-works at Seller's works at Hyderabad as per Incoterms 2020. Time of delivery shall start from receipt of final Purchase Order and receipt of downpayment."),
-        ("Transportation and Insurance",
-         "The Seller may arrange for transportation on 'freight to pay' or 'freight paid' basis. Buyer shall arrange insurance on the Equipment from the time the goods leave the Seller's works until commissioning at Buyer's factory site."),
-        ("Mechanical Completion",
-         "As soon as the Equipment is substantially erected, the Buyer shall notify in writing to the Seller. Upon completion of demonstration, both parties shall sign the Mechanical Completion Certificate."),
-        ("Mechanical Warranty",
-         "Each item of Equipment shall be free from defects in design, materials and workmanship for a period of 12 months from date of mechanical completion or 18 months from date of last major supply, whichever is earlier. This warranty is based on normal operation."),
-        ("Force Majeure",
-         "Force Majeure shall include but not be restricted to Acts of God, action of government, strikes, floods, fires, earthquakes, explosions, accidents, epidemics, civil commotions, war, riots, and any factor beyond reasonable control. If Force Majeure affects performance exceeding 3 months, either party may terminate."),
-        ("Terms of Payment",
-         "In case of delayed payment, Seller shall be entitled to interest at 15% or as agreed. In event of non-compliance with payment terms, Seller may enforce lien on Equipment already supplied and suspend performance."),
-        ("Liability",
-         "Seller shall not be liable for loss of use, profits, revenue, contracts, or indirect or consequential losses. Maximum cumulative liability shall not exceed 5% of Contract Price."),
-        ("Intellectual Property Rights",
-         "Seller shall provide back-up support to defend any lawsuits for alleged infringement of trademark or intellectual property rights with respect to this Offer."),
-        ("Confidentiality",
-         "All data, information, designs, drawings, process know-how pertaining to the PLANT shall be kept confidential by Buyer. Buyer shall not disclose such information to third parties without written permission from Seller."),
-    ]
-    for title, body in terms:
-        _add_heading(doc, title, level=3)
-        _add_paragraph(doc, body, size=10)
+# ---------------------------------------------------------------------
+# PART XI — General Terms & Conditions
+#
+# FIX: Previously this function had hardcoded abbreviated T&C text
+# and ignored data["general_terms"] entirely.
+#
+# Now it reads data["general_terms"] (the full editable text from Tab ⑩)
+# and renders it with smart heading detection:
+#   - A line that is ALL-CAPS and ends with ':' → bold clause heading (level 3)
+#   - Empty lines → spacing only (no blank paragraphs)
+#   - Everything else → normal body paragraph at 10pt
+# ---------------------------------------------------------------------
+def _add_general_terms(doc, data: dict):
+    """
+    Render Part XI from data["general_terms"].
+
+    Formatting rules applied to each line:
+      • ALL-CAPS line ending with ':' → bold sub-heading (_add_heading level 3)
+      • Blank line                    → skip (spacing comes from paragraph_format)
+      • Any other line                → 10pt body paragraph
+    """
+    raw_text = (data.get("general_terms") or "").strip()
+
+    if not raw_text:
+        _add_paragraph(
+            doc,
+            "General terms and conditions not specified. Please add them in Tab ⑩ Gen. T&C.",
+            size=10, color_hex="888888"
+        )
+        return
+
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+
+        if not stripped:
+            # Skip blank lines — paragraph spacing provides visual separation
+            continue
+
+        # Detect clause heading: ALL-CAPS (allowing spaces, digits, &, /, comma,
+        # apostrophe, parentheses) and ends with ':'
+        is_heading = (
+            stripped.endswith(":")
+            and stripped == stripped.upper()
+        )
+
+        if is_heading:
+            _add_heading(doc, stripped, level=3)
+        else:
+            _add_paragraph(doc, stripped, size=10)
