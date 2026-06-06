@@ -85,9 +85,8 @@ def get_latest_work_log(employee_name, today_str):
     except Exception:
         return None
 
-@st.cache_data(ttl=60)
 def get_missed_punchouts(employee_name, today_str):
-    """Attendance rows with punch_in but no punch_out, on days before today."""
+    """Attendance rows with punch_in but no punch_out, on days before today. Not cached — must be live."""
     try:
         res = conn.table("attendance_logs").select("*") \
             .eq("employee_name", employee_name) \
@@ -98,9 +97,8 @@ def get_missed_punchouts(employee_name, today_str):
     except Exception:
         return []
 
-@st.cache_data(ttl=60)
 def get_all_missed_punchouts(today_str):
-    """Admin view — all staff with open punch-ins from any previous day."""
+    """Admin view — all staff with open punch-ins from any previous day. Not cached — must reflect corrections instantly."""
     try:
         res = conn.table("attendance_logs").select("*") \
             .lt("work_date", today_str) \
