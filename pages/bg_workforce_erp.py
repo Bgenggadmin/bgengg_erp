@@ -30,6 +30,25 @@ def get_ampm_label(slot_str):
 def get_now_ist():
     return datetime.now(IST)
 
+def safe_to_ist(val, fmt='%d-%m-%Y %I:%M %p'):
+    """Safely convert any timestamp format to IST string.
+    Handles: UTC with tz, IST with tz, naive (assumed IST for old data), None/NaT.
+    Replaces the utc=True approach which breaks naive timestamps stored as IST.
+    """
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    try:
+        dt = pd.to_datetime(val)
+        if pd.isna(dt):
+            return "—"
+        if dt.tzinfo is None:
+            dt = IST.localize(dt)   # naive → old data written without tz, assume IST
+        else:
+            dt = dt.tz_convert(IST) # tz-aware → convert to IST correctly
+        return dt.strftime(fmt)
+    except Exception:
+        return "—"
+
 def safe_db_write(fn, success_msg=None, error_prefix="DB Error"):
     try:
         fn()
@@ -794,12 +813,7 @@ with tabs[1]:
             time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
             for col in time_cols:
                 if col in df_hist.columns:
-                    converted = pd.to_datetime(df_hist[col], errors='coerce', utc=True) \
-                                  .dt.tz_convert(IST)
-                    df_hist[col] = converted.apply(
-                        lambda t: t.strftime('%d-%m-%Y %I:%M %p') if pd.notna(t) else "—"
-                    )
-            df_hist = df_hist.replace({None: "—", "NaT": "—", "None": "—"}).fillna("—")
+                    df_hist[col] = df_hist[col].apply(safe_to_ist)
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
             st.download_button(
                 label=f"📥 Download {hist_type} (CSV)",
@@ -1281,21 +1295,13 @@ with tabs[4]:
             if s_name != "All Staff":
                 df_v = df_v[df_v['employee_name'] == s_name]
 
-            # Convert timestamp columns to IST — nulls become "—" not "None"/"NaT"
+            # Convert all timestamp columns safely — handles naive, UTC, and IST formats
             time_cols = ['punch_in', 'punch_out', 'exit_time', 'return_time', 'created_at']
             for col in time_cols:
                 if col in df_v.columns:
-                    converted = pd.to_datetime(df_v[col], errors='coerce', utc=True) \
-                                  .dt.tz_convert(IST)
-                    df_v[col] = converted.apply(
-                        lambda t: t.strftime('%d-%m-%Y %I:%M %p') if pd.notna(t) else "—"
-                    )
+                    df_v[col] = df_v[col].apply(safe_to_ist)
 
-            # Replace any remaining None / NaN / "NaT" with a clean dash
-            df_v = df_v.replace({None: "—", "NaT": "—", "None": "—"})
-            df_v = df_v.fillna("—")
-
-            # For Attendance: show status clearly based on punch_out presence
+            # For Attendance: label missing punch-out clearly
             if l_type == "Attendance" and 'punch_out' in df_v.columns:
                 df_v['punch_out'] = df_v['punch_out'].apply(
                     lambda v: v if v != "—" else "Not punched out"
