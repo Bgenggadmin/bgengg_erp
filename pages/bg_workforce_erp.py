@@ -1426,10 +1426,43 @@ with tabs[4]:
     # --- Missed Punch-Outs ---
     with admin_tabs[4]:
         st.subheader("🚨 Missed Punch-Outs")
-        all_missed = get_all_missed_punchouts(str(date.today()))
+
+        # ── TODAY's staff still punched in (live alert after 5 PM) ──
+        today_str_po = str(date.today())
+        now_ist = get_now_ist()
+        try:
+            today_open = conn.table("attendance_logs").select("*") \
+                .eq("work_date", today_str_po) \
+                .is_("punch_out", "null").execute().data or []
+        except Exception:
+            today_open = []
+
+        if today_open and now_ist.hour >= 17:
+            st.warning(
+                f"⚠️ **{len(today_open)} staff still punched in today** "
+                f"with no punch-out. Current time: {now_ist.strftime('%I:%M %p')}. "
+                f"Remind them to punch out before leaving."
+            )
+            with st.expander("👀 View today's open shifts", expanded=True):
+                for t in today_open:
+                    pi = pd.to_datetime(t['punch_in']).tz_convert(IST).strftime('%I:%M %p') \
+                        if t.get('punch_in') else "—"
+                    elapsed = int((now_ist - pd.to_datetime(t['punch_in']).tz_convert(IST))
+                                  .total_seconds() // 60) if t.get('punch_in') else 0
+                    st.markdown(
+                        f"<div style='padding:6px 12px; margin-bottom:4px; "
+                        f"border-left:3px solid #ffc107; background:#fff9e6; border-radius:4px;'>"
+                        f"<b>{t['employee_name']}</b> — punched in at {pi} "
+                        f"({elapsed//60}h {elapsed%60}m ago)</div>",
+                        unsafe_allow_html=True
+                    )
+            st.divider()
+
+        # ── PREVIOUS DAYS missed punch-outs ──────────────────────
+        all_missed = get_all_missed_punchouts(today_str_po)
 
         if all_missed:
-            st.error(f"**{len(all_missed)} open shift(s)** with no punch-out recorded across all staff.")
+            st.error(f"**{len(all_missed)} open shift(s)** from previous days with no punch-out recorded.")
             st.caption("Use the correction tool below to set the punch-out time for any affected record.")
 
             for m in all_missed:
@@ -1441,8 +1474,9 @@ with tabs[4]:
                     mc1.markdown(f"**{m['employee_name']}**")
                     mc2.markdown(f"📅 `{m['work_date']}` &nbsp; Punched in: **{punch_in_str}**")
 
-                    # Manual punch-out correction form
                     mid = m['id']
+                    # FIX: capture punch_in_ist by value — loop variable would be stale otherwise
+                    pi_ist = punch_in_ist
                     with mc3:
                         with st.form(key=f"fix_po_{mid}"):
                             fix_time = st.time_input(
@@ -1451,26 +1485,27 @@ with tabs[4]:
                                 key=f"fix_t_{mid}"
                             )
                             if st.form_submit_button("🔧 Apply Correction"):
-                                # Combine the work_date with the corrected time in IST
                                 corrected_dt = IST.localize(
                                     datetime.combine(
                                         date.fromisoformat(m['work_date']), fix_time
                                     )
                                 )
+                                is_short_corrected = (
+                                    (corrected_dt - pi_ist).total_seconds() < 30600
+                                ) if pi_ist else False
                                 safe_db_write(
-                                    lambda mid=mid, corrected_dt=corrected_dt: conn.table("attendance_logs")
-                                        .update({
-                                            "punch_out": corrected_dt.isoformat(),
-                                            "short_shift": (corrected_dt - punch_in_ist).total_seconds() < 30600
-                                        })
-                                        .eq("id", mid).execute(),
+                                    lambda mid=mid, cdt=corrected_dt, isc=is_short_corrected:
+                                        conn.table("attendance_logs").update({
+                                            "punch_out": cdt.isoformat(),
+                                            "short_shift": isc
+                                        }).eq("id", mid).execute(),
                                     success_msg="✅ Punch-out corrected.",
                                     error_prefix="Correction Error"
                                 )
                                 st.cache_data.clear()
                                 st.rerun()
         else:
-            st.success("✅ No missed punch-outs — all shifts are properly closed.")
+            st.success("✅ No missed punch-outs from previous days — all historical shifts are closed.")
 
     # --- Access Keys ---
     with admin_tabs[5]:
@@ -1481,10 +1516,9 @@ with tabs[4]:
             if st.form_submit_button("Update Access Key"):
                 if new_key:
                     safe_db_write(
-                        lambda: conn.table("employee_auth").upsert(
-                            {"employee_name": target_emp, "access_key": new_key},
-                            on_conflict="employee_name"
-                        ).execute(),
+                        lambda: conn.table("employee_auth").upsert({
+                            "employee_name": target_emp, "access_key": new_key
+                        }).execute(),
                         success_msg=f"✅ Key updated for {target_emp}!",
                         error_prefix="Key Update Error"
                     )
