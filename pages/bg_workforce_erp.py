@@ -534,39 +534,18 @@ with tabs[0]:
                         still_needed = REQUIRED_MINS - elapsed_mins
                         st.warning(
                             f"⏳ Only **{elapsed_mins // 60}h {elapsed_mins % 60}m** logged. "
-                            f"Full shift needs **8h 30m** — {still_needed // 60}h {still_needed % 60}m remaining."
+                            f"Full shift needs **8h 30m** — {still_needed // 60}h {still_needed % 60}m remaining. "
+                            f"Short shift will be recorded and visible to HR."
                         )
 
                     st.markdown("**Productivity Rating**")
                     work_sat = st.feedback("stars", key="prod_stars_fb")
 
-                    # FIX: Persist checkbox acknowledgement in session_state so it
-                    # survives the rerun that happens when the checkbox is ticked.
-                    # Previously the checkbox reset to False on every rerun, making
-                    # the button permanently disabled for short shifts.
-                    if short_shift:
-                        if not st.session_state.get("short_shift_ack"):
-                            st.checkbox(
-                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
-                                key="short_shift_ack"
-                            )
-                        else:
-                            st.checkbox(
-                                "⚠️ I understand I am punching out before completing the required 8h 30m shift.",
-                                key="short_shift_ack",
-                                value=True
-                            )
-                        allow_punchout = bool(st.session_state.get("short_shift_ack", False))
-                    else:
-                        allow_punchout = True
+                    # Capture variables before button — no disabled logic
+                    rec_id   = log_data['id']
+                    is_short = short_shift
 
-                    # FIX: Capture all closure variables explicitly to avoid
-                    # stale reference bugs in the lambda
-                    rec_id     = log_data['id']
-                    is_short   = short_shift
-
-                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary",
-                                 disabled=not allow_punchout):
+                    if st.button("🏁 PUNCH OUT", use_container_width=True, type="primary"):
                         safe_work_sat = work_sat if work_sat is not None else 0
                         safe_db_write(
                             lambda rid=rec_id, ss=is_short, ws=safe_work_sat:
@@ -577,7 +556,6 @@ with tabs[0]:
                                 }).eq("id", rid).execute(),
                             error_prefix="Punch Out Error"
                         )
-                        # Clear short shift ack so it doesn't bleed into next session
                         st.session_state.pop("short_shift_ack", None)
                         st.cache_data.clear()
                         st.rerun()
