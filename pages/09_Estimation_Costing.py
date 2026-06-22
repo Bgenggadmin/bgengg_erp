@@ -311,11 +311,81 @@ def geom_limpet_coil(shell_id_mm, shell_thk_mm, shell_ht_mm,
 
     return round(wt_per_m, 4), round(total_wt, 3), round(total_length_m, 3)
 
+def dish_depth_mm(shell_id_mm, crown_radius_mm=None, knuckle_frac=0.20, straight_flange_mm=0.0):
+    """
+    Inside depth of a torispherical dish end (DOD), from the shell ID.
+    Defaults: crown radius L = ID, knuckle r = 0.20·ID.
+
+        DOD = L − √[(L − ID/2)·(L + ID/2 − 2·r)]
+
+    With L = ID, r = 0.20·ID  →  DOD ≈ 0.258 × ID.
+    """
+    ID = float(shell_id_mm)
+    L  = float(crown_radius_mm) if crown_radius_mm else ID
+    r  = knuckle_frac * ID
+    dod = L - math.sqrt((L - ID / 2.0) * (L + ID / 2.0 - 2.0 * r))
+    return round(dod + straight_flange_mm, 1)
+
+
+def dish_developed_radius_mm(shell_id_mm, knuckle_frac=0.20):
+    """
+    Developed (flat-pattern) radius of the dish surface — the meridional arc
+    from pole to outer edge, modelled as a spherical cap of depth dish_depth_mm().
+    This is the surface the dish limpet is laid onto, so coil length grows with
+    diameter AND depth (deeper dish ⇒ longer arc ⇒ more pipe).
+    """
+    a = float(shell_id_mm) / 2.0
+    h = dish_depth_mm(shell_id_mm, knuckle_frac=knuckle_frac)
+    if h <= 0:
+        return round(a, 1)
+    R_s   = (a * a + h * h) / (2.0 * h)        # equivalent sphere radius
+    theta = math.asin(min(a / R_s, 1.0))       # half-angle to edge
+    return round(R_s * theta, 1)
+
+
+def geom_limpet_shell(shell_id_mm, shell_thk_mm, shell_ht_mm,
+                      pipe_od_mm, pipe_thk_mm, pitch_mm,
+                      density=8000, scrap=0.10):
+    """
+    Half-pipe limpet (continuous strip coil from vendor) on the cylindrical
+    shell. Weighed as a HALF-pipe section, since it is formed from strip.
+    Returns: (wt_per_m, total_wt_kg, length_m)
+    """
+    shell_od_mm   = shell_id_mm + 2.0 * shell_thk_mm
+    coil_circ_m   = PI * _m(shell_od_mm + pipe_od_mm)
+    n_turns       = _m(shell_ht_mm) / _m(pitch_mm) if pitch_mm > 0 else 0
+    length_m      = n_turns * coil_circ_m
+    mid_r_m       = (_m(pipe_od_mm) - _m(pipe_thk_mm)) / 2.0
+    half_wt_per_m = PI * mid_r_m * _m(pipe_thk_mm) * density   # half of full round pipe
+    total_wt      = half_wt_per_m * length_m * (1 + scrap)
+    return round(half_wt_per_m, 4), round(total_wt, 3), round(length_m, 3)
+
+
+def geom_limpet_dish(shell_id_mm, pipe_od_mm, pipe_thk_mm, pitch_mm,
+                     coverage_frac=0.85, knuckle_frac=0.20,
+                     density=8000, scrap=0.33):
+    """
+    Limpet on the bottom dish — full round pipe bought and cut by hand to suit
+    the dish radius. Weighed as FULL round pipe; ~25% of the purchased pipe is
+    cut off as offcut (≈ 33% on applied length → default scrap = 33%).
+
+    Length laid on the developed dish surface (dish_developed_radius_mm, driven
+    by dish depth → diameter + 20% knuckle):  L = π·R_out² / pitch.
+    Returns: (wt_per_m, total_wt_kg, length_m)
+    """
+    R_dev_m  = _m(dish_developed_radius_mm(shell_id_mm, knuckle_frac))
+    R_out_m  = R_dev_m * coverage_frac
+    p_m      = _m(pitch_mm)
+    length_m = PI * (R_out_m ** 2) / p_m if p_m > 0 else 0.0
+    mid_r_m  = (_m(pipe_od_mm) - _m(pipe_thk_mm)) / 2.0
+    full_wt_per_m = PI * 2 * mid_r_m * _m(pipe_thk_mm) * density   # full round pipe
+    total_wt = full_wt_per_m * length_m * (1 + scrap)
+    return round(full_wt_per_m, 4), round(total_wt, 3), round(length_m, 3)
 # Default scrap % per part type
 DEFAULT_SCRAP = {
     "shell": 5.0, "dish": 15.0, "annular": 5.0, "solid": 15.0,
     "flat": 5.0, "stiff": 5.0, "cone": 5.0, "rect": 5.0, "tube": 5.0,
-    "limpet": 10.0,
+    "limpet": 10.0,"limpet_shell": 10.0, "limpet_dish": 33.0,
 }
 
 PART_TYPES = {
@@ -378,6 +448,26 @@ PART_TYPES = {
         "fn": "limpet",
         "has_checkbox": True,
     },
+    "Limpet coil — Shell (half-pipe on shell)": {
+        "fields": [
+            ("shell_id_mm",   "Shell ID (mm)"),
+            ("shell_thk_mm",  "Shell Thickness (mm)"),
+            ("shell_ht_mm",   "Shell Height (mm)"),
+            ("pipe_od_mm",    "Half-pipe OD (mm)"),
+            ("pipe_thk_mm",   "Half-pipe Thickness (mm)"),
+            ("pitch_mm",      "Coil Pitch (mm)"),
+        ],
+        "fn": "limpet_shell",
+    },
+    "Limpet coil — Dish (full pipe on dish)": {
+        "fields": [
+            ("shell_id_mm",   "Shell ID (mm)"),
+            ("pipe_od_mm",    "Pipe OD (mm)"),
+            ("pipe_thk_mm",   "Pipe Thickness (mm)"),
+            ("pitch_mm",      "Coil Pitch (mm)"),
+        ],
+        "fn": "limpet_dish",
+    },
 }
 
 def calc_weight(fn, dims, density, qty, scrap_pct=None):
@@ -426,8 +516,23 @@ def calc_weight(fn, dims, density, qty, scrap_pct=None):
                 density=density,
                 scrap=sc if sc is not None else 0.10,
             )
+        elif fn == "limpet_shell":
+            _, wt_total, _ = geom_limpet_shell(
+                d.get("shell_id_mm", 0), d.get("shell_thk_mm", 0), d.get("shell_ht_mm", 0),
+                d.get("pipe_od_mm", 0), d.get("pipe_thk_mm", 0), d.get("pitch_mm", 80),
+                density=density, scrap=sc if sc is not None else 0.10,
+            )
             wt = wt_total / max(qty, 1)
             return round(wt, 3), round(wt_total, 3), qty
+        elif fn == "limpet_dish":
+            _, wt_total, _ = geom_limpet_dish(
+                d.get("shell_id_mm", 0),
+                d.get("pipe_od_mm", 0), d.get("pipe_thk_mm", 0), d.get("pitch_mm", 80),
+                density=density, scrap=sc if sc is not None else 0.33,
+            )
+            wt = wt_total / max(qty, 1)
+            return round(wt, 3), round(wt_total, 3), qty    
+            
         else:
             wt = 0.0
     except Exception as e:
@@ -1479,6 +1584,8 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, struct_items, fab_servi
         "rect":    "L × W × Thk × ρ × (1+scrap)",
         "tube":    "π × (OD−Thk) × Thk × TubeL × ρ × N × (1+scrap)",
         "limpet":  "CoilMeanD=ShOD+PipeOD | Turns=ShHt/Pitch | Wt=π×(PipeOD−PipeThk)×PipeThk×TotalL×ρ×(1+scrap)",
+        "limpet_shell": "Turns=ShHt/Pitch | L=π×(ShOD+PipeOD)×Turns | HalfPipe Wt=π×(PipeOD−PipeThk)/2×PipeThk×L×ρ×(1+scrap)",
+        "limpet_dish":  "Rdev=dish dev. radius (20% knuckle) | L=π×(0.85·Rdev)²/Pitch | FullPipe Wt=π×(PipeOD−PipeThk)×PipeThk×L×ρ×(1+scrap@33%)",
     }
 
     def dims_str(fn, dims):
@@ -1497,6 +1604,10 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, struct_items, fab_servi
         if fn=="limpet": return (f"ShID={d.get('shell_id_mm','')} ShThk={d.get('shell_thk_mm','')} ShHt={d.get('shell_ht_mm','')} mm | "
                                  f"PipeOD={d.get('pipe_od_mm','')} PipeThk={d.get('pipe_thk_mm','')} Pitch={d.get('pitch_mm','')} mm | "
                                  f"BottomDish={'Yes' if d.get('cover_bottom_dish') else 'No'}")
+        if fn=="limpet_shell": return (f"ShID={d.get('shell_id_mm','')} ShThk={d.get('shell_thk_mm','')} ShHt={d.get('shell_ht_mm','')} | "
+                                       f"PipeOD={d.get('pipe_od_mm','')} PipeThk={d.get('pipe_thk_mm','')} Pitch={d.get('pitch_mm','')} mm")
+        if fn=="limpet_dish":  return (f"ShID={d.get('shell_id_mm','')} | PipeOD={d.get('pipe_od_mm','')} "
+                                       f"PipeThk={d.get('pipe_thk_mm','')} Pitch={d.get('pitch_mm','')} mm")
         return str(dims)
 
     row_n = 2
@@ -2389,7 +2500,12 @@ with TAB_NEW:
         g3.metric("Total Internal (m²)",  f"{int_area:.3f}")
         g4.metric("Shell Vol (Ltrs)",     f"{vol:.0f}")
         g5.metric("Est. Weld (m)",        f"{weld_m:.1f}")
-
+        dd = dish_depth_mm(h["shell_dia_mm"]) if h["shell_dia_mm"] > 0 else 0.0
+        st.caption(
+            f"📐 Dish depth ≈ **{dd:.0f} mm** (torispherical, 20% knuckle, from ID) → "
+            f"suggested agitator shaft length ≈ shell T/T {h['shell_ht_mm']:.0f} + dish {dd:.0f} "
+            f"= **{(h['shell_ht_mm'] + dd):.0f} mm** + bottom clearance"
+        )
         c1, c2 = st.columns(2)
         h["jacket_type"]   = c1.text_input("Jacket Type",   value=h["jacket_type"])
         h["agitator_type"] = c2.text_input("Agitator Type", value=h["agitator_type"])
@@ -2684,7 +2800,25 @@ with TAB_NEW:
                     )
                     lc2.metric("Coil Length (m)", f"{prev_len:.2f} m")
                     lc3.metric("Est. Weight (kg)", f"{prev_wt:.2f} kg")
+            if fn_key == "limpet_shell" and all(dims.get(k, 0) > 0 for k in
+                    ["shell_id_mm", "shell_thk_mm", "shell_ht_mm", "pipe_od_mm", "pipe_thk_mm", "pitch_mm"]):
+                _, _pw, _pl = geom_limpet_shell(
+                    dims["shell_id_mm"], dims["shell_thk_mm"], dims["shell_ht_mm"],
+                    dims["pipe_od_mm"], dims["pipe_thk_mm"], dims["pitch_mm"],
+                    density=DENSITY.get(p_material, 8000), scrap=p_scrap / 100.0)
+                pc1, pc2 = st.columns(2)
+                pc1.metric("Shell Coil Length (m)", f"{_pl:.2f}")
+                pc2.metric("Est. Weight (kg)", f"{_pw:.2f}")
 
+            if fn_key == "limpet_dish" and all(dims.get(k, 0) > 0 for k in
+                    ["shell_id_mm", "pipe_od_mm", "pipe_thk_mm", "pitch_mm"]):
+                _, _pw, _pl = geom_limpet_dish(
+                    dims["shell_id_mm"], dims["pipe_od_mm"], dims["pipe_thk_mm"], dims["pitch_mm"],
+                    density=DENSITY.get(p_material, 8000), scrap=p_scrap / 100.0)
+                pc1, pc2, pc3 = st.columns(3)
+                pc1.metric("Dish Depth (mm)", f"{dish_depth_mm(dims['shell_id_mm']):.0f}")
+                pc2.metric("Dish Coil Length (m)", f"{_pl:.2f}")
+                pc3.metric("Est. Weight (kg)", f"{_pw:.2f}")
             btn_c1, btn_c2 = st.columns([3, 1])
             add_btn    = btn_c1.button("➕ Add Part" if not editing_part else "✅ Update Part", type="primary", use_container_width=True)
             cancel_btn = btn_c2.button("✖ Cancel", use_container_width=True) if editing_part else False
