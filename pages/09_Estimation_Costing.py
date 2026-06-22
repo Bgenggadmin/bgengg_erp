@@ -2218,11 +2218,13 @@ with TAB_LIST:
         st.info("No estimations yet. Use ➕ New / Edit tab to create one.")
     else:
         summary_rows = []
-        for est in reversed(all_est):
+        summary_rows = []
+        for i, est in enumerate(reversed(all_est), start=1):
             eq_info = EQUIPMENT_TYPES.get(est.get("equipment_type", ""), {})
             si = {"Draft": "🟡", "Issued": "🔵", "Won": "🟢", "Lost": "🔴", "On Hold": "⚪"}.get(est.get("status", ""), "🟡")
             summary_rows.append({
                 "":           f"{si} {eq_info.get('icon', '🔧')}",
+                "Sl No":      i,
                 "QTN No":     est.get("qtn_number", ""),
                 "Customer":   est.get("customer_name", ""),
                 "Equipment":  est.get("equipment_desc", ""),
