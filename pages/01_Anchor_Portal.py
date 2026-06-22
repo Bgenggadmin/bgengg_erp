@@ -10,8 +10,12 @@ import plotly.express as px
 PIPELINE_STAGES = ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"]
 DRAWING_STATUSES = ["Pending", "Drafting", "Approved", "NA"]
 PURCHASE_STATUSES = ["Triggered", "Ordered", "Received"]
-ANCHOR_PERSONS = ["Ammu", "Kishore"]
+ANCHOR_PERSONS = ["API", "MEE"]   # API first = default opening profile (was Kishore)
 DESC_TRUNCATE = 50  # single consistent truncation length
+PROSPECT_STAGES = ["Identified", "Contacted", "Qualified", "Converted", "Dropped"]
+PROSPECT_OPEN_STAGES = ["Identified", "Contacted", "Qualified"]   # still need follow-up
+BD_ZONES = ["South", "West / Gujarat", "Maha + North + East"]
+# BDMs reuse ANCHOR_PERSONS. If you add a 3rd BDM, just extend ANCHOR_PERSONS.
 
 # ---------------------------------------------------------------------------
 # PAGE CONFIG
@@ -99,6 +103,63 @@ def get_purchase_items() -> pd.DataFrame:
         )
 
 
+@st.cache_data(ttl=30)
+def get_prospects() -> pd.DataFrame:
+    try:
+        res = conn.table("bd_prospects").select("*").order("id", desc=True).execute()
+        return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    except Exception as e:
+        st.warning(f"⚠️ Could not load BD prospects: {e}")
+        return pd.DataFrame()
+
+
+def _refresh_prospects():
+    get_prospects.clear()
+
+
+def create_prospect(payload: dict):
+    conn.table("bd_prospects").insert(payload).execute()
+    _refresh_prospects()
+
+
+def update_prospect(prospect_id: int, payload: dict):
+    conn.table("bd_prospects").update(payload).eq("id", prospect_id).execute()
+    _refresh_prospects()
+
+
+def delete_prospect(prospect_id: int):
+    conn.table("bd_prospects").delete().eq("id", prospect_id).execute()
+    _refresh_prospects()
+
+
+def convert_prospect_to_enquiry(row) -> int | None:
+    """Push a BD prospect into the live anchor_projects pipeline as an Enquiry."""
+    payload = {
+        "client_name": row["company"],
+        "project_description": (row.get("buying_signal") or "BD-sourced opportunity"),
+        "anchor_person": row.get("assigned_to") or ANCHOR_PERSONS[0],
+        "enquiry_date": str(date.today()),
+        "contact_person": row.get("contact_name") or "",
+        "contact_phone": row.get("contact_phone") or "",
+        "special_notes": (
+            f"[BD lead | {row.get('location','')}] "
+            f"Fit: {row.get('equipment_fit','')}. {row.get('notes','') or ''}"
+        ).strip(),
+        "status": "Enquiry",
+        "drawing_status": "Pending",
+    }
+    ins = conn.table("anchor_projects").insert(payload).execute()
+    new_id = ins.data[0]["id"] if getattr(ins, "data", None) else None
+    conn.table("bd_prospects").update(
+        {"stage": "Converted", "converted_project_id": new_id}
+    ).eq("id", int(row["id"])).execute()
+    # clear every cache so the new enquiry shows up immediately
+    get_projects.clear()
+    get_purchase_items.clear()
+    get_prospects.clear()
+    return new_id
+
+
 # Mutation helpers — invalidate only the relevant cache after writes
 def _refresh_projects():
     get_projects.clear()
@@ -142,9 +203,252 @@ def add_purchase_item(job_no: str, item_name: str, specs: str):
 
 
 # ---------------------------------------------------------------------------
+# BD SIDEBAR ALERTS  (defined here, called in the sidebar section below)
+# ---------------------------------------------------------------------------
+def render_bd_sidebar_alerts(df_prospects, anchor_choice, today_dt):
+    st.sidebar.divider()
+    owner_view = st.sidebar.checkbox(
+        "👁️ Owner view — all BDMs (BD)", key="bd_owner_view"
+    )
+    if df_prospects.empty:
+        st.sidebar.caption("No BD prospects yet.")
+        return
+
+    scope = (
+        df_prospects
+        if owner_view
+        else df_prospects[df_prospects["assigned_to"] == anchor_choice]
+    ).copy()
+
+    if scope.empty or "next_action_date" not in scope.columns:
+        st.sidebar.success("✅ No BD follow-ups due")
+        return
+
+    scope["nad"] = pd.to_datetime(scope["next_action_date"], errors="coerce")
+    due = scope[
+        scope["nad"].notna()
+        & (scope["nad"] <= today_dt)
+        & (~scope["stage"].isin(["Converted", "Dropped"]))
+    ]
+    if not due.empty:
+        st.sidebar.error(f"🎯 **{len(due)} BD follow-up(s) due**")
+        if st.sidebar.checkbox("Show BD due list", key="bd_due_list"):
+            for _, p in due.sort_values("nad").iterrows():
+                who = f" · {p['assigned_to']}" if owner_view else ""
+                st.sidebar.caption(f"📞 {p['company']}{who} — {p.get('next_action') or ''}")
+    else:
+        st.sidebar.success("✅ No BD follow-ups due")
+
+
+# ---------------------------------------------------------------------------
+# PROSPECTS TAB  (defined here, rendered at the very bottom under tabs[5])
+# ---------------------------------------------------------------------------
+def render_prospects_tab(df_prospects, anchor_choice, today_dt):
+    st.subheader("🎯 Business Development — Prospect Tracker")
+
+    owner_view = st.session_state.get("bd_owner_view", False)
+    scope_label = "All BDMs (owner view)" if owner_view else f"{anchor_choice}'s prospects"
+    st.caption(f"Showing: **{scope_label}** · toggle owner view in the sidebar.")
+
+    # ---- Add a new prospect -------------------------------------------------
+    with st.expander("➕ Add a prospect"):
+        with st.form("new_prospect_form", clear_on_submit=True):
+            a1, a2 = st.columns(2)
+            p_company = a1.text_input("Company *")
+            p_location = a2.text_input("Plant / Location (State)")
+            b1, b2, b3 = st.columns(3)
+            p_zone = b1.selectbox("Zone", BD_ZONES)
+            p_segment = b2.text_input("Segment", placeholder="API / CDMO / Formulations")
+            p_assigned = b3.selectbox("Assign to (BDM)", ANCHOR_PERSONS)
+            p_signal = st.text_input("Buying signal", placeholder="Expansion / Schedule M / ZLD ...")
+            c1, c2 = st.columns(2)
+            p_fit = c1.text_input("Equipment fit (B&G)", placeholder="Reactor / ATFD / MEE / HX")
+            p_role = c2.text_input("Decision contact (role)", placeholder="Projects Head")
+            d1, d2 = st.columns(2)
+            p_action = d1.text_input("Next action")
+            p_action_date = d2.date_input("Next action date", value=date.today())
+            p_notes = st.text_area("Notes")
+            if st.form_submit_button("Add Prospect"):
+                if p_company.strip():
+                    create_prospect({
+                        "company": p_company.strip(),
+                        "location": p_location.strip(),
+                        "zone": p_zone,
+                        "segment": p_segment.strip(),
+                        "buying_signal": p_signal.strip(),
+                        "equipment_fit": p_fit.strip(),
+                        "contact_role": p_role.strip(),
+                        "assigned_to": p_assigned,
+                        "stage": "Identified",
+                        "next_action": p_action.strip(),
+                        "next_action_date": str(p_action_date),
+                        "notes": p_notes.strip(),
+                    })
+                    st.success(f"Added {p_company.strip()}")
+                    st.rerun()
+                else:
+                    st.error("Company name is required.")
+
+    # ---- Bulk import from CSV (load the 36-prospect list) -------------------
+    with st.expander("📥 Bulk import from CSV"):
+        st.caption(
+            "CSV headers expected: company, location, zone, segment, buying_signal, "
+            "equipment_fit, contact_role, next_action, next_action_date, notes"
+        )
+        imp1, imp2 = st.columns(2)
+        imp_assigned = imp1.selectbox("Assign all imported rows to", ANCHOR_PERSONS, key="imp_assign")
+        imp_zone_default = imp2.selectbox("Default zone (if blank in file)", BD_ZONES, key="imp_zone")
+        up = st.file_uploader("Upload CSV", type=["csv"], key="bd_import")
+        if up is not None:
+            try:
+                imp_df = pd.read_csv(up).fillna("")
+                st.dataframe(imp_df.head(10), use_container_width=True, hide_index=True)
+                if st.button(f"Import {len(imp_df)} rows", key="do_import"):
+                    rows = []
+                    for _, r in imp_df.iterrows():
+                        rows.append({
+                            "company": str(r.get("company", "")).strip(),
+                            "location": str(r.get("location", "")).strip(),
+                            "zone": str(r.get("zone", "")).strip() or imp_zone_default,
+                            "segment": str(r.get("segment", "")).strip(),
+                            "buying_signal": str(r.get("buying_signal", "")).strip(),
+                            "equipment_fit": str(r.get("equipment_fit", "")).strip(),
+                            "contact_role": str(r.get("contact_role", "")).strip(),
+                            "assigned_to": imp_assigned,
+                            "stage": "Identified",
+                            "next_action": str(r.get("next_action", "")).strip(),
+                            "next_action_date": str(r.get("next_action_date", "")).strip() or None,
+                            "notes": str(r.get("notes", "")).strip(),
+                        })
+                    rows = [x for x in rows if x["company"]]
+                    if rows:
+                        conn.table("bd_prospects").insert(rows).execute()
+                        _refresh_prospects()
+                        st.success(f"Imported {len(rows)} prospects.")
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Import failed: {e}")
+
+    st.divider()
+
+    if df_prospects.empty:
+        st.info("No prospects yet — add one above or import a CSV.")
+        return
+
+    # ---- Scope + funnel snapshot -------------------------------------------
+    view = df_prospects if owner_view else df_prospects[df_prospects["assigned_to"] == anchor_choice]
+    view = view.copy()
+    if view.empty:
+        st.info("No prospects assigned to this profile.")
+        return
+
+    view["nad"] = pd.to_datetime(view["next_action_date"], errors="coerce")
+    open_view = view[view["stage"].isin(PROSPECT_OPEN_STAGES)]
+    due_now = open_view[open_view["nad"].notna() & (open_view["nad"] <= today_dt)]
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Open prospects", len(open_view))
+    k2.metric("Follow-ups due", len(due_now))
+    k3.metric("Qualified", int((view["stage"] == "Qualified").sum()))
+    k4.metric("Converted", int((view["stage"] == "Converted").sum()))
+
+    # ---- Filters ------------------------------------------------------------
+    fcol1, fcol2 = st.columns([2, 2])
+    stage_pick = fcol1.radio("Stage", ["All"] + PROSPECT_STAGES, horizontal=True)
+    zone_pick = fcol2.selectbox("Zone", ["All"] + BD_ZONES)
+
+    filt = view.copy()
+    if stage_pick != "All":
+        filt = filt[filt["stage"] == stage_pick]
+    if zone_pick != "All":
+        filt = filt[filt["zone"] == zone_pick]
+    filt = filt.sort_values("nad", na_position="last")
+
+    # ---- Rows ---------------------------------------------------------------
+    for _, row in filt.iterrows():
+        nad = row["nad"]
+        is_due = pd.notna(nad) and nad <= today_dt and row["stage"] in PROSPECT_OPEN_STAGES
+        icon = "🔴" if is_due else "🔹"
+        who = f" · {row['assigned_to']}" if owner_view else ""
+        due_txt = f"  [⏰ due {row['next_action_date']}]" if is_due else ""
+        title = f"{icon} {row['company']} | {row['stage']}{who}{due_txt}"
+
+        with st.expander(title):
+            top = st.columns(3)
+            top[0].caption(f"📍 {row.get('location') or '—'}")
+            top[1].caption(f"🏭 {row.get('segment') or '—'}")
+            top[2].caption(f"🔧 {row.get('equipment_fit') or '—'}")
+            if row.get("buying_signal"):
+                st.caption(f"💡 **Signal:** {row['buying_signal']}")
+
+            e1, e2 = st.columns(2)
+            new_stage = e1.selectbox(
+                "Stage", PROSPECT_STAGES,
+                index=PROSPECT_STAGES.index(row["stage"]) if row["stage"] in PROSPECT_STAGES else 0,
+                key=f"pstage_{row['id']}",
+            )
+            new_assigned = e2.selectbox(
+                "BDM", ANCHOR_PERSONS,
+                index=ANCHOR_PERSONS.index(row["assigned_to"]) if row.get("assigned_to") in ANCHOR_PERSONS else 0,
+                key=f"passign_{row['id']}",
+            )
+
+            g1, g2 = st.columns(2)
+            new_cname = g1.text_input("Contact name", value=row.get("contact_name") or "", key=f"pcn_{row['id']}")
+            new_crole = g2.text_input("Contact role", value=row.get("contact_role") or "", key=f"pcr_{row['id']}")
+            h1, h2 = st.columns(2)
+            new_phone = h1.text_input("Contact phone", value=row.get("contact_phone") or "", key=f"pph_{row['id']}")
+            new_email = h2.text_input("Contact email", value=row.get("contact_email") or "", key=f"pem_{row['id']}")
+
+            i1, i2 = st.columns([2, 1])
+            new_action = i1.text_input("Next action", value=row.get("next_action") or "", key=f"pna_{row['id']}")
+            new_action_date = i2.date_input(
+                "Next action date",
+                value=safe_date(row.get("next_action_date")),
+                key=f"pnad_{row['id']}",
+            )
+            new_notes = st.text_area("Notes", value=row.get("notes") or "", key=f"pnotes_{row['id']}")
+
+            if row.get("converted_project_id"):
+                st.success(f"✅ Converted → anchor_projects id {int(row['converted_project_id'])}")
+
+            b_save, b_conv, b_del = st.columns([2, 2, 1])
+            if b_save.button("💾 Save", key=f"psave_{row['id']}", type="primary", use_container_width=True):
+                update_prospect(int(row["id"]), {
+                    "stage": new_stage,
+                    "assigned_to": new_assigned,
+                    "contact_name": new_cname.strip(),
+                    "contact_role": new_crole.strip(),
+                    "contact_phone": new_phone.strip(),
+                    "contact_email": new_email.strip(),
+                    "next_action": new_action.strip(),
+                    "next_action_date": str(new_action_date),
+                    "notes": new_notes.strip(),
+                })
+                st.rerun()
+
+            # Convert → live enquiry (disabled once converted)
+            already = bool(row.get("converted_project_id"))
+            if b_conv.button(
+                "➡️ Convert to Enquiry", key=f"pconv_{row['id']}",
+                use_container_width=True, disabled=already,
+            ):
+                new_id = convert_prospect_to_enquiry(row)
+                st.success(f"Created enquiry (id {new_id}) for {row['company']}. See the Pipeline tab.")
+                st.rerun()
+
+            with b_del.popover("🗑️"):
+                st.warning("Delete this prospect?")
+                if st.button("Confirm", key=f"pdel_{row['id']}", type="primary"):
+                    delete_prospect(int(row["id"]))
+                    st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # LOAD DATA
 # ---------------------------------------------------------------------------
 df = get_projects()
+df_prospects = get_prospects()
 df_pur = get_purchase_items()
 today_dt = pd.to_datetime(date.today())
 
@@ -177,6 +481,9 @@ if not df_anchor.empty and not df_pur.empty:
                 st.sidebar.caption(f"📍 {item['job_no']}: {item['item_name']}")
     else:
         st.sidebar.success("✅ All Materials Ordered")
+
+# Sidebar: BD follow-up alerts  (this is the call that was missing)
+render_bd_sidebar_alerts(df_prospects, anchor_choice, today_dt)
 
 # Sidebar: sync & search
 st.sidebar.divider()
@@ -240,7 +547,7 @@ if not df_search.empty:
 # ---------------------------------------------------------------------------
 # MAIN TABS  (all use df_anchor — the full unfiltered anchor dataset)
 # ---------------------------------------------------------------------------
-tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status", "📊 Analytics"])
+tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status", "📊 Analytics", "🎯 Prospects (BD)"])
 
 # ── TAB 1: NEW ENTRY ────────────────────────────────────────────────────────
 with tabs[0]:
@@ -593,3 +900,8 @@ with tabs[4]:
                 key="master_csv_dl",
             )
             st.dataframe(export_df, use_container_width=True)
+
+# ── TAB 6: PROSPECTS (BD) ────────────────────────────────────────────────────
+# NOTE: render_prospects_tab is defined far above, so this call is safe.
+with tabs[5]:
+    render_prospects_tab(get_prospects(), anchor_choice, today_dt)
