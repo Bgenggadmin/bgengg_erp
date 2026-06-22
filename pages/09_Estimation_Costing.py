@@ -2236,11 +2236,17 @@ with TAB_LIST:
         st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
         st.markdown("#### Select a quotation to view details and actions")
-        qtn_opts = ["— select —"] + [e.get("qtn_number", "") for e in reversed(all_est) if e.get("qtn_number")]
+        _ordered = list(reversed(all_est))
+        qtn_opts = ["— select —"] + [
+            f"{i}. {e.get('qtn_number', '')}"
+            for i, e in enumerate(_ordered, start=1)
+            if e.get("qtn_number")
+        ]
         selected_qtn = st.selectbox("QTN", qtn_opts, label_visibility="collapsed")
 
         if selected_qtn != "— select —":
-            est = next((e for e in all_est if e.get("qtn_number") == selected_qtn), None)
+            _sel_qtn = selected_qtn.split(". ", 1)[1] if ". " in selected_qtn else selected_qtn
+            est = next((e for e in all_est if e.get("qtn_number") == _sel_qtn), None)
             if est:
                 parts   = json.loads(est.get("parts_json")   or "[]")
                 pipes   = json.loads(est.get("pipes_json")   or "[]")
