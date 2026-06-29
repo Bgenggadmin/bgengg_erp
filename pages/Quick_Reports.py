@@ -26,28 +26,13 @@ st.set_page_config(page_title="Quick Reports | BGEngg ERP",
                    layout="wide", page_icon="\U0001F4CB")
 
 # ----------------------------------------------------------------------
-# PASSWORD PROTECTION  (same session gate as your other pages)
-# Reuses st.session_state["password_correct"], so if you've already
-# unlocked another page this session, this one passes straight through.
+# PASSWORD PROTECTION — REMOVED on request.
+# This page is now open: anyone who can reach it sees all report data,
+# with no login. To restore the gate, paste back the check_password()
+# block from any other page (e.g. 01_Anchor_Portal.py) and re-add:
+#     if not check_password():
+#         st.stop()
 # ----------------------------------------------------------------------
-def check_password() -> bool:
-    def _verify():
-        if st.session_state.get("qr_password") == st.secrets.get("APP_PASSWORD"):
-            st.session_state["password_correct"] = True
-            st.session_state.pop("qr_password", None)
-        else:
-            st.session_state["password_correct"] = False
-
-    if st.session_state.get("password_correct"):
-        return True
-    st.text_input("\U0001F511 Enter Master Password", type="password",
-                  on_change=_verify, key="qr_password")
-    if st.session_state.get("password_correct") is False:
-        st.error("\U0001F623 Password incorrect")
-    return False
-
-if not check_password():
-    st.stop()
 
 # ----------------------------------------------------------------------
 # DATABASE CONNECTION  (identical to 01_Anchor_Portal.py, line 54)
