@@ -3015,7 +3015,7 @@ with TAB_NEW:
                 if c8.button("✏️", key=f"epipe_{idx}", help=f"Edit row {idx + 1}"):
                     st.session_state["edit_pipe_idx"] = idx
                     st.rerun()
-               if c9.button("🗑️", key=f"dpipe_{idx}", help=f"Delete row {idx + 1}"):
+                if c9.button("🗑️", key=f"dpipe_{idx}", help=f"Delete row {idx + 1}"):
                     st.session_state.est_pipes.pop(idx)
                     st.session_state["edit_pipe_idx"] = None
                     st.rerun()
@@ -3076,7 +3076,7 @@ with TAB_NEW:
 
         if st.session_state.est_flanges:
             st.markdown("**Flanges list**")
-           _flgcols = [0.5, 2.8, 1.8, 1, 1.2, 1.2, 1.5, 0.5, 0.5]
+            _flgcols = [0.5, 2.8, 1.8, 1, 1.2, 1.2, 1.5, 0.5, 0.5]
             hc = st.columns(_flgcols)
             for col, lbl in zip(hc, ["#", "Description", "Code", "Qty", "Wt(kg)",
                                       "Rate", "Amount", "✏️", "🗑️"]):
@@ -3274,7 +3274,7 @@ with TAB_NEW:
         if st.session_state.est_fab:
             st.markdown("---")
             st.markdown("**Fabrication services — click ✏️ to edit, 🗑️ to delete**")
-           _fabcols = [0.5, 3.2, 3.0, 1.1, 0.9, 1.4, 1.5, 0.5, 0.5]
+            _fabcols = [0.5, 3.2, 3.0, 1.1, 0.9, 1.4, 1.5, 0.5, 0.5]
             hc = st.columns(_fabcols)
             for col, lbl in zip(hc, ["#", "Service", "Basis", "Qty", "UOM",
                                       "Rate", "Amount", "✏️", "🗑️"]):
