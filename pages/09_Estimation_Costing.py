@@ -255,6 +255,22 @@ def geom_dish_end(shell_id_mm, thk_mm, density=8000, scrap=0.15):
     r = _m(shell_id_mm * 1.167) / 2
     return 1.09 * PI * r * r * _m(thk_mm) * density * (1 + scrap)
 
+def geom_dish_ellipsoidal(shell_id_mm, thk_mm, density=8000, scrap=0.15):
+    """
+    2:1 semi-ellipsoidal dish end.  Inside depth = ID / 4.
+
+    Same two-step logic as the torispherical dish, only the blank constant
+    changes:
+        torispherical (crown = ID, 20% knuckle) -> blank dia = ID x 1.167
+        ellipsoidal 2:1                         -> blank dia = ID x 1.24
+
+    The ellipsoidal profile is drawn deeper from the flat plate, so it needs
+    a larger blank for the same shell ID.  The 1.09 factor is unchanged --
+    it covers knuckle draw allowance, straight flange and edge trim.
+    """
+    r = _m(shell_id_mm * 1.24) / 2
+    return 1.09 * PI * r * r * _m(thk_mm) * density * (1 + scrap)
+
 def geom_annular_plate(od_mm, id_mm, thk_mm, density=8000, scrap=0.05):
     return (PI / 4.0) * (_m(od_mm) ** 2 - _m(id_mm) ** 2) * _m(thk_mm) * density * (1 + scrap)
 
@@ -383,7 +399,7 @@ def geom_limpet_dish(shell_id_mm, pipe_od_mm, pipe_thk_mm, pitch_mm,
     return round(full_wt_per_m, 4), round(total_wt, 3), round(length_m, 3)
 # Default scrap % per part type
 DEFAULT_SCRAP = {
-    "shell": 5.0, "dish": 15.0, "annular": 5.0, "solid": 15.0,
+    "shell": 5.0, "dish": 15.0, "dish_ellip": 15.0, "annular": 5.0, "solid": 15.0,
     "flat": 5.0, "stiff": 5.0, "cone": 5.0, "rect": 5.0, "tube": 5.0,
     "limpet": 10.0,"limpet_shell": 10.0, "limpet_dish": 33.0,
 }
@@ -396,6 +412,10 @@ PART_TYPES = {
     "Dish end (torispherical)": {
         "fields": [("shell_id_mm", "Shell ID (mm)"), ("thk_mm", "Thickness (mm)")],
         "fn": "dish",
+    },
+    "Dish end (ellipsoidal 2:1)": {
+        "fields": [("shell_id_mm", "Shell ID (mm)"), ("thk_mm", "Thickness (mm)")],
+        "fn": "dish_ellip",
     },
     "Annular plate / flange": {
         "fields": [("od_mm", "Outer Dia OD (mm)"), ("id_mm", "Inner Dia ID (mm)"), ("thk_mm", "Thickness (mm)")],
@@ -482,6 +502,9 @@ def calc_weight(fn, dims, density, qty, scrap_pct=None):
         elif fn == "dish":
             wt = geom_dish_end(d["shell_id_mm"], d["thk_mm"], density,
                                 scrap=sc if sc is not None else 0.15)
+        elif fn == "dish_ellip":
+            wt = geom_dish_ellipsoidal(d["shell_id_mm"], d["thk_mm"], density,
+                                        scrap=sc if sc is not None else 0.15)
         elif fn == "annular":
             wt = geom_annular_plate(d["od_mm"], d["id_mm"], d["thk_mm"], density,
                                      scrap=sc if sc is not None else 0.05)
@@ -1576,6 +1599,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, struct_items, fab_servi
     FORMULA_DESC = {
         "shell":   "π × ID × Ht × Thk × ρ × (1+scrap)",
         "dish":    "1.09 × π × (ID×1.167/2)² × Thk × ρ × (1+scrap)",
+        "dish_ellip": "1.09 × π × (ID×1.24/2)² × Thk × ρ × (1+scrap)",
         "annular": "(π/4) × (OD²−ID²) × Thk × ρ × (1+scrap)",
         "solid":   "(π/4) × D² × L × ρ × (1+scrap)",
         "flat":    "W × H × Thk × ρ × (1+scrap)",
@@ -1592,6 +1616,7 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, struct_items, fab_servi
         d = dims or {}
         if fn=="shell":  return f"ID={d.get('id_mm','')} Ht={d.get('ht_mm','')} Thk={d.get('thk_mm','')} mm"
         if fn=="dish":   return f"ShID={d.get('shell_id_mm','')} Thk={d.get('thk_mm','')} mm"
+        if fn=="dish_ellip": return f"ShID={d.get('shell_id_mm','')} Thk={d.get('thk_mm','')} mm (2:1 ellip, depth=ID/4)"
         if fn=="annular":return f"OD={d.get('od_mm','')} ID={d.get('id_mm','')} Thk={d.get('thk_mm','')} mm"
         if fn=="solid":  return f"D={d.get('dia_mm','')} L={d.get('length_mm','')} mm"
         if fn=="flat":   return f"W={d.get('w_mm','')} H={d.get('h_mm','')} Thk={d.get('thk_mm','')} mm"
@@ -1809,6 +1834,9 @@ def generate_fact_sheet_xlsx(est, parts, pipes, flanges, struct_items, fab_servi
         ("DISH END (Torispherical)",
          "Blank dia = ID × 1.167 | Area = 1.09 × π × (blank_dia/2)² | W = Area × Thk(m) × ρ × (1 + scrap)",
          "scrap = 15%", "Crown radius = ID"),
+        ("DISH END (Ellipsoidal 2:1)",
+         "Blank dia = ID × 1.24 | Area = 1.09 × π × (blank_dia/2)² | W = Area × Thk(m) × ρ × (1 + scrap)",
+         "scrap = 15%", "Depth = ID/4"),
         ("ANNULAR PLATE / FLANGE",
          "W = (π/4) × (OD² − ID²) × Thk(m) × ρ × (1 + scrap)",
          "scrap = 5%", "All dims in metres"),
