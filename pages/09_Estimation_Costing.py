@@ -2890,9 +2890,12 @@ with TAB_NEW:
             st.markdown("---")
             st.markdown("**Parts list — click ✏️ to edit, 🗑️ to delete**")
             # Column headers
-            hc = st.columns([0.5, 2.5, 2, 1.5, 1, 0.8, 0.8, 1.5, 2, 0.5, 0.5])
+            # Column widths — "Rate" inserted between Weight and Amount so the
+            # engineer can see the ₹/kg actually applied without opening the row.
+            _pcols = [0.5, 2.4, 1.8, 1.3, 1, 0.7, 0.7, 1.3, 1.2, 1.8, 0.5, 0.5]
+            hc = st.columns(_pcols)
             for col, lbl in zip(hc, ["#", "Name", "Part Type", "Group", "Material",
-                                      "Qty", "Scrap", "Weight", "Amount", "✏️", "🗑️"]):
+                                      "Qty", "Scrap", "Weight", "Rate", "Amount", "✏️", "🗑️"]):
                 col.caption(f"**{lbl}**")
 
             for idx, p in enumerate(st.session_state.est_parts):
@@ -2901,8 +2904,7 @@ with TAB_NEW:
                 _prefix = "🟡 " if _is_editing_row else ""
                 _bold   = "**" if _is_editing_row else ""
 
-                c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns(
-                    [0.5, 2.5, 2, 1.5, 1, 0.8, 0.8, 1.5, 2, 0.5, 0.5])
+                c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11 = st.columns(_pcols)
                 c0.write(f"{_prefix}**{idx + 1}**")
                 c1.write(f"{_bold}{p.get('name', '')}{_bold}")
                 c2.write(f"{_bold}{p.get('part_type', '')[:20]}{_bold}")
@@ -2912,11 +2914,12 @@ with TAB_NEW:
                 sc = p.get("scrap_pct", None)
                 c6.write(f"{_bold}{(f'{sc:.0f}%' if sc is not None else '—')}{_bold}")
                 c7.write(f"{_bold}{p.get('total_wt_kg', 0):.1f} kg{_bold}")
-                c8.write(f"{_bold}₹{p.get('amount', 0):,.0f}{_bold}")
-                if c9.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name', '')}"):
+                c8.write(f"{_bold}₹{p.get('rate', 0):,.0f}/kg{_bold}")
+                c9.write(f"{_bold}₹{p.get('amount', 0):,.0f}{_bold}")
+                if c10.button("✏️", key=f"ep_{idx}", help=f"Edit {p.get('name', '')}"):
                     st.session_state["edit_part_idx"] = idx
                     st.rerun()
-                if c10.button("🗑️", key=f"dp_{idx}", help=f"Delete row {idx + 1}"):
+                if c11.button("🗑️", key=f"dp_{idx}", help=f"Delete row {idx + 1}"):
                     st.session_state.est_parts.pop(idx)
                     st.session_state["edit_part_idx"] = None
                     st.rerun()
@@ -2993,25 +2996,26 @@ with TAB_NEW:
 
         if st.session_state.est_pipes:
             st.markdown("**Pipes list**")
-            hc = st.columns([0.5, 3, 2, 1, 0.8, 1.2, 1.5, 0.5, 0.5])
+            _pipecols = [0.5, 2.8, 1.8, 1, 0.8, 1.2, 1.2, 1.5, 0.5, 0.5]
+            hc = st.columns(_pipecols)
             for col, lbl in zip(hc, ["#", "Description", "Code", "Len(m)", "Qty",
-                                      "Wt(kg)", "Amount", "✏️", "🗑️"]):
+                                      "Wt(kg)", "Rate", "Amount", "✏️", "🗑️"]):
                 col.caption(f"**{lbl}**")
 
             for idx, p in enumerate(st.session_state.est_pipes):
-                c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(
-                    [0.5, 3, 2, 1, 0.8, 1.2, 1.5, 0.5, 0.5])
+                c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(_pipecols)
                 c0.write(f"**{idx + 1}**")
                 c1.write(p.get("name", ""))
                 c2.write(p.get("item_code", ""))
                 c3.write(f"{p.get('length_m', 0):.2f}")
                 c4.write(f"{p.get('qty', 1)}")
                 c5.write(f"{p.get('total_wt_kg', 0):.1f}")
-                c6.write(f"₹{p.get('amount', 0):,.0f}")
-                if c7.button("✏️", key=f"epipe_{idx}", help=f"Edit row {idx + 1}"):
+                c6.write(f"₹{p.get('rate', 0):,.0f}/kg")
+                c7.write(f"₹{p.get('amount', 0):,.0f}")
+                if c8.button("✏️", key=f"epipe_{idx}", help=f"Edit row {idx + 1}"):
                     st.session_state["edit_pipe_idx"] = idx
                     st.rerun()
-                if c8.button("🗑️", key=f"dpipe_{idx}", help=f"Delete row {idx + 1}"):
+               if c9.button("🗑️", key=f"dpipe_{idx}", help=f"Delete row {idx + 1}"):
                     st.session_state.est_pipes.pop(idx)
                     st.session_state["edit_pipe_idx"] = None
                     st.rerun()
@@ -3072,24 +3076,25 @@ with TAB_NEW:
 
         if st.session_state.est_flanges:
             st.markdown("**Flanges list**")
-            hc = st.columns([0.5, 3, 2, 1, 1.2, 1.5, 0.5, 0.5])
+           _flgcols = [0.5, 2.8, 1.8, 1, 1.2, 1.2, 1.5, 0.5, 0.5]
+            hc = st.columns(_flgcols)
             for col, lbl in zip(hc, ["#", "Description", "Code", "Qty", "Wt(kg)",
-                                      "Amount", "✏️", "🗑️"]):
+                                      "Rate", "Amount", "✏️", "🗑️"]):
                 col.caption(f"**{lbl}**")
 
             for idx, p in enumerate(st.session_state.est_flanges):
-                c0, c1, c2, c3, c4, c5, c6, c7 = st.columns(
-                    [0.5, 3, 2, 1, 1.2, 1.5, 0.5, 0.5])
+                c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(_flgcols)
                 c0.write(f"**{idx + 1}**")
                 c1.write(p.get("name", ""))
                 c2.write(p.get("item_code", ""))
                 c3.write(f"{p.get('qty', 1)}")
                 c4.write(f"{p.get('total_wt_kg', 0):.1f}")
-                c5.write(f"₹{p.get('amount', 0):,.0f}")
-                if c6.button("✏️", key=f"eflg_{idx}", help=f"Edit row {idx + 1}"):
+                c5.write(f"₹{p.get('rate', 0):,.0f}/kg")
+                c6.write(f"₹{p.get('amount', 0):,.0f}")
+                if c7.button("✏️", key=f"eflg_{idx}", help=f"Edit row {idx + 1}"):
                     st.session_state["edit_flg_idx"] = idx
                     st.rerun()
-                if c7.button("🗑️", key=f"dflg_{idx}", help=f"Delete row {idx + 1}"):
+                if c8.button("🗑️", key=f"dflg_{idx}", help=f"Delete row {idx + 1}"):
                     st.session_state.est_flanges.pop(idx)
                     st.session_state["edit_flg_idx"] = None
                     st.rerun()
@@ -3178,17 +3183,23 @@ with TAB_NEW:
         if st.session_state.est_struct:
             st.divider()
             st.markdown("**Structural items added**")
+            _stcols = [2.3, 1.8, 1, 1, 0.8, 1.2, 1.2, 1.5, 0.7]
+            _sth = st.columns(_stcols)
+            for col, lbl in zip(_sth, ["Name", "Section", "Material", "Length",
+                                        "Qty", "Weight", "Rate", "Amount", "🗑️"]):
+                col.caption(f"**{lbl}**")
+
             for idx, s in enumerate(st.session_state.est_struct):
-                lc1, lc2, lc3, lc4, lc5, lc6, lc7, lc8 = st.columns(
-                    [2.5, 2, 1, 1, 1, 1.2, 1.5, 0.7])
+                lc1, lc2, lc3, lc4, lc5, lc6, lc7, lc8, lc9 = st.columns(_stcols)
                 lc1.write(s.get("name", ""))
                 lc2.write(s.get("section", ""))
                 lc3.write(s.get("material", ""))
                 lc4.write(f"{s.get('length_m', 0):.2f} m")
                 lc5.write(f"× {s.get('qty', 1)}")
                 lc6.write(f"{s.get('total_wt_kg', 0):.1f} kg")
-                lc7.write(f"₹{s.get('amount', 0):,.0f}")
-                if lc8.button("🗑️", key=f"st_del_{idx}", help="Remove"):
+                lc7.write(f"₹{s.get('rate', 0):,.0f}/kg")
+                lc8.write(f"₹{s.get('amount', 0):,.0f}")
+                if lc9.button("🗑️", key=f"st_del_{idx}", help="Remove"):
                     st.session_state.est_struct.pop(idx)
                     st.rerun()
 
@@ -3263,25 +3274,27 @@ with TAB_NEW:
         if st.session_state.est_fab:
             st.markdown("---")
             st.markdown("**Fabrication services — click ✏️ to edit, 🗑️ to delete**")
-            hc = st.columns([0.5, 3.5, 3.5, 1.2, 1, 1.5, 0.5, 0.5])
+           _fabcols = [0.5, 3.2, 3.0, 1.1, 0.9, 1.4, 1.5, 0.5, 0.5]
+            hc = st.columns(_fabcols)
             for col, lbl in zip(hc, ["#", "Service", "Basis", "Qty", "UOM",
-                                      "Amount", "✏️", "🗑️"]):
+                                      "Rate", "Amount", "✏️", "🗑️"]):
                 col.caption(f"**{lbl}**")
 
             fab_total = 0
             for idx, fs in enumerate(st.session_state.est_fab):
-                c0, c1, c2, c3, c4, c5, c6, c7 = st.columns(
-                    [0.5, 3.5, 3.5, 1.2, 1, 1.5, 0.5, 0.5])
+                c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(_fabcols)
                 c0.write(f"**{idx + 1}**")
                 c1.write(fs.get("service", ""))
                 c2.caption(fs.get("basis", ""))
                 c3.write(f"{fs.get('qty', '')}")
                 c4.write(fs.get("uom", ""))
-                c5.write(f"₹{fs.get('amount', 0):,.0f}")
-                if c6.button("✏️", key=f"efab_{idx}", help=f"Edit row {idx + 1}"):
+                # Unit rate per UOM — for LS lines this equals the amount, which is correct
+                c5.write(f"₹{fs.get('rate', 0):,.0f}")
+                c6.write(f"₹{fs.get('amount', 0):,.0f}")
+                if c7.button("✏️", key=f"efab_{idx}", help=f"Edit row {idx + 1}"):
                     st.session_state["edit_fab_idx"] = idx
                     st.rerun()
-                if c7.button("🗑️", key=f"dfab_{idx}", help=f"Delete row {idx + 1}"):
+                if c8.button("🗑️", key=f"dfab_{idx}", help=f"Delete row {idx + 1}"):
                     st.session_state.est_fab.pop(idx)
                     st.session_state["edit_fab_idx"] = None
                     st.rerun()
