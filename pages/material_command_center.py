@@ -420,8 +420,18 @@ with main_tabs[0]:
         st.info("No rate enquiries raised yet.")
 
 # ============================================================
-# TAB 1: PURCHASE CONSOLE
+# TAB 1: PURCHASE CONSOLE   (full drop-in replacement)
+# ------------------------------------------------------------
+# Replace everything in material_command_center from the line
+#       with main_tabs[1]:
+# up to (but NOT including) the line
+#       # TAB 2: STORES GRN
+# with the block below.
+#
+# Nothing else in the file needs to change. cutoff_90 is still
+# defined here because the Stores GRN tab depends on it.
 # ============================================================
+
 with main_tabs[1]:
     st.subheader("🛒 Purchase Processing")
 
@@ -429,22 +439,130 @@ with main_tabs[1]:
     vendor_options = {v['name']: v for v in vendors_raw}
     vendor_list    = ["--- Choose Vendor ---"] + list(vendor_options.keys())
 
+    # Kept for Tab 2 (Stores GRN), which references cutoff_90
     cutoff_90 = str(date.today() - timedelta(days=90))
+
+    # ── SEARCH & FILTER BAR ──────────────────────────────────
+    PC_KEYS = ["pc_search", "pc_range", "pc_f_group", "pc_f_job",
+               "pc_f_status", "pc_f_raiser", "pc_f_urgent"]
+
+    with st.container(border=True):
+        s1, s2 = st.columns([3, 1])
+        pc_query = s1.text_input(
+            "🔍 Search",
+            placeholder="Indent no, item, specs, job/project, vendor, PO no, group, raised by…",
+            key="pc_search",
+            help="Space-separated words are ANDed. e.g. `107 steel` or `PO-22 anchor`"
+        )
+        pc_range = s2.selectbox(
+            "Period",
+            ["Last 30 days", "Last 90 days", "Last 180 days", "All time"],
+            index=1, key="pc_range"
+        )
+
+        f1, f2, f3, f4, f5 = st.columns(5)
+        pc_group  = f1.selectbox("Material Group", ["All"] + get_material_groups(), key="pc_f_group")
+        pc_job    = f2.selectbox("Job / Project",  ["All"] + get_jobs(),            key="pc_f_job")
+        pc_status = f3.selectbox(
+            "Status",
+            ["All (pending)", "Triggered", "Ordered", "Partial", "Rejected"],
+            key="pc_f_status"
+        )
+        pc_raiser = f4.selectbox("Raised By", ["All"] + get_staff_list(), key="pc_f_raiser")
+        pc_urgent = f5.selectbox("Priority", ["All", "🚨 Urgent only", "Normal only"], key="pc_f_urgent")
+
+        r1, r2 = st.columns([1, 4])
+        if r1.button("♻️ Reset filters", key="pc_reset", use_container_width=True):
+            for k in PC_KEYS:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+        active_bits = []
+        if pc_query:                     active_bits.append(f"“{pc_query}”")
+        if pc_group  != "All":           active_bits.append(pc_group)
+        if pc_job    != "All":           active_bits.append(f"Job {pc_job}")
+        if pc_status != "All (pending)": active_bits.append(pc_status)
+        if pc_raiser != "All":           active_bits.append(pc_raiser)
+        if pc_urgent != "All":           active_bits.append(pc_urgent)
+        if active_bits:
+            r2.caption("Active filters: " + "  •  ".join(active_bits))
+
+    # ── QUERY (server-side filters) ──────────────────────────
+    range_days = {"Last 30 days": 30, "Last 90 days": 90,
+                  "Last 180 days": 180, "All time": None}[pc_range]
+
     try:
-        res_p = conn.table("purchase_orders").select("*") \
-            .neq("status", "Received") \
-            .neq("status", "Rejected") \
-            .neq("status", "Editing") \
-            .gte("created_at", f"{cutoff_90}T00:00:00") \
-            .limit(100).execute()
-        pending_data = res_p.data or []
+        q = conn.table("purchase_orders").select("*").neq("status", "Editing")
+
+        if pc_status == "All (pending)":
+            q = q.neq("status", "Received").neq("status", "Rejected")
+        else:
+            q = q.eq("status", pc_status)
+
+        if range_days:
+            pc_cutoff = str(date.today() - timedelta(days=range_days))
+            q = q.gte("created_at", f"{pc_cutoff}T00:00:00")
+
+        if pc_group != "All":
+            q = q.eq("material_group", pc_group)
+        if pc_raiser != "All":
+            q = q.eq("triggered_by", pc_raiser)
+
+        pending_data = q.order("created_at", desc=True).limit(300).execute().data or []
     except Exception as e:
         st.error(f"Purchase load error: {e}")
         pending_data = []
 
-    if pending_data:
-        df_p = pd.DataFrame(pending_data)
-        df_p['_has_urgent'] = df_p['is_urgent'].fillna(False)
+    # ── CLIENT-SIDE FILTERS (job match, priority, free text) ──
+    df_p = pd.DataFrame(pending_data) if pending_data else pd.DataFrame()
+
+    if not df_p.empty:
+        if 'is_urgent' not in df_p.columns:
+            df_p['is_urgent'] = False
+        df_p['is_urgent'] = df_p['is_urgent'].fillna(False)
+
+        # job_no is stored comma-joined -> substring match
+        if pc_job != "All" and 'job_no' in df_p.columns:
+            df_p = df_p[df_p['job_no'].astype(str).str.contains(pc_job, case=False, na=False)]
+
+        if pc_urgent == "🚨 Urgent only":
+            df_p = df_p[df_p['is_urgent'] == True]
+        elif pc_urgent == "Normal only":
+            df_p = df_p[df_p['is_urgent'] != True]
+
+    if not df_p.empty and pc_query:
+        search_cols = ['indent_no', 'item_name', 'specs', 'job_no', 'po_no',
+                       'purchase_reply', 'material_group', 'triggered_by',
+                       'special_notes', 'units', 'status']
+        use_cols = [c for c in search_cols if c in df_p.columns]
+        blob = (
+            df_p[use_cols].fillna("").astype(str)
+            .agg(" | ".join, axis=1).str.lower()
+        )
+        mask = pd.Series(True, index=df_p.index)
+        for term in pc_query.replace(",", " ").split():
+            t = term.strip().lower().lstrip("#")
+            if t:
+                mask &= blob.str.contains(t, na=False, regex=False)
+        df_p = df_p[mask]
+
+    # ── RESULTS ──────────────────────────────────────────────
+    if df_p.empty:
+        if pending_data:
+            st.info("No items match your search / filters. Try ♻️ Reset filters.")
+        else:
+            st.info(f"No purchase requests found for: {pc_range}.")
+    else:
+        n_items   = len(df_p)
+        n_indents = df_p['indent_no'].nunique() if 'indent_no' in df_p.columns else 0
+        n_urgent  = int(df_p['is_urgent'].sum())
+        st.caption(
+            f"Showing **{n_items}** item{'s' if n_items != 1 else ''} "
+            f"across **{n_indents}** indent{'s' if n_indents != 1 else ''}"
+            + (f"  •  🚨 {n_urgent} urgent" if n_urgent else "")
+        )
+
+        df_p['_has_urgent'] = df_p['is_urgent']
         df_p = df_p.sort_values(by=['_has_urgent', 'indent_no'], ascending=[False, False])
 
         for indent_no, indent_grp in df_p.groupby('indent_no', sort=False):
@@ -707,9 +825,6 @@ with main_tabs[1]:
 
                     if grp_idx < len(mat_groups) - 1:
                         st.markdown("---")
-
-    else:
-        st.info("No pending purchase requests found (last 90 days).")
 
     # ── RATE ENQUIRIES FROM ESTIMATION ───────────────────────
     st.divider()
