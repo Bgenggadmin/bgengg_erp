@@ -55,6 +55,21 @@ ENQUIRY_STATUS       = "Enquiry"          # anchor_projects.status — pre-quote
 # and put the real approved label(s) below. Matching is case-insensitive.
 APPROVED_LEAVE_STATUSES = ["Approved", "Sanctioned", "Granted"]
 
+# --- Staff roster -----------------------------------------------------
+# CONFIRMED 15-Aug-2026: bg_staff_master is EMPTY (0 rows); the live
+# roster is master_staff (19 rows). This report silently reported
+# "everyone present" for its entire life before this was caught.
+# master_staff columns: id, name, role, contact_no, created_at, phone, email
+# NOTE: no department column, and no active/inactive flag — leavers will
+# show as absent forever until one is added.
+STAFF_TABLE = "master_staff"
+
+# Rows in master_staff that aren't a person. Without this they show as
+# absent every single day and train everyone to ignore the report.
+# Confirmed: 'Driver', 'Freelancer' and 'test' have never punched in.
+# 'Admin' does punch in, so it is NOT excluded.
+NON_STAFF_NAMES = ["Driver", "Freelancer", "test"]
+
 # --- Overdue Jobs ---------------------------------------------------
 # A job is "overdue" when its effective delivery date (revised if set,
 # else PO delivery date) is before today AND it's still a live order.
@@ -189,7 +204,7 @@ def as_int_col(s: pd.Series) -> pd.Series:
 # ----------------------------------------------------------------------
 @st.cache_data(ttl=30)
 def get_staff() -> pd.DataFrame:
-    res = conn.table("bg_staff_master").select("*").execute()
+    res = conn.table(STAFF_TABLE).select("*").execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
 
 @st.cache_data(ttl=30)
@@ -283,15 +298,22 @@ def build_absent_today():
             appr = leaves[leaves["status"].apply(lambda s: norm(s) in allowed)]
         on_leave = {norm(n) for n in appr["employee_name"]}
 
+    skip = {norm(x) for x in NON_STAFF_NAMES}
+
     rows = []
     for _, r in staff.iterrows():
         nm = r.get("name")
-        if norm(nm) in present:
+        if norm(nm) in present or norm(nm) in skip:
             continue
+        # NB: pandas turns a null phone into NaN, which is truthy — so
+        # `r.get("phone") or r.get("contact_no")` silently returns NaN.
+        phone = r.get("phone")
+        if is_blank(phone):
+            phone = r.get("contact_no")
         rows.append({
             "Name": nm,
-            "Department": r.get("department"),
             "Role": r.get("role"),
+            "Phone": phone if not is_blank(phone) else "\u2014",
             "Status": "On leave" if norm(nm) in on_leave else "Absent",
         })
 
