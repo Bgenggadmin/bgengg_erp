@@ -8,16 +8,21 @@
 #   - st_supabase_connection  (conn = st.connection("supabase", ...))
 #   - @st.cache_data(ttl=30) on each fetch
 #   - conn.table("...").select("*").execute()  query-builder style
-#   - check_password() gate
 #
-# To add a 4th/5th report later: write one build_* function + one
-# expander block. That's it.
+# Reports:
+#   1. Absent Today          5. Material Shortages
+#   2. Pending Quotes        6. Pending Enquiries   (purchase pipeline)
+#   3. Open Enquiries        7. Pending Orders      (purchase pipeline)
+#   4. Overdue Jobs
+#
+# To add a report later: write one build_* function + one expander
+# block. That's it.
 # ======================================================================
 
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 # ----------------------------------------------------------------------
 # PAGE CONFIG
@@ -65,6 +70,29 @@ OVERDUE_OPEN_STATUS = "Won"
 # To fix: set DISPATCH_DONE_COL to that DATE column's name and rows with a
 # value there will be excluded. Leave as None until confirmed.
 DISPATCH_DONE_COL = None   # e.g. "dispatch_date"
+
+# --- Purchase pipeline (reports 6 & 7) ------------------------------
+# Statuses derived from material_command_center.py, which is the only
+# writer of purchase_orders: Triggered / Editing / Ordered / Partial /
+# Received / Rejected.
+# >>> CONFIRM <<<  run:  select distinct status from purchase_orders;
+# A stray legacy value here silently drops rows from both reports.
+AWAITING_ENQUIRY_STATUSES = ["Triggered", "Editing"]   # raised, no vendor enquiry sent yet
+OPEN_ORDER_STATUSES       = ["Ordered", "Partial"]     # PO placed, material not fully in
+
+# rate_enquiries.status — 'Pending' on insert, 'Quoted' once a rate is saved.
+RATE_ENQ_PENDING_STATUS = "Pending"
+
+# Column recording "we sent this to a vendor". Null = not sent yet.
+ENQUIRY_SENT_COL = "enquiry_sent_at"
+
+# How far back to pull purchase rows. Anything older than this that's
+# still open is almost certainly abandoned data, not a live item.
+PURCHASE_LOOKBACK_DAYS = 180
+
+# Rejected items sitting unrevised are arguably "pending" too. Flip to
+# True to surface them in the awaiting-enquiry table.
+INCLUDE_REJECTED_AS_PENDING = False
 
 TRUNC = 55  # description truncation length
 
@@ -116,6 +144,46 @@ def is_true(v) -> bool:
         return False
     return str(v).strip().lower() in {"true", "t", "yes", "y", "1"}
 
+def is_blank(v) -> bool:
+    """True for None / NaN / NaT / empty-ish strings."""
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip() in ("", "None", "NaT", "nan")
+
+def col(df: pd.DataFrame, name: str, default=None) -> pd.Series:
+    """df[name], or a same-length Series of `default` if the column is
+    absent. Stops one missing column blanking a whole report."""
+    if name in df.columns:
+        return df[name]
+    return pd.Series([default] * len(df), index=df.index)
+
+def clean_trunc(v) -> str:
+    """trunc() but NaN-safe — bare trunc(nan) returns the string 'nan'."""
+    return "" if is_blank(v) else trunc(v)
+
+def fmt_date(val) -> str:
+    d = parse_date(val)
+    return d.strftime("%d-%m-%Y") if d else "\u2014"
+
+def fmt_qty(q, units) -> str:
+    try:
+        s = f"{float(q):g}"
+    except (TypeError, ValueError):
+        s = "\u2014"
+    u = "" if is_blank(units) else str(units)
+    return f"{s} {u}".strip()
+
+def to_num(v, default=0.0) -> float:
+    n = pd.to_numeric(v, errors="coerce")
+    return float(n) if pd.notna(n) else default
+
+def as_int_col(s: pd.Series) -> pd.Series:
+    """Whole-number day counts, blanks left blank (no 12.0 / NaN)."""
+    return pd.to_numeric(s, errors="coerce").astype("Int64")
+
 # ----------------------------------------------------------------------
 # DATA ACCESS LAYER  (your conn.table(...).select(...).execute() idiom)
 # ----------------------------------------------------------------------
@@ -146,6 +214,50 @@ def get_projects() -> pd.DataFrame:
 def get_jobs() -> pd.DataFrame:
     res = conn.table("bg_job_master").select("*").execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+
+@st.cache_data(ttl=30)
+def get_open_purchase_items() -> pd.DataFrame:
+    """All live purchase_orders rows: pre-enquiry AND on-order, one fetch.
+
+    Note purchase_orders holds indent LINE ITEMS from the moment they're
+    raised (status 'Triggered', no PO yet); the same row later becomes
+    the PO. It is not a table of purchase orders only."""
+    cutoff = (date.today() - timedelta(days=PURCHASE_LOOKBACK_DAYS)).isoformat()
+    wanted = list(AWAITING_ENQUIRY_STATUSES) + list(OPEN_ORDER_STATUSES)
+    if INCLUDE_REJECTED_AS_PENDING:
+        wanted.append("Rejected")
+    res = (conn.table("purchase_orders").select("*")
+           .in_("status", wanted)
+           .gte("created_at", f"{cutoff}T00:00:00")
+           .order("created_at", desc=True)
+           .limit(500)
+           .execute())
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+
+@st.cache_data(ttl=30)
+def get_pending_rate_enquiries() -> pd.DataFrame:
+    res = (conn.table("rate_enquiries").select("*")
+           .eq("status", RATE_ENQ_PENDING_STATUS)
+           .order("created_at", desc=True)
+           .limit(200)
+           .execute())
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+
+@st.cache_data(ttl=30)
+def get_grn_for(po_ids: tuple) -> pd.DataFrame:
+    """Receipts against the given purchase_orders.id values. Chunked,
+    because .in_() with a few hundred ids can blow the URL length."""
+    if not po_ids:
+        return pd.DataFrame()
+    frames = []
+    ids = list(po_ids)
+    for i in range(0, len(ids), 100):
+        res = (conn.table("grn_receipts")
+               .select("po_id, received_qty, received_date")
+               .in_("po_id", ids[i:i + 100]).execute())
+        if res.data:
+            frames.append(pd.DataFrame(res.data))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 # ----------------------------------------------------------------------
 # REPORT BUILDERS
@@ -306,6 +418,130 @@ def build_material_shortages():
 
     return proj_df, jobs_df
 
+
+def build_pending_rate_enquiries():
+    """Estimation asked Purchase for a rate; no rate entered yet."""
+    re_df = get_pending_rate_enquiries()
+    if re_df.empty:
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "Item":         col(re_df, "item_name"),
+        "Specs":        col(re_df, "specs", "").apply(clean_trunc),
+        "Qty":          [fmt_qty(q, u) for q, u in
+                         zip(col(re_df, "quantity"), col(re_df, "units"))],
+        "Job":          col(re_df, "job_no", "").apply(
+                            lambda v: "\u2014" if is_blank(v) else v),
+        "Requested by": col(re_df, "requested_by"),
+        "Raised":       col(re_df, "created_at").apply(fmt_date),
+        "Days waiting": col(re_df, "created_at").apply(days_since),
+    })
+    out = out.sort_values("Days waiting", ascending=False,
+                          na_position="last").reset_index(drop=True)
+    out["Days waiting"] = as_int_col(out["Days waiting"])
+    return out
+
+
+def build_awaiting_vendor_enquiry():
+    """Indent items raised but never sent out to a vendor.
+
+    'Editing' rows are included deliberately: the Purchase Console hides
+    them with .neq("status","Editing"), so a row abandoned mid-edit is
+    invisible to purchase. Surfacing them here is the only safety net."""
+    po = get_open_purchase_items()
+    if po.empty or "status" not in po.columns:
+        return pd.DataFrame()
+
+    wanted = list(AWAITING_ENQUIRY_STATUSES)
+    if INCLUDE_REJECTED_AS_PENDING:
+        wanted.append("Rejected")
+    df = po[po["status"].isin(wanted)].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df[col(df, ENQUIRY_SENT_COL).apply(is_blank)]
+    if df.empty:
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "!":            col(df, "is_urgent").apply(
+                            lambda v: "\U0001F6A8" if is_true(v) else ""),
+        "Indent #":     col(df, "indent_no"),
+        "Item":         col(df, "item_name", "").apply(clean_trunc),
+        "Group":        col(df, "material_group"),
+        "Qty":          [fmt_qty(q, u) for q, u in
+                         zip(col(df, "quantity"), col(df, "units"))],
+        "Job":          col(df, "job_no"),
+        "Raised by":    col(df, "triggered_by"),
+        "Status":       col(df, "status"),
+        "Indented":     col(df, "created_at").apply(fmt_date),
+        "Days waiting": col(df, "created_at").apply(days_since),
+    })
+    out = out.sort_values("Days waiting", ascending=False,
+                          na_position="last").reset_index(drop=True)
+    out["Days waiting"] = as_int_col(out["Days waiting"])
+    return out
+
+
+def build_pending_orders():
+    """PO placed, material not fully received. Returns (df, overdue_count)."""
+    po = get_open_purchase_items()
+    if po.empty or "status" not in po.columns:
+        return pd.DataFrame(), 0
+
+    df = po[po["status"].isin(OPEN_ORDER_STATUSES)].copy()
+    if df.empty:
+        return pd.DataFrame(), 0
+
+    # receipts so far, keyed by purchase_orders.id
+    ids = tuple(df["id"].dropna().tolist()) if "id" in df.columns else ()
+    grn = get_grn_for(ids)
+    recd = {}
+    if not grn.empty and "po_id" in grn.columns:
+        g = grn.copy()
+        g["received_qty"] = pd.to_numeric(g["received_qty"], errors="coerce").fillna(0)
+        recd = g.groupby("po_id")["received_qty"].sum().to_dict()
+
+    today = date.today()
+    rows = []
+    for _, r in df.iterrows():
+        qty   = to_num(r.get("quantity"))
+        got   = to_num(recd.get(r.get("id")), 0.0)
+        bal   = max(0.0, qty - got)
+        units = r.get("units")
+
+        exp  = parse_date(r.get("expected_delivery"))
+        late = (today - exp).days if exp else None
+        # po_date is blank on anything confirmed before the Command Center
+        # dates patch — fall back to the indent date so ageing still works.
+        basis = parse_date(r.get("po_date")) or parse_date(r.get("created_at"))
+        age   = (today - basis).days if basis else None
+
+        rows.append({
+            "!":          "\U0001F6A8" if is_true(r.get("is_urgent")) else "",
+            "PO no":      r.get("po_no") if not is_blank(r.get("po_no")) else "\u2014",
+            "Item":       clean_trunc(r.get("item_name")),
+            "Job":        r.get("job_no"),
+            "Vendor":     r.get("purchase_reply") if not is_blank(r.get("purchase_reply")) else "\u2014",
+            "Ordered":    fmt_qty(qty, units),
+            "Received":   fmt_qty(got, units),
+            "Balance":    fmt_qty(bal, units),
+            "Status":     r.get("status"),
+            "Expected":   fmt_date(r.get("expected_delivery")),
+            "Days late":  late if (late is not None and late > 0) else None,
+            "Age (days)": age,
+            "Indent #":   r.get("indent_no"),
+        })
+
+    out = pd.DataFrame(rows)
+    out = out.sort_values(["Days late", "Age (days)"],
+                          ascending=[False, False],
+                          na_position="last").reset_index(drop=True)
+    overdue_n = int(out["Days late"].notna().sum())
+    out["Days late"]  = as_int_col(out["Days late"])
+    out["Age (days)"] = as_int_col(out["Age (days)"])
+    return out, overdue_n
+
 # ----------------------------------------------------------------------
 # PAGE
 # ----------------------------------------------------------------------
@@ -384,3 +620,57 @@ with st.expander("\U0001F4E6  Material Shortages", expanded=True):
                 st.dataframe(df_ms_jobs, use_container_width=True, hide_index=True)
     except Exception as e:
         st.warning(f"Could not build Material Shortages: {e}")
+
+# ---- Pending Enquiries ----
+with st.expander("\U0001F4B0  Pending Enquiries  (nobody has asked a vendor yet)",
+                 expanded=True):
+    try:
+        df_rate = build_pending_rate_enquiries()
+        df_wait = build_awaiting_vendor_enquiry()
+
+        e1, e2 = st.columns(2)
+        e1.metric("Rate enquiries awaiting a quote", len(df_rate))
+        e2.metric("Indent items not yet sent to a vendor", len(df_wait))
+
+        st.markdown("**Rate enquiries \u2014 Estimation is waiting on Purchase**")
+        if df_rate.empty:
+            st.success("No rate enquiries pending.")
+        else:
+            st.dataframe(df_rate, use_container_width=True, hide_index=True)
+
+        st.markdown("**Indent items \u2014 raised, but no vendor enquiry sent**")
+        if df_wait.empty:
+            st.success("Every open indent item has been sent out.")
+        else:
+            st.dataframe(df_wait, use_container_width=True, hide_index=True)
+            st.caption(
+                "Rows showing status 'Editing' are parked mid-edit and are "
+                "hidden from the Purchase Console \u2014 chase or reset them."
+            )
+    except Exception as e:
+        st.warning(f"Could not build Pending Enquiries: {e}")
+
+# ---- Pending Orders ----
+with st.expander("\U0001F69A  Pending Orders  (ordered, not yet fully received)",
+                 expanded=True):
+    try:
+        df_po, overdue_n = build_pending_orders()
+
+        o1, o2 = st.columns(2)
+        o1.metric("Items on order", len(df_po))
+        o2.metric("Past expected delivery", overdue_n,
+                  delta=f"{overdue_n} late" if overdue_n else None,
+                  delta_color="inverse")
+
+        if df_po.empty:
+            st.success("Nothing outstanding \u2014 all POs fully received.")
+        else:
+            st.dataframe(df_po, use_container_width=True, hide_index=True)
+            st.caption(
+                "'Expected' is blank on orders confirmed before the Command "
+                "Center dates patch \u2014 those rows can't be flagged late. "
+                "'Age (days)' falls back to the indent date so the list still "
+                "sorts sensibly."
+            )
+    except Exception as e:
+        st.warning(f"Could not build Pending Orders: {e}")
