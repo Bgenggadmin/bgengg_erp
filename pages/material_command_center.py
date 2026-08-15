@@ -161,29 +161,19 @@ with main_tabs[0]:
             cancel_edit = f_btn1.form_submit_button("❌ Cancel")
 
             if cancel_edit:
+                # Backing out of an edit must put the row back to
+                # Triggered, or it stays invisible to the Purchase Console.
+                stuck_id = (st.session_state.rev_data or {}).get('_edit_id') \
+                    if isinstance(st.session_state.rev_data, dict) else None
+                if stuck_id:
+                    safe_db_write(
+                        lambda: conn.table("purchase_orders")
+                            .update({"status": "Triggered"})
+                            .eq("id", stuck_id).execute(),
+                        error_prefix="Edit cancel error"
+                    )
                 st.session_state.rev_data = None
-                st.rerun()
-
-            if submit_item:
-                if not sel_jobs or not i_name:
-                    st.error("Job and Item Name are required.")
-                elif len(st.session_state.indent_cart) >= 20:
-                    st.warning("⚠️ Draft limit reached (20 items). Please submit before adding more.")
-                else:
-                    st.session_state.indent_cart.append({
-                        "job_no":         ", ".join(sel_jobs),
-                        "material_group": m_grp,
-                        "item_name":      i_name.upper(),
-                        "specs":          i_specs,
-                        "quantity":       i_qty,
-                        "units":          i_unit,
-                        "special_notes":  i_note,
-                        "triggered_by":   raised_by,
-                        "status":         "Triggered",
-                        "is_urgent":      rd.get('is_urgent', False)
-                    })
-                    st.session_state.rev_data = None
-                    st.rerun()
+                st.rerun()                   
 
     # ── PART B: DRAFT LIST ───────────────────────────────────
     if st.session_state.indent_cart:
@@ -203,16 +193,39 @@ with main_tabs[0]:
                     st.session_state.indent_cart.pop(idx)
                     st.rerun()
 
-        if st.button("🚀 FINAL SUBMIT INDENT", type="primary", use_container_width=True):
+         if st.button("🚀 FINAL SUBMIT INDENT", type="primary", use_container_width=True):
             try:
-                header = conn.table("indent_headers").insert({"raised_by": raised_by}).execute()
-                new_id = header.data[0]['indent_no']
-                for item in st.session_state.indent_cart:
-                    item['indent_no'] = new_id
-                    conn.table("purchase_orders").insert(item).execute()
+                cart      = st.session_state.indent_cart
+                new_items = [i for i in cart if not i.get("_edit_id")]
+                edits     = [i for i in cart if i.get("_edit_id")]
+ 
+                # Only mint a new indent header if there's genuinely new
+                # material. An all-edits submit keeps its original indent.
+                new_id = None
+                if new_items:
+                    header = conn.table("indent_headers").insert(
+                        {"raised_by": raised_by}
+                    ).execute()
+                    new_id = header.data[0]['indent_no']
+ 
+                for item in new_items:
+                    payload = {k: v for k, v in item.items() if k != "_edit_id"}
+                    payload['indent_no'] = new_id
+                    conn.table("purchase_orders").insert(payload).execute()
+ 
+                for item in edits:
+                    edit_id = item["_edit_id"]
+                    payload = {k: v for k, v in item.items() if k != "_edit_id"}
+                    payload['status'] = "Triggered"   # release the Editing lock
+                    conn.table("purchase_orders").update(payload).eq("id", edit_id).execute()
+ 
                 st.session_state.indent_cart = []
+                st.session_state.rev_data    = None
                 st.cache_data.clear()
-                st.success("✅ Indent Submitted Successfully!")
+                bits = []
+                if new_items: bits.append(f"{len(new_items)} new item(s)")
+                if edits:     bits.append(f"{len(edits)} updated")
+                st.success("✅ Indent submitted — " + ", ".join(bits))
                 st.rerun()
             except Exception as e:
                 st.error(f"Submission Error: {e}")
@@ -783,24 +796,41 @@ with main_tabs[1]:
                                     value=sel_vendor if sel_vendor != "--- Choose Vendor ---" else "",
                                     key=f"pc_rem_{gkey}"
                                 )
+                                pd_c1, pd_c2 = st.columns(2)
+                                p_date = pd_c1.date_input(
+                                    "PO Date", value=date.today(), key=f"pc_pdate_{gkey}"
+                                )
+                                p_exp = pd_c2.date_input(
+                                    "Expected Delivery",
+                                    value=date.today() + timedelta(days=7),
+                                    key=f"pc_pexp_{gkey}",
+                                    help="Best estimate is fine. Drives the overdue alerts."
+                                )
                                 if st.button("Confirm Order", key=f"pc_ok_{gkey}",
                                              type="primary", use_container_width=True):
-                                    errors = []
-                                    for rid in grp_ids:
-                                        try:
-                                            conn.table("purchase_orders").update({
-                                                "status":           "Ordered",
-                                                "po_no":            p_no,
-                                                "purchase_reply":   p_rem
-                                            }).eq("id", rid).execute()
-                                        except Exception as e:
-                                            errors.append(str(e))
-                                    if errors:
-                                        st.error(f"Errors: {'; '.join(errors)}")
+                                    if not p_no.strip():
+                                        st.warning("PO No is required.")
+                                    elif p_exp < p_date:
+                                        st.warning("Expected delivery is before the PO date.")
                                     else:
-                                        st.success(f"✅ {mat_grp} items ordered!")
-                                        st.cache_data.clear()
-                                        st.rerun()
+                                        errors = []
+                                        for rid in grp_ids:
+                                            try:
+                                                conn.table("purchase_orders").update({
+                                                    "status":            "Ordered",
+                                                    "po_no":             p_no.strip(),
+                                                    "purchase_reply":    p_rem,
+                                                    "po_date":           str(p_date),
+                                                    "expected_delivery": str(p_exp)
+                                                }).eq("id", rid).execute()
+                                            except Exception as e:
+                                                errors.append(str(e))
+                                        if errors:
+                                            st.error(f"Errors: {'; '.join(errors)}")
+                                        else:
+                                            st.success(f"✅ {mat_grp} items ordered!")
+                                            st.cache_data.clear()
+                                            st.rerun()
 
                             with st.expander("🚫 Reject this group"):
                                 rej_r = st.text_area("Rejection reason", key=f"pc_rejr_{gkey}")
