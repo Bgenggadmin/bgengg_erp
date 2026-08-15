@@ -173,7 +173,31 @@ with main_tabs[0]:
                         error_prefix="Edit cancel error"
                     )
                 st.session_state.rev_data = None
-                st.rerun()                   
+                st.rerun()
+
+            if submit_item:
+                if not sel_jobs or not i_name:
+                    st.error("Job and Item Name are required.")
+                elif len(st.session_state.indent_cart) >= 20:
+                    st.warning("⚠️ Draft limit reached (20 items). Please submit before adding more.")
+                else:
+                    st.session_state.indent_cart.append({
+                        "job_no":         ", ".join(sel_jobs),
+                        "material_group": m_grp,
+                        "item_name":      i_name.upper(),
+                        "specs":          i_specs,
+                        "quantity":       i_qty,
+                        "units":          i_unit,
+                        "special_notes":  i_note,
+                        "triggered_by":   raised_by,
+                        "status":         "Triggered",
+                        "is_urgent":      rd.get('is_urgent', False),
+                        # None for a brand-new item; a row id when we're
+                        # editing an existing one (see FINAL SUBMIT).
+                        "_edit_id":       rd.get('_edit_id')
+                    })
+                    st.session_state.rev_data = None
+                    st.rerun()
 
     # ── PART B: DRAFT LIST ───────────────────────────────────
     if st.session_state.indent_cart:
@@ -193,12 +217,12 @@ with main_tabs[0]:
                     st.session_state.indent_cart.pop(idx)
                     st.rerun()
 
-         if st.button("🚀 FINAL SUBMIT INDENT", type="primary", use_container_width=True):
+        if st.button("🚀 FINAL SUBMIT INDENT", type="primary", use_container_width=True):
             try:
                 cart      = st.session_state.indent_cart
                 new_items = [i for i in cart if not i.get("_edit_id")]
                 edits     = [i for i in cart if i.get("_edit_id")]
- 
+
                 # Only mint a new indent header if there's genuinely new
                 # material. An all-edits submit keeps its original indent.
                 new_id = None
@@ -207,18 +231,18 @@ with main_tabs[0]:
                         {"raised_by": raised_by}
                     ).execute()
                     new_id = header.data[0]['indent_no']
- 
+
                 for item in new_items:
                     payload = {k: v for k, v in item.items() if k != "_edit_id"}
                     payload['indent_no'] = new_id
                     conn.table("purchase_orders").insert(payload).execute()
- 
+
                 for item in edits:
                     edit_id = item["_edit_id"]
                     payload = {k: v for k, v in item.items() if k != "_edit_id"}
                     payload['status'] = "Triggered"   # release the Editing lock
                     conn.table("purchase_orders").update(payload).eq("id", edit_id).execute()
- 
+
                 st.session_state.indent_cart = []
                 st.session_state.rev_data    = None
                 st.cache_data.clear()
