@@ -10,24 +10,18 @@
 #   - conn.table("...").select("*").execute()  query-builder style
 #
 # Reports:
-#   PEOPLE     1. Absent Today
-#   PIPELINE   2. Pending Quotes        3. Open Enquiries
-#   DELIVERY   4. Overdue Jobs
-#   MATERIAL   5. Pending Material      6. Pending Orders
-#   FOLLOW-UP  7. Follow-ups Due        8. Decision Gate
-#              9. Follow-up data gaps   (collapsed)
+#   1. Absent Today          5. Follow-ups Due       (quotations)
+#   2. Pending Quotes        6. Decision Gate        (90+ days)
+#   3. Open Enquiries        7. Follow-up data gaps  (housekeeping)
+#   4. Overdue Jobs
 #
-# >>> DELETE pages/15_Material_Status.py <<<
-# Reports 5 and 6 came from that page. If both files exist, the sidebar
-# shows two entries and the same reports render twice.
+# Material reporting lives on pages/15_Material_Status.py — it is NOT
+# here. The old Report 5 (Material Shortages) was retired on 16 Aug 2026
+# when anchor_projects.material_shortage / bg_job_master.is_shortage were
+# confirmed legacy. Do not re-add it.
 #
-# Material reports read ONLY the Material Command Center tables
-# (indent_headers / purchase_orders / grn_receipts). The legacy
-# anchor_projects.material_shortage and bg_job_master.is_shortage signals
-# are deliberately NOT read — they were retired on 16 Aug 2026.
-#
-# Reports 7-9 read v_ap_followups_due. Run quote_followups_schema_v2.sql
-# before deploying, or those sections show a setup message.
+# Reports 5-7 read v_ap_followups_due. Run quote_followups_schema_v2.sql
+# before deploying, or those three sections show a setup message.
 #
 # To add a report later: write one build_* function + one expander block.
 # ======================================================================
@@ -60,13 +54,9 @@ conn = st.connection("supabase", type=SupabaseConnection)
 # ----------------------------------------------------------------------
 # CONFIG  —  >>> CONFIRM THESE LABELS MATCH YOUR DATA <<<
 # ----------------------------------------------------------------------
+PENDING_QUOTE_STATUS = "Quotation Sent"   # anchor_projects.status (confirmed)
+ENQUIRY_STATUS       = "Enquiry"          # anchor_projects.status (confirmed)
 
-# ---- Sales pipeline (anchor_projects.status) -------------------------
-PENDING_QUOTE_STATUS = "Quotation Sent"   # confirmed
-ENQUIRY_STATUS       = "Enquiry"          # confirmed
-OVERDUE_OPEN_STATUS  = "Won"              # "live order"
-
-# ---- Staff -----------------------------------------------------------
 # >>> CHANGED 16 Aug 2026 <<<
 # bg_staff_master has ZERO rows. Absent Today silently reported "everyone
 # present" for its entire existence. The real roster is master_staff (19
@@ -80,9 +70,13 @@ EXCLUDE_STAFF_NAMES = ["driver", "freelancer", "test"]
 
 # leave_requests.status value(s) that mean "granted". Still unconfirmed —
 # run:  select distinct status from leave_requests;
+# and put the real approved label(s) below. Matching is case-insensitive.
 APPROVED_LEAVE_STATUSES = ["Approved", "Sanctioned", "Granted"]
 
-# ---- Delivery --------------------------------------------------------
+# "Live order" = status == 'Won'. Confirmed values:
+# Enquiry / Quotation Sent / Won / Lost.
+OVERDUE_OPEN_STATUS = "Won"
+
 # >>> STILL UNRESOLVED <<<
 # No dispatch/completion signal exists anywhere in the database. Checked
 # all 43 anchor_projects columns, job_gate_history (covers 0 of 58 Won
@@ -91,16 +85,7 @@ APPROVED_LEAVE_STATUSES = ["Approved", "Sanctioned", "Granted"]
 # plausibly live. Set this to a real date column name once one exists.
 DISPATCH_DONE_COL = None   # e.g. "dispatch_date"
 
-# ---- Material (purchase_orders.status, as the Command Center writes) --
-STATUS_AWAITING_PO = "Triggered"   # indented, no PO yet
-STATUS_MID_EDIT    = "Editing"     # locked mid-edit -> hidden from the
-                                   # Purchase Console, so it stalls
-STATUS_ORDERED     = "Ordered"     # PO placed, nothing received
-STATUS_PARTIAL     = "Partial"     # PO placed, part-received
-
-MATERIAL_AGE_WARN = 3   # days an indent can sit with no PO before "aged"
-
-# ---- Quotation follow-up (see quote_followups_schema_v2.sql) ---------
+# Quotation follow-up view (see quote_followups_schema_v2.sql)
 FOLLOWUP_VIEW     = "v_ap_followups_due"
 BUCKET_DUE        = "Due"
 BUCKET_GATE       = "Decision gate"
@@ -109,12 +94,10 @@ BUCKET_NO_DATE    = "No quote date"
 BUCKET_DUP        = "Duplicate row"
 DECISION_GATE_DAY = 90     # display only; the view is the authority
 
-TRUNC = 55  # description / item-name truncation length
+TRUNC = 55  # description truncation length
 
 # ----------------------------------------------------------------------
 # HELPERS
-# One definition each. Where pages 14 and 15 had drifted (blank, is_true)
-# the merged version below is the superset — do not re-paste the originals.
 # ----------------------------------------------------------------------
 def parse_date(val):
     """Raw DB value -> python date, or None if unparseable."""
@@ -134,21 +117,9 @@ def coalesce_date(*vals):
     return None
 
 
-def fmt_date(val) -> str:
-    d = parse_date(val)
-    return d.strftime("%d-%m-%Y") if d else "\u2014"
-
-
 def days_since(val):
     d = parse_date(val)
     return (date.today() - d).days if d else None
-
-
-# days_ago / days_late are the same arithmetic under two names, kept
-# because they read differently at the call site: "waiting N days" vs
-# "N days past the promised date".
-days_ago  = days_since
-days_late = days_since
 
 
 def trunc(text, n: int = TRUNC) -> str:
@@ -180,40 +151,23 @@ def is_true(v) -> bool:
     return str(v).strip().lower() in {"true", "t", "yes", "y", "1"}
 
 
-def num(v, default: float = 0.0) -> float:
-    try:
-        f = float(v)
-        return default if pd.isna(f) else f
-    except (TypeError, ValueError):
-        return default
-
-
-def blank(v, dash: str = "\u2014") -> str:
-    """
-    Null-safe display. Merged from both pages:
-      - real nulls / NaN / NaT            -> dash
-      - the strings 'nan' / 'none' / 'nat' -> dash  (import artefacts)
-      - null-heavy int columns (41.0)      -> '41'
-      - custom dash for 'never contacted' etc.
-    """
-    try:
-        if v is None or pd.isna(v):
-            return dash
-    except (TypeError, ValueError):
-        pass
-    s = str(v).strip()
-    if s.lower() in ("nan", "none", "nat", ""):
-        return dash
-    if s.endswith(".0") and s[:-2].isdigit():
-        return s[:-2]
-    return s
-
-
 def col(df: pd.DataFrame, name: str, default=None) -> pd.Series:
     """Fetch a column that may not exist, without exploding."""
     if name in df.columns:
         return df[name]
     return pd.Series([default] * len(df), index=df.index)
+
+
+def blank(v, dash: str = "\u2014") -> str:
+    """Null-safe display. Null-heavy int columns arrive as floats (41.0)."""
+    try:
+        if v is None or pd.isna(v):
+            return dash
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, float) and float(v).is_integer():
+        return str(int(v))
+    return str(v)
 
 
 def days_txt(v, suffix: str = "d") -> str:
@@ -267,28 +221,6 @@ def get_leaves_covering_today() -> pd.DataFrame:
 def get_projects() -> pd.DataFrame:
     res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
-
-
-@st.cache_data(ttl=30)
-def get_open_purchase_orders() -> pd.DataFrame:
-    """Every purchase_orders row that is not finished or dead."""
-    res = (conn.table("purchase_orders").select("*")
-           .in_("status", [STATUS_AWAITING_PO, STATUS_MID_EDIT,
-                           STATUS_ORDERED, STATUS_PARTIAL])
-           .order("created_at", desc=True)
-           .limit(500).execute())
-    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
-
-
-@st.cache_data(ttl=30)
-def get_grn_totals() -> pd.DataFrame:
-    """Total received qty per purchase_orders.id, from the GRN desk."""
-    res = conn.table("grn_receipts").select("po_id, received_qty").execute()
-    df = pd.DataFrame(res.data) if res.data else pd.DataFrame()
-    if df.empty or "po_id" not in df:
-        return pd.DataFrame(columns=["po_id", "received_qty"])
-    df["received_qty"] = df["received_qty"].apply(num)
-    return df.groupby("po_id", as_index=False)["received_qty"].sum()
 
 
 @st.cache_data(ttl=30)
@@ -425,120 +357,6 @@ def build_overdue_jobs():
                            na_position="last").reset_index(drop=True)
 
 
-def build_pending_material():
-    """Indented material with no PO yet, plus anything stuck mid-edit."""
-    po = get_open_purchase_orders()
-    if po.empty or "status" not in po:
-        return pd.DataFrame(), 0, 0
-
-    df = po[po["status"].astype(str).str.strip()
-            .isin([STATUS_AWAITING_PO, STATUS_MID_EDIT])].copy()
-    if df.empty:
-        return pd.DataFrame(), 0, 0
-
-    df["_urgent"]  = col(df, "is_urgent").apply(is_true)
-    df["_age"]     = pd.to_numeric(
-        col(df, "created_at").apply(days_ago), errors="coerce")
-    df["_editing"] = df["status"].astype(str).str.strip() == STATUS_MID_EDIT
-
-    def stage(r):
-        if r["_editing"]:
-            return "\u26A0\uFE0F Stuck in edit"
-        if pd.notna(r["_age"]) and r["_age"] >= MATERIAL_AGE_WARN:
-            return "Awaiting PO (aged)"
-        return "Awaiting PO"
-
-    def enquiry_flag(v):
-        try:
-            if v is None or pd.isna(v):
-                return "\u2014"
-        except (TypeError, ValueError):
-            pass
-        return "Sent" if str(v).strip() else "\u2014"
-
-    out = pd.DataFrame({
-        "Priority":     df["_urgent"].apply(lambda u: "\U0001F6A8" if u else ""),
-        "Job(s)":       col(df, "job_no").apply(blank),
-        "Item":         col(df, "item_name").apply(trunc),
-        "Group":        col(df, "material_group").apply(blank),
-        "Qty":          df.apply(
-                            lambda r: f"{num(r.get('quantity')):g} "
-                                      f"{r.get('units') or ''}".strip(), axis=1),
-        "Indent #":     col(df, "indent_no").apply(blank),
-        "Raised by":    col(df, "triggered_by").apply(blank),
-        "Indented":     col(df, "created_at").apply(fmt_date),
-        "Days waiting": df["_age"],
-        "Enquiry":      col(df, "enquiry_sent_at").apply(enquiry_flag),
-        "Stage":        df.apply(stage, axis=1),
-    })
-
-    out = (out.assign(_u=df["_urgent"].values)
-              .sort_values(["_u", "Days waiting"],
-                           ascending=[False, False], na_position="last")
-              .drop(columns="_u").reset_index(drop=True))
-
-    awaiting_n = int((~df["_editing"]).sum())
-    stuck_n    = int(df["_editing"].sum())
-    return out, awaiting_n, stuck_n
-
-
-def build_pending_orders():
-    """POs placed but not closed: overdue first, with GRN balances."""
-    po = get_open_purchase_orders()
-    if po.empty or "status" not in po:
-        return pd.DataFrame(), 0
-
-    df = po[po["status"].astype(str).str.strip()
-            .isin([STATUS_ORDERED, STATUS_PARTIAL])].copy()
-    if df.empty:
-        return pd.DataFrame(), 0
-
-    grn  = get_grn_totals()
-    recd = dict(zip(grn["po_id"], grn["received_qty"])) if not grn.empty else {}
-
-    df["_ordered"] = col(df, "quantity").apply(num)
-    df["_recd"]    = col(df, "id").apply(lambda i: num(recd.get(i, 0)))
-    df["_bal"]     = (df["_ordered"] - df["_recd"]).clip(lower=0)
-    df["_late"]    = pd.to_numeric(
-        col(df, "expected_delivery").apply(days_late), errors="coerce")
-    df["_urgent"]  = col(df, "is_urgent").apply(is_true)
-
-    def late_label(d):
-        if d is None or pd.isna(d):
-            return "\U0001F7E1 No date"
-        d = int(d)
-        if d > 0:
-            return f"\U0001F534 {d}d late"
-        if d == 0:
-            return "\U0001F7E0 Due today"
-        return f"\U0001F7E2 {abs(d)}d to go"
-
-    out = pd.DataFrame({
-        "Priority": df["_urgent"].apply(lambda u: "\U0001F6A8" if u else ""),
-        "Job(s)":   col(df, "job_no").apply(blank),
-        "Item":     col(df, "item_name").apply(trunc),
-        "PO no":    col(df, "po_no").apply(blank),
-        "Vendor":   col(df, "purchase_reply").apply(blank),
-        "PO date":  col(df, "po_date").apply(fmt_date),
-        "Expected": col(df, "expected_delivery").apply(fmt_date),
-        "Delivery": df["_late"].apply(late_label),
-        "Ordered":  df.apply(lambda r: f"{r['_ordered']:g}", axis=1),
-        "Received": df.apply(lambda r: f"{r['_recd']:g}", axis=1),
-        "Balance":  df.apply(
-                        lambda r: f"{r['_bal']:g} "
-                                  f"{r.get('units') or ''}".strip(), axis=1),
-        "Status":   col(df, "status"),
-    })
-
-    out = (out.assign(_u=df["_urgent"].values, _l=df["_late"].values)
-              .sort_values(["_u", "_l"],
-                           ascending=[False, False], na_position="last")
-              .drop(columns=["_u", "_l"]).reset_index(drop=True))
-
-    overdue_n = int((pd.to_numeric(df["_late"], errors="coerce") > 0).sum())
-    return out, overdue_n
-
-
 def _fu_frame(bucket: str) -> pd.DataFrame:
     df = get_followups_due()
     if df.empty or "bucket" not in df.columns:
@@ -650,11 +468,6 @@ if st.button("\U0001F504 Refresh data"):
     st.cache_data.clear()
     st.rerun()
 
-# ======================================================================
-# PEOPLE
-# ======================================================================
-st.subheader("People")
-
 # ---- 1. Absent Today ----
 with st.expander("\U0001F64B  Absent Today", expanded=True):
     try:
@@ -669,11 +482,6 @@ with st.expander("\U0001F64B  Absent Today", expanded=True):
         st.caption(f"Roster source: `{STAFF_TABLE}`")
     except Exception as e:
         st.warning(f"Could not build Absent Today: {e}")
-
-# ======================================================================
-# SALES PIPELINE
-# ======================================================================
-st.subheader("Sales pipeline")
 
 # ---- 2. Pending Quotes ----
 with st.expander("\U0001F4E8  Pending Quotes  (Quotation Sent)", expanded=True):
@@ -699,11 +507,6 @@ with st.expander("\U0001F4E5  Open Enquiries  (not yet quoted)", expanded=True):
     except Exception as e:
         st.warning(f"Could not build Open Enquiries: {e}")
 
-# ======================================================================
-# DELIVERY
-# ======================================================================
-st.subheader("Delivery")
-
 # ---- 4. Overdue Jobs ----
 with st.expander("\u23F0  Overdue Jobs  (Won, past delivery date)", expanded=True):
     try:
@@ -722,55 +525,7 @@ with st.expander("\u23F0  Overdue Jobs  (Won, past delivery date)", expanded=Tru
     except Exception as e:
         st.warning(f"Could not build Overdue Jobs: {e}")
 
-# ======================================================================
-# MATERIAL  (source: Material Command Center)
-# ======================================================================
-st.subheader("Material")
-
-# ---- 5. Pending Material ----
-with st.expander("\U0001F4E6  Pending Material  (indented, no PO yet)",
-                 expanded=True):
-    try:
-        df_pm, awaiting_n, stuck_n = build_pending_material()
-        m1, m2 = st.columns(2)
-        m1.metric("Awaiting a PO", awaiting_n)
-        m2.metric("Stuck in edit", stuck_n)
-        if stuck_n:
-            st.warning(
-                f"{stuck_n} item(s) are in 'Editing' \u2014 the Purchase "
-                "Console hides these, so they will not be actioned until "
-                "someone resumes or resets them in the Indent tab."
-            )
-        if df_pm.empty:
-            st.success("No indented material is waiting for a PO.")
-        else:
-            st.dataframe(df_pm, use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.warning(f"Could not build Pending Material: {e}")
-
-# ---- 6. Pending Orders ----
-with st.expander("\U0001F69A  Pending Orders  (PO placed, not received)",
-                 expanded=True):
-    try:
-        df_po, overdue_n = build_pending_orders()
-        m1, m2 = st.columns(2)
-        m1.metric("Open POs", len(df_po))
-        m2.metric("Past expected delivery", overdue_n,
-                  delta=f"{overdue_n} late" if overdue_n else None,
-                  delta_color="inverse")
-        if df_po.empty:
-            st.success("No open purchase orders awaiting delivery.")
-        else:
-            st.dataframe(df_po, use_container_width=True, hide_index=True)
-    except Exception as e:
-        st.warning(f"Could not build Pending Orders: {e}")
-
-# ======================================================================
-# QUOTATION FOLLOW-UP  (source: v_ap_followups_due)
-# ======================================================================
-st.subheader("Quotation follow-up")
-
-# ---- 7. Follow-ups Due ----
+# ---- 5. Follow-ups Due ----
 with st.expander("\U0001F4DE  Follow-ups Due  (quotations)", expanded=True):
     try:
         df_all = get_followups_due()
@@ -801,7 +556,7 @@ with st.expander("\U0001F4DE  Follow-ups Due  (quotations)", expanded=True):
     except Exception as e:
         st.warning(f"Could not build Follow-ups Due: {e}")
 
-# ---- 8. Decision Gate ----
+# ---- 6. Decision Gate ----
 with st.expander(f"\u2696\uFE0F  Decision Gate  ({DECISION_GATE_DAY}+ days old)",
                  expanded=True):
     try:
@@ -819,7 +574,7 @@ with st.expander(f"\u2696\uFE0F  Decision Gate  ({DECISION_GATE_DAY}+ days old)"
     except Exception as e:
         st.warning(f"Could not build Decision Gate: {e}")
 
-# ---- 9. Follow-up data gaps ----
+# ---- 7. Follow-up data gaps ----
 with st.expander("\U0001F9F9  Follow-up data gaps", expanded=False):
     try:
         df_gaps = build_followup_gaps()
