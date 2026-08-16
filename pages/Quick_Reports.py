@@ -1,14 +1,30 @@
-# pages/15_Material_Status.py
+# pages/14_Quick_Reports.py
 # ======================================================================
-# B&G Engineering ERP — Material Status
+# B&G Engineering ERP — Quick Reports
 #
-# Two read-only reports, sourced ONLY from the Material Command Center
-# (indent_headers / purchase_orders / grn_receipts):
+# Four read-only reports across two source systems.
+#
+# MATERIAL — Material Command Center
+#            (indent_headers / purchase_orders / grn_receipts):
 #   1. Pending Material  — indented, no PO raised yet
 #   2. Pending Orders    — PO raised, not yet fully received
 #
+# QUOTATIONS — Anchor Portal (anchor_projects / quote_followups):
+#   3. Quotations Sent    — issued to the client, awaiting a decision.
+#                           Shows follow-up state and what to chase today.
+#   4. Quotations Pending — enquiry logged, quote NOT yet issued.
+#
 # The old anchor_projects.material_shortage and bg_job_master.is_shortage
 # signals are legacy and are deliberately NOT read here.
+#
+# Report 3 reads the view v_ap_followups_due, which computes the
+# follow-up cadence in SQL so this page and the Monday Cowork brief can
+# never disagree. Run quote_followups_schema.sql before deploying.
+# Follow-ups are LOGGED in 01_Anchor_Portal.py (Pipeline tab) — this page
+# only reports. If nobody logs a call, every quote reads "Due" forever.
+#
+# >>> This file replaces pages/15_Material_Status.py. Delete that file,
+# >>> or the material reports render twice in the sidebar.
 # ======================================================================
 
 import streamlit as st
@@ -19,25 +35,25 @@ from datetime import date, datetime
 # ----------------------------------------------------------------------
 # PAGE CONFIG
 # ----------------------------------------------------------------------
-st.set_page_config(page_title="Material Status | BGEngg ERP",
-                   layout="wide", page_icon="\U0001F4E6")
+st.set_page_config(page_title="Quick Reports | BGEngg ERP",
+                   layout="wide", page_icon="\U0001F4CB")
 
 # ----------------------------------------------------------------------
-# PASSWORD GATE — currently off, matching 14_Quick_Reports.py.
+# PASSWORD GATE — currently off.
 # To restore it, un-comment this block:
 #
 # def check_password() -> bool:
 #     def _verify():
-#         if st.session_state.get("ms_password") == st.secrets.get("APP_PASSWORD"):
+#         if st.session_state.get("qr_password") == st.secrets.get("APP_PASSWORD"):
 #             st.session_state["password_correct"] = True
-#             st.session_state.pop("ms_password", None)
+#             st.session_state.pop("qr_password", None)
 #         else:
 #             st.session_state["password_correct"] = False
 #
 #     if st.session_state.get("password_correct"):
 #         return True
 #     st.text_input("\U0001F511 Enter Master Password", type="password",
-#                   on_change=_verify, key="ms_password")
+#                   on_change=_verify, key="qr_password")
 #     if st.session_state.get("password_correct") is False:
 #         st.error("\U0001F623 Password incorrect")
 #     return False
@@ -52,7 +68,7 @@ st.set_page_config(page_title="Material Status | BGEngg ERP",
 conn = st.connection("supabase", type=SupabaseConnection)
 
 # ----------------------------------------------------------------------
-# CONFIG  —  >>> CONFIRM THESE MATCH YOUR DATA <<<
+# CONFIG — MATERIAL  —  >>> CONFIRM THESE MATCH YOUR DATA <<<
 # purchase_orders.status values, exactly as the Command Center writes them.
 # ----------------------------------------------------------------------
 STATUS_AWAITING_PO = "Triggered"   # indented, no PO yet
@@ -63,6 +79,41 @@ STATUS_PARTIAL     = "Partial"     # PO placed, part-received
 
 MATERIAL_AGE_WARN = 3    # days an indent can sit with no PO before we tag it
 TRUNC             = 55   # item-name truncation length
+
+# ----------------------------------------------------------------------
+# CONFIG — QUOTATIONS  —  >>> CONFIRM THESE MATCH YOUR DATA <<<
+# anchor_projects.status values, confirmed:
+#   Enquiry (3) / Quotation Sent (46) / Won (45) / Lost (17)
+# ----------------------------------------------------------------------
+# Quote not yet issued to the client. 'Estimation' is in PIPELINE_STAGES
+# in 01_Anchor_Portal.py but currently has zero rows — included so the
+# report doesn't silently miss them once estimation starts being used.
+NOT_YET_QUOTED = ["Enquiry", "Estimation"]
+
+# Days an enquiry can sit without a quote before it's flagged. A working
+# assumption, not a measured number — adjust once you know your real
+# estimation turnaround.
+QUOTE_AGE_WARN = 7
+
+# Follow-up view. The cadence ladder lives in SQL; these are display
+# labels only — change them ONLY if you change the view's CASE expression.
+FOLLOWUP_VIEW    = "v_ap_followups_due"
+BUCKET_DUE       = "Due"
+BUCKET_SCHEDULED = "Scheduled"
+BUCKET_GATE      = "Decision gate"
+BUCKET_NO_PHONE  = "No contact details"
+BUCKET_NO_DATE   = "No quote date"
+BUCKET_DUP       = "Duplicate row"
+
+# Sort priority — what needs a human first.
+BUCKET_ORDER = {
+    BUCKET_GATE:      0,
+    BUCKET_DUE:       1,
+    BUCKET_NO_PHONE:  2,
+    BUCKET_NO_DATE:   3,
+    BUCKET_DUP:       4,
+    BUCKET_SCHEDULED: 5,
+}
 
 # ----------------------------------------------------------------------
 # HELPERS
@@ -124,6 +175,49 @@ def days_late(val):
     d = parse_date(val)
     return (date.today() - d).days if d else None
 
+
+# ---- added for the quotation reports ---------------------------------
+def fmt_money(v) -> str:
+    """NaN survives float(), so it must be checked explicitly or nulls
+    render as 'Rs nan'. estimated_value is null on several open quotes."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "\u2014"
+    return "\u2014" if pd.isna(f) else f"\u20B9 {f:,.0f}"
+
+
+def col(df: pd.DataFrame, name: str, default=None) -> pd.Series:
+    """Fetch a column that may not exist, without exploding.
+    df.get() returns None for a missing column, which then blows up
+    inside pd.DataFrame({...}); this returns an aligned Series instead."""
+    if name in df.columns:
+        return df[name]
+    return pd.Series([default] * len(df), index=df.index)
+
+
+def days_txt(v, suffix: str = "d") -> str:
+    n = pd.to_numeric(v, errors="coerce")
+    return f"{int(n)}{suffix}" if pd.notna(n) else "\u2014"
+
+
+def outcome_txt(v) -> str:
+    """blank() but with a meaningful placeholder for an empty history."""
+    s = blank(v)
+    return "never contacted" if s == "\u2014" else s
+
+
+def contact_txt(row) -> str:
+    """NaN is truthy, so str(v or '') yields the literal 'nan' on null
+    columns. Route through blank() instead."""
+    person = blank(row.get("contact_person"))
+    phone  = blank(row.get("contact_phone"))
+    person = "" if person == "\u2014" else person
+    phone  = "" if phone  == "\u2014" else phone
+    if person and phone:
+        return f"{person} \u00B7 {phone}"
+    return person or phone or "\u26A0\uFE0F none"
+
 # ----------------------------------------------------------------------
 # DATA ACCESS LAYER
 # ----------------------------------------------------------------------
@@ -148,8 +242,25 @@ def get_grn_totals() -> pd.DataFrame:
     df["received_qty"] = df["received_qty"].apply(num)
     return df.groupby("po_id", as_index=False)["received_qty"].sum()
 
+
+@st.cache_data(ttl=30)
+def get_followups() -> pd.DataFrame:
+    """
+    Every 'Quotation Sent' row with cadence state already computed:
+    attempts, last_outcome, due_date, quote_age_days, bucket.
+    Empty frame if the view hasn't been created yet.
+    """
+    res = conn.table(FOLLOWUP_VIEW).select("*").execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+
+
+@st.cache_data(ttl=30)
+def get_projects() -> pd.DataFrame:
+    res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+
 # ----------------------------------------------------------------------
-# REPORT BUILDERS
+# REPORT BUILDERS — MATERIAL
 # ----------------------------------------------------------------------
 def build_pending_material():
     """Indented material with no PO yet, plus anything stuck mid-edit."""
@@ -266,17 +377,127 @@ def build_pending_orders():
     return out, overdue_n
 
 # ----------------------------------------------------------------------
+# REPORT BUILDERS — QUOTATIONS
+# ----------------------------------------------------------------------
+def build_quotations_sent():
+    """
+    Every open quotation with its follow-up state, action-needed first.
+    Returns (table, counts dict).
+    """
+    df = get_followups()
+    if df.empty or "bucket" not in df:
+        return pd.DataFrame(), {}
+
+    df = df.copy()
+    df["_age"]  = pd.to_numeric(col(df, "quote_age_days"), errors="coerce")
+    df["_over"] = pd.to_numeric(col(df, "days_until_due"), errors="coerce")
+    df["_rank"] = df["bucket"].map(BUCKET_ORDER).fillna(9)
+
+    def action(r):
+        b = r["bucket"]
+        if b == BUCKET_GATE:
+            att = int(num(r.get("attempts")))
+            return ("Decide: Won or Lost" if att
+                    else "Never chased \u2014 last attempt")
+        if b == BUCKET_DUE:
+            o = r["_over"]
+            return (f"Chase \u2014 {int(-o)}d overdue"
+                    if pd.notna(o) and o < 0 else "Chase today")
+        if b == BUCKET_NO_PHONE:
+            return "Add contact details"
+        if b == BUCKET_NO_DATE:
+            return "Set a quote date"
+        if b == BUCKET_DUP:
+            return "Duplicate \u2014 mark one Lost"
+        return f"Next: {fmt_date(r.get('due_date'))}"
+
+    out = pd.DataFrame({
+        "Stage":        df["bucket"].apply(blank),
+        "Action":       df.apply(action, axis=1),
+        "Client":       col(df, "client_name"),
+        "Quote ref":    col(df, "quote_ref").apply(blank),
+        "Project":      col(df, "project_description").apply(trunc),
+        "Est. value":   col(df, "estimated_value").apply(fmt_money),
+        "Quote date":   col(df, "quote_date").apply(fmt_date),
+        "Age":          df["_age"].apply(days_txt),
+        "Attempts":     col(df, "attempts").apply(blank),
+        "Last outcome": col(df, "last_outcome").apply(outcome_txt),
+        "Anchor":       col(df, "anchor_person").apply(blank),
+        "Contact":      df.apply(contact_txt, axis=1),
+    })
+
+    out = (out.assign(_r=df["_rank"].values, _a=df["_age"].values)
+              .sort_values(["_r", "_a"], ascending=[True, False],
+                           na_position="last")
+              .drop(columns=["_r", "_a"]).reset_index(drop=True))
+
+    attempts = pd.to_numeric(col(df, "attempts"), errors="coerce").fillna(0)
+    counts = {
+        "total":   len(df),
+        "due":     int((df["bucket"] == BUCKET_DUE).sum()),
+        "gate":    int((df["bucket"] == BUCKET_GATE).sum()),
+        "never":   int((attempts == 0).sum()),
+        "blocked": int(df["bucket"].isin(
+                       [BUCKET_NO_PHONE, BUCKET_NO_DATE, BUCKET_DUP]).sum()),
+        "value":   float(pd.to_numeric(col(df, "estimated_value"),
+                                       errors="coerce").fillna(0).sum()),
+    }
+    return out, counts
+
+
+def build_quotations_pending():
+    """Enquiries logged but no quote issued yet."""
+    proj = get_projects()
+    if proj.empty or "status" not in proj:
+        return pd.DataFrame(), 0
+
+    df = proj[proj["status"].astype(str).str.strip()
+              .isin(NOT_YET_QUOTED)].copy()
+    if df.empty:
+        return pd.DataFrame(), 0
+
+    df["_wait"] = pd.to_numeric(
+        col(df, "enquiry_date").apply(days_ago), errors="coerce")
+
+    def flag(w):
+        if pd.isna(w):
+            return "\u26A0\uFE0F No enquiry date"
+        return (f"\U0001F534 {int(w)}d waiting" if w >= QUOTE_AGE_WARN
+                else f"\U0001F7E2 {int(w)}d")
+
+    out = pd.DataFrame({
+        "Waiting":      df["_wait"].apply(flag),
+        "Client":       col(df, "client_name"),
+        "Project":      col(df, "project_description").apply(trunc),
+        "Stage":        col(df, "status").apply(blank),
+        "Enquiry date": col(df, "enquiry_date").apply(fmt_date),
+        "Est. value":   col(df, "estimated_value").apply(fmt_money),
+        "Drawing":      col(df, "drawing_status").apply(blank),
+        "Contact":      df.apply(contact_txt, axis=1),
+        "Anchor":       col(df, "anchor_person").apply(blank),
+    })
+
+    out = (out.assign(_s=df["_wait"].values)
+              .sort_values("_s", ascending=False, na_position="first")
+              .drop(columns="_s").reset_index(drop=True))
+
+    aged_n = int((df["_wait"] >= QUOTE_AGE_WARN).sum())
+    return out, aged_n
+
+# ----------------------------------------------------------------------
 # PAGE
 # ----------------------------------------------------------------------
-st.title("\U0001F4E6 Material Status")
+st.title("\U0001F4CB Quick Reports")
 st.caption(f"Live snapshot \u00B7 {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
-           " \u00B7 source: Material Command Center")
+           " \u00B7 sources: Material Command Center \u00B7 Anchor Portal")
 
 if st.button("\U0001F504 Refresh data"):
     st.cache_data.clear()
     st.rerun()
 
-# ---- Pending Material (indented, not yet ordered) ----
+st.subheader("Material")
+
+# ---- 1. Pending Material (indented, not yet ordered) ----
 with st.expander("\U0001F4E6  Pending Material  (indented, no PO yet)",
                  expanded=True):
     try:
@@ -297,7 +518,7 @@ with st.expander("\U0001F4E6  Pending Material  (indented, no PO yet)",
     except Exception as e:
         st.warning(f"Could not build Pending Material: {e}")
 
-# ---- Pending Orders (PO placed, not fully received) ----
+# ---- 2. Pending Orders (PO placed, not fully received) ----
 with st.expander("\U0001F69A  Pending Orders  (PO placed, not received)",
                  expanded=True):
     try:
@@ -313,3 +534,56 @@ with st.expander("\U0001F69A  Pending Orders  (PO placed, not received)",
             st.dataframe(df_po, use_container_width=True, hide_index=True)
     except Exception as e:
         st.warning(f"Could not build Pending Orders: {e}")
+
+st.subheader("Quotations")
+
+# ---- 3. Quotations Sent (follow-up) ----
+with st.expander("\U0001F4DE  Quotations Sent  \u2014 follow-up", expanded=True):
+    try:
+        df_sent, c = build_quotations_sent()
+        if df_sent.empty:
+            st.info(
+                f"No data from `{FOLLOWUP_VIEW}`. Run "
+                "`quote_followups_schema.sql` first. If you already have, "
+                "check the view is readable by the API role:  "
+                f"`grant select on {FOLLOWUP_VIEW} to anon, authenticated;`"
+            )
+        else:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Chase today", c["due"])
+            m2.metric("Past 90 days", c["gate"])
+            m3.metric("Never contacted", c["never"])
+            m4.metric("Open quotations", c["total"])
+            st.caption(
+                f"\u20B9 {c['value']:,.0f} of quoted value open \u00B7 "
+                f"{c['blocked']} row(s) blocked on missing data"
+            )
+            st.dataframe(df_sent, use_container_width=True, hide_index=True)
+            st.caption(
+                "Sorted by what needs a human first. Log the call in the "
+                "Anchor Portal (Pipeline tab) once you've made it \u2014 that "
+                "is what advances the next due date."
+            )
+    except Exception as e:
+        st.warning(f"Could not build Quotations Sent: {e}")
+
+# ---- 4. Quotations Pending (not yet sent) ----
+with st.expander("\u270D\uFE0F  Quotations Pending  (not yet sent to client)",
+                 expanded=True):
+    try:
+        df_pend, aged_n = build_quotations_pending()
+        m1, m2 = st.columns(2)
+        m1.metric("Awaiting a quote", len(df_pend))
+        m2.metric(f"Waiting {QUOTE_AGE_WARN}+ days", aged_n,
+                  delta=f"{aged_n} aged" if aged_n else None,
+                  delta_color="inverse")
+        if df_pend.empty:
+            st.success("Every logged enquiry has been quoted.")
+        else:
+            st.dataframe(df_pend, use_container_width=True, hide_index=True)
+            st.caption(
+                "Statuses counted as not-yet-quoted: "
+                + ", ".join(f"`{s}`" for s in NOT_YET_QUOTED)
+            )
+    except Exception as e:
+        st.warning(f"Could not build Quotations Pending: {e}")
