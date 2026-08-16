@@ -1,26 +1,92 @@
+# pages/15_Material_Status.py
 # ======================================================================
-# MATERIAL REPORTS  —  sourced ONLY from the Material Command Center
-# (indent_headers / purchase_orders / grn_receipts).
+# B&G Engineering ERP — Material Status
+#
+# Two read-only reports, sourced ONLY from the Material Command Center
+# (indent_headers / purchase_orders / grn_receipts):
+#   1. Pending Material  — indented, no PO raised yet
+#   2. Pending Orders    — PO raised, not yet fully received
 #
 # The old anchor_projects.material_shortage and bg_job_master.is_shortage
-# signals are legacy and are NOT read here.
+# signals are legacy and are deliberately NOT read here.
 # ======================================================================
 
-# ---- CONFIG (add near the other constants at the top of the file) ----
+import streamlit as st
+from st_supabase_connection import SupabaseConnection
+import pandas as pd
+from datetime import date, datetime
 
+# ----------------------------------------------------------------------
+# PAGE CONFIG
+# ----------------------------------------------------------------------
+st.set_page_config(page_title="Material Status | BGEngg ERP",
+                   layout="wide", page_icon="\U0001F4E6")
+
+# ----------------------------------------------------------------------
+# PASSWORD GATE — currently off, matching 14_Quick_Reports.py.
+# To restore it, un-comment this block:
+#
+# def check_password() -> bool:
+#     def _verify():
+#         if st.session_state.get("ms_password") == st.secrets.get("APP_PASSWORD"):
+#             st.session_state["password_correct"] = True
+#             st.session_state.pop("ms_password", None)
+#         else:
+#             st.session_state["password_correct"] = False
+#
+#     if st.session_state.get("password_correct"):
+#         return True
+#     st.text_input("\U0001F511 Enter Master Password", type="password",
+#                   on_change=_verify, key="ms_password")
+#     if st.session_state.get("password_correct") is False:
+#         st.error("\U0001F623 Password incorrect")
+#     return False
+#
+# if not check_password():
+#     st.stop()
+# ----------------------------------------------------------------------
+
+# ----------------------------------------------------------------------
+# DATABASE CONNECTION
+# ----------------------------------------------------------------------
+conn = st.connection("supabase", type=SupabaseConnection)
+
+# ----------------------------------------------------------------------
+# CONFIG  —  >>> CONFIRM THESE MATCH YOUR DATA <<<
 # purchase_orders.status values, exactly as the Command Center writes them.
+# ----------------------------------------------------------------------
 STATUS_AWAITING_PO = "Triggered"   # indented, no PO yet
 STATUS_MID_EDIT    = "Editing"     # locked by an in-progress edit -> hidden
                                    # from the Purchase Console, so it stalls
 STATUS_ORDERED     = "Ordered"     # PO placed, nothing received
 STATUS_PARTIAL     = "Partial"     # PO placed, part-received
 
-# How many days an item can sit before we call it out.
-MATERIAL_AGE_WARN = 3    # days since indent with no PO
-EDIT_STUCK_WARN   = 1    # days sat in "Editing"
+MATERIAL_AGE_WARN = 3    # days an indent can sit with no PO before we tag it
+TRUNC             = 55   # item-name truncation length
+
+# ----------------------------------------------------------------------
+# HELPERS
+# ----------------------------------------------------------------------
+def parse_date(val):
+    """Raw DB value -> python date, or None if unparseable."""
+    try:
+        parsed = pd.to_datetime(val)
+        return parsed.date() if pd.notnull(parsed) else None
+    except Exception:
+        return None
 
 
-# ---- HELPERS (skip any you already have) -----------------------------
+def fmt_date(val) -> str:
+    d = parse_date(val)
+    return d.strftime("%d-%m-%Y") if d else "\u2014"
+
+
+def trunc(text, n: int = TRUNC) -> str:
+    if not text:
+        return ""
+    text = str(text)
+    return text[:n] + ("\u2026" if len(text) > n else "")
+
 
 def is_true(v) -> bool:
     """Supabase sometimes hands booleans back as text. Normalise."""
@@ -58,9 +124,9 @@ def days_late(val):
     d = parse_date(val)
     return (date.today() - d).days if d else None
 
-
-# ---- DATA ACCESS -----------------------------------------------------
-
+# ----------------------------------------------------------------------
+# DATA ACCESS LAYER
+# ----------------------------------------------------------------------
 @st.cache_data(ttl=30)
 def get_open_purchase_orders() -> pd.DataFrame:
     """Every purchase_orders row that is not finished or dead."""
@@ -82,9 +148,9 @@ def get_grn_totals() -> pd.DataFrame:
     df["received_qty"] = df["received_qty"].apply(num)
     return df.groupby("po_id", as_index=False)["received_qty"].sum()
 
-
-# ---- BUILDERS --------------------------------------------------------
-
+# ----------------------------------------------------------------------
+# REPORT BUILDERS
+# ----------------------------------------------------------------------
 def build_pending_material():
     """Indented material with no PO yet, plus anything stuck mid-edit."""
     po = get_open_purchase_orders()
@@ -111,26 +177,24 @@ def build_pending_material():
         return "Awaiting PO"
 
     def enquiry_flag(v):
-        return "Sent" if (v is not None and not pd.isna(v) and str(v).strip()) \
-            else "\u2014"
+        return "Sent" if (v is not None and not pd.isna(v)
+                          and str(v).strip()) else "\u2014"
 
     out = pd.DataFrame({
-        "Priority":   df["_urgent"].apply(lambda u: "\U0001F6A8" if u else ""),
-        "Job(s)":     df.get("job_no").apply(blank),
-        "Item":       df.get("item_name").apply(trunc),
-        "Group":      df.get("material_group").apply(blank),
-        "Qty":        df.apply(
-                          lambda r: f"{num(r.get('quantity')):g} "
-                                    f"{r.get('units') or ''}".strip(), axis=1),
-        "Indent #":   df.get("indent_no").apply(blank),
-        "Raised by":  df.get("triggered_by").apply(blank),
-        "Indented":   df.get("created_at").apply(
-                          lambda v: (parse_date(v).strftime("%d-%m-%Y")
-                                     if parse_date(v) else "\u2014")),
+        "Priority":     df["_urgent"].apply(lambda u: "\U0001F6A8" if u else ""),
+        "Job(s)":       df.get("job_no").apply(blank),
+        "Item":         df.get("item_name").apply(trunc),
+        "Group":        df.get("material_group").apply(blank),
+        "Qty":          df.apply(
+                            lambda r: f"{num(r.get('quantity')):g} "
+                                      f"{r.get('units') or ''}".strip(), axis=1),
+        "Indent #":     df.get("indent_no").apply(blank),
+        "Raised by":    df.get("triggered_by").apply(blank),
+        "Indented":     df.get("created_at").apply(fmt_date),
         "Days waiting": df["_age"],
-        "Enquiry":    df.get("enquiry_sent_at").apply(enquiry_flag)
-                      if "enquiry_sent_at" in df else "\u2014",
-        "Stage":      df.apply(stage, axis=1),
+        "Enquiry":      df.get("enquiry_sent_at").apply(enquiry_flag)
+                        if "enquiry_sent_at" in df else "\u2014",
+        "Stage":        df.apply(stage, axis=1),
     })
 
     out = (out.assign(_u=df["_urgent"].values)
@@ -154,7 +218,7 @@ def build_pending_orders():
     if df.empty:
         return pd.DataFrame(), 0
 
-    grn = get_grn_totals()
+    grn  = get_grn_totals()
     recd = dict(zip(grn["po_id"], grn["received_qty"])) if not grn.empty else {}
 
     df["_ordered"] = df.get("quantity").apply(num)
@@ -177,24 +241,20 @@ def build_pending_orders():
         return f"\U0001F7E2 {abs(d)}d to go"
 
     out = pd.DataFrame({
-        "Priority":  df["_urgent"].apply(lambda u: "\U0001F6A8" if u else ""),
-        "Job(s)":    df.get("job_no").apply(blank),
-        "Item":      df.get("item_name").apply(trunc),
-        "PO no":     df.get("po_no").apply(blank),
-        "Vendor":    df.get("purchase_reply").apply(blank),
-        "PO date":   df.get("po_date").apply(
-                         lambda v: (parse_date(v).strftime("%d-%m-%Y")
-                                    if parse_date(v) else "\u2014")),
-        "Expected":  df.get("expected_delivery").apply(
-                         lambda v: (parse_date(v).strftime("%d-%m-%Y")
-                                    if parse_date(v) else "\u2014")),
-        "Delivery":  df["_late"].apply(late_label),
-        "Ordered":   df.apply(lambda r: f"{r['_ordered']:g}", axis=1),
-        "Received":  df.apply(lambda r: f"{r['_recd']:g}", axis=1),
-        "Balance":   df.apply(
-                         lambda r: f"{r['_bal']:g} "
-                                   f"{r.get('units') or ''}".strip(), axis=1),
-        "Status":    df.get("status"),
+        "Priority": df["_urgent"].apply(lambda u: "\U0001F6A8" if u else ""),
+        "Job(s)":   df.get("job_no").apply(blank),
+        "Item":     df.get("item_name").apply(trunc),
+        "PO no":    df.get("po_no").apply(blank),
+        "Vendor":   df.get("purchase_reply").apply(blank),
+        "PO date":  df.get("po_date").apply(fmt_date),
+        "Expected": df.get("expected_delivery").apply(fmt_date),
+        "Delivery": df["_late"].apply(late_label),
+        "Ordered":  df.apply(lambda r: f"{r['_ordered']:g}", axis=1),
+        "Received": df.apply(lambda r: f"{r['_recd']:g}", axis=1),
+        "Balance":  df.apply(
+                        lambda r: f"{r['_bal']:g} "
+                                  f"{r.get('units') or ''}".strip(), axis=1),
+        "Status":   df.get("status"),
     })
 
     out = (out.assign(_u=df["_urgent"].values, _l=df["_late"].values)
@@ -205,8 +265,16 @@ def build_pending_orders():
     overdue_n = int((pd.to_numeric(df["_late"], errors="coerce") > 0).sum())
     return out, overdue_n
 
+# ----------------------------------------------------------------------
+# PAGE
+# ----------------------------------------------------------------------
+st.title("\U0001F4E6 Material Status")
+st.caption(f"Live snapshot \u00B7 {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
+           " \u00B7 source: Material Command Center")
 
-# ---- PAGE BLOCKS (paste where the old Report 5 was) ------------------
+if st.button("\U0001F504 Refresh data"):
+    st.cache_data.clear()
+    st.rerun()
 
 # ---- Pending Material (indented, not yet ordered) ----
 with st.expander("\U0001F4E6  Pending Material  (indented, no PO yet)",
