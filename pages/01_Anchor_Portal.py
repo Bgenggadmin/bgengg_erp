@@ -1,8 +1,9 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import plotly.express as px
+import urllib.parse
 
 # ---------------------------------------------------------------------------
 # CONSTANTS
@@ -16,6 +17,26 @@ PROSPECT_STAGES = ["Identified", "Contacted", "Qualified", "Converted", "Dropped
 PROSPECT_OPEN_STAGES = ["Identified", "Contacted", "Qualified"]   # still need follow-up
 BD_ZONES = ["South", "West / Gujarat", "Maha + North + East"]
 # BDMs reuse ANCHOR_PERSONS. If you add a 3rd BDM, just extend ANCHOR_PERSONS.
+
+# ---- QUOTATION FOLLOW-UP ---------------------------------------------------
+# Days after the clock starts (quote_date, else enquiry_date).
+# Index = number of follow-ups already logged. Mirrors the ladder in
+# v_ap_followups_due — change BOTH or the portal and the reports disagree.
+FOLLOWUP_LADDER   = [3, 10, 21, 45, 75]
+DECISION_GATE_DAY = 90   # past this, stop chasing and call it Won or Lost
+MIN_GAP_DAYS      = 7    # never chase the same client twice inside a week
+
+FOLLOWUP_CHANNELS = ["Call", "WhatsApp", "Email", "Visit"]
+FOLLOWUP_OUTCOMES = [
+    "No response",
+    "Acknowledged \u2014 under review",
+    "Revision requested",
+    "Budget / approval hold",
+    "Competitor in play",
+    "Verbal yes",
+    "Declined",
+]
+FOLLOWUP_SENDER   = "B&G Engineering Industries"
 
 # ---------------------------------------------------------------------------
 # PAGE CONFIG
@@ -130,6 +151,235 @@ def update_prospect(prospect_id: int, payload: dict):
 def delete_prospect(prospect_id: int):
     conn.table("bd_prospects").delete().eq("id", prospect_id).execute()
     _refresh_prospects()
+
+
+# ---------------------------------------------------------------------------
+# QUOTATION FOLLOW-UP  (reads/writes quote_followups)
+# The only write this feature makes is one INSERT into quote_followups.
+# Nothing in anchor_projects is modified.
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=30)
+def get_followups() -> pd.DataFrame:
+    """All rows from quote_followups. Empty frame if the table is missing."""
+    try:
+        res = (conn.table("quote_followups").select("*")
+               .order("followup_date", desc=True).execute())
+        return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    except Exception as e:
+        st.warning(f"\u26a0\ufe0f Could not load follow-ups: {e}")
+        return pd.DataFrame()
+
+
+def _refresh_followups():
+    get_followups.clear()
+
+
+def log_followup(payload: dict):
+    conn.table("quote_followups").insert(payload).execute()
+    _refresh_followups()
+
+
+def clean_phone(raw) -> str:
+    """Digits only \u2014 same rule the Material Command Center uses."""
+    return "".join(filter(str.isdigit, str(raw or "")))
+
+
+def clean_ref(raw) -> str | None:
+    """quote_ref holds the literal string 'nan' on some rows (an import
+    artefact, not a null). Treat it as absent, or drafts go out saying
+    'Reference: nan'."""
+    s = str(raw or "").strip()
+    return None if s == "" or s.lower() in ("nan", "none") else s
+
+
+def followup_clock_start(row) -> date | None:
+    """quote_date if present, else enquiry_date. None if neither parses."""
+    for c in ("quote_date", "enquiry_date"):
+        raw = row.get(c)
+        try:
+            parsed = pd.to_datetime(raw)
+            if pd.notnull(parsed):
+                return parsed.date()
+        except Exception:
+            continue
+    return None
+
+
+def followup_due_date(clock_start, attempts: int, last_date, override):
+    """Cadence resolver. A manual next_action_date always wins. Otherwise
+    the ladder decides, floored at MIN_GAP_DAYS after the last contact."""
+    if override:
+        return override
+    if clock_start is None:
+        return None
+    if attempts < len(FOLLOWUP_LADDER):
+        due = clock_start + timedelta(days=FOLLOWUP_LADDER[attempts])
+    else:
+        due = clock_start + timedelta(days=DECISION_GATE_DAY)
+    if last_date:
+        due = max(due, last_date + timedelta(days=MIN_GAP_DAYS))
+    return due
+
+
+def _followup_draft(row, attempts: int):
+    """(subject, body) for the outgoing chase. Tone escalates with attempts."""
+    person = str(row.get("contact_person") or "").strip() or "Sir/Madam"
+    qref   = clean_ref(row.get("quote_ref")) or "our quotation"
+    desc   = row.get("project_description") or "the enquiry"
+
+    subject = f"Follow-up \u2014 {qref} | {desc[:60]} | {FOLLOWUP_SENDER}"
+
+    if attempts == 0:
+        ask = ("Just confirming you received our quotation. Happy to walk "
+               "through the scope or the technical annexure whenever "
+               "convenient.")
+    elif attempts < 3:
+        ask = ("Wanted to check where this sits on your side, and whether "
+               "you need any revision to the scope, delivery schedule or "
+               "commercial terms.")
+    else:
+        ask = ("We'd like to close our books on this one. Could you let us "
+               "know whether it's still live, on hold, or decided? A clear "
+               "'not now' is genuinely as useful to us as a yes.")
+
+    body = (f"Dear {person},\n\n"
+            f"Reference: {qref} \u2014 {desc}\n\n"
+            f"{ask}\n\n"
+            f"Regards,\n{FOLLOWUP_SENDER}")
+    return subject, body
+
+
+def render_followup_block(row, df_followups: pd.DataFrame, logged_by: str):
+    """Follow-up panel. Renders only for status = 'Quotation Sent'."""
+    if str(row.get("status")) != "Quotation Sent":
+        return
+
+    pid = int(row["id"])
+
+    mine = pd.DataFrame()
+    if not df_followups.empty and "project_id" in df_followups.columns:
+        mine = df_followups[
+            pd.to_numeric(df_followups["project_id"], errors="coerce") == pid
+        ].copy()
+
+    attempts, last_date, last_row, override = len(mine), None, None, None
+    if attempts:
+        mine["_fd"] = pd.to_datetime(mine["followup_date"], errors="coerce")
+        mine = mine.sort_values("_fd", ascending=False)
+        last_row = mine.iloc[0]
+        if pd.notnull(last_row["_fd"]):
+            last_date = last_row["_fd"].date()
+        nad = pd.to_datetime(last_row.get("next_action_date"), errors="coerce")
+        override = nad.date() if pd.notnull(nad) else None
+
+    clock = followup_clock_start(row)
+    due   = followup_due_date(clock, attempts, last_date, override)
+    age   = (date.today() - clock).days if clock else None
+
+    st.markdown("##### \U0001F4DE Quotation Follow-up")
+
+    if clock is None:
+        st.error("No quote date and no enquiry date \u2014 this quote has no "
+                 "clock. Set a Quote Date above before the cadence can work.")
+    elif age is not None and age >= DECISION_GATE_DAY:
+        st.error(f"\U0001F514 **Decision gate** \u2014 {age} days open. Move "
+                 f"this to Won or Lost, or record why it stays open.")
+    elif due and due <= date.today():
+        st.warning(f"\u23F0 **Follow-up due** \u2014 was due "
+                   f"{due.strftime('%d %b')} ({(date.today()-due).days}d ago)")
+    elif due:
+        st.success(f"\u2705 Next follow-up scheduled for "
+                   f"{due.strftime('%d %b %Y')}")
+
+    fm1, fm2, fm3 = st.columns(3)
+    fm1.metric("Attempts logged", attempts)
+    fm2.metric("Quote age", f"{age}d" if age is not None else "\u2014")
+    fm3.metric("Last contact",
+               last_date.strftime("%d %b") if last_date else "Never")
+
+    if last_row is not None:
+        st.caption(
+            f"Last: **{last_row.get('outcome') or '\u2014'}** via "
+            f"{last_row.get('channel') or '\u2014'} on "
+            f"{last_date.strftime('%d %b %Y') if last_date else '\u2014'}"
+            + (f" \u00b7 {last_row.get('logged_by')}"
+               if last_row.get("logged_by") else "")
+        )
+        if last_row.get("notes"):
+            st.caption(f"\U0001F4DD {last_row['notes']}")
+
+    # ---- outgoing drafts ---------------------------------------------
+    subject, body = _followup_draft(row, attempts)
+    phone = clean_phone(row.get("contact_phone"))
+    # anchor_projects has NO contact_email column today. .get() returns
+    # None, so the mailto opens with an empty To: field and you type the
+    # address. Add the column and this fills itself.
+    email = str(row.get("contact_email") or "").strip()
+
+    if not phone and not str(row.get("contact_person") or "").strip():
+        st.error("\u26a0\ufe0f No contact person and no phone on this project "
+                 "\u2014 nobody to follow up with. Add contact details first.")
+
+    dc1, dc2 = st.columns(2)
+    wa_url = (f"https://wa.me/{phone}?text={urllib.parse.quote(body)}"
+              if phone else f"https://wa.me/?text={urllib.parse.quote(body)}")
+    dc1.markdown(
+        f'<a href="{wa_url}" target="_blank" style="text-decoration:none;">'
+        f'<div style="background:#25D366;color:white;padding:7px;'
+        f'border-radius:5px;text-align:center;font-weight:bold;">'
+        f'\U0001F4F2 WhatsApp draft</div></a>', unsafe_allow_html=True)
+    mail_url = (f"mailto:{email}?subject={urllib.parse.quote(subject)}"
+                f"&body={urllib.parse.quote(body)}")
+    dc2.markdown(
+        f'<a href="{mail_url}" style="text-decoration:none;">'
+        f'<div style="background:#007bff;color:white;padding:7px;'
+        f'border-radius:5px;text-align:center;font-weight:bold;">'
+        f'\U0001F4E7 Email draft</div></a>', unsafe_allow_html=True)
+
+    with st.expander("\u270F\ufe0f Edit the draft before sending"):
+        st.text_area("Message", value=body, height=180, key=f"fu_draft_{pid}")
+        st.caption("Copy from here to tweak the wording. The buttons above "
+                   "always use the generated version.")
+
+    # ---- log the attempt ---------------------------------------------
+    with st.form(f"fu_form_{pid}", clear_on_submit=True):
+        st.caption("Log what actually happened \u2014 this is what drives "
+                   "the reports and the Monday brief.")
+        g1, g2, g3 = st.columns(3)
+        f_date    = g1.date_input("Date", value=date.today(), key=f"fud_{pid}")
+        f_channel = g2.selectbox("Channel", FOLLOWUP_CHANNELS, key=f"fuc_{pid}")
+        f_outcome = g3.selectbox("Outcome", FOLLOWUP_OUTCOMES, key=f"fuo_{pid}")
+        f_notes   = st.text_input("Notes", key=f"fun_{pid}",
+                                  placeholder="What did they actually say?")
+        h1, h2 = st.columns([1, 2])
+        f_set_next = h1.checkbox("Set next date manually", key=f"fus_{pid}")
+        f_next     = h2.date_input("Next action date",
+                                   value=date.today() + timedelta(days=14),
+                                   key=f"fux_{pid}")
+
+        if st.form_submit_button("\U0001F4BE Log follow-up", type="primary",
+                                 use_container_width=True):
+            try:
+                log_followup({
+                    "project_id":       pid,
+                    "followup_date":    str(f_date),
+                    "channel":          f_channel,
+                    "outcome":          f_outcome,
+                    "notes":            f_notes.strip(),
+                    "next_action_date": str(f_next) if f_set_next else None,
+                    "logged_by":        logged_by,
+                })
+                st.success("Logged.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Could not log follow-up: {e}")
+
+    if attempts:
+        with st.expander(f"\U0001F4CB Follow-up history ({attempts})"):
+            hist = mine[["followup_date", "channel", "outcome",
+                         "notes", "logged_by"]].copy()
+            hist.columns = ["Date", "Channel", "Outcome", "Notes", "By"]
+            st.dataframe(hist, use_container_width=True, hide_index=True)
 
 
 def convert_prospect_to_enquiry(row) -> int | None:
@@ -450,6 +700,7 @@ def render_prospects_tab(df_prospects, anchor_choice, today_dt):
 df = get_projects()
 df_prospects = get_prospects()
 df_pur = get_purchase_items()
+df_followups = get_followups()
 today_dt = pd.to_datetime(date.today())
 
 # ---------------------------------------------------------------------------
@@ -694,6 +945,9 @@ with tabs[1]:
                         variance = u_act_val - u_val
                         colour = "green" if variance >= 0 else "red"
                         st.markdown(f"**Margin Variance:** :{colour}[₹{variance:,.0f}]")
+
+                    render_followup_block(row, df_followups, anchor_choice)
+                    st.divider()
 
                     new_status = st.selectbox(
                         "Update Stage",
