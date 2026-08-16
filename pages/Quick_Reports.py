@@ -1,3 +1,232 @@
+# pages/14_Quick_Reports.py
+# ======================================================================
+# B&G Engineering ERP — Quick Reports
+# A daily-driver "morning check" page: a few pre-defined, read-only
+# reports. No free-text, no AI at runtime — fast and safe.
+#
+# Built to match the patterns already used in 01_Anchor_Portal.py:
+#   - st_supabase_connection  (conn = st.connection("supabase", ...))
+#   - @st.cache_data(ttl=30) on each fetch
+#   - conn.table("...").select("*").execute()  query-builder style
+#   - check_password() gate
+#
+# To add a 4th/5th report later: write one build_* function + one
+# expander block. That's it.
+# ======================================================================
+ 
+import streamlit as st
+from st_supabase_connection import SupabaseConnection
+import pandas as pd
+from datetime import date, datetime
+ 
+# ----------------------------------------------------------------------
+# PAGE CONFIG
+# ----------------------------------------------------------------------
+st.set_page_config(page_title="Quick Reports | BGEngg ERP",
+                   layout="wide", page_icon="\U0001F4CB")
+ 
+# ----------------------------------------------------------------------
+# PASSWORD PROTECTION  (same session gate as your other pages)
+# Reuses st.session_state["password_correct"], so if you've already
+# unlocked another page this session, this one passes straight through.
+# ----------------------------------------------------------------------
+def check_password() -> bool:
+    def _verify():
+        if st.session_state.get("qr_password") == st.secrets.get("APP_PASSWORD"):
+            st.session_state["password_correct"] = True
+            st.session_state.pop("qr_password", None)
+        else:
+            st.session_state["password_correct"] = False
+ 
+    if st.session_state.get("password_correct"):
+        return True
+    st.text_input("\U0001F511 Enter Master Password", type="password",
+                  on_change=_verify, key="qr_password")
+    if st.session_state.get("password_correct") is False:
+        st.error("\U0001F623 Password incorrect")
+    return False
+ 
+if not check_password():
+    st.stop()
+ 
+# ----------------------------------------------------------------------
+# DATABASE CONNECTION  (identical to 01_Anchor_Portal.py, line 54)
+# ----------------------------------------------------------------------
+conn = st.connection("supabase", type=SupabaseConnection)
+ 
+# ----------------------------------------------------------------------
+# CONFIG  —  >>> CONFIRM THESE LABELS MATCH YOUR DATA <<<
+# ----------------------------------------------------------------------
+PENDING_QUOTE_STATUS = "Quotation Sent"   # anchor_projects.status — live quotes (confirmed)
+ENQUIRY_STATUS       = "Enquiry"          # anchor_projects.status — pre-quote (confirmed)
+ 
+# leave_requests.status value(s) that mean "granted". I'm guessing here —
+# run:  select distinct status from leave_requests;
+# and put the real approved label(s) below. Matching is case-insensitive.
+APPROVED_LEAVE_STATUSES = ["Approved", "Sanctioned", "Granted"]
+ 
+TRUNC = 55  # description truncation length
+ 
+# ----------------------------------------------------------------------
+# HELPERS  (mirrors your safe_date / trunc)
+# ----------------------------------------------------------------------
+def parse_date(val):
+    """Raw DB value -> python date, or None if unparseable."""
+    try:
+        parsed = pd.to_datetime(val)
+        return parsed.date() if pd.notnull(parsed) else None
+    except Exception:
+        return None
+ 
+def days_since(val):
+    d = parse_date(val)
+    return (date.today() - d).days if d else None
+ 
+def trunc(text, n: int = TRUNC) -> str:
+    if not text:
+        return ""
+    text = str(text)
+    return text[:n] + ("\u2026" if len(text) > n else "")
+ 
+def fmt_money(v) -> str:
+    try:
+        return f"\u20B9 {float(v):,.0f}"
+    except Exception:
+        return "\u2014"
+ 
+def norm(s) -> str:
+    """Normalise a name for comparison: trimmed + lowercased."""
+    return str(s).strip().lower() if s is not None else ""
+ 
+# ----------------------------------------------------------------------
+# DATA ACCESS LAYER  (your conn.table(...).select(...).execute() idiom)
+# ----------------------------------------------------------------------
+@st.cache_data(ttl=30)
+def get_staff() -> pd.DataFrame:
+    res = conn.table("bg_staff_master").select("*").execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+ 
+@st.cache_data(ttl=30)
+def get_today_attendance() -> pd.DataFrame:
+    today = date.today().isoformat()
+    res = conn.table("attendance_logs").select("*").eq("work_date", today).execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+ 
+@st.cache_data(ttl=30)
+def get_leaves_covering_today() -> pd.DataFrame:
+    today = date.today().isoformat()
+    res = (conn.table("leave_requests").select("*")
+           .lte("start_date", today).gte("end_date", today).execute())
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+ 
+@st.cache_data(ttl=30)
+def get_projects() -> pd.DataFrame:
+    res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+ 
+# ----------------------------------------------------------------------
+# REPORT BUILDERS
+# ----------------------------------------------------------------------
+def build_absent_today():
+    """Staff with no attendance row today, split into Absent vs On leave."""
+    staff  = get_staff()
+    att    = get_today_attendance()
+    leaves = get_leaves_covering_today()
+ 
+    if staff.empty or "name" not in staff:
+        return pd.DataFrame(), 0, 0
+ 
+    present = set()
+    if not att.empty and "employee_name" in att:
+        present = {norm(n) for n in att["employee_name"]}
+ 
+    on_leave = set()
+    if not leaves.empty and "employee_name" in leaves:
+        appr = leaves
+        if "status" in leaves:
+            allowed = {norm(x) for x in APPROVED_LEAVE_STATUSES}
+            appr = leaves[leaves["status"].apply(lambda s: norm(s) in allowed)]
+        on_leave = {norm(n) for n in appr["employee_name"]}
+ 
+    rows = []
+    for _, r in staff.iterrows():
+        nm = r.get("name")
+        if norm(nm) in present:
+            continue
+        rows.append({
+            "Name": nm,
+            "Department": r.get("department"),
+            "Role": r.get("role"),
+            "Status": "On leave" if norm(nm) in on_leave else "Absent",
+        })
+ 
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["Status", "Name"]).reset_index(drop=True)
+    absent_n = int((df["Status"] == "Absent").sum()) if not df.empty else 0
+    leave_n  = int((df["Status"] == "On leave").sum()) if not df.empty else 0
+    return df, absent_n, leave_n
+ 
+ 
+def build_pending_quotes():
+    proj = get_projects()
+    if proj.empty or "status" not in proj:
+        return pd.DataFrame()
+    df = proj[proj["status"] == PENDING_QUOTE_STATUS].copy()
+    if df.empty:
+        return df
+    out = pd.DataFrame({
+        "Client":       df.get("client_name"),
+        "Project":      df.get("project_description").apply(trunc),
+        "Quote ref":    df.get("quote_ref"),
+        "Quote date":   df.get("quote_date"),
+        "Est. value":   df.get("estimated_value").apply(fmt_money),
+        "Days pending": df.get("quote_date").apply(days_since),
+        "Anchor":       df.get("anchor_person"),
+    })
+    return out.sort_values("Days pending", ascending=False,
+                           na_position="last").reset_index(drop=True)
+ 
+ 
+def build_open_enquiries():
+    proj = get_projects()
+    if proj.empty or "status" not in proj:
+        return pd.DataFrame()
+    df = proj[proj["status"] == ENQUIRY_STATUS].copy()
+    if df.empty:
+        return df
+    out = pd.DataFrame({
+        "Client":       df.get("client_name"),
+        "Project":      df.get("project_description").apply(trunc),
+        "Enquiry date": df.get("enquiry_date"),
+        "Days waiting": df.get("enquiry_date").apply(days_since),
+        "Anchor":       df.get("anchor_person"),
+    })
+    return out.sort_values("Days waiting", ascending=False,
+                           na_position="last").reset_index(drop=True)
+ 
+# ----------------------------------------------------------------------
+# PAGE
+# ----------------------------------------------------------------------
+st.title("\U0001F4CB Quick Reports")
+st.caption(f"Live snapshot \u00B7 {datetime.now().strftime('%d %b %Y, %I:%M %p')}")
+ 
+if st.button("\U0001F504 Refresh data"):
+    st.cache_data.clear()
+    st.rerun()
+ 
+# ---- Absent Today ----
+with st.expander("\U0001F64B  Absent Today", expanded=True):
+    try:
+        df_abs, absent_n, leave_n = build_absent_today()
+        m1, m2 = st.columns(2)
+        m1.metric("Absent (unexplained)", absent_n)
+        m2.metric("On approved leave", leave_n)
+        if df_abs.empty:
+            st.success("Everyone on the staff list has punched in today.")
+        else:
+            st.dataframe(df_abs, use_container_width=True, hide_index=True)
+    except Exception as e:
         st.warning(f"Could not build Absent Today: {e}")
  
 # ---- Pending Quotes ----
