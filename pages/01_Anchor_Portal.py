@@ -38,6 +38,13 @@ FOLLOWUP_OUTCOMES = [
 ]
 FOLLOWUP_SENDER   = "B&G Engineering Industries"
 
+# ---- CRM DESK --------------------------------------------------------------
+# This list order IS the sort priority on the call list. A 90-day-old quote is
+# a decision to make, so it outranks a plain overdue call.
+CRM_BUCKETS = ["🔔 Decision gate", "🔴 Overdue", "🟠 Due today",
+               "🟡 Due this week", "⚪ Scheduled later", "❔ No clock"]
+CRM_HOT_BUCKETS = ["🔔 Decision gate", "🔴 Overdue", "🟠 Due today"]
+
 # ---------------------------------------------------------------------------
 # PAGE CONFIG
 # ---------------------------------------------------------------------------
@@ -249,8 +256,14 @@ def _followup_draft(row, attempts: int):
     return subject, body
 
 
-def render_followup_block(row, df_followups: pd.DataFrame, logged_by: str):
-    """Follow-up panel. Renders only for status = 'Quotation Sent'."""
+def render_followup_block(row, df_followups: pd.DataFrame, logged_by: str,
+                          key_ns: str = "pipe"):
+    """Follow-up panel. Renders only for status = 'Quotation Sent'.
+
+    key_ns exists because Streamlit builds EVERY tab on every run, not just the
+    visible one. This panel now renders in both the Pipeline tab and the CRM
+    Desk tab, so without a namespace the widget keys collide and Streamlit
+    throws DuplicateWidgetID on load."""
     if str(row.get("status")) != "Quotation Sent":
         return
 
@@ -337,25 +350,30 @@ def render_followup_block(row, df_followups: pd.DataFrame, logged_by: str):
         f'\U0001F4E7 Email draft</div></a>', unsafe_allow_html=True)
 
     with st.expander("\u270F\ufe0f Edit the draft before sending"):
-        st.text_area("Message", value=body, height=180, key=f"fu_draft_{pid}")
+        st.text_area("Message", value=body, height=180,
+                     key=f"fu_draft_{key_ns}_{pid}")
         st.caption("Copy from here to tweak the wording. The buttons above "
                    "always use the generated version.")
 
     # ---- log the attempt ---------------------------------------------
-    with st.form(f"fu_form_{pid}", clear_on_submit=True):
+    with st.form(f"fu_form_{key_ns}_{pid}", clear_on_submit=True):
         st.caption("Log what actually happened \u2014 this is what drives "
                    "the reports and the Monday brief.")
         g1, g2, g3 = st.columns(3)
-        f_date    = g1.date_input("Date", value=date.today(), key=f"fud_{pid}")
-        f_channel = g2.selectbox("Channel", FOLLOWUP_CHANNELS, key=f"fuc_{pid}")
-        f_outcome = g3.selectbox("Outcome", FOLLOWUP_OUTCOMES, key=f"fuo_{pid}")
-        f_notes   = st.text_input("Notes", key=f"fun_{pid}",
+        f_date    = g1.date_input("Date", value=date.today(),
+                                  key=f"fud_{key_ns}_{pid}")
+        f_channel = g2.selectbox("Channel", FOLLOWUP_CHANNELS,
+                                 key=f"fuc_{key_ns}_{pid}")
+        f_outcome = g3.selectbox("Outcome", FOLLOWUP_OUTCOMES,
+                                 key=f"fuo_{key_ns}_{pid}")
+        f_notes   = st.text_input("Notes", key=f"fun_{key_ns}_{pid}",
                                   placeholder="What did they actually say?")
         h1, h2 = st.columns([1, 2])
-        f_set_next = h1.checkbox("Set next date manually", key=f"fus_{pid}")
+        f_set_next = h1.checkbox("Set next date manually",
+                                 key=f"fus_{key_ns}_{pid}")
         f_next     = h2.date_input("Next action date",
                                    value=date.today() + timedelta(days=14),
-                                   key=f"fux_{pid}")
+                                   key=f"fux_{key_ns}_{pid}")
 
         if st.form_submit_button("\U0001F4BE Log follow-up", type="primary",
                                  use_container_width=True):
@@ -391,6 +409,7 @@ def convert_prospect_to_enquiry(row) -> int | None:
         "enquiry_date": str(date.today()),
         "contact_person": row.get("contact_name") or "",
         "contact_phone": row.get("contact_phone") or "",
+        "contact_email": row.get("contact_email") or "",
         "special_notes": (
             f"[BD lead | {row.get('location','')}] "
             f"Fit: {row.get('equipment_fit','')}. {row.get('notes','') or ''}"
@@ -695,6 +714,224 @@ def render_prospects_tab(df_prospects, anchor_choice, today_dt):
 
 
 # ---------------------------------------------------------------------------
+# CRM DESK — a cockpit over quote_followups. No new tables, no new writes.
+# It reuses followup_clock_start / followup_due_date / render_followup_block,
+# so the Desk and the Pipeline panel can never show different due dates.
+# ---------------------------------------------------------------------------
+def build_followup_board(df_anchor: pd.DataFrame,
+                         df_followups: pd.DataFrame) -> pd.DataFrame:
+    """One row per open quotation, with its follow-up state resolved.
+    Scope: status == 'Quotation Sent' only."""
+    if df_anchor.empty:
+        return pd.DataFrame()
+
+    live = df_anchor[df_anchor["status"] == "Quotation Sent"].copy()
+    if live.empty:
+        return pd.DataFrame()
+
+    today = date.today()
+    week_end = today + timedelta(days=7)
+    rows = []
+
+    for _, r in live.iterrows():
+        pid = int(r["id"])
+
+        # This project's history, newest first — same logic as the panel.
+        mine = pd.DataFrame()
+        if not df_followups.empty and "project_id" in df_followups.columns:
+            mine = df_followups[
+                pd.to_numeric(df_followups["project_id"], errors="coerce") == pid
+            ].copy()
+
+        attempts = len(mine)
+        last_date = last_outcome = last_note = last_by = override = None
+        if attempts:
+            mine["_fd"] = pd.to_datetime(mine["followup_date"], errors="coerce")
+            mine = mine.sort_values("_fd", ascending=False)
+            top = mine.iloc[0]
+            if pd.notnull(top["_fd"]):
+                last_date = top["_fd"].date()
+            last_outcome = top.get("outcome")
+            last_note = top.get("notes")
+            last_by = top.get("logged_by")
+            nad = pd.to_datetime(top.get("next_action_date"), errors="coerce")
+            override = nad.date() if pd.notnull(nad) else None
+
+        clock = followup_clock_start(r)
+        due = followup_due_date(clock, attempts, last_date, override)
+        age = (today - clock).days if clock else None
+
+        # No clock = no quote date AND no enquiry date. Nobody chases these,
+        # which is exactly why they get their own bucket instead of hiding.
+        if clock is None or due is None:
+            bucket = "❔ No clock"
+        elif age is not None and age >= DECISION_GATE_DAY:
+            bucket = "🔔 Decision gate"
+        elif due < today:
+            bucket = "🔴 Overdue"
+        elif due == today:
+            bucket = "🟠 Due today"
+        elif due <= week_end:
+            bucket = "🟡 Due this week"
+        else:
+            bucket = "⚪ Scheduled later"
+
+        rows.append({
+            "id": pid,
+            "Bucket": bucket,
+            "Client": r.get("client_name"),
+            "Description": trunc(r.get("project_description"), 40),
+            "Contact": r.get("contact_person") or "",
+            "Phone": r.get("contact_phone") or "",
+            "Quote Ref": clean_ref(r.get("quote_ref")) or "",
+            "Value ₹": float(r.get("estimated_value") or 0),
+            "Age (d)": age if age is not None else "",
+            "Attempts": attempts,
+            "Due": due,
+            "Last contact": last_date,
+            "Last outcome": last_outcome or "",
+            "Last note": last_note or "",
+            "By": last_by or "",
+        })
+
+    board = pd.DataFrame(rows)
+    board["_order"] = board["Bucket"].apply(
+        lambda b: CRM_BUCKETS.index(b) if b in CRM_BUCKETS else 99
+    )
+    board["_due"] = pd.to_datetime(board["Due"], errors="coerce")
+    return board.sort_values(["_order", "_due"]).reset_index(drop=True)
+
+
+def render_quote_followup_alerts(board: pd.DataFrame):
+    """Sidebar counter — deliberately mirrors the BD alert block above it."""
+    st.sidebar.divider()
+    if board.empty:
+        st.sidebar.caption("No quotations awaiting follow-up.")
+        return
+
+    hot = board[board["Bucket"].isin(CRM_HOT_BUCKETS)]
+    if hot.empty:
+        st.sidebar.success("✅ No quote follow-ups due")
+        return
+
+    st.sidebar.error(f"📞 **{len(hot)} quote follow-up(s) due**")
+    if st.sidebar.checkbox("Show call list", key="crm_due_list"):
+        for _, b in hot.iterrows():
+            label = b["Bucket"].split(" ", 1)[1]
+            st.sidebar.caption(f"☎️ {b['Client']} — {label}")
+
+
+def render_crm_desk_tab(board: pd.DataFrame, df_anchor: pd.DataFrame,
+                        df_followups: pd.DataFrame, anchor_choice: str):
+    """The 'who do I call today' screen for the estimation / marketing team."""
+    st.subheader("☎️ CRM Desk — Quotation Follow-ups")
+    st.caption(
+        f"Scope: **{anchor_choice}** · status **Quotation Sent** · "
+        f"cadence {FOLLOWUP_LADDER} days · decision gate at {DECISION_GATE_DAY}."
+    )
+
+    if board.empty:
+        st.info("No quotations are currently sitting at 'Quotation Sent'.")
+        return
+
+    counts = board["Bucket"].value_counts()
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("🔴 Overdue", int(counts.get("🔴 Overdue", 0)))
+    k2.metric("🟠 Due today", int(counts.get("🟠 Due today", 0)))
+    k3.metric("🟡 This week", int(counts.get("🟡 Due this week", 0)))
+    k4.metric("🔔 Decision gate", int(counts.get("🔔 Decision gate", 0)))
+
+    no_clock = int(counts.get("❔ No clock", 0))
+    if no_clock:
+        st.warning(
+            f"❔ **{no_clock} quotation(s) have no follow-up clock** — no quote "
+            f"date and no enquiry date, so the cadence can't start and nobody "
+            f"is chasing them. Set a Quote Date in the Pipeline tab."
+        )
+
+    st.divider()
+
+    # ---- the call list ----------------------------------------------------
+    st.markdown("##### 📋 Call list")
+    only_due = st.checkbox("Show only what needs action today",
+                           value=True, key="crm_only_due")
+    view = board[board["Bucket"].isin(CRM_HOT_BUCKETS)] if only_due else board
+
+    if view.empty:
+        st.success("✅ Nothing due today. Untick the box to see the full list.")
+    else:
+        st.dataframe(
+            view[["Bucket", "Client", "Contact", "Phone", "Quote Ref",
+                  "Value ₹", "Age (d)", "Attempts", "Due",
+                  "Last outcome", "Last note"]],
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Value ₹": st.column_config.NumberColumn(format="₹%.0f"),
+            },
+        )
+
+    # ---- act on one, without leaving the tab ------------------------------
+    st.divider()
+    st.markdown("##### ✍️ Log a call")
+    st.caption("Opens the same panel used in the Pipeline tab — "
+               "draft the message, send it, log what they said.")
+
+    pick_src = view if not view.empty else board
+    labels = {
+        int(r["id"]): f"{r['Bucket']}  {r['Client']} — {r['Quote Ref'] or 'no ref'}"
+        for _, r in pick_src.iterrows()
+    }
+    pick_id = st.selectbox("Client", options=list(labels.keys()),
+                           format_func=lambda i: labels[i], key="crm_pick")
+
+    if pick_id is not None:
+        proj = df_anchor[df_anchor["id"] == pick_id]
+        if not proj.empty:
+            with st.container(border=True):
+                render_followup_block(proj.iloc[0], df_followups,
+                                      anchor_choice, key_ns="crm")
+
+    # ---- full history for one client, across all their quotes -------------
+    st.divider()
+    with st.expander("🗂️ Client conversation history"):
+        client_list = sorted(board["Client"].dropna().unique().tolist())
+        who = st.selectbox("Client", client_list, key="crm_hist_client")
+        ids = df_anchor[df_anchor["client_name"] == who]["id"].astype(int).tolist()
+        hist = pd.DataFrame()
+        if not df_followups.empty and ids:
+            hist = df_followups[
+                pd.to_numeric(df_followups["project_id"], errors="coerce").isin(ids)
+            ].copy()
+        if hist.empty:
+            st.info(f"No follow-ups logged against {who} yet.")
+        else:
+            hist["_fd"] = pd.to_datetime(hist["followup_date"], errors="coerce")
+            hist = hist.sort_values("_fd", ascending=False)
+            st.dataframe(
+                hist[["followup_date", "channel", "outcome", "notes",
+                      "next_action_date", "logged_by"]].rename(columns={
+                          "followup_date": "Date", "channel": "Channel",
+                          "outcome": "Outcome", "notes": "Notes",
+                          "next_action_date": "Next action", "logged_by": "By",
+                      }),
+                use_container_width=True, hide_index=True,
+            )
+
+    # ---- morning brief ----------------------------------------------------
+    st.divider()
+    with st.expander("🌅 Morning brief feed"):
+        st.caption("Cowork can read v_ap_followups_due straight from Supabase — "
+                   "no file needed. This download is the manual fallback.")
+        brief = board.drop(columns=["id", "_order", "_due"], errors="ignore")
+        st.download_button(
+            "💾 Download today's call list (CSV)",
+            data=brief.to_csv(index=False).encode("utf-8"),
+            file_name=f"BGE_CRM_{anchor_choice}_{date.today()}.csv",
+            key="crm_csv_dl",
+        )
+
+
+# ---------------------------------------------------------------------------
 # LOAD DATA
 # ---------------------------------------------------------------------------
 df = get_projects()
@@ -735,6 +972,11 @@ if not df_anchor.empty and not df_pur.empty:
 
 # Sidebar: BD follow-up alerts  (this is the call that was missing)
 render_bd_sidebar_alerts(df_prospects, anchor_choice, today_dt)
+
+# Build the CRM board ONCE — the sidebar alert and the CRM Desk tab share it.
+# Building it twice would double the work and risk the two disagreeing.
+crm_board = build_followup_board(df_anchor, df_followups)
+render_quote_followup_alerts(crm_board)
 
 # Sidebar: sync & search
 st.sidebar.divider()
@@ -798,7 +1040,8 @@ if not df_search.empty:
 # ---------------------------------------------------------------------------
 # MAIN TABS  (all use df_anchor — the full unfiltered anchor dataset)
 # ---------------------------------------------------------------------------
-tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status", "📊 Analytics", "🎯 Prospects (BD)"])
+tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status",
+                "📊 Analytics", "🎯 Prospects (BD)", "☎️ CRM Desk"])
 
 # ── TAB 1: NEW ENTRY ────────────────────────────────────────────────────────
 with tabs[0]:
@@ -807,10 +1050,11 @@ with tabs[0]:
         col1, col2 = st.columns(2)
         u_client = col1.text_input("Client Name")
         u_proj = col2.text_input("Project Description")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         u_date = c1.date_input("Enquiry Date", value=datetime.now())
         u_contact = c2.text_input("Contact Person Name")
         u_phone = c3.text_input("Contact Phone")
+        u_email = c4.text_input("Contact Email")
         u_notes = st.text_area("Initial Remarks")
         if st.form_submit_button("Log Enquiry"):
             client_clean = u_client.strip()
@@ -823,6 +1067,7 @@ with tabs[0]:
                     "enquiry_date": str(u_date),
                     "contact_person": u_contact.strip(),
                     "contact_phone": u_phone.strip(),
+                    "contact_email": u_email.strip(),
                     "special_notes": u_notes,
                     "status": "Enquiry",
                     "drawing_status": "Pending",
@@ -946,7 +1191,31 @@ with tabs[1]:
                         colour = "green" if variance >= 0 else "red"
                         st.markdown(f"**Margin Variance:** :{colour}[₹{variance:,.0f}]")
 
-                    render_followup_block(row, df_followups, anchor_choice)
+                    # Contact details feed the drafts below. Edits show up in
+                    # the draft immediately, but only persist on Save.
+                    st.markdown("##### 👤 Contact")
+                    ct1, ct2, ct3 = st.columns(3)
+                    u_cperson = ct1.text_input(
+                        "Contact Person", value=row.get("contact_person") or "",
+                        key=f"cper_{row['id']}",
+                    )
+                    u_cphone = ct2.text_input(
+                        "Contact Phone", value=row.get("contact_phone") or "",
+                        key=f"cph_{row['id']}",
+                    )
+                    u_cemail = ct3.text_input(
+                        "Contact Email", value=row.get("contact_email") or "",
+                        key=f"cem_{row['id']}",
+                    )
+
+                    # Hand the panel a live copy so the WhatsApp/Email buttons
+                    # use what's on screen, not the stale DB values.
+                    row_live = row.copy()
+                    row_live["contact_person"] = u_cperson
+                    row_live["contact_phone"] = u_cphone
+                    row_live["contact_email"] = u_cemail
+
+                    render_followup_block(row_live, df_followups, anchor_choice)
                     st.divider()
 
                     new_status = st.selectbox(
@@ -1002,6 +1271,9 @@ with tabs[1]:
                             "purchase_trigger": u_trig,
                             "po_delivery_date": str(u_po_del),
                             "revised_delivery_date": str(u_rev_del),
+                            "contact_person": u_cperson.strip(),
+                            "contact_phone": u_cphone.strip(),
+                            "contact_email": u_cemail.strip(),
                         }
                         if new_status != row["status"]:
                             payload["status_updated_at"] = datetime.now().isoformat()
@@ -1159,3 +1431,8 @@ with tabs[4]:
 # NOTE: render_prospects_tab is defined far above, so this call is safe.
 with tabs[5]:
     render_prospects_tab(get_prospects(), anchor_choice, today_dt)
+
+# ── TAB 7: CRM DESK ─────────────────────────────────────────────────────────
+# crm_board was built once in the sidebar section above.
+with tabs[6]:
+    render_crm_desk_tab(crm_board, df_anchor, df_followups, anchor_choice)
