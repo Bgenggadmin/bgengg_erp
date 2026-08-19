@@ -52,11 +52,32 @@ def get_jobs():
 
 @st.cache_data(ttl=60)
 def get_material_groups():
+    """Names only, for dropdowns. Skips NULL/blank rows (str(None) was
+    printing a literal 'None' option) and de-duplicates, so a stray
+    duplicate in the master can't appear twice in a selectbox."""
     try:
         res = conn.table("material_master").select("material_group").execute()
-        return sorted([str(r['material_group']) for r in res.data])
+        names = {
+            str(r['material_group']).strip()
+            for r in (res.data or [])
+            if r.get('material_group') and str(r['material_group']).strip()
+        }
+        return sorted(names)
     except Exception:
         return ["GENERAL"]
+
+
+@st.cache_data(ttl=60)
+def get_material_master_rows():
+    """Full rows (id, name, category). Needed by Master Setup for edit and
+    delete — get_material_groups() returns names only, which is all the
+    dropdowns need but not enough to target a row by id."""
+    try:
+        res = conn.table("material_master").select("*") \
+            .order("material_group").execute()
+        return res.data or []
+    except Exception:
+        return []
 
 @st.cache_data(ttl=60)
 def get_staff_list():
@@ -1749,30 +1770,182 @@ with main_tabs[3]:
 with main_tabs[4]:
     st.subheader("⚙️ System Configuration & Master Data")
 
-    col_grp, col_vend_form, col_vend_list = st.columns([1, 1.5, 2])
+    col_grp, col_vend_form, col_vend_list = st.columns([1.6, 1.5, 2])
 
-    with col_grp:
+        with col_grp:
         st.markdown("#### 📦 Material Groups")
-        with st.form("m_grp_form", clear_on_submit=True):
-            new_g = st.text_input("New Group Name")
-            if st.form_submit_button("➕ Save Group") and new_g:
-                safe_db_write(
-                    lambda: conn.table("material_master")
-                        .insert({"material_group": new_g.upper()}).execute(),
-                    success_msg=f"Group '{new_g.upper()}' added!",
-                    error_prefix="Group Error"
+
+        MG_CATEGORIES = ["Consumables", "Raw Materials", "Hardware",
+                         "Tools", "Electrical", "General"]
+
+        # Which row (if any) is armed for edit / delete.
+        st.session_state.setdefault("mg_edit_id", None)
+        st.session_state.setdefault("mg_del_id", None)
+
+        mg_rows = get_material_master_rows()
+        mg_editing = next(
+            (g for g in mg_rows if g.get("id") == st.session_state.mg_edit_id),
+            None
+        )
+
+        def mg_refresh():
+            """Both loaders read material_master — clear both, not the whole
+            app cache, so vendor and job lists aren't needlessly re-fetched."""
+            get_material_master_rows.clear()
+            get_material_groups.clear()
+
+        def mg_name_taken(name, ignore_id=None):
+            """Case-insensitive duplicate check. ignore_id lets a row skip
+            comparing against itself while being edited."""
+            t = (name or "").strip().upper()
+            return any(
+                (g.get("material_group") or "").strip().upper() == t
+                and (ignore_id is None or g.get("id") != ignore_id)
+                for g in mg_rows
+            )
+
+        def mg_usage(name):
+            """How many purchase_orders rows carry this group name.
+            material_group is stored on purchase_orders as free text with no
+            foreign key, so nothing in the database protects us here — we
+            have to look before renaming or deleting."""
+            try:
+                res = conn.table("purchase_orders").select("id") \
+                    .eq("material_group", name).execute()
+                return len(res.data or [])
+            except Exception:
+                return 0
+
+        # ── ADD  or  EDIT ────────────────────────────────────
+        if mg_editing is None:
+            with st.form("m_grp_form", clear_on_submit=True):
+                new_g = st.text_input("New Group Name")
+                new_c = st.selectbox("Category", MG_CATEGORIES)
+                if st.form_submit_button("➕ Save Group"):
+                    clean = (new_g or "").strip().upper()
+                    if not clean:
+                        st.warning("Enter a group name.")
+                    elif mg_name_taken(clean):
+                        st.warning(f"'{clean}' already exists.")
+                    else:
+                        ok = safe_db_write(
+                            lambda: conn.table("material_master").insert({
+                                "material_group": clean,
+                                "category":       new_c
+                            }).execute(),
+                            success_msg=f"Group '{clean}' added!",
+                            error_prefix="Group Error"
+                        )
+                        if ok:
+                            mg_refresh()
+                            st.rerun()
+        else:
+            mg_old  = mg_editing.get("material_group", "")
+            mg_used = mg_usage(mg_old)
+            with st.form("m_grp_edit_form"):
+                st.info(f"✏️ Editing: **{mg_old}**")
+                ed_name = st.text_input("Group Name", value=mg_old)
+                cur_c   = mg_editing.get("category")
+                ed_cat  = st.selectbox(
+                    "Category", MG_CATEGORIES,
+                    index=MG_CATEGORIES.index(cur_c) if cur_c in MG_CATEGORIES else 0
                 )
-                st.cache_data.clear()
-                st.rerun()
-        try:
-            grps = conn.table("material_master").select("*").execute().data
-            if grps:
-                st.dataframe(
-                    pd.DataFrame(grps)[['material_group']],
-                    hide_index=True, use_container_width=True
-                )
-        except Exception as e:
-            st.error(f"Group load error: {e}")
+                if mg_used:
+                    st.caption(
+                        f"⚠️ {mg_used} indent item(s) use this name. "
+                        "Renaming relabels all of them."
+                    )
+                e1, e2 = st.columns(2)
+                mg_save   = e1.form_submit_button("✅ Update", use_container_width=True)
+                mg_cancel = e2.form_submit_button("✖ Cancel", use_container_width=True)
+
+                if mg_cancel:
+                    st.session_state.mg_edit_id = None
+                    st.rerun()
+
+                if mg_save:
+                    clean = (ed_name or "").strip().upper()
+                    if not clean:
+                        st.warning("Enter a group name.")
+                    elif mg_name_taken(clean, ignore_id=mg_editing.get("id")):
+                        st.warning(f"'{clean}' already exists.")
+                    else:
+                        ok = safe_db_write(
+                            lambda: conn.table("material_master").update({
+                                "material_group": clean,
+                                "category":       ed_cat
+                            }).eq("id", mg_editing["id"]).execute(),
+                            error_prefix="Group update error"
+                        )
+                        # Cascade the rename by hand. There is no foreign key
+                        # from purchase_orders.material_group back to this
+                        # table, so without this step old indents keep the old
+                        # label and drop out of the Purchase Console filter.
+                        if ok and clean != mg_old.strip().upper():
+                            safe_db_write(
+                                lambda: conn.table("purchase_orders").update(
+                                    {"material_group": clean}
+                                ).eq("material_group", mg_old).execute(),
+                                error_prefix="Relabel error"
+                            )
+                        if ok:
+                            mg_refresh()
+                            st.session_state.mg_edit_id = None
+                            st.success(f"Updated to '{clean}'")
+                            st.rerun()
+
+        # ── LIST  with per-row edit / delete ─────────────────
+        if not mg_rows:
+            st.info("No material groups yet.")
+        else:
+            st.caption(f"{len(mg_rows)} group(s)")
+            for g in mg_rows:
+                gid   = g.get("id")
+                gname = g.get("material_group") or "(blank)"
+                gr1, gr2, gr3 = st.columns([3, 0.8, 0.8])
+                gr1.write(f"**{gname}**")
+                gr1.caption(g.get("category") or "—")
+
+                if gr2.button("✏️", key=f"mg_e_{gid}", help="Edit"):
+                    st.session_state.mg_edit_id = gid
+                    st.session_state.mg_del_id  = None
+                    st.rerun()
+
+                if gr3.button("🗑️", key=f"mg_d_{gid}", help="Delete"):
+                    st.session_state.mg_del_id = gid
+                    st.rerun()
+
+                # Two-step delete, and blocked outright if indents depend on it.
+                if st.session_state.mg_del_id == gid:
+                    used = mg_usage(g.get("material_group") or "")
+                    with st.container(border=True):
+                        if used:
+                            st.error(
+                                f"Can't delete — {used} indent item(s) still "
+                                f"use '{gname}'. Rename it instead, or move "
+                                "those items to another group first."
+                            )
+                            if st.button("OK", key=f"mg_dx_{gid}"):
+                                st.session_state.mg_del_id = None
+                                st.rerun()
+                        else:
+                            st.warning(f"Delete '{gname}'? Not used by any indent.")
+                            dc1, dc2 = st.columns(2)
+                            if dc1.button("Yes, delete", key=f"mg_dy_{gid}",
+                                          type="primary"):
+                                ok = safe_db_write(
+                                    lambda: conn.table("material_master")
+                                        .delete().eq("id", gid).execute(),
+                                    success_msg="Deleted.",
+                                    error_prefix="Delete Error"
+                                )
+                                if ok:
+                                    mg_refresh()
+                                    st.session_state.mg_del_id = None
+                                    st.rerun()
+                            if dc2.button("Cancel", key=f"mg_dn_{gid}"):
+                                st.session_state.mg_del_id = None
+                                st.rerun()
 
     with col_vend_form:
         st.markdown("#### 🤝 Add New Vendor")
