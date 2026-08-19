@@ -280,6 +280,61 @@ with main_tabs[0]:
     # ── PART C: HISTORY, TRIGGER & EDIT/REVISE ───────────────
     st.subheader("🔍 Tracking & Adjustments")
 
+    # ── EDITING LOCKS — always visible, no date window, no row cap ────────
+    # The Purchase Console filters out `Editing`, and these rows can be older
+    # than the history window below. Without this panel they show up in
+    # Analytics but there is nowhere in the app to act on them.
+    try:
+        stuck_rows = conn.table("purchase_orders").select("*") \
+            .eq("status", "Editing") \
+            .order("created_at", desc=True).execute().data or []
+    except Exception as e:
+        st.error(f"Editing-lock load error: {e}")
+        stuck_rows = []
+
+    if stuck_rows:
+        with st.expander(
+            f"⚪ {len(stuck_rows)} item(s) locked in Editing — release them here",
+            expanded=True
+        ):
+            st.caption(
+                "Purchase cannot see these. RESUME loads the item back into the "
+                "draft list above for editing; RESET just returns it to Triggered."
+            )
+            for s_row in stuck_rows:
+                s_id = s_row['id']
+                try:
+                    s_age = (date.today() - pd.to_datetime(s_row['created_at']).date()).days
+                except Exception:
+                    s_age = None
+
+                sc1, sc2, sc3 = st.columns([4, 1, 1])
+                sc1.write(
+                    f"**{s_row.get('item_name', '')}** · "
+                    f"Indent #{s_row.get('indent_no', '—')} · "
+                    f"{s_row.get('triggered_by', '—')}"
+                    + (f" · **{s_age}d** locked" if s_age is not None else "")
+                )
+                sc1.caption(f"Job: {s_row.get('job_no', '—')}")
+
+                if sc2.button("▶️ Resume", key=f"sr_res_{s_id}",
+                              use_container_width=True):
+                    st.session_state.rev_data = dict(s_row)
+                    st.session_state.rev_data['_edit_id'] = s_id
+                    st.rerun()
+
+                if sc3.button("↩️ Reset", key=f"sr_rst_{s_id}",
+                              use_container_width=True):
+                    safe_db_write(
+                        lambda rid=s_id: conn.table("purchase_orders")
+                            .update({"status": "Triggered"})
+                            .eq("id", rid).execute(),
+                        success_msg="Reset to Triggered",
+                        error_prefix="Reset error"
+                    )
+                    st.rerun()
+
+    # ── HISTORY ──────────────────────────────────────────────────────────
     fc1, fc2, fc3 = st.columns(3)
     search_j   = fc1.selectbox("Filter by Job", ["ALL"] + get_jobs())
     search_sta = fc2.selectbox("Filter by Status",
@@ -287,14 +342,30 @@ with main_tabs[0]:
     show_all   = fc3.toggle("👥 Show All Users", value=False)
 
     try:
-        hist_q = conn.table("purchase_orders").select("*") \
-            .order("created_at", desc=True).limit(200)
+        hist_q = conn.table("purchase_orders").select("*")
+
         if not show_all:
             hist_q = hist_q.eq("triggered_by", raised_by)
-        hist_data = hist_q.execute().data or []
+
+        # Status is now filtered on the SERVER, before the row cap applies.
+        # Previously the cap fetched the 200 newest rows and pandas filtered
+        # inside that slice — so picking "Editing" could only ever find
+        # Editing rows that happened to be recent enough to survive the cap.
+        if search_sta != "ALL":
+            hist_q = hist_q.eq("status", search_sta)
+
+        hist_data = hist_q.order("created_at", desc=True).limit(300).execute().data or []
     except Exception as e:
         st.error(f"History load error: {e}")
         hist_data = []
+
+    # Warn when the cap is actually biting, so old rows never go missing
+    # silently again.
+    if len(hist_data) >= 300:
+        st.caption(
+            "⚠️ Showing the 300 most recent matching items — older ones are "
+            "not listed. Narrow the status filter to reach further back."
+        )
 
     if hist_data:
         df_h = pd.DataFrame(hist_data)
