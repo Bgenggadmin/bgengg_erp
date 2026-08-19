@@ -2,7 +2,10 @@
 # ======================================================================
 # B&G Engineering ERP — Quick Reports
 #
-# Four read-only reports across two source systems.
+# Five read-only reports across three source systems.
+#
+# WORKFORCE — master_staff / attendance_logs / leave_requests:
+#   0. Absent Today      — on the roster, no punch-in yet today
 #
 # MATERIAL — Material Command Center
 #            (indent_headers / purchase_orders / grn_receipts):
@@ -16,6 +19,15 @@
 #
 # The old anchor_projects.material_shortage and bg_job_master.is_shortage
 # signals are legacy and are deliberately NOT read here.
+#
+# Report 0 reads the view v_qr_absent_today. ALL of its logic lives in
+# SQL — the roster table (master_staff, NOT the empty bg_staff_master),
+# the placeholder/Admin exclusions, and the approved-leave labels. This
+# page does no filtering of its own, so it cannot drift from the view.
+# Reportable roster = 15 (19 rows less Driver / Freelancer / test / Admin).
+# Admin is the founder's login and must never be deleted from
+# master_staff — get_staff_list() in bg_workforce_erp.py builds the user
+# selector from it. Excluded in the view, not in the table.
 #
 # Report 3 reads the view v_ap_followups_due, which computes the
 # follow-up cadence in SQL so this page and the Monday Cowork brief can
@@ -66,6 +78,14 @@ st.set_page_config(page_title="Quick Reports | BGEngg ERP",
 # DATABASE CONNECTION
 # ----------------------------------------------------------------------
 conn = st.connection("supabase", type=SupabaseConnection)
+
+# ----------------------------------------------------------------------
+# CONFIG — WORKFORCE
+# The view name only. Roster source, exclusions and the approved-leave
+# labels (Approved / Sanctioned / Granted, case-insensitive) are all
+# defined inside v_qr_absent_today — do not re-declare them here.
+# ----------------------------------------------------------------------
+ABSENT_VIEW = "v_qr_absent_today"
 
 # ----------------------------------------------------------------------
 # CONFIG — MATERIAL  —  >>> CONFIRM THESE MATCH YOUR DATA <<<
@@ -222,6 +242,15 @@ def contact_txt(row) -> str:
 # DATA ACCESS LAYER
 # ----------------------------------------------------------------------
 @st.cache_data(ttl=30)
+def get_absent_today() -> pd.DataFrame:
+    """Roster rows with no attendance_logs entry for today (IST).
+    Columns: name, role, absence_type ('Absent' / 'On leave').
+    Empty frame if the view hasn't been created yet."""
+    res = conn.table(ABSENT_VIEW).select("*").execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+
+
+@st.cache_data(ttl=30)
 def get_open_purchase_orders() -> pd.DataFrame:
     """Every purchase_orders row that is not finished or dead."""
     res = (conn.table("purchase_orders").select("*")
@@ -258,6 +287,27 @@ def get_followups() -> pd.DataFrame:
 def get_projects() -> pd.DataFrame:
     res = conn.table("anchor_projects").select("*").order("id", desc=True).execute()
     return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+
+# ----------------------------------------------------------------------
+# REPORT BUILDER — WORKFORCE
+# ----------------------------------------------------------------------
+def build_absent_today():
+    """Not-yet-punched-in staff, split into Absent vs On leave.
+    No filtering happens here — the view is the single source of truth."""
+    df = get_absent_today()
+    if df.empty:
+        return pd.DataFrame(), 0, 0
+
+    out = pd.DataFrame({
+        "Name":   col(df, "name").apply(blank),
+        "Role":   col(df, "role").apply(blank),
+        "Status": col(df, "absence_type").apply(blank),
+    })
+    out = out.sort_values(["Status", "Name"]).reset_index(drop=True)
+
+    absent_n = int((out["Status"] == "Absent").sum())
+    leave_n  = int((out["Status"] == "On leave").sum())
+    return out, absent_n, leave_n
 
 # ----------------------------------------------------------------------
 # REPORT BUILDERS — MATERIAL
@@ -489,11 +539,39 @@ def build_quotations_pending():
 # ----------------------------------------------------------------------
 st.title("\U0001F4CB Quick Reports")
 st.caption(f"Live snapshot \u00B7 {datetime.now().strftime('%d %b %Y, %I:%M %p')}"
-           " \u00B7 sources: Material Command Center \u00B7 Anchor Portal")
+           " \u00B7 sources: Workforce \u00B7 Material Command Center"
+           " \u00B7 Anchor Portal")
 
 if st.button("\U0001F504 Refresh data"):
     st.cache_data.clear()
     st.rerun()
+
+st.subheader("Workforce")
+
+# ---- 0. Absent Today (roster vs punch-ins) ----
+with st.expander("\U0001F64B  Absent Today  (no punch-in yet)", expanded=True):
+    try:
+        df_abs, absent_n, leave_n = build_absent_today()
+        m1, m2 = st.columns(2)
+        m1.metric("Absent (unexplained)", absent_n)
+        m2.metric("On approved leave", leave_n)
+        if df_abs.empty:
+            st.success("Everyone on the roster has punched in today.")
+        else:
+            st.dataframe(df_abs, use_container_width=True, hide_index=True)
+        st.caption(
+            "Live against today's punch-ins \u2014 before the shift starts "
+            "this correctly lists the whole roster. Read it after "
+            "start-of-day. Roster excludes the Driver / Freelancer / test "
+            "placeholders and the Admin login."
+        )
+    except Exception as e:
+        st.warning(
+            f"Could not build Absent Today: {e}  \n"
+            f"If `{ABSENT_VIEW}` is missing, run qr_views_patch_02.sql. "
+            f"If it exists but errors, check: "
+            f"`grant select on {ABSENT_VIEW} to anon, authenticated;`"
+        )
 
 st.subheader("Material")
 
