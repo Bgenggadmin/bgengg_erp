@@ -920,7 +920,7 @@ def render_crm_desk_tab(board: pd.DataFrame, df_anchor: pd.DataFrame,
     # ---- morning brief ----------------------------------------------------
     st.divider()
     with st.expander("🌅 Morning brief feed"):
-        st.caption("no file needed. This download is the manual fallback.")
+        st.caption("No file needed. This download is the manual fallback.")
         brief = board.drop(columns=["id", "_order", "_due"], errors="ignore")
         st.download_button(
             "💾 Download today's call list (CSV)",
