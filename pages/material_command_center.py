@@ -1772,7 +1772,8 @@ with main_tabs[4]:
 
     col_grp, col_vend_form, col_vend_list = st.columns([1.6, 1.5, 2])
 
-        with col_grp:
+    # ── MATERIAL GROUPS ──────────────────────────────────────
+    with col_grp:
         st.markdown("#### 📦 Material Groups")
 
         MG_CATEGORIES = ["Consumables", "Raw Materials", "Hardware",
@@ -1789,8 +1790,9 @@ with main_tabs[4]:
         )
 
         def mg_refresh():
-            """Both loaders read material_master — clear both, not the whole
-            app cache, so vendor and job lists aren't needlessly re-fetched."""
+            """Both loaders read material_master — clear just those two, not
+            the whole app cache, so vendor and job lists aren't needlessly
+            re-fetched on every group save."""
             get_material_master_rows.clear()
             get_material_groups.clear()
 
@@ -1816,7 +1818,7 @@ with main_tabs[4]:
             except Exception:
                 return 0
 
-        # ── ADD  or  EDIT ────────────────────────────────────
+        # ADD mode (no row being edited)
         if mg_editing is None:
             with st.form("m_grp_form", clear_on_submit=True):
                 new_g = st.text_input("New Group Name")
@@ -1839,6 +1841,8 @@ with main_tabs[4]:
                         if ok:
                             mg_refresh()
                             st.rerun()
+
+        # EDIT mode
         else:
             mg_old  = mg_editing.get("material_group", "")
             mg_used = mg_usage(mg_old)
@@ -1894,7 +1898,7 @@ with main_tabs[4]:
                             st.success(f"Updated to '{clean}'")
                             st.rerun()
 
-        # ── LIST  with per-row edit / delete ─────────────────
+        # LIST with per-row edit / delete
         if not mg_rows:
             st.info("No material groups yet.")
         else:
@@ -1915,7 +1919,7 @@ with main_tabs[4]:
                     st.session_state.mg_del_id = gid
                     st.rerun()
 
-                # Two-step delete, and blocked outright if indents depend on it.
+                # Two-step delete, blocked outright if indents depend on it.
                 if st.session_state.mg_del_id == gid:
                     used = mg_usage(g.get("material_group") or "")
                     with st.container(border=True):
@@ -1947,6 +1951,7 @@ with main_tabs[4]:
                                 st.session_state.mg_del_id = None
                                 st.rerun()
 
+    # ── ADD VENDOR ───────────────────────────────────────────
     with col_vend_form:
         st.markdown("#### 🤝 Add New Vendor")
         with st.form("vendor_entry_form", clear_on_submit=True):
@@ -1971,11 +1976,12 @@ with main_tabs[4]:
                         success_msg=f"Vendor {v_name.upper()} added!",
                         error_prefix="Vendor Save Error"
                     )
-                    st.cache_data.clear()
+                    get_vendors.clear()
                     st.rerun()
                 else:
                     st.warning("Company Name is required.")
 
+    # ── VENDOR DIRECTORY ─────────────────────────────────────
     with col_vend_list:
         st.markdown("#### 🔍 Vendor Directory")
         v_search    = st.text_input("Search Vendors...", placeholder="Name or category")
@@ -2004,14 +2010,15 @@ with main_tabs[4]:
                     del_row = df_v[df_v['name'] == del_name].iloc[0]
                     if st.button(f"🗑️ Delete {del_name}", type="secondary",
                                  key="confirm_del_vendor"):
-                        safe_db_write(
+                        ok = safe_db_write(
                             lambda: conn.table("master_vendors")
                                 .delete().eq("id", int(del_row['id'])).execute(),
                             success_msg=f"{del_name} removed.",
                             error_prefix="Delete Error"
                         )
-                        st.cache_data.clear()
-                        st.rerun()
+                        if ok:
+                            get_vendors.clear()
+                            st.rerun()
             else:
                 st.info("No vendors match your search.")
         else:
