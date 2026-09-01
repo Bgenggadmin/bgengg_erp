@@ -38,6 +38,30 @@ def get_spares_with_stock(machine_name):
         return []
     except: return []
 
+# --- 2b. MACHINE MASTER HELPERS ---
+@st.cache_data(ttl=600)
+def get_machines_full():
+    try:
+        res = conn.table("master_machines").select("*").order("name").execute()
+        return res.data or []
+    except Exception:
+        return []
+
+@st.cache_data(ttl=60)
+def get_log_counts():
+    try:
+        res = conn.table("maintenance_logs").select("equipment").execute()
+        if not res.data:
+            return {}
+        return pd.DataFrame(res.data)["equipment"].value_counts().to_dict()
+    except Exception:
+        return {}
+
+def machine_filter(query, row):
+    if row.get("id") is not None:
+        return query.eq("id", row["id"])
+    return query.eq("name", row["name"])
+
 # Pre-fetch lists
 machine_list = get_mdm_list("master_machines", "name")
 staff_list = get_mdm_list("master_staff", "name")
@@ -45,7 +69,7 @@ staff_list = get_mdm_list("master_staff", "name")
 st.title("🔧 B&G Maintenance Master")
 
 # --- 3. TABS STRUCTURE ---
-tab_entry, tab_history = st.tabs(["📝 New Log Entry", "📜 History & Alerts"])
+tab_entry, tab_history, tab_master = st.tabs(["📝 New Log Entry", "📜 History & Alerts", "🛠️ Machine Master"])
 
 # --- 4. TAB: NEW LOG ENTRY ---
 with tab_entry:
@@ -173,3 +197,138 @@ with tab_history:
             st.info("No records found.")
     except Exception as e:
         st.error(f"Error loading history: {e}")
+
+# --- 6. TAB: MACHINE MASTER ---
+with tab_master:
+    st.subheader("🛠️ Machine Master")
+    st.caption("Machines added here feed the 'Select Machine' dropdown, the spares matching, and the PM alerts.")
+
+    machines = get_machines_full()
+    log_counts = get_log_counts()
+    existing_names = [m["name"] for m in machines]
+    existing_cats = sorted({m.get("category") for m in machines if m.get("category")})
+    NEW_CAT = "➕ New category..."
+
+    # --- 6a. ADD A MACHINE ---
+    with st.expander("➕ Add New Machine", expanded=not machines):
+        with st.form("add_machine_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                add_name = st.text_input("Machine Name *", placeholder="e.g. Lathe-02")
+            with c2:
+                add_cat_pick = st.selectbox("Category *", existing_cats + [NEW_CAT])
+            add_cat_new = st.text_input("New category name", placeholder=f"Fill this only if you picked '{NEW_CAT}'")
+
+            if st.form_submit_button("Save Machine"):
+                name_clean = add_name.strip()
+                cat_clean = add_cat_new.strip() if add_cat_pick == NEW_CAT else add_cat_pick
+
+                # Name is the link key to maintenance_logs, so it must be unique and non-blank.
+                if not name_clean:
+                    st.error("Machine name cannot be blank.")
+                elif not cat_clean:
+                    st.error("Category cannot be blank.")
+                elif name_clean.lower() in [n.lower() for n in existing_names]:
+                    st.error(f"'{name_clean}' already exists. Machine names must be unique.")
+                else:
+                    try:
+                        conn.table("master_machines").insert(
+                            {"name": name_clean, "category": cat_clean}
+                        ).execute()
+                        st.cache_data.clear()
+                        st.success(f"✅ Added '{name_clean}'.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Add failed: {e}")
+
+    st.divider()
+
+    if not machines:
+        st.info("No machines in the master yet — add the first one above.")
+    else:
+        # --- 6b. CURRENT LIST ---
+        st.markdown("**Current Machines**")
+        list_df = pd.DataFrame([
+            {
+                "Machine": m["name"],
+                "Category": m.get("category") or "—",
+                "Logs": log_counts.get(m["name"], 0),
+            }
+            for m in machines
+        ])
+        st.dataframe(list_df, use_container_width=True, hide_index=True)
+
+        # --- 6c. EDIT / REMOVE ---
+        st.divider()
+        st.markdown("**Edit or Remove a Machine**")
+        pick = st.selectbox("Select machine", existing_names, key="mm_pick")
+        row = next(m for m in machines if m["name"] == pick)
+        # Tie widget keys to the selected row, otherwise Streamlit keeps the
+        # previous machine's text in the boxes when you change the selection.
+        row_key = row.get("id") or row["name"]
+        used = log_counts.get(pick, 0)
+
+        e1, e2 = st.columns(2)
+        with e1:
+            up_name = st.text_input("Machine Name", value=row["name"], key=f"mm_name_{row_key}")
+        with e2:
+            cur_cat = row.get("category") or ""
+            cat_opts = existing_cats + [NEW_CAT]
+            cat_idx = cat_opts.index(cur_cat) if cur_cat in cat_opts else len(cat_opts) - 1
+            up_cat_pick = st.selectbox("Category", cat_opts, index=cat_idx, key=f"mm_cat_{row_key}")
+        up_cat_new = st.text_input(
+            "New category name", key=f"mm_catnew_{row_key}",
+            placeholder=f"Fill this only if you picked '{NEW_CAT}'"
+        )
+
+        cascade = False
+        if used > 0:
+            st.caption(f"ℹ️ '{pick}' has {used} maintenance log(s). Logs store the machine NAME, not its ID.")
+            cascade = st.checkbox(
+                f"If I rename it, also update those {used} log(s) to the new name",
+                value=True, key=f"mm_cascade_{row_key}"
+            )
+
+        if st.button("💾 Save Changes", key=f"mm_save_{row_key}"):
+            new_name = up_name.strip()
+            new_cat = up_cat_new.strip() if up_cat_pick == NEW_CAT else up_cat_pick
+            other_names = [n.lower() for n in existing_names if n != pick]
+
+            if not new_name:
+                st.error("Machine name cannot be blank.")
+            elif not new_cat:
+                st.error("Category cannot be blank.")
+            elif new_name.lower() in other_names:
+                st.error(f"'{new_name}' already exists.")
+            else:
+                try:
+                    machine_filter(
+                        conn.table("master_machines").update({"name": new_name, "category": new_cat}),
+                        row
+                    ).execute()
+                    # Keep history pointing at the machine after a rename.
+                    if new_name != pick and cascade and used > 0:
+                        conn.table("maintenance_logs").update(
+                            {"equipment": new_name}
+                        ).eq("equipment", pick).execute()
+                    st.cache_data.clear()
+                    st.success(f"✅ Saved '{new_name}'.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Update failed: {e}")
+
+        with st.expander("🗑️ Remove this machine"):
+            if used > 0:
+                st.warning(
+                    f"'{pick}' has {used} maintenance log(s). Deleting the machine does NOT delete those logs — "
+                    "they stay visible in History, but the machine disappears from the dropdown and from PM alerts."
+                )
+            confirm_del = st.checkbox(f"Yes, remove '{pick}' from the master", key=f"mm_del_{row_key}")
+            if st.button("🗑️ Delete Machine", key=f"mm_delbtn_{row_key}", disabled=not confirm_del):
+                try:
+                    machine_filter(conn.table("master_machines").delete(), row).execute()
+                    st.cache_data.clear()
+                    st.success(f"Removed '{pick}'.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Delete failed: {e}")
