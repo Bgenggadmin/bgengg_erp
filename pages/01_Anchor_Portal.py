@@ -13,7 +13,7 @@ PIPELINE_STAGES = ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"]
 # Production lifecycle. Separate from PIPELINE_STAGES: a job stays "Won"
 # in sales terms after it ships. Stored in anchor_projects.prod_stage,
 # the same column the Production Plan app uses.
-PROD_STAGES = ["Running", "Hold", "Dispatched"]
+PROD_STAGES = ["Running", "Hold", "Dispatched", "Stock"]
 DRAWING_STATUSES = ["Pending", "Drafting", "Approved", "NA"]
 PURCHASE_STATUSES = ["Triggered", "Ordered", "Received"]
 ANCHOR_PERSONS = ["API", "MEE"]   # API first = default opening profile (was Kishore)
@@ -845,15 +845,31 @@ with tabs[1]:
     else:
         view_col, stage_col = st.columns([1, 2])
         bulk_mode = view_col.toggle("⚡ Bulk Update Mode", value=False)
-        stage_filter_options = ["All"] + PIPELINE_STAGES
+        # Two different columns behind one filter bar. PIPELINE_STAGES
+        # filter on `status` (the sales pipeline); the production stages
+        # filter on `prod_stage`. A job can be Won AND Dispatched — they
+        # are separate facts, so the filter has to know which column a
+        # given choice belongs to. No label appears in both lists.
+        prod_filter_options = ["Hold", "Dispatched", "Stock"]
+        stage_filter_options = ["All"] + PIPELINE_STAGES + prod_filter_options
         selected_stage = stage_col.radio(
             "Filter Stage", stage_filter_options, horizontal=True
         )
 
-        df_pipeline = (
-            df_anchor if selected_stage == "All"
-            else df_anchor[df_anchor["status"] == selected_stage]
-        )
+        if selected_stage == "All":
+            df_pipeline = df_anchor
+        elif selected_stage in PIPELINE_STAGES:
+            df_pipeline = df_anchor[df_anchor["status"] == selected_stage]
+        elif "prod_stage" in df_anchor.columns:
+            df_pipeline = df_anchor[df_anchor["prod_stage"] == selected_stage]
+        else:
+            # prod_stage column not added yet — say so rather than
+            # silently showing everything as if the filter had worked.
+            st.warning(
+                "The prod_stage column does not exist yet. Run prod_stage.sql "
+                "in Supabase to use the production stage filters."
+            )
+            df_pipeline = df_anchor.iloc[0:0]
 
         if bulk_mode:
             with st.form("bulk_update_form"):
