@@ -402,8 +402,19 @@ def render_project_header(p_data: pd.Series, target_job: str):
         c2.write(f"🚚 **PO Dispatch**\n{fmt_date(po_disp_dt)}")
         c3.write(f"🔴 **Revised Date**\n{fmt_date(rev_dt)}")
 
+        # Same rule as the Anchor Portal: a job that has shipped or gone to
+        # stock is not counting down to anything.
+        stage_now = p_data.get("prod_stage") or "Running"
         days = days_remaining(final_target)
-        if days is not None:
+
+        if stage_now == "Dispatched":
+            c4.metric("Dispatch Status", "✅ Dispatched")
+        elif stage_now == "Stock":
+            c4.metric("Dispatch Status", "📦 In Stock")
+        elif stage_now == "Hold":
+            c4.metric("Dispatch Status", "🔵 On Hold")
+            c4.caption(f"Target was {fmt_date(final_target)}")
+        elif days is not None:
             c4.metric("Days to Dispatch", f"{days} Days", delta=days,
                       delta_color="normal" if days > 7 else "inverse")
         else:
