@@ -33,6 +33,73 @@ MILESTONE_MAP = [
     ("FAT Status",          "fat_stat",  "fat_note"),
 ]
 
+# ── DISPATCH / RUNNING RULE ────────────────────────────────  NEW
+# Three places in the ERP can tell us whether a job has been dispatched.
+# They are checked in this order and the FIRST one with an answer wins:
+#
+#   1. Anchor Portal    -> anchor_projects.prod_stage  ("Dispatched" tag)
+#   2. Production Plan  -> job_planning, "Final Finishing & Dispatch" gate
+#   3. This app         -> progress_logs qc_stat / overall_progress
+#
+# Anchor wins because prod_stage is a deliberate decision someone recorded
+# about the job. A shop-floor gate can be closed early or left open, and a
+# progress log can simply be stale. Tier 2 and 3 are the bridge until every
+# job carries a prod_stage tag.
+PROD_STAGE_DISPATCHED = "dispatched"                  # anchor_projects.prod_stage
+DISPATCH_GATE_NAME    = "Final Finishing & Dispatch"  # row in production_gates
+DISPATCH_GATE_DONE    = "completed"                   # job_planning.current_status
+DISPATCH_STATUS_KEY   = "qc_stat"                     # progress_logs milestone
+DISPATCH_DONE_VALUES  = {"completed"}
+
+# Only jobs at these Anchor pipeline stages ever reach the shop floor.
+# Enquiry / Quotation Sent / Lost jobs are excluded from the Running and
+# Dispatched buckets so the lists stay short and meaningful.
+PRODUCTION_STATUSES = {"Won"}
+
+
+def log_says_dispatched(log: dict) -> bool:
+    """Tier-3 fallback: read dispatch out of this app's own progress log."""
+    if not log:
+        return False
+    status = str(log.get(DISPATCH_STATUS_KEY) or "").strip().lower()
+    if status in DISPATCH_DONE_VALUES:
+        return True
+    try:
+        return int(log.get("overall_progress") or 0) >= 100
+    except (TypeError, ValueError):
+        return False
+
+
+def resolve_stage(job_no, sources, log=None):
+    """
+    Decide Running vs Dispatched for ONE job.
+
+    Returns (dispatched, label, source) - not just the answer but WHERE it
+    came from, so the team can see which portal is driving the classification
+    and fix the source when two portals disagree.
+    """
+    src = (sources or {}).get(job_no, {})
+
+    # Tier 1 - Anchor Portal tag
+    stage = str(src.get("prod_stage") or "").strip()
+    if stage:
+        return (stage.lower() == PROD_STAGE_DISPATCHED, stage, "Anchor Portal")
+
+    # Tier 2 - Production Plan dispatch gate
+    gate = str(src.get("gate_status") or "").strip()
+    if gate:
+        done = gate.lower() == DISPATCH_GATE_DONE
+        return (done,
+                "Dispatched" if done else f"Running ({gate} at dispatch gate)",
+                "Production Plan")
+
+    # Tier 3 - this app's own progress log
+    if log:
+        done = log_says_dispatched(log)
+        return (done, "Dispatched" if done else "Running", "Progress log")
+
+    return (False, "Not started", "—")
+
 # ──────────────────────────────────────────────
 # 2. ENGINE
 # ──────────────────────────────────────────────
@@ -214,17 +281,118 @@ def generate_pdf(logs):
 @st.cache_data(ttl=60)
 def get_master_data():
     try:
-        res = conn.table("anchor_projects").select("client_name, job_no").execute()
+        # status is pulled too, so we know which jobs actually reach the shop floor
+        res = conn.table("anchor_projects").select("client_name, job_no, status").execute()
         if res.data:
             c_list = list(set([d['client_name'] for d in res.data if d.get('client_name')]))
             j_list = list(set([d['job_no']     for d in res.data if d.get('job_no')]))
-            return sorted(c_list), sorted(j_list)
-        return [], []
+            j_stat = {d['job_no']: d.get('status') for d in res.data if d.get('job_no')}
+            return sorted(c_list), sorted(j_list), j_stat
+        return [], [], {}
     except:
-        return [], []
+        return [], [], {}
 
 
-customers, jobs = get_master_data()
+@st.cache_data(ttl=60)
+def get_latest_status_map(row_cap: int = 5000):
+    """
+    Build {job_code: latest_log_row} for the Running / Dispatched split.
+
+    Only the three columns needed to make that decision are pulled, so this
+    stays cheap even with thousands of logs. Rows come back id-desc, so the
+    FIRST time we meet a job_code is that job's newest entry.
+
+    Returns (map, capped) - capped=True warns that we hit row_cap and older
+    logs were never read, which would silently hide long-finished jobs.
+    """
+    try:
+        res = (
+            conn.table("progress_logs")
+            .select(f"id, job_code, overall_progress, {DISPATCH_STATUS_KEY}")
+            .order("id", desc=True)
+            .limit(row_cap)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception:
+        return {}, False
+
+    latest = {}
+    for row in rows:
+        jc = row.get("job_code")
+        if jc and jc not in latest:
+            latest[jc] = row
+    return latest, len(rows) >= row_cap
+
+
+@st.cache_data(ttl=60)
+def get_dispatch_sources():
+    """
+    Pull the two EXTERNAL dispatch signals into one lookup:
+
+        {job_no: {"prod_stage": ..., "gate_status": ...}}
+
+    Both are one-row-per-job tables, so there is no row-cap risk here.
+    A failure in either query degrades gracefully - the resolver simply
+    falls through to the next tier instead of crashing the page.
+    """
+    out = {}
+
+    # Tier 1 source - Anchor Portal
+    try:
+        res = conn.table("anchor_projects").select("job_no, prod_stage").execute()
+        for r in (res.data or []):
+            jn = r.get("job_no")
+            if jn and r.get("prod_stage"):
+                out.setdefault(jn, {})["prod_stage"] = r["prod_stage"]
+    except Exception:
+        pass
+
+    # Tier 2 source - Production Plan dispatch gate.
+    # A job can carry duplicate rows for the same gate; the most advanced
+    # status wins so a stray "Pending" duplicate cannot mask a real completion.
+    rank = {"pending": 0, "active": 1, "completed": 2}
+    try:
+        res = (
+            conn.table("job_planning")
+            .select("job_no, current_status")
+            .eq("gate_name", DISPATCH_GATE_NAME)
+            .execute()
+        )
+        for r in (res.data or []):
+            jn, cs = r.get("job_no"), r.get("current_status")
+            if not jn or not cs:
+                continue
+            prev = out.setdefault(jn, {}).get("gate_status")
+            if prev is None or rank.get(str(cs).lower(), -1) > rank.get(str(prev).lower(), -1):
+                out[jn]["gate_status"] = cs
+    except Exception:
+        pass
+
+    return out
+
+
+customers, jobs, job_status = get_master_data()
+status_map, status_capped   = get_latest_status_map()
+dispatch_src                = get_dispatch_sources()         # NEW
+
+
+def job_stage(job_no):
+    """Resolve one job using all three sources. Small wrapper for readability."""
+    return resolve_stage(job_no, dispatch_src, status_map.get(job_no))
+
+
+# Only Won jobs are on the shop floor, so only those get bucketed.       NEW
+prod_jobs       = [j for j in jobs if (job_status.get(j) or "") in PRODUCTION_STATUSES]
+running_jobs    = [j for j in prod_jobs if not job_stage(j)[0]]
+dispatched_jobs = [j for j in prod_jobs if     job_stage(j)[0]]
+
+if status_capped:
+    st.warning(
+        "Progress-log row cap reached while classifying jobs - some older "
+        "dispatched jobs may be missing from the split. Raise `row_cap` in "
+        "`get_latest_status_map()`."
+    )
 
 # ──────────────────────────────────────────────
 # 4. HELPER
@@ -253,12 +421,41 @@ with tab1:
     if "form_reset" not in st.session_state:
         st.session_state.form_reset = False
 
+    # ── Running / Dispatched selector ─────────────────────────  NEW
+    # Keeps the Job Code dropdown short: the team normally only needs the
+    # jobs still on the shop floor.
+    VIEW_LABELS = {
+        "run":  f"🏃 Running ({len(running_jobs)})",
+        "disp": f"🚚 Dispatched ({len(dispatched_jobs)})",
+        "all":  f"📋 All jobs ({len(jobs)})",
+    }
+    view_key = st.radio(
+        "Show jobs",
+        list(VIEW_LABELS.keys()),
+        format_func=lambda k: VIEW_LABELS[k],
+        horizontal=True,
+        key="entry_view",
+    )
+    job_options = {
+        "run":  running_jobs,
+        "disp": dispatched_jobs,
+        "all":  jobs,
+    }[view_key]
+
     c_top1, c_top2 = st.columns([3, 1])
-    f_job = c_top1.selectbox("Job Code", [""] + jobs, key="job_lookup")
+    # Key is tied to the view, so switching views cannot leave a stale
+    # selection pointing at a job that is no longer in the option list.
+    f_job = c_top1.selectbox("Job Code", [""] + job_options, key=f"job_lookup_{view_key}")
 
     if c_top2.button("🧹 Clear Form", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
+
+    if f_job:                                                                # NEW
+        _disp, _label, _src = job_stage(f_job)
+        st.caption(f"Stage: **{_label}**  ·  read from: **{_src}**")
+        if _disp:
+            st.warning(f"🚚 **{f_job}** is marked DISPATCHED. Updates will still be saved.")
 
     last_data = {}
 
@@ -446,25 +643,51 @@ with tab2:
             seen[jc] = row
     data = list(seen.values())
 
-    if data:
-        if st.button("📥 Prepare PDF for Download", use_container_width=True):
+    # ── Split the filtered archive into Running vs Dispatched ──  NEW
+    # Uses the same three-source resolver as Tab 1, so the Archive and the
+    # entry dropdown can never disagree with each other.
+    running_logs    = [d for d in data
+                       if not resolve_stage(d.get("job_code"), dispatch_src, d)[0]]
+    dispatched_logs = [d for d in data
+                       if     resolve_stage(d.get("job_code"), dispatch_src, d)[0]]
+
+    def render_logs(rows, section_key):
+        """Draw the PDF button + expander list for ONE group of logs.
+
+        section_key keeps every widget key unique across the three sub-tabs,
+        otherwise Streamlit would see duplicate keys and error out.
+        """
+        if not rows:
+            st.info("No jobs in this group for the selected filter.")
+            return
+
+        if st.button(
+            f"📥 Prepare PDF ({len(rows)} job{'s' if len(rows) != 1 else ''})",
+            use_container_width=True,
+            key=f"pdf_btn_{section_key}",
+        ):
             with st.spinner("Generating PDF..."):
-                pdf_bytes = generate_pdf(data)
+                pdf_bytes = generate_pdf(rows)
                 if pdf_bytes:
                     st.download_button(
                         label="✅ Click here to Save PDF",
                         data=pdf_bytes,
-                        file_name="BG_Report.pdf",
-                        mime="application/pdf"
+                        file_name=f"BG_Report_{section_key}.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_dl_{section_key}",
                     )
 
-        for log in data:
-            with st.expander(f"📦 {log.get('job_code')} — {log.get('customer')}"):
+        for log in rows:
+            jc = log.get("job_code")
+            disp, label, srcname = resolve_stage(jc, dispatch_src, log)
+            icon = "🚚" if disp else "🏃"
+            with st.expander(f"📦 {jc} — {log.get('customer')}  ·  {icon} {label}"):
+                st.caption(f"Stage read from: **{srcname}**")
                 col_a, col_b, col_c, col_d = st.columns(4)
                 col_a.metric("Overall", f"{log.get('overall_progress', 0)}%")
                 col_b.metric("PO Date (Printed)",     log.get('po_date',          '—'))
-                col_c.metric("Actual PO Received",    log.get('actual_po_date',   '—'))  # ← NEW
-                col_d.metric("Drawing Approval Date", log.get('draw_app_date',    '—'))  # ← NEW
+                col_c.metric("Actual PO Received",    log.get('actual_po_date',   '—'))
+                col_d.metric("Drawing Approval Date", log.get('draw_app_date',    '—'))
 
                 st.progress(int(log.get('overall_progress') or 0) / 100)
 
@@ -474,6 +697,41 @@ with tab2:
                     ms_cols[idx % 3].markdown(
                         f"**{label}:** {log.get(skey, 'Pending')}"
                     )
+
+    # ── Do the two portals agree? ───────────────────────────────  NEW
+    # Anchor wins when they clash, but the team should still see the clash
+    # and fix it at source rather than let it drift.
+    conflicts = []
+    for j in prod_jobs:
+        s     = dispatch_src.get(j, {})
+        stage = str(s.get("prod_stage")  or "").strip().lower()
+        gate  = str(s.get("gate_status") or "").strip().lower()
+        if not stage or not gate:
+            continue    # only one source has an opinion, nothing to compare
+        if (stage == PROD_STAGE_DISPATCHED) != (gate == DISPATCH_GATE_DONE):
+            conflicts.append((j, s.get("prod_stage"), s.get("gate_status")))
+
+    if conflicts:
+        with st.expander(f"⚠️ {len(conflicts)} job(s): Anchor and Production Plan disagree"):
+            st.caption(
+                "Anchor Portal wins the classification. Correct the source portal "
+                "so both agree."
+            )
+            for j, ps, gs in conflicts:
+                st.markdown(f"- **{j}** — Anchor: `{ps}`  ·  Dispatch gate: `{gs}`")
+
+    if data:
+        sub_run, sub_disp, sub_all = st.tabs([
+            f"🏃 Running ({len(running_logs)})",
+            f"🚚 Dispatched ({len(dispatched_logs)})",
+            f"📋 All ({len(data)})",
+        ])
+        with sub_run:
+            render_logs(running_logs, "running")
+        with sub_disp:
+            render_logs(dispatched_logs, "dispatched")
+        with sub_all:
+            render_logs(data, "all")
     else:
         st.info("No records found for the selected filter.")
 
@@ -534,3 +792,11 @@ ALTER TABLE progress_logs
     st.write("3. **New Fields:** `actual_po_date` (real date PO was received) and `draw_app_date` (date drawings were formally approved) are captured on every submission.")
     st.write("4. **Submission:** All data saved to `progress_logs`; images uploaded to storage bucket.")
     st.write("5. **PDF:** Both new date fields appear in the header table of every report.")
+    st.write("6. **Running vs Dispatched (synced):** resolved by `resolve_stage()` "
+             "from three sources, first answer wins — "
+             "(1) `anchor_projects.prod_stage` set in the **Anchor Portal**, "
+             "(2) the *Final Finishing & Dispatch* gate in `job_planning` set in the "
+             "**Production Plan**, (3) this app's own `progress_logs` "
+             "(`qc_stat` = 'Completed' or `overall_progress` = 100). "
+             "Only jobs with Anchor status **Won** are bucketed. "
+             "Every card shows which source decided.")
