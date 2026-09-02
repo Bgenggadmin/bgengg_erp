@@ -124,6 +124,29 @@ def load_all_data() -> tuple[pd.DataFrame, ...]:
 all_staff      = master.get("staff", [])
 all_workers    = sorted(set(master.get("workers", [])))
 all_jobs       = sorted(df_projects["job_no"].astype(str).unique()) if not df_projects.empty else []
+
+
+def _active_job_list(projects: pd.DataFrame) -> list:
+    """
+    Jobs still being worked on: Running or Hold.
+
+    Reads prod_stage with NULL meaning Running. Guards against the column
+    being absent so the app still runs if prod_stage.sql has not been
+    applied yet — in that case every job counts as active, which is the
+    old behaviour rather than an empty dropdown.
+    """
+    if projects.empty:
+        return []
+    if "prod_stage" not in projects.columns:
+        return sorted(projects["job_no"].astype(str).unique())
+
+    stage = projects["prod_stage"].fillna("Running")
+    keep  = projects.loc[~stage.isin(CLOSED_STAGES), "job_no"]
+    return sorted(keep.astype(str).unique())
+
+
+active_jobs = _active_job_list(df_projects)
+closed_jobs = [j for j in all_jobs if j not in set(active_jobs)]
 all_activities = master.get("gates", [])
 
 
@@ -992,6 +1015,8 @@ def render_analytics():
             "Select Range", [today - timedelta(days=30), today]
         )
 
+        # Full list on purpose: reports look backwards, so dispatched
+        # jobs must stay available here.
         f_jobs    = c2.multiselect("Filter Jobs",    all_jobs,    default=all_jobs)
         f_workers = c3.multiselect("Filter Workers", all_workers, default=all_workers)
 
@@ -1082,7 +1107,17 @@ with tab_dash:
 # ── TAB 1: SCHEDULING & EXECUTION ──────────────
 with tab_plan:
     st.subheader("📋 Production Control Center")
-    target_job = st.selectbox("Select Job to Manage", ["-- Select --"] + all_jobs)
+    # Dispatched and Stock jobs are out of the list by default. The
+    # checkbox matters: without it, marking a job Dispatched by mistake
+    # would remove the only control that can un-mark it.
+    jc1, jc2 = st.columns([3, 1])
+    show_closed_jobs = jc2.checkbox(
+        f"Show closed ({len(closed_jobs)})", value=False, key="pc_show_closed",
+        help="Dispatched and Stock jobs. Tick this to reopen or correct one.",
+    )
+    job_choices = active_jobs + closed_jobs if show_closed_jobs else active_jobs
+
+    target_job = jc1.selectbox("Select Job to Manage", ["-- Select --"] + job_choices)
 
     # NOTE: this used to be `st.stop()`, which halts the WHOLE script and
     # therefore stopped every later tab from being built. An if/else only
@@ -1107,6 +1142,8 @@ with tab_plan:
         # ── No plan yet: clone or start fresh ──
         if job_steps.empty:
             st.warning("⚠️ No Plan Detected")
+            # Full list on purpose: a finished job is often the best
+            # template to copy a gate sequence from.
             src_job = st.selectbox("Clone from Template:", ["-- Select --"] + all_jobs, key="clone_src")
             if st.button("🚀 Clone Sequence") and src_job != "-- Select --":
                 src_steps = df_job_plans[df_job_plans["job_no"] == src_job]
@@ -1195,7 +1232,9 @@ with tab_entry:
     st.divider()
 
     st.subheader("👷 Labor & Output Tracking")
-    f_job = st.selectbox("Select Job Code", ["-- Select --"] + all_jobs, key="ent_job")
+    # Active jobs only — logging hours against a dispatched job is almost
+    # always a mis-click. Use Scheduling & Execution to reopen one first.
+    f_job = st.selectbox("Select Job Code", ["-- Select --"] + active_jobs, key="ent_job")
 
     if f_job != "-- Select --":
         job_plan_df  = df_job_plans[df_job_plans["job_no"] == f_job] if not df_job_plans.empty else pd.DataFrame()
