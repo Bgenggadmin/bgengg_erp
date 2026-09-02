@@ -21,6 +21,10 @@ conn = st.connection("supabase", type=SupabaseConnection)
 OUTPUT_UNITS = ["Nos", "Mtrs", "Sq.Ft", "Kgs", "Joints"]
 PERIOD_OPTIONS = ["Today", "Last 7 Days", "Current Month", "Custom Range"]
 
+# Production lifecycle, stored in anchor_projects.prod_stage.
+# NULL in the database means Running — nothing needed backfilling.
+PROD_STAGES = ["Running", "Hold", "Dispatched"]
+
 # A job is flagged "Due soon" when dispatch is this many days away or less.
 DUE_SOON_DAYS = 7
 
@@ -87,7 +91,8 @@ def load_all_data() -> tuple[pd.DataFrame, ...]:
     """Load all core tables and return as a named tuple of DataFrames."""
     try:
         p  = conn.table("anchor_projects").select(
-                "job_no, status, po_no, po_date, po_delivery_date, revised_delivery_date"
+                "job_no, status, po_no, po_date, po_delivery_date, "
+                "revised_delivery_date, prod_stage"
              ).eq("status", "Won").execute()
         l  = conn.table("production").select("*").order("created_at", desc=True).execute()
         g  = conn.table("production_gates").select("*").order("step_order").execute()
@@ -224,6 +229,13 @@ def build_dispatch_board(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataF
 
     for _, p in projects.iterrows():
         job = str(p.get("job_no"))
+        stage = (p.get("prod_stage") or "Running")
+
+        # Dispatched jobs have left the floor — they are not part of an
+        # outlook of what is still to come.
+        if stage == "Dispatched":
+            continue
+
         po_dt  = safe_date(p.get("po_delivery_date"))
         rev_dt = safe_date(p.get("revised_delivery_date"))
         target = rev_dt or po_dt
@@ -240,10 +252,14 @@ def build_dispatch_board(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataF
         # Does the plan itself already overshoot the commitment?
         gap = (plan_end - target).days if (plan_end and target) else None
 
-        if total == 0:
-            flag, rank = "⚪ No plan", 3
+        # Hold is checked first: a job the customer has paused should not
+        # be reported as overdue or lagging against us.
+        if stage == "Hold":
+            flag, rank = "🔵 Hold", 3
+        elif total == 0:
+            flag, rank = "⚪ No plan", 4
         elif pct == 100:
-            flag, rank = "✅ Plan complete", 5
+            flag, rank = "✅ Plan complete", 6
         elif target and days_left is not None and days_left < 0:
             flag, rank = "🔴 Overdue", 0
         elif max_delay > 0:
@@ -251,7 +267,7 @@ def build_dispatch_board(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataF
         elif days_left is not None and days_left <= DUE_SOON_DAYS:
             flag, rank = "🟡 Due soon", 2
         else:
-            flag, rank = "🟢 On track", 4
+            flag, rank = "🟢 On track", 5
 
         rows.append({
             "Status":          flag,
@@ -402,6 +418,33 @@ def render_project_header(p_data: pd.Series, target_job: str):
                               "job_no", target_job)
                     st.rerun()
             _update_dates()
+
+        # ── Production stage ──
+        # Writes anchor_projects.prod_stage, the same column the Anchor
+        # Portal reads and writes. Set it here or there; both show it.
+        st.divider()
+        cur_stage = p_data.get("prod_stage") or "Running"
+        s1, s2 = st.columns([2, 1])
+        new_stage = s1.radio(
+            "Production Stage",
+            PROD_STAGES,
+            index=PROD_STAGES.index(cur_stage) if cur_stage in PROD_STAGES else 0,
+            horizontal=True,
+            key=f"stage_{target_job}",
+            help="Dispatched hides the job from the outlook. "
+                 "Hold keeps it visible but stops it counting as late.",
+        )
+        if new_stage != cur_stage:
+            if s2.button("💾 Save Stage", key=f"savestage_{target_job}",
+                         type="primary", use_container_width=True):
+                db_update("anchor_projects",
+                          {"prod_stage": new_stage,
+                           "prod_stage_updated_at": NOW_IST()},
+                          "job_no", target_job)
+                st.success(f"{target_job} marked {new_stage}.")
+                st.rerun()
+        else:
+            s2.caption(f"Currently **{cur_stage}**")
 
 
 def render_purchase_section(target_job: str):
@@ -650,11 +693,14 @@ def job_plan_status(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
     """
     One row per Won job with a lifecycle bucket.
 
-    There is no 'Dispatched' status in anchor_projects — every job stays
-    'Won' forever — so the stage has to be inferred from the plan:
-      Yet to plan          no job_planning rows at all
-      Dispatched / closed  every gate Completed
-      Running              has a plan, not all gates closed
+    The explicit marker wins. anchor_projects.prod_stage is set by hand
+    in either this app or the Anchor Portal — one column, so a change in
+    one place shows in the other with nothing to sync.
+
+    Gate completion is NOT used to infer dispatch any more. A job whose
+    gates are all closed but which nobody has marked stays visible,
+    because "the plan finished" and "it left the factory" are different
+    claims and only a person knows the second one.
     """
     if projects.empty:
         return pd.DataFrame()
@@ -664,15 +710,18 @@ def job_plan_status(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
 
     for _, p in projects.iterrows():
         job    = str(p.get("job_no"))
+        stage  = (p.get("prod_stage") or "Running")
         target = safe_date(p.get("revised_delivery_date")) or safe_date(p.get("po_delivery_date"))
         steps  = plan[plan["job_no"] == job] if not plan.empty else pd.DataFrame()
         total  = len(steps)
         done   = int((steps["current_status"] == "Completed").sum()) if total else 0
 
-        if total == 0:
+        if stage == "Dispatched":
+            bucket = "Dispatched"
+        elif stage == "Hold":
+            bucket = "Hold"
+        elif total == 0:
             bucket = "Yet to plan"
-        elif done == total:
-            bucket = "Dispatched / closed"
         else:
             bucket = "Running"
 
@@ -712,19 +761,33 @@ def render_job_plans():
     }
 
     # ── All jobs ──
-    status_df   = job_plan_status(df_projects, enriched_plan)
-    running     = set(status_df.loc[status_df["Bucket"] == "Running", "Job No"]) if not status_df.empty else set()
-    closed      = set(status_df.loc[status_df["Bucket"] == "Dispatched / closed", "Job No"]) if not status_df.empty else set()
+    status_df = job_plan_status(df_projects, enriched_plan)
+
+    def _bucket(name: str) -> set:
+        if status_df.empty:
+            return set()
+        return set(status_df.loc[status_df["Bucket"] == name, "Job No"])
+
+    running, hold = _bucket("Running"), _bucket("Hold")
+    dispatched    = _bucket("Dispatched")
 
     st.markdown("#### 📚 Consolidated Plan — Running Jobs")
 
-    show_closed = st.checkbox(
-        f"Also show dispatched / closed jobs ({len(closed)})",
-        value=False, key="jp_show_closed",
-        help="Jobs where every gate is Completed. Hidden by default.",
+    c1, c2 = st.columns(2)
+    show_hold = c1.checkbox(
+        f"Include jobs on Hold ({len(hold)})", value=True, key="jp_show_hold",
+        help="Customer-paused jobs. Shown by default so they are not forgotten.",
+    )
+    show_dispatched = c2.checkbox(
+        f"Include Dispatched ({len(dispatched)})", value=False, key="jp_show_disp",
+        help="Marked as dispatched in this app or the Anchor Portal.",
     )
 
-    visible = running | closed if show_closed else running
+    visible = set(running)
+    if show_hold:
+        visible |= hold
+    if show_dispatched:
+        visible |= dispatched
 
     all_view = (
         enriched_plan[enriched_plan["job_no"].isin(visible)][list(view_cols.keys())]
@@ -733,11 +796,12 @@ def render_job_plans():
     )
 
     if all_view.empty:
-        st.info("No running jobs with a plan right now.")
+        st.info("No jobs match the current filter.")
     else:
+        hidden = len(dispatched) if not show_dispatched else 0
         st.caption(
             f"{all_view['Job No'].nunique()} job(s), {len(all_view)} steps."
-            + ("" if show_closed else f" {len(closed)} dispatched job(s) hidden.")
+            + (f" {hidden} dispatched job(s) hidden." if hidden else "")
         )
         st.dataframe(all_view, use_container_width=True, hide_index=True, height=320)
         st.download_button(
