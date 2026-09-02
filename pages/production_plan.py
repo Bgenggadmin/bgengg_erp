@@ -646,6 +646,50 @@ def render_dashboard():
         )
 
 
+def job_plan_status(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per Won job with a lifecycle bucket.
+
+    There is no 'Dispatched' status in anchor_projects — every job stays
+    'Won' forever — so the stage has to be inferred from the plan:
+      Yet to plan          no job_planning rows at all
+      Dispatched / closed  every gate Completed
+      Running              has a plan, not all gates closed
+    """
+    if projects.empty:
+        return pd.DataFrame()
+
+    today = date.today()
+    rows = []
+
+    for _, p in projects.iterrows():
+        job    = str(p.get("job_no"))
+        target = safe_date(p.get("revised_delivery_date")) or safe_date(p.get("po_delivery_date"))
+        steps  = plan[plan["job_no"] == job] if not plan.empty else pd.DataFrame()
+        total  = len(steps)
+        done   = int((steps["current_status"] == "Completed").sum()) if total else 0
+
+        if total == 0:
+            bucket = "Yet to plan"
+        elif done == total:
+            bucket = "Dispatched / closed"
+        else:
+            bucket = "Running"
+
+        rows.append({
+            "Job No":    job,
+            "PO No":     p.get("po_no") or "---",
+            "Bucket":    bucket,
+            "Target":    fmt_date(target),
+            "Days Left": (target - today).days if target else None,
+            "Steps":     total,
+            "Done":      done,
+            "_target":   target or date(2099, 1, 1),
+        })
+
+    return pd.DataFrame(rows)
+
+
 def render_job_plans():
     """Read-only view of production plans, per job or all jobs, with CSV export."""
     st.subheader("📅 Job-wise Production Plan")
@@ -668,20 +712,65 @@ def render_job_plans():
     }
 
     # ── All jobs ──
-    st.markdown("#### 📚 All Jobs — Consolidated Plan")
+    status_df   = job_plan_status(df_projects, enriched_plan)
+    running     = set(status_df.loc[status_df["Bucket"] == "Running", "Job No"]) if not status_df.empty else set()
+    closed      = set(status_df.loc[status_df["Bucket"] == "Dispatched / closed", "Job No"]) if not status_df.empty else set()
+
+    st.markdown("#### 📚 Consolidated Plan — Running Jobs")
+
+    show_closed = st.checkbox(
+        f"Also show dispatched / closed jobs ({len(closed)})",
+        value=False, key="jp_show_closed",
+        help="Jobs where every gate is Completed. Hidden by default.",
+    )
+
+    visible = running | closed if show_closed else running
+
     all_view = (
-        enriched_plan[list(view_cols.keys())]
+        enriched_plan[enriched_plan["job_no"].isin(visible)][list(view_cols.keys())]
         .rename(columns=view_cols)
         .sort_values(["Job No", "Step"])
     )
-    st.dataframe(all_view, use_container_width=True, hide_index=True, height=320)
-    st.download_button(
-        "📥 Download ALL Job Plans",
-        to_csv(all_view),
-        f"all_job_plans_{date.today()}.csv",
-        "text/csv",
-        key="dl_all_plans",
-    )
+
+    if all_view.empty:
+        st.info("No running jobs with a plan right now.")
+    else:
+        st.caption(
+            f"{all_view['Job No'].nunique()} job(s), {len(all_view)} steps."
+            + ("" if show_closed else f" {len(closed)} dispatched job(s) hidden.")
+        )
+        st.dataframe(all_view, use_container_width=True, hide_index=True, height=320)
+        st.download_button(
+            "📥 Download Consolidated Plan",
+            to_csv(all_view),
+            f"job_plans_{date.today()}.csv",
+            "text/csv",
+            key="dl_all_plans",
+        )
+
+    # ── Jobs with no plan yet ──
+    if not status_df.empty:
+        unplanned = (
+            status_df[status_df["Bucket"] == "Yet to plan"]
+            .sort_values("_target")
+            .drop(columns=["Bucket", "Steps", "Done", "_target"])
+        )
+        if not unplanned.empty:
+            overdue = int((unplanned["Days Left"] < 0).sum())
+            st.markdown(f"#### 🕳️ Yet to Plan — {len(unplanned)} job(s)")
+            if overdue:
+                st.warning(
+                    f"{overdue} of these are already past their delivery date "
+                    "with no production plan created."
+                )
+            st.dataframe(unplanned, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 Download Yet-to-Plan List",
+                to_csv(unplanned),
+                f"yet_to_plan_{date.today()}.csv",
+                "text/csv",
+                key="dl_unplanned",
+            )
 
     st.divider()
 
