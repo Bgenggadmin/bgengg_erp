@@ -936,8 +936,31 @@ with tabs[1]:
                         ),
                         key=f"rev_del_date_{row['id']}",
                     )
+                    # "Days to Dispatch" only means something while the job is
+                    # still heading towards a dispatch. Once it has shipped or
+                    # gone to stock the countdown is noise — it just grows more
+                    # negative every day and makes a finished job look overdue.
+                    cur_pstage = row.get("prod_stage") or "Running"
                     days_to_go = (u_rev_del - date.today()).days
-                    d3.metric("Days to Dispatch", f"{days_to_go} Days", delta=days_to_go)
+
+                    if cur_pstage == "Dispatched":
+                        d3.metric("Dispatch Status", "✅ Dispatched")
+                        raw_marked = row.get("prod_stage_updated_at")
+                        # safe_date() falls back to today() on a null, so check
+                        # the raw value first rather than printing today's date
+                        # as though it were the dispatch date.
+                        if pd.notnull(raw_marked):
+                            d3.caption(
+                                "Marked " + safe_date(raw_marked).strftime("%d-%b-%Y")
+                            )
+                    elif cur_pstage == "Stock":
+                        d3.metric("Dispatch Status", "📦 In Stock")
+                    elif cur_pstage == "Hold":
+                        d3.metric("Dispatch Status", "🔵 On Hold")
+                        d3.caption("Target was " + u_rev_del.strftime("%d-%b-%Y"))
+                    else:
+                        d3.metric("Days to Dispatch", f"{days_to_go} Days",
+                                  delta=days_to_go)
 
                     st.divider()
 
@@ -970,26 +993,41 @@ with tabs[1]:
                     render_followup_block(row, df_followups, anchor_choice)
                     st.divider()
 
-                    new_status = st.selectbox(
-                        "Update Stage",
+                    # Two stages, two columns, two different facts:
+                    #   Sales Stage      -> anchor_projects.status
+                    #   Production Stage -> anchor_projects.prod_stage
+                    # A job is Won AND Dispatched at the same time. Putting
+                    # them in one dropdown would force a choice between them,
+                    # and picking Dispatched would erase the fact it was Won.
+                    sc1, sc2 = st.columns([1, 2])
+
+                    new_status = sc1.selectbox(
+                        "Sales Stage",
                         PIPELINE_STAGES,
                         index=PIPELINE_STAGES.index(row["status"])
                         if row["status"] in PIPELINE_STAGES else 0,
                         key=f"st_select_{row['id']}",
                     )
 
-                    # Production stage — only meaningful once the job is Won.
-                    cur_pstage = row.get("prod_stage") or "Running"
-                    new_pstage = st.radio(
-                        "Production Stage",
-                        PROD_STAGES,
-                        index=PROD_STAGES.index(cur_pstage)
-                        if cur_pstage in PROD_STAGES else 0,
-                        horizontal=True,
-                        key=f"pstage_{row['id']}",
-                        help="Shared with the Production Plan app — set it "
-                             "here or there, both show the same value.",
-                    )
+                    # Production stage only exists for work that was actually
+                    # won. An Enquiry cannot be Dispatched, so the control is
+                    # hidden rather than offered and then ignored.
+                    if new_status == "Won":
+                        new_pstage = sc2.radio(
+                            "Production Stage",
+                            PROD_STAGES,
+                            index=PROD_STAGES.index(cur_pstage)
+                            if cur_pstage in PROD_STAGES else 0,
+                            horizontal=True,
+                            key=f"pstage_{row['id']}",
+                            help="Shared with the Production Plan app — set it "
+                                 "here or there, both show the same value.",
+                        )
+                    else:
+                        new_pstage = cur_pstage
+                        sc2.caption(
+                            "Production stage applies once the job is Won."
+                        )
 
                     # Purchase trigger
                     st.markdown("##### 🛒 Item-wise Purchase Trigger")
