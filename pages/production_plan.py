@@ -23,7 +23,11 @@ PERIOD_OPTIONS = ["Today", "Last 7 Days", "Current Month", "Custom Range"]
 
 # Production lifecycle, stored in anchor_projects.prod_stage.
 # NULL in the database means Running — nothing needed backfilling.
-PROD_STAGES = ["Running", "Hold", "Dispatched"]
+PROD_STAGES = ["Running", "Hold", "Dispatched", "Stock"]
+
+# Stages that take a job out of the dispatch outlook. Both are
+# terminal: nothing is being chased towards a customer date.
+CLOSED_STAGES = ["Dispatched", "Stock"]
 
 # A job is flagged "Due soon" when dispatch is this many days away or less.
 DUE_SOON_DAYS = 7
@@ -231,9 +235,10 @@ def build_dispatch_board(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataF
         job = str(p.get("job_no"))
         stage = (p.get("prod_stage") or "Running")
 
-        # Dispatched jobs have left the floor — they are not part of an
+        # Dispatched and Stock jobs are finished with. Neither is being
+        # chased towards a customer date, so neither belongs in an
         # outlook of what is still to come.
-        if stage == "Dispatched":
+        if stage in CLOSED_STAGES:
             continue
 
         po_dt  = safe_date(p.get("po_delivery_date"))
@@ -716,8 +721,8 @@ def job_plan_status(projects: pd.DataFrame, plan: pd.DataFrame) -> pd.DataFrame:
         total  = len(steps)
         done   = int((steps["current_status"] == "Completed").sum()) if total else 0
 
-        if stage == "Dispatched":
-            bucket = "Dispatched"
+        if stage in CLOSED_STAGES:
+            bucket = stage
         elif stage == "Hold":
             bucket = "Hold"
         elif total == 0:
@@ -768,26 +773,22 @@ def render_job_plans():
             return set()
         return set(status_df.loc[status_df["Bucket"] == name, "Job No"])
 
-    running, hold = _bucket("Running"), _bucket("Hold")
-    dispatched    = _bucket("Dispatched")
+    st.markdown("#### 📚 Consolidated Plan")
 
-    st.markdown("#### 📚 Consolidated Plan — Running Jobs")
-
-    c1, c2 = st.columns(2)
-    show_hold = c1.checkbox(
-        f"Include jobs on Hold ({len(hold)})", value=True, key="jp_show_hold",
-        help="Customer-paused jobs. Shown by default so they are not forgotten.",
-    )
-    show_dispatched = c2.checkbox(
-        f"Include Dispatched ({len(dispatched)})", value=False, key="jp_show_disp",
-        help="Marked as dispatched in this app or the Anchor Portal.",
+    counts = {b: len(_bucket(b)) for b in ["Running", "Hold", "Dispatched", "Stock"]}
+    chosen = st.multiselect(
+        "Show stages",
+        options=list(counts.keys()),
+        default=["Running", "Hold"],
+        format_func=lambda b: f"{b} ({counts[b]})",
+        key="jp_stages",
+        help="Hold is on by default so paused jobs are not forgotten. "
+             "Dispatched and Stock are off — turn them on for history.",
     )
 
-    visible = set(running)
-    if show_hold:
-        visible |= hold
-    if show_dispatched:
-        visible |= dispatched
+    visible = set()
+    for b in chosen:
+        visible |= _bucket(b)
 
     all_view = (
         enriched_plan[enriched_plan["job_no"].isin(visible)][list(view_cols.keys())]
@@ -796,12 +797,12 @@ def render_job_plans():
     )
 
     if all_view.empty:
-        st.info("No jobs match the current filter.")
+        st.info("No jobs match the selected stages.")
     else:
-        hidden = len(dispatched) if not show_dispatched else 0
+        hidden = sum(v for b, v in counts.items() if b not in chosen)
         st.caption(
             f"{all_view['Job No'].nunique()} job(s), {len(all_view)} steps."
-            + (f" {hidden} dispatched job(s) hidden." if hidden else "")
+            + (f" {hidden} job(s) hidden by the stage filter." if hidden else "")
         )
         st.dataframe(all_view, use_container_width=True, hide_index=True, height=320)
         st.download_button(
