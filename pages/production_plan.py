@@ -911,76 +911,135 @@ def render_job_plans():
 
 def render_morning_rating():
     """
-    Supervisor rates the previous day's workers, 0-4.
-    Defaults to yesterday because the rating happens next morning.
+    Supervisors rate the previous day's workers, 0-4.
+
+    Different workers are rated by different supervisors, so the
+    supervisor is captured per row, not once for the whole screen.
     """
     st.markdown("#### 🌅 Morning Rating")
 
-    r1, r2 = st.columns([1, 2])
-    rate_day = r1.date_input(
+    rate_day = st.date_input(
         "Work date being rated",
         value=date.today() - timedelta(days=1),
         max_value=date.today(),
         key="mr_day",
     )
-    supervisor = r2.selectbox("Rating by", ["-- Select --"] + all_staff, key="mr_sup")
 
     board = worker_day_board(df_logs, rate_day)
     if board.empty:
         st.info(f"Nobody logged hours on {fmt_date(rate_day)}.")
         return
 
-    # Pre-fill anything already saved for this date so re-rating shows
-    # the current value rather than resetting to blank.
+    # Pre-fill anything already saved for this date so re-rating shows the
+    # current values rather than resetting to blank.
     day_r = ratings_for_day(df_ratings, rate_day)
-    prev_rating  = dict(zip(day_r["worker"], day_r["rating"])) if not day_r.empty else {}
-    prev_remarks = dict(zip(day_r["worker"], day_r["remarks"])) if not day_r.empty else {}
+    prev_rating  = dict(zip(day_r["worker"], day_r["rating"]))     if not day_r.empty else {}
+    prev_remarks = dict(zip(day_r["worker"], day_r["remarks"]))    if not day_r.empty else {}
+    prev_sup     = dict(zip(day_r["worker"], day_r["supervisor"])) if not day_r.empty else {}
+    already_saved = set(prev_rating.keys())
 
     NOT_RATED = "— not rated —"
+    NO_SUP    = "— who? —"
     options   = [NOT_RATED, 0, 1, 2, 3, 4]
+    sup_opts  = [NO_SUP] + all_staff
+
+    # Widget keys carry the date. Without it, switching from the 1st to the
+    # 2nd would show the 1st's values under the 2nd's date — Streamlit keeps
+    # whatever is stored against a key regardless of what changed around it.
+    r_key = lambda w: f"mr_r_{rate_day}_{w}"
+    s_key = lambda w: f"mr_s_{rate_day}_{w}"
+    n_key = lambda w: f"mr_n_{rate_day}_{w}"
+
+    # Convenience only. Outside the form so that pressing it takes effect
+    # immediately; a widget inside a form does not update its neighbours
+    # until the form is submitted.
+    bulk1, bulk2 = st.columns([2, 1])
+    bulk_sup = bulk1.selectbox(
+        "Set one supervisor across all rows (optional)",
+        sup_opts, key=f"mr_bulk_{rate_day}",
+        help="A shortcut for when one person did rate everybody. "
+             "You can still change any row afterwards.",
+    )
+    if bulk2.button("Apply to all rows", key=f"mr_apply_{rate_day}",
+                    use_container_width=True):
+        if bulk_sup == NO_SUP:
+            st.warning("Pick a supervisor first.")
+        else:
+            for w in board["Worker"].astype(str):
+                st.session_state[s_key(w)] = bulk_sup
+            st.rerun()
 
     with st.form("morning_rating_form"):
-        st.caption("0 = poor, 4 = excellent. Leave as 'not rated' to skip someone.")
-        picks = {}
+        st.caption("0 = poor, 4 = excellent. Each row records who rated it.")
 
+        h1, h2, h3, h4 = st.columns([2, 1, 1.5, 2])
+        h1.markdown("**Worker**")
+        h2.markdown("**Rating**")
+        h3.markdown("**Rated by**")
+        h4.markdown("**Remarks**")
+
+        picks = {}
         for _, row in board.iterrows():
             w = str(row["Worker"])
-            c1, c2, c3 = st.columns([2, 1, 2])
+            c1, c2, c3, c4 = st.columns([2, 1, 1.5, 2])
 
             c1.write(f"**{w}**")
             c1.caption(f"{row['Hours']:.1f} hrs • {row['Jobs']}")
 
             pv = prev_rating.get(w)
-            idx = options.index(int(pv)) if pd.notna(pv) and int(pv) in options else 0
+            r_idx = options.index(int(pv)) if pd.notna(pv) and int(pv) in options else 0
+
+            ps = prev_sup.get(w)
+            s_idx = sup_opts.index(ps) if (pd.notna(ps) and ps in sup_opts) else 0
 
             picks[w] = (
-                c2.selectbox("Rating", options, index=idx,
-                             key=f"mr_r_{w}", label_visibility="collapsed"),
-                c3.text_input("Remarks", value=str(prev_remarks.get(w) or ""),
-                              key=f"mr_n_{w}", label_visibility="collapsed",
-                              placeholder="Remarks (optional)"),
+                c2.selectbox("Rating", options, index=r_idx,
+                             key=r_key(w), label_visibility="collapsed"),
+                c3.selectbox("Rated by", sup_opts, index=s_idx,
+                             key=s_key(w), label_visibility="collapsed"),
+                c4.text_input("Remarks", value=str(prev_remarks.get(w) or ""),
+                              key=n_key(w), label_visibility="collapsed",
+                              placeholder="optional"),
             )
 
         if st.form_submit_button("💾 Save Ratings"):
-            if supervisor == "-- Select --":
-                st.error("Please select who is giving these ratings.")
+            # A grade with nobody's name against it is not much use later,
+            # so a rated row must say who gave it.
+            missing = [w for w, (val, sup, _) in picks.items()
+                       if val != NOT_RATED and sup == NO_SUP]
+            if missing:
+                st.error(
+                    "These workers have a rating but no supervisor: "
+                    + ", ".join(missing)
+                )
             else:
-                payload = [
-                    {
+                payload = []
+                for w, (val, sup, note) in picks.items():
+                    rated    = val != NOT_RATED
+                    has_note = bool(note and note.strip())
+                    # Skip untouched rows entirely. Writing a blank row would
+                    # turn "never reviewed" into "reviewed and skipped".
+                    if not (rated or has_note or w in already_saved):
+                        continue
+                    payload.append({
                         "worker":     w,
                         "work_date":  rate_day.isoformat(),
-                        # None, not 0 — an unrated worker must not be
-                        # stored as a zero grade.
-                        "rating":     None if val == NOT_RATED else int(val),
-                        "supervisor": supervisor,
-                        "remarks":    note or None,
+                        "rating":     int(val) if rated else None,
+                        "supervisor": None if sup == NO_SUP else sup,
+                        "remarks":    note.strip() or None,
                         "updated_at": NOW_IST(),
-                    }
-                    for w, (val, note) in picks.items()
-                ]
-                db_upsert("worker_day_ratings", payload, "worker,work_date")
-                st.success(f"Saved {len(payload)} rating(s) for {fmt_date(rate_day)}.")
-                st.rerun()
+                    })
+
+                if not payload:
+                    st.warning("Nothing to save — no ratings or remarks entered.")
+                else:
+                    db_upsert("worker_day_ratings", payload, "worker,work_date")
+                    sups = {p["supervisor"] for p in payload if p["supervisor"]}
+                    st.success(
+                        f"Saved {len(payload)} row(s) for {fmt_date(rate_day)} "
+                        f"across {len(sups)} supervisor(s)."
+                    )
+                    st.rerun()
 
 
 def render_analytics():
