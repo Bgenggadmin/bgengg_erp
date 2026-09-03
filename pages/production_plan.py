@@ -1,7 +1,7 @@
 import streamlit as st
 from st_supabase_connection import SupabaseConnection
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta
 import pytz
 
 # ─────────────────────────────────────────────
@@ -36,6 +36,17 @@ DUE_SOON_DAYS = 7
 # best/worst leaderboard. Stops a 15-minute entry from topping the chart.
 LEADERBOARD_MIN_HOURS = 1.0
 
+# Attendance
+ATT_STATUSES = ["Present", "Half Day", "Absent", "Leave", "Holiday"]
+# Statuses where nobody is expected to punch in.
+ATT_AWAY = ["Absent", "Leave", "Holiday"]
+DEFAULT_PUNCH_IN  = time(9, 0)
+DEFAULT_PUNCH_OUT = time(17, 30)
+
+# Slack when comparing hours logged against hours present, so that
+# rounding or a 20-minute gap does not get called under-allotment.
+ALLOTMENT_TOLERANCE_HRS = 0.5
+
 
 # ─────────────────────────────────────────────
 # HELPERS
@@ -60,6 +71,65 @@ def days_remaining(target: date | None) -> int | None:
 
 def to_csv(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
+
+
+def safe_time(val) -> time | None:
+    """Parse a Postgres `time` value ('09:00:00') to a Python time."""
+    if val is None or (not isinstance(val, time) and pd.isnull(val)):
+        return None
+    if isinstance(val, time):
+        return val
+    try:
+        return pd.to_datetime(str(val)).time()
+    except Exception:
+        return None
+
+
+def hours_between(punch_in, punch_out) -> float | None:
+    """
+    Hours between two clock times.
+
+    A punch_out earlier than punch_in means the shift crossed midnight,
+    so 24 hours are added rather than returning a negative number. That
+    is why the database does not reject punch_out < punch_in.
+    """
+    pin, pout = safe_time(punch_in), safe_time(punch_out)
+    if pin is None or pout is None:
+        return None
+    start = timedelta(hours=pin.hour,  minutes=pin.minute,  seconds=pin.second)
+    end   = timedelta(hours=pout.hour, minutes=pout.minute, seconds=pout.second)
+    if end < start:
+        end += timedelta(days=1)
+    return round((end - start).total_seconds() / 3600, 2)
+
+
+def allotment_bucket(present, logged, status=None) -> str:
+    """
+    Compare hours logged on jobs against hours physically present.
+
+    `status` is needed as well as the hours: a man marked Absent has no
+    punch times, so his present-hours are missing — the same shape as a
+    man whose punches nobody entered. Without the status those two look
+    identical, and an absent man gets reported as idle on the floor.
+
+    'Over' is flagged as a suspected entry error, not as high output: a
+    man present 8 hours cannot work 11. It usually means team hours were
+    entered per-team instead of per-person.
+    """
+    if status in ATT_AWAY:
+        return "⚫ Away"
+    # pd.isna catches NaN, which `is None` does not.
+    if present is None or pd.isna(present):
+        return "⚪ No attendance"
+    if present <= 0:
+        return "⚫ Away"
+    if logged is None or pd.isna(logged) or logged <= 0:
+        return "🔴 Not allotted"
+    if logged > present + ALLOTMENT_TOLERANCE_HRS:
+        return "⚠️ Over — check entry"
+    if logged < present - ALLOTMENT_TOLERANCE_HRS:
+        return "🟠 Under-allotted"
+    return "🟢 Balanced"
 
 
 # ─────────────────────────────────────────────
@@ -102,7 +172,7 @@ def load_all_data() -> tuple[pd.DataFrame, ...]:
         g  = conn.table("production_gates").select("*").order("step_order").execute()
         jp = conn.table("job_planning").select("*").order("step_order").execute()
         po = conn.table("purchase_orders").select("*").execute()
-        wr = conn.table("worker_day_ratings").select("*").order("work_date", desc=True).execute()
+        wr = conn.table("worker_day").select("*").order("work_date", desc=True).execute()
 
         return (
             pd.DataFrame(p.data  or []),
@@ -118,7 +188,7 @@ def load_all_data() -> tuple[pd.DataFrame, ...]:
 
 
 (df_projects, df_logs, df_master_gates,
- df_job_plans, df_purchase, df_ratings) = load_all_data()
+ df_job_plans, df_purchase, df_day) = load_all_data()
 
 # Derived lists
 all_staff      = master.get("staff", [])
@@ -172,7 +242,7 @@ def db_upsert(table: str, data: dict | list, on_conflict: str):
     """
     Insert, or update the existing row when it collides.
     `on_conflict` must name columns covered by a UNIQUE constraint —
-    for worker_day_ratings that is "worker,work_date". This is what
+    for worker_day that is "worker,work_date". This is what
     makes re-rating a worker correct their row instead of adding a
     second one for the same day.
     """
@@ -365,43 +435,71 @@ def worker_day_board(logs: pd.DataFrame, day: date) -> pd.DataFrame:
     return grp.sort_values("Output/Hr", ascending=False).reset_index(drop=True)
 
 
-def ratings_for_day(ratings: pd.DataFrame, day: date) -> pd.DataFrame:
-    """Rows from worker_day_ratings for one work_date."""
-    if ratings.empty or "work_date" not in ratings.columns or not day:
+def rows_for_day(day_rows: pd.DataFrame, day: date) -> pd.DataFrame:
+    """Rows from worker_day for one work_date."""
+    if day_rows.empty or "work_date" not in day_rows.columns or not day:
         return pd.DataFrame()
-    r = ratings.copy()
+    r = day_rows.copy()
     r["work_date"] = r["work_date"].apply(safe_date)
     return r[r["work_date"] == day]
 
 
-def attach_ratings(board: pd.DataFrame, ratings: pd.DataFrame, day: date) -> pd.DataFrame:
-    """
-    Add the supervisor's Rating column to a worker day board.
+ATT_COLS = ["worker", "rating", "supervisor", "remarks",
+            "attendance_status", "punch_in", "punch_out"]
 
-    A left join is used on purpose: a worker who logged hours but has
-    not been rated keeps their row with Rating as NaN. Filling that
-    with 0 would make an unrated worker look like a zero-graded one.
-    """
-    if board.empty:
-        return board
 
-    out = board.copy()
-    day_r = ratings_for_day(ratings, day)
+def attach_day_data(board: pd.DataFrame, day_rows: pd.DataFrame, day: date) -> pd.DataFrame:
+    """
+    Add attendance and rating to a worker day board, then derive
+    hours present and the allotment bucket.
+
+    An OUTER join, not a left join. The board is built from production
+    logs, so a left join would only ever describe men who were given
+    work. The whole point of attendance is to see the man who was
+    present all day and logged nothing — he has no production row, so
+    he only appears if attendance rows are brought in too.
+    """
+    day_r = rows_for_day(day_rows, day)
+
+    if board.empty and day_r.empty:
+        return pd.DataFrame()
+
+    out = board.copy() if not board.empty else pd.DataFrame(columns=["Worker"])
 
     if day_r.empty:
-        out["Rating"] = pd.NA
-        out["Rated By"] = ""
-        out["Remarks"] = ""
-        return out
+        for c, v in [("Rating", pd.NA), ("Rated By", ""), ("Remarks", ""),
+                     ("Attendance", ""), ("In", ""), ("Out", "")]:
+            out[c] = v
+    else:
+        keep = day_r[[c for c in ATT_COLS if c in day_r.columns]].rename(columns={
+            "worker": "Worker", "rating": "Rating", "supervisor": "Rated By",
+            "remarks": "Remarks", "attendance_status": "Attendance",
+            "punch_in": "In", "punch_out": "Out",
+        })
+        out = out.merge(keep, on="Worker", how="outer")
+        for c in ["Rated By", "Remarks", "Attendance", "In", "Out"]:
+            if c in out.columns:
+                out[c] = out[c].fillna("")
 
-    keep = day_r[["worker", "rating", "supervisor", "remarks"]].rename(columns={
-        "worker": "Worker", "rating": "Rating",
-        "supervisor": "Rated By", "remarks": "Remarks",
-    })
-    out = out.merge(keep, on="Worker", how="left")
-    out["Rated By"] = out["Rated By"].fillna("")
-    out["Remarks"]  = out["Remarks"].fillna("")
-    return out
+    # Men brought in by attendance alone have no production numbers.
+    for c, v in [("Hours", 0.0), ("Output", 0.0), ("Output/Hr", 0.0),
+                 ("Jobs", ""), ("Units", ""), ("Entries", 0)]:
+        if c not in out.columns:
+            out[c] = v
+        else:
+            out[c] = out[c].fillna(v)
+
+    out["Present Hrs"] = [hours_between(i, o) for i, o in zip(out["In"], out["Out"])]
+    out["Logged Hrs"]  = pd.to_numeric(out["Hours"], errors="coerce").fillna(0.0)
+    att_col = out["Attendance"] if "Attendance" in out.columns else [None] * len(out)
+    out["Allotment"] = [allotment_bucket(p, l, a)
+                        for p, l, a in zip(out["Present Hrs"],
+                                           out["Logged Hrs"], att_col)]
+    out["Util %"] = [
+        round(l / p * 100) if (p and p > 0) else pd.NA
+        for p, l in zip(out["Present Hrs"], out["Logged Hrs"])
+    ]
+    return out.sort_values("Worker").reset_index(drop=True)
 
 
 enriched_plan = enrich_plan(df_job_plans)
@@ -636,7 +734,7 @@ def render_dashboard():
     st.divider()
 
     # ── Worker leaderboard ──
-    st.markdown("#### 👷 Worker Performance — Single Day")
+    st.markdown("#### 👷 Attendance, Allotment & Performance")
     last_day = latest_log_date(df_logs)
 
     if not last_day:
@@ -658,14 +756,57 @@ def render_dashboard():
         st.warning(f"No entries logged on {fmt_date(pick_day)}.")
         return
 
-    day_board = attach_ratings(day_board, df_ratings, pick_day)
+    day_board = attach_day_data(day_board, df_day, pick_day)
+
+    # ── Attendance vs work allotted ──
+    present_hrs = pd.to_numeric(day_board["Present Hrs"], errors="coerce").fillna(0).sum()
+    logged_hrs  = pd.to_numeric(day_board["Logged Hrs"],  errors="coerce").fillna(0).sum()
+    util        = round(logged_hrs / present_hrs * 100) if present_hrs > 0 else 0
+
+    counts = day_board["Allotment"].value_counts().to_dict()
+    n_none = counts.get("🔴 Not allotted", 0)
+    n_und  = counts.get("🟠 Under-allotted", 0)
+    n_over = counts.get("⚠️ Over — check entry", 0)
+
+    a1, a2, a3, a4, a5, a6 = st.columns(6)
+    a1.metric("Hours Present", f"{present_hrs:.1f}")
+    a2.metric("Hours on Jobs", f"{logged_hrs:.1f}")
+    a3.metric("Utilisation", f"{util}%")
+    a4.metric("🔴 Not allotted", n_none)
+    a5.metric("🟠 Under", n_und)
+    a6.metric("⚠️ Check entry", n_over)
+
+    if present_hrs > 0 and logged_hrs < present_hrs:
+        st.caption(
+            f"{present_hrs - logged_hrs:.1f} hours present but not booked to "
+            "any job. That is idle capacity, work nobody logged, or both."
+        )
+    if n_over:
+        st.warning(
+            f"{n_over} worker(s) logged more hours than they were present. "
+            "That is usually team hours entered per-team instead of "
+            "per-person — worth correcting before it reaches a report."
+        )
+
+    idle = day_board[day_board["Allotment"] == "🔴 Not allotted"]
+    if not idle.empty:
+        with st.expander(f"🔴 Present but no work allotted ({len(idle)})",
+                         expanded=False):
+            st.dataframe(
+                idle[["Worker", "Attendance", "In", "Out", "Present Hrs", "Remarks"]],
+                use_container_width=True, hide_index=True,
+            )
+
+    st.divider()
+    st.markdown("##### 🏅 Ratings")
 
     rated_count = int(day_board["Rating"].notna().sum())
     total_count = len(day_board)
     st.caption(f"{rated_count} of {total_count} workers rated for {fmt_date(pick_day)}.")
 
     ranked = day_board[day_board["Hours"] >= LEADERBOARD_MIN_HOURS]
-    cols = ["Worker", "Rating", "Output/Hr", "Hours", "Output", "Units", "Jobs"]
+    cols = ["Worker", "Rating", "Present Hrs", "Logged Hrs", "Util %",
+            "Allotment", "Output/Hr", "Rated By"]
 
     if ranked.empty:
         st.warning(
@@ -909,137 +1050,148 @@ def render_job_plans():
     )
 
 
-def render_morning_rating():
+def render_morning_roll_call():
     """
-    Supervisors rate the previous day's workers, 0-4.
+    Morning screen: who was here, from when to when, and how they did.
 
-    Different workers are rated by different supervisors, so the
-    supervisor is captured per row, not once for the whole screen.
+    The worker list is NOT limited to men who logged production. A man
+    who was present and given nothing to do has no production row, and
+    he is precisely the one this screen exists to surface.
     """
-    st.markdown("#### 🌅 Morning Rating")
+    st.markdown("#### 🌅 Morning Roll Call & Rating")
 
     rate_day = st.date_input(
-        "Work date being rated",
+        "Work date",
         value=date.today() - timedelta(days=1),
         max_value=date.today(),
         key="mr_day",
     )
 
-    board = worker_day_board(df_logs, rate_day)
-    if board.empty:
-        st.info(f"Nobody logged hours on {fmt_date(rate_day)}.")
+    board  = worker_day_board(df_logs, rate_day)
+    logged = set(board["Worker"].astype(str)) if not board.empty else set()
+
+    saved   = rows_for_day(df_day, rate_day)
+    saved_w = set(saved["worker"].astype(str)) if not saved.empty else set()
+    prev    = {str(r["worker"]): r for _, r in saved.iterrows()} if not saved.empty else {}
+
+    logged_hrs = (dict(zip(board["Worker"].astype(str), board["Hours"]))
+                  if not board.empty else {})
+
+    # Anyone already saved, plus anyone who logged work, was obviously
+    # present. Add the rest by hand.
+    default_present = sorted(saved_w | logged)
+    present = st.multiselect(
+        "Workers present",
+        options=all_workers,
+        default=[w for w in default_present if w in all_workers],
+        key=f"mr_present_{rate_day}",
+        help="Pre-filled with anyone who logged hours. Add men who were "
+             "here but had no job assigned — they are the ones this screen "
+             "exists to surface.",
+    )
+
+    if not present:
+        st.info("Select who was present to start the roll call.")
         return
 
-    # Pre-fill anything already saved for this date so re-rating shows the
-    # current values rather than resetting to blank.
-    day_r = ratings_for_day(df_ratings, rate_day)
-    prev_rating  = dict(zip(day_r["worker"], day_r["rating"]))     if not day_r.empty else {}
-    prev_remarks = dict(zip(day_r["worker"], day_r["remarks"]))    if not day_r.empty else {}
-    prev_sup     = dict(zip(day_r["worker"], day_r["supervisor"])) if not day_r.empty else {}
-    already_saved = set(prev_rating.keys())
+    NOT_RATED, NO_SUP = "— not rated —", "— who? —"
+    r_opts   = [NOT_RATED, 0, 1, 2, 3, 4]
+    sup_opts = [NO_SUP] + all_staff
 
-    NOT_RATED = "— not rated —"
-    NO_SUP    = "— who? —"
-    options   = [NOT_RATED, 0, 1, 2, 3, 4]
-    sup_opts  = [NO_SUP] + all_staff
+    # Keys carry the date. Without it, switching days would show one
+    # day's entries sitting under another day's date.
+    k = lambda kind, w: f"mr_{kind}_{rate_day}_{w}"
 
-    # Widget keys carry the date. Without it, switching from the 1st to the
-    # 2nd would show the 1st's values under the 2nd's date — Streamlit keeps
-    # whatever is stored against a key regardless of what changed around it.
-    r_key = lambda w: f"mr_r_{rate_day}_{w}"
-    s_key = lambda w: f"mr_s_{rate_day}_{w}"
-    n_key = lambda w: f"mr_n_{rate_day}_{w}"
+    # Shift times and supervisor are usually shared, so offer a bulk fill.
+    # Outside the form: a widget inside a form cannot update its
+    # neighbours until the form is submitted.
+    st.caption("Optional bulk fill — you can still change any row after.")
+    b1, b2, b3, b4 = st.columns([1, 1, 1.5, 1])
+    bulk_in  = b1.time_input("In",  value=DEFAULT_PUNCH_IN,  key=f"bin_{rate_day}")
+    bulk_out = b2.time_input("Out", value=DEFAULT_PUNCH_OUT, key=f"bout_{rate_day}")
+    bulk_sup = b3.selectbox("Rated by", sup_opts, key=f"bsup_{rate_day}")
+    if b4.button("Apply to all", key=f"bapply_{rate_day}", use_container_width=True):
+        for w in present:
+            st.session_state[k("in", w)]  = bulk_in
+            st.session_state[k("out", w)] = bulk_out
+            if bulk_sup != NO_SUP:
+                st.session_state[k("sup", w)] = bulk_sup
+        st.rerun()
 
-    # Convenience only. Outside the form so that pressing it takes effect
-    # immediately; a widget inside a form does not update its neighbours
-    # until the form is submitted.
-    bulk1, bulk2 = st.columns([2, 1])
-    bulk_sup = bulk1.selectbox(
-        "Set one supervisor across all rows (optional)",
-        sup_opts, key=f"mr_bulk_{rate_day}",
-        help="A shortcut for when one person did rate everybody. "
-             "You can still change any row afterwards.",
-    )
-    if bulk2.button("Apply to all rows", key=f"mr_apply_{rate_day}",
-                    use_container_width=True):
-        if bulk_sup == NO_SUP:
-            st.warning("Pick a supervisor first.")
-        else:
-            for w in board["Worker"].astype(str):
-                st.session_state[s_key(w)] = bulk_sup
-            st.rerun()
-
-    with st.form("morning_rating_form"):
-        st.caption("0 = poor, 4 = excellent. Each row records who rated it.")
-
-        h1, h2, h3, h4 = st.columns([2, 1, 1.5, 2])
-        h1.markdown("**Worker**")
-        h2.markdown("**Rating**")
-        h3.markdown("**Rated by**")
-        h4.markdown("**Remarks**")
+    with st.form("roll_call_form"):
+        widths = [1.6, 1.1, 0.9, 0.9, 1.1, 1.3, 1.6]
+        for col, label in zip(st.columns(widths),
+                              ["Worker", "Attendance", "In", "Out",
+                               "Rating", "Rated by", "Remarks"]):
+            col.markdown(f"**{label}**")
 
         picks = {}
-        for _, row in board.iterrows():
-            w = str(row["Worker"])
-            c1, c2, c3, c4 = st.columns([2, 1, 1.5, 2])
+        for w in present:
+            pr = prev.get(w)
+            c = st.columns(widths)
 
-            c1.write(f"**{w}**")
-            c1.caption(f"{row['Hours']:.1f} hrs • {row['Jobs']}")
+            c[0].write(f"**{w}**")
+            lh = float(logged_hrs.get(w, 0) or 0)
+            c[0].caption(f"logged {lh:.1f} hrs" if lh else "no work logged")
 
-            pv = prev_rating.get(w)
-            r_idx = options.index(int(pv)) if pd.notna(pv) and int(pv) in options else 0
+            a_prev = (pr.get("attendance_status") if pr is not None else None) or "Present"
+            att = c[1].selectbox("Attendance", ATT_STATUSES,
+                                 index=ATT_STATUSES.index(a_prev)
+                                 if a_prev in ATT_STATUSES else 0,
+                                 key=k("att", w), label_visibility="collapsed")
 
-            ps = prev_sup.get(w)
-            s_idx = sup_opts.index(ps) if (pd.notna(ps) and ps in sup_opts) else 0
+            pin_prev  = safe_time(pr.get("punch_in"))  if pr is not None else None
+            pout_prev = safe_time(pr.get("punch_out")) if pr is not None else None
+            pin  = c[2].time_input("In",  value=pin_prev  or DEFAULT_PUNCH_IN,
+                                   key=k("in", w), label_visibility="collapsed")
+            pout = c[3].time_input("Out", value=pout_prev or DEFAULT_PUNCH_OUT,
+                                   key=k("out", w), label_visibility="collapsed")
 
-            picks[w] = (
-                c2.selectbox("Rating", options, index=r_idx,
-                             key=r_key(w), label_visibility="collapsed"),
-                c3.selectbox("Rated by", sup_opts, index=s_idx,
-                             key=s_key(w), label_visibility="collapsed"),
-                c4.text_input("Remarks", value=str(prev_remarks.get(w) or ""),
-                              key=n_key(w), label_visibility="collapsed",
-                              placeholder="optional"),
-            )
+            rv = pr.get("rating") if pr is not None else None
+            r_idx = r_opts.index(int(rv)) if pd.notna(rv) and int(rv) in r_opts else 0
+            rating = c[4].selectbox("Rating", r_opts, index=r_idx,
+                                    key=k("r", w), label_visibility="collapsed")
 
-        if st.form_submit_button("💾 Save Ratings"):
-            # A grade with nobody's name against it is not much use later,
-            # so a rated row must say who gave it.
-            missing = [w for w, (val, sup, _) in picks.items()
-                       if val != NOT_RATED and sup == NO_SUP]
+            sv = pr.get("supervisor") if pr is not None else None
+            s_idx = sup_opts.index(sv) if (pd.notna(sv) and sv in sup_opts) else 0
+            sup = c[5].selectbox("Rated by", sup_opts, index=s_idx,
+                                 key=k("sup", w), label_visibility="collapsed")
+
+            note = c[6].text_input(
+                "Remarks",
+                value=str((pr.get("remarks") if pr is not None else "") or ""),
+                key=k("n", w), label_visibility="collapsed", placeholder="optional")
+
+            picks[w] = (att, pin, pout, rating, sup, note)
+
+        if st.form_submit_button("💾 Save Roll Call"):
+            missing = [w for w, (_, _, _, r, sp, _) in picks.items()
+                       if r != NOT_RATED and sp == NO_SUP]
             if missing:
-                st.error(
-                    "These workers have a rating but no supervisor: "
-                    + ", ".join(missing)
-                )
+                st.error("Rated but no supervisor named: " + ", ".join(missing))
             else:
                 payload = []
-                for w, (val, sup, note) in picks.items():
-                    rated    = val != NOT_RATED
-                    has_note = bool(note and note.strip())
-                    # Skip untouched rows entirely. Writing a blank row would
-                    # turn "never reviewed" into "reviewed and skipped".
-                    if not (rated or has_note or w in already_saved):
-                        continue
+                for w, (att, pin, pout, rating, sup, note) in picks.items():
+                    away  = att in ATT_AWAY
+                    rated = rating != NOT_RATED
                     payload.append({
-                        "worker":     w,
-                        "work_date":  rate_day.isoformat(),
-                        "rating":     int(val) if rated else None,
-                        "supervisor": None if sup == NO_SUP else sup,
-                        "remarks":    note.strip() or None,
-                        "updated_at": NOW_IST(),
+                        "worker":            w,
+                        "work_date":         rate_day.isoformat(),
+                        "attendance_status": att,
+                        # Nobody punches in on a day off. Leaving stale
+                        # times would compute present-hours for a man who
+                        # was never here.
+                        "punch_in":          None if away else pin.strftime("%H:%M:%S"),
+                        "punch_out":         None if away else pout.strftime("%H:%M:%S"),
+                        "rating":            int(rating) if rated else None,
+                        "supervisor":        None if sup == NO_SUP else sup,
+                        "remarks":           note.strip() or None,
+                        "updated_at":        NOW_IST(),
                     })
-
-                if not payload:
-                    st.warning("Nothing to save — no ratings or remarks entered.")
-                else:
-                    db_upsert("worker_day_ratings", payload, "worker,work_date")
-                    sups = {p["supervisor"] for p in payload if p["supervisor"]}
-                    st.success(
-                        f"Saved {len(payload)} row(s) for {fmt_date(rate_day)} "
-                        f"across {len(sups)} supervisor(s)."
-                    )
-                    st.rerun()
+                db_upsert("worker_day", payload, "worker,work_date")
+                st.success(f"Roll call saved for {len(payload)} worker(s) "
+                           f"on {fmt_date(rate_day)}.")
+                st.rerun()
 
 
 def render_analytics():
@@ -1285,8 +1437,8 @@ with tab_plan:
 
 # ── TAB 2: DAILY ENTRY ─────────────────────────
 with tab_entry:
-    with st.expander("🌅 Morning Rating — rate yesterday's work", expanded=False):
-        render_morning_rating()
+    with st.expander("🌅 Morning Roll Call — attendance & rating", expanded=False):
+        render_morning_roll_call()
 
     st.divider()
 
