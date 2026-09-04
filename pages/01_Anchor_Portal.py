@@ -548,6 +548,29 @@ def render_dashboard_tab(df_all: pd.DataFrame, df_followups: pd.DataFrame,
         ), errors="coerce"
     ).astype("Int64")
 
+    # Drawings pending — Won jobs whose drawing is not Approved and not NA.
+    # Same rule the Live Action Summary above uses. A null drawing_status
+    # counts as pending on purpose: ~isin() returns True for NaN, and a Won
+    # job with nothing recorded is genuinely outstanding, not exempt.
+    if "drawing_status" in scope.columns:
+        drawings = scope[(scope["status"] == "Won")
+                         & (~scope["drawing_status"].isin(["Approved", "NA"]))].copy()
+    else:
+        drawings = scope.iloc[0:0].copy()
+
+    if not drawings.empty:
+        # Two different clocks. Won age says how long the drawing office has
+        # had the job; days-to-delivery says how much runway is left. The
+        # second is the one that actually hurts, so we sort on it.
+        drawings["_won_age"] = pd.to_numeric(
+            _date_col(drawings, "won_date").apply(
+                lambda d: (today - d).days if pd.notna(d) else None
+            ), errors="coerce").astype("Int64")
+        drawings["_del_days"] = pd.to_numeric(
+            _date_col(drawings, "revised_delivery_date").apply(
+                lambda d: (d - today).days if pd.notna(d) else None
+            ), errors="coerce").astype("Int64")
+
     queue = build_followup_queue(scope, df_followups)
     if queue.empty:
         due = no_clock = pd.DataFrame()
@@ -556,11 +579,12 @@ def render_dashboard_tab(df_all: pd.DataFrame, df_followups: pd.DataFrame,
         no_clock = queue[queue["bucket"] == "No clock"]
 
     # ---- headline numbers -------------------------------------------------
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Enquiries received", len(new_enq))
     m2.metric("Quotations sent", len(quoted_out))
     m3.metric("Pending quotations", len(pending))
     m4.metric("Follow-ups due", len(due))
+    m5.metric("Drawings pending", len(drawings))
 
     pend_value = float(pending["estimated_value"].fillna(0).sum()) if not pending.empty else 0.0
     due_value = float(due["value"].sum()) if not due.empty else 0.0
@@ -577,6 +601,13 @@ def render_dashboard_tab(df_all: pd.DataFrame, df_followups: pd.DataFrame,
                 f"☎️ {no_phone} of {len(due)} due follow-ups have no phone "
                 f"number on record — add contact details before the chase "
                 f"list is usable."
+            )
+    if not drawings.empty and "_del_days" in drawings.columns:
+        tight = drawings[drawings["_del_days"].notna() & (drawings["_del_days"] <= 14)]
+        if not tight.empty:
+            st.warning(
+                f"\U0001F4D0 {len(tight)} job(s) ship within 14 days with the "
+                f"drawing still unapproved."
             )
     if not no_clock.empty:
         st.error(
@@ -639,6 +670,43 @@ def render_dashboard_tab(df_all: pd.DataFrame, df_followups: pd.DataFrame,
                                    "_age": "Days Open",
                                    "estimated_value": "Est. Value ₹"}))
         st.dataframe(p_show, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ---- drawings outstanding ----------------------------------------------
+    st.markdown(f"##### \U0001F4D0 Drawings pending ({len(drawings)})")
+    st.caption(
+        "Won jobs where the drawing is not Approved and not marked NA. "
+        "Sorted by delivery date — the top row is the one running out of "
+        "runway. Edit these in the Drawings tab."
+    )
+    if drawings.empty:
+        st.success("\u2705 No drawings outstanding.")
+    else:
+        by_stat = drawings["drawing_status"].fillna("Not set").value_counts()
+        st.caption(" \u00b7 ".join(f"**{k}**: {v}" for k, v in by_stat.items()))
+
+        dr_cols = ["client_name", "job_no", "project_description", "anchor_person",
+                   "drawing_status", "drawing_ref", "_won_age", "_del_days",
+                   "revised_delivery_date"]
+        dr_show = drawings[[c for c in dr_cols if c in drawings.columns]].copy()
+        for c in ("drawing_status", "drawing_ref", "job_no"):
+            if c in dr_show.columns:
+                dr_show[c] = (dr_show[c].fillna("").astype(str).str.strip()
+                              .replace("", "\u2014"))
+        # A negative runway means the promised date has already gone past.
+        if "_del_days" in dr_show.columns:
+            dr_show.insert(0, "_flag", dr_show["_del_days"].apply(
+                lambda v: "\U0001F534" if pd.notna(v) and v < 0
+                else ("\U0001F7E0" if pd.notna(v) and v <= 14 else "\U0001F535")))
+            dr_show = dr_show.sort_values("_del_days", na_position="last")
+        dr_show = dr_show.rename(columns={
+            "_flag": " ", "client_name": "Client", "job_no": "Job No",
+            "project_description": "Description", "anchor_person": "Anchor",
+            "drawing_status": "Drawing", "drawing_ref": "Dwg Ref",
+            "_won_age": "Days Since Won", "_del_days": "Days To Delivery",
+            "revised_delivery_date": "Delivery Date"})
+        st.dataframe(dr_show, hide_index=True, use_container_width=True)
 
     st.divider()
 
