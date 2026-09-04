@@ -112,13 +112,20 @@ st.markdown(
 )
 st.markdown('<div class="blue-strip"></div>', unsafe_allow_html=True)
 
-main_tabs = st.tabs([
+_all_tabs = st.tabs([
+    "📊 Dashboard",
     "📝 Indent Application",
     "🛒 Purchase Console",
     "📦 Stores GRN",
     "📊 Analytics",
     "⚙️ Master Setup"
 ])
+
+# Dashboard is the new first tab. Slicing the rest back into `main_tabs`
+# means every existing block below still says main_tabs[0]..main_tabs[4]
+# and refers to exactly the same tab it always did — no renumbering.
+dash_tab  = _all_tabs[0]
+main_tabs = _all_tabs[1:]
 
 # ============================================================
 # TAB 0: INDENT APPLICATION
@@ -2094,3 +2101,649 @@ with main_tabs[4]:
                 st.info("No vendors match your search.")
         else:
             st.info("No vendors registered yet.")
+
+
+# ============================================================
+# TAB: DASHBOARD  (shown FIRST in the tab strip)
+# ------------------------------------------------------------
+# The code sits at the end of the file on purpose. Streamlit puts
+# content into whichever tab container the `with` block names, not
+# in the order the blocks appear — so writing it here keeps the
+# five existing tab blocks completely untouched.
+# ============================================================
+with dash_tab:
+    st.subheader("📊 Daily Dashboard")
+    st.caption(
+        "What moved in the chosen window, what is still owed to us, "
+        "and what needs chasing today."
+    )
+
+    # ── CONTROLS ─────────────────────────────────────────────
+    dc1, dc2, dc3 = st.columns([1.3, 1.3, 2.4])
+    dash_period = dc1.selectbox(
+        "Activity window",
+        ["Yesterday", "Today", "Last 7 days"],
+        index=0, key="dash_period",
+        help="Monday mornings: 'Yesterday' is Sunday and will usually be empty."
+    )
+    DUE_SOON = dc2.number_input(
+        "Due-soon window (days)", min_value=1, max_value=30, value=7,
+        key="dash_due_days"
+    )
+    dc3.write("")
+    if dc3.button("🔄 Refresh now", key="dash_refresh", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+    today_ist = datetime.now(IST).date()
+    if dash_period == "Yesterday":
+        win_start = win_end = today_ist - timedelta(days=1)
+        win_label = f"Yesterday ({win_start.strftime('%d-%m-%Y')})"
+    elif dash_period == "Today":
+        win_start = win_end = today_ist
+        win_label = f"Today ({win_start.strftime('%d-%m-%Y')})"
+    else:
+        win_start = today_ist - timedelta(days=6)
+        win_end   = today_ist
+        win_label = (f"{win_start.strftime('%d-%m')} → "
+                     f"{win_end.strftime('%d-%m-%Y')}")
+
+    # created_at and enquiry_sent_at are timestamptz columns. If we send a
+    # bare "2026-09-03T00:00:00" the database reads it in ITS timezone
+    # (UTC), which slides our day boundary by 5h30m and silently drops
+    # anything entered before 5:30 am IST into the wrong day. Attaching
+    # the +05:30 offset makes the window mean a real IST calendar day.
+    win_from_ts = IST.localize(
+        datetime.combine(win_start, datetime.min.time())).isoformat()
+    win_to_ts = IST.localize(
+        datetime.combine(win_end + timedelta(days=1),
+                         datetime.min.time())).isoformat()
+
+    # ── LOADERS ──────────────────────────────────────────────
+    # Cached, because Streamlit re-runs EVERY tab body on every click
+    # anywhere in the app. Uncached queries here would fire each time
+    # someone pressed a button over in Purchase or GRN.
+    # They return (data, error) rather than calling st.error inside the
+    # cached body, so a failure is reported on every rerun, not just the
+    # one that missed the cache.
+
+    @st.cache_data(ttl=180)
+    def dash_load_open():
+        """Every item still live in the pipeline, at any age."""
+        try:
+            res = conn.table("purchase_orders").select("*") \
+                .in_("status", ["Triggered", "Editing", "Ordered", "Partial"]) \
+                .order("created_at", desc=True).limit(1500).execute()
+            return (res.data or []), None
+        except Exception as e:
+            return [], str(e)
+
+    @st.cache_data(ttl=180)
+    def dash_load_indented(ts_from, ts_to):
+        """Items INDENTED inside the window (any status they since reached)."""
+        try:
+            res = conn.table("purchase_orders").select("*") \
+                .gte("created_at", ts_from).lt("created_at", ts_to) \
+                .order("created_at", desc=True).execute()
+            return (res.data or []), None
+        except Exception as e:
+            return [], str(e)
+
+    @st.cache_data(ttl=180)
+    def dash_load_enquired(ts_from, ts_to):
+        """Items whose vendor enquiry was marked sent inside the window."""
+        try:
+            res = conn.table("purchase_orders").select("*") \
+                .gte("enquiry_sent_at", ts_from).lt("enquiry_sent_at", ts_to) \
+                .execute()
+            return (res.data or []), None
+        except Exception as e:
+            return [], str(e)
+
+    @st.cache_data(ttl=180)
+    def dash_load_ordered(d_from, d_to):
+        """Items turned into a PO inside the window. po_date is a plain
+        DATE column, so a string range is safe — no timezone maths."""
+        try:
+            res = conn.table("purchase_orders").select("*") \
+                .gte("po_date", str(d_from)).lte("po_date", str(d_to)) \
+                .execute()
+            return (res.data or []), None
+        except Exception as e:
+            return [], str(e)
+
+    @st.cache_data(ttl=180)
+    def dash_load_receipts(d_from, d_to):
+        """GRN lines booked in the window, each with its parent PO row
+        attached under '_po'. Fetched in chunks because a very long
+        in_() list can overrun the request URL length limit."""
+        try:
+            g = conn.table("grn_receipts").select("*") \
+                .gte("received_date", str(d_from)) \
+                .lte("received_date", str(d_to)) \
+                .order("received_date", desc=True).execute().data or []
+        except Exception as e:
+            return [], str(e)
+        if not g:
+            return [], None
+        po_ids = list({r['po_id'] for r in g if r.get('po_id')})
+        po_map = {}
+        try:
+            for i in range(0, len(po_ids), 100):
+                chunk = conn.table("purchase_orders").select(
+                    "id, item_name, job_no, units, quantity, po_no, "
+                    "purchase_reply, material_group, indent_no"
+                ).in_("id", po_ids[i:i + 100]).execute().data or []
+                for p in chunk:
+                    po_map[p['id']] = p
+        except Exception as e:
+            return g, str(e)
+        for r in g:
+            r['_po'] = po_map.get(r.get('po_id'), {})
+        return g, None
+
+    @st.cache_data(ttl=180)
+    def dash_load_grn_totals(po_ids):
+        """Qty received so far per PO row id — this is what turns an
+        ordered quantity into a real outstanding balance."""
+        totals, counts, last = {}, {}, {}
+        ids = list(po_ids)
+        if not ids:
+            return totals, counts, last, None
+        try:
+            for i in range(0, len(ids), 100):
+                rows = conn.table("grn_receipts") \
+                    .select("po_id, received_qty, received_date") \
+                    .in_("po_id", ids[i:i + 100]).execute().data or []
+                for r in rows:
+                    pid = r['po_id']
+                    totals[pid] = totals.get(pid, 0.0) + float(r.get('received_qty') or 0)
+                    counts[pid] = counts.get(pid, 0) + 1
+                    d = r.get('received_date')
+                    if d and (pid not in last or d > last[pid]):
+                        last[pid] = d
+        except Exception as e:
+            return totals, counts, last, str(e)
+        return totals, counts, last, None
+
+    @st.cache_data(ttl=180)
+    def dash_load_rate_enq(ts_from, ts_to):
+        """Rate enquiries raised, and rate enquiries answered, in window."""
+        raised, quoted = [], []
+        try:
+            raised = conn.table("rate_enquiries").select("*") \
+                .gte("created_at", ts_from).lt("created_at", ts_to) \
+                .execute().data or []
+            quoted = conn.table("rate_enquiries").select("*") \
+                .gte("quoted_at", ts_from).lt("quoted_at", ts_to) \
+                .execute().data or []
+        except Exception as e:
+            return raised, quoted, str(e)
+        return raised, quoted, None
+
+    # ── SMALL HELPERS ────────────────────────────────────────
+    # Named with a dash_ prefix so they can never collide with the
+    # similarly-shaped helpers defined inside the Analytics tab.
+    def dash_d(val):
+        """Anything date-ish -> a date, else None. Blank strings and NaN
+        are both common in these columns, so guard for both."""
+        if val is None or val == "" or (isinstance(val, float) and pd.isna(val)):
+            return None
+        try:
+            d = pd.to_datetime(val)
+            return d.date() if pd.notnull(d) else None
+        except Exception:
+            return None
+
+    def dash_txt(v, dash="—"):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return dash
+        t = str(v).strip()
+        return t if t and t.lower() not in ("nan", "none", "nat") else dash
+
+    def dash_urgent(v):
+        """is_urgent arrives as bool, text 'true'/'false', or null."""
+        if isinstance(v, bool):
+            return v
+        return str(v).strip().lower() in ("true", "t", "yes", "1")
+
+    def dash_fmt(d):
+        return d.strftime('%d-%m-%Y') if d else "—"
+
+    def dash_qty(sub, qty_col):
+        """Series of 'qty units' strings. Guarded because on pandas 2.x
+        DataFrame.apply(axis=1) over an EMPTY frame returns a DataFrame,
+        and feeding that into pd.DataFrame({...}) raises."""
+        if sub.empty:
+            return pd.Series(dtype="object")
+        return sub.apply(
+            lambda r: f"{(r[qty_col] or 0):g} {r['units']}".strip(), axis=1)
+
+    def dash_pct(sub):
+        """'% received' per row, same empty-frame guard as dash_qty."""
+        if sub.empty:
+            return pd.Series(dtype="object")
+        return sub.apply(
+            lambda r: f"{min(100, round(r['recd'] / r['qty'] * 100)) if r['qty'] else 0}%",
+            axis=1)
+
+    def dash_show(df_disp, empty_msg, height=None):
+        """One place to decide 'table or green all-clear message'."""
+        if df_disp is None or df_disp.empty:
+            st.success(empty_msg)
+        else:
+            st.dataframe(df_disp, use_container_width=True,
+                         hide_index=True, height=height)
+
+    # ── FETCH ────────────────────────────────────────────────
+    open_rows, err_open = dash_load_open()
+    ind_rows,  err_ind  = dash_load_indented(win_from_ts, win_to_ts)
+    enq_rows,  err_enq  = dash_load_enquired(win_from_ts, win_to_ts)
+    po_rows,   err_po   = dash_load_ordered(win_start, win_end)
+    grn_rows,  err_grn  = dash_load_receipts(win_start, win_end)
+    re_raised, re_quoted, err_re = dash_load_rate_enq(win_from_ts, win_to_ts)
+
+    open_ids = tuple(r['id'] for r in open_rows if r.get('id') is not None)
+    recd_tot, recd_cnt, recd_last, err_tot = dash_load_grn_totals(open_ids)
+
+    for _msg in [err_open, err_ind, err_enq, err_po, err_grn, err_tot, err_re]:
+        if _msg:
+            st.error(f"Dashboard load error: {_msg}")
+
+    # ── NORMALISE THE OPEN PIPELINE ──────────────────────────
+    OPEN_COLS = ['id', 'indent_no', 'item', 'specs', 'group', 'job', 'raised_by',
+                 'status', 'urgent', 'qty', 'recd', 'bal', 'units', 'po_no',
+                 'vendor', 'po_date', 'exp_date', 'indent_date', 'enq_date',
+                 'last_recd', 'age', 'overdue_by', 'due_in']
+
+    open_view = []
+    for r in open_rows:
+        rid   = r.get('id')
+        qty   = float(r.get('quantity') or 0)
+        got   = float(recd_tot.get(rid, 0) or 0)
+        exp_d = dash_d(r.get('expected_delivery'))
+        ind_d = dash_d(r.get('created_at'))
+        open_view.append({
+            'id':          rid,
+            'indent_no':   r.get('indent_no'),
+            'item':        dash_txt(r.get('item_name'), ''),
+            'specs':       dash_txt(r.get('specs'), ''),
+            'group':       dash_txt(r.get('material_group')),
+            'job':         dash_txt(r.get('job_no')),
+            'raised_by':   dash_txt(r.get('triggered_by')),
+            'status':      r.get('status', ''),
+            'urgent':      dash_urgent(r.get('is_urgent')),
+            'qty':         qty,
+            'recd':        got,
+            'bal':         max(0.0, qty - got),
+            'units':       dash_txt(r.get('units'), ''),
+            'po_no':       dash_txt(r.get('po_no'), ''),
+            'vendor':      dash_txt(r.get('purchase_reply'), ''),
+            'po_date':     dash_d(r.get('po_date')),
+            'exp_date':    exp_d,
+            'indent_date': ind_d,
+            'enq_date':    dash_d(r.get('enquiry_sent_at')),
+            'last_recd':   dash_d(recd_last.get(rid)),
+            'age':         (today_ist - ind_d).days if ind_d else None,
+            'overdue_by':  (today_ist - exp_d).days if exp_d and exp_d < today_ist else None,
+            'due_in':      (exp_d - today_ist).days if exp_d and exp_d >= today_ist else None,
+        })
+
+    # columns= keeps the frame usable (and every filter below valid) even
+    # when there is nothing open at all.
+    dfo = pd.DataFrame(open_view, columns=OPEN_COLS)
+
+    # Force the number-like columns to real numerics. Built from dicts, a
+    # column that is all-None stays dtype `object`, and `object <= 7` raises
+    # TypeError on pandas 2.x instead of returning False. Same guard the
+    # Analytics tab already uses.
+    for _c in ['qty', 'recd', 'bal', 'age', 'overdue_by', 'due_in']:
+        dfo[_c] = pd.to_numeric(dfo[_c], errors='coerce')
+    dfo['bal'] = dfo['bal'].fillna(0.0)
+
+    # ============================================================
+    # SECTION A — ACTIVITY IN THE WINDOW
+    # ============================================================
+    st.markdown(f"### 🗓️ Activity — {win_label}")
+
+    n_ind_items = len(ind_rows)
+    n_ind_hdrs  = len({r.get('indent_no') for r in ind_rows if r.get('indent_no')})
+    n_enq_items = len(enq_rows)
+    n_enq_hdrs  = len({r.get('indent_no') for r in enq_rows if r.get('indent_no')})
+    n_po_items  = len(po_rows)
+    n_po_nos    = len({str(r.get('po_no')).strip() for r in po_rows if r.get('po_no')})
+    n_grn_lines = len(grn_rows)
+    n_grn_qty   = sum(float(r.get('received_qty') or 0) for r in grn_rows)
+    n_urg_new   = sum(1 for r in ind_rows if dash_urgent(r.get('is_urgent')))
+
+    a1, a2, a3, a4, a5 = st.columns(5)
+    a1.metric("📝 Indents raised", n_ind_items,
+              f"{n_ind_hdrs} indent no(s)" if n_ind_hdrs else None,
+              delta_color="off",
+              help="Line items created in this window.")
+    a2.metric("📤 Enquiries sent", n_enq_items,
+              f"{n_enq_hdrs} indent no(s)" if n_enq_hdrs else None,
+              delta_color="off",
+              help="Items marked 'Enquiry Sent' to a vendor in this window.")
+    a3.metric("🛒 POs placed", n_po_items,
+              f"{n_po_nos} PO no(s)" if n_po_nos else None,
+              delta_color="off",
+              help="Items confirmed as Ordered, counted by PO date.")
+    a4.metric("📦 Receipts booked", n_grn_lines,
+              f"{n_grn_qty:g} qty in" if n_grn_lines else None,
+              delta_color="off",
+              help="GRN lines recorded at Stores in this window.")
+    a5.metric("💰 Rate enquiries", len(re_raised),
+              f"{len(re_quoted)} quoted back" if re_quoted else None,
+              delta_color="off")
+
+    if n_urg_new:
+        st.warning(f"🚨 {n_urg_new} of the new indent line(s) were flagged URGENT.")
+
+    # ── Detail expanders for the window ──────────────────────
+    with st.expander(f"📝 Indents raised — {n_ind_items} item(s)"):
+        if ind_rows:
+            st.dataframe(pd.DataFrame([{
+                "Indent #": dash_txt(r.get('indent_no')),
+                "": "🚨" if dash_urgent(r.get('is_urgent')) else "",
+                "Item":     dash_txt(r.get('item_name'), ''),
+                "Qty":      f"{float(r.get('quantity') or 0):g} {dash_txt(r.get('units'), '')}",
+                "Group":    dash_txt(r.get('material_group')),
+                "Job":      dash_txt(r.get('job_no')),
+                "Raised by": dash_txt(r.get('triggered_by')),
+                "Status":   dash_txt(r.get('status')),
+            } for r in ind_rows]), use_container_width=True, hide_index=True)
+        else:
+            st.info("No indents raised in this window.")
+
+    with st.expander(f"📤 Vendor enquiries sent — {n_enq_items} item(s)"):
+        if enq_rows:
+            st.dataframe(pd.DataFrame([{
+                "Indent #": dash_txt(r.get('indent_no')),
+                "Item":     dash_txt(r.get('item_name'), ''),
+                "Qty":      f"{float(r.get('quantity') or 0):g} {dash_txt(r.get('units'), '')}",
+                "Group":    dash_txt(r.get('material_group')),
+                "Job":      dash_txt(r.get('job_no')),
+                "Sent":     dash_fmt(dash_d(r.get('enquiry_sent_at'))),
+                "Status":   dash_txt(r.get('status')),
+            } for r in enq_rows]), use_container_width=True, hide_index=True)
+        else:
+            st.info("No vendor enquiries marked sent in this window.")
+
+    with st.expander(f"🛒 Purchase orders placed — {n_po_items} item(s)"):
+        if po_rows:
+            st.dataframe(pd.DataFrame([{
+                "PO No":    dash_txt(r.get('po_no'), ''),
+                "Item":     dash_txt(r.get('item_name'), ''),
+                "Qty":      f"{float(r.get('quantity') or 0):g} {dash_txt(r.get('units'), '')}",
+                "Vendor":   dash_txt(r.get('purchase_reply'), ''),
+                "Job":      dash_txt(r.get('job_no')),
+                "PO Date":  dash_fmt(dash_d(r.get('po_date'))),
+                "Expected": dash_fmt(dash_d(r.get('expected_delivery'))),
+            } for r in po_rows]), use_container_width=True, hide_index=True)
+        else:
+            st.info("No POs dated in this window.")
+
+    with st.expander(f"📦 Material received — {n_grn_lines} receipt line(s)"):
+        if grn_rows:
+            st.dataframe(pd.DataFrame([{
+                "Date":   dash_txt(r.get('received_date')),
+                "PO No":  dash_txt((r.get('_po') or {}).get('po_no'), ''),
+                "Item":   dash_txt((r.get('_po') or {}).get('item_name'), ''),
+                "Recd":   f"{float(r.get('received_qty') or 0):g} "
+                          f"{dash_txt((r.get('_po') or {}).get('units'), '')}",
+                "Job":    dash_txt((r.get('_po') or {}).get('job_no')),
+                "Vendor": dash_txt((r.get('_po') or {}).get('purchase_reply'), ''),
+                "DC No":  dash_txt(r.get('dc_no')),
+                "Remarks": dash_txt(r.get('remarks'), ''),
+            } for r in grn_rows]), use_container_width=True, hide_index=True)
+        else:
+            st.info("No material booked in at Stores in this window.")
+
+    st.divider()
+
+    # ============================================================
+    # SECTION B — WHERE THE PIPELINE STANDS RIGHT NOW
+    # ============================================================
+    st.markdown("### 📌 Open position (all ages, not just the window)")
+
+    m_trig    = dfo[dfo['status'] == 'Triggered']
+    m_edit    = dfo[dfo['status'] == 'Editing']
+    m_ord     = dfo[dfo['status'] == 'Ordered']
+    m_part    = dfo[dfo['status'] == 'Partial']
+    dues      = dfo[dfo['status'].isin(['Ordered', 'Partial'])]
+    m_urgent  = dfo[dfo['urgent'] == True]
+    m_overdue = dues[dues['overdue_by'].notna()]
+    m_noexp   = dues[dues['exp_date'].isna()]
+    m_duesoon = dues[dues['due_in'].notna() & (dues['due_in'] <= DUE_SOON)]
+
+    b1, b2, b3, b4, b5, b6 = st.columns(6)
+    b1.metric("🟡 Awaiting purchase", len(m_trig),
+              help="Status Triggered — indented but no PO yet.")
+    b2.metric("🚚 Material due", len(dues),
+              f"{dues['bal'].sum():g} qty pending" if len(dues) else None,
+              delta_color="off",
+              help="Ordered or partially received, balance still owed by vendors.")
+    b3.metric("🔄 Part-received POs", len(m_part),
+              help="Some material in, balance still outstanding.")
+    b4.metric("🚨 Urgent open", int(len(m_urgent)),
+              delta=f"{len(m_urgent)} to chase" if len(m_urgent) else None,
+              delta_color="inverse")
+    b5.metric("⏰ Overdue", len(m_overdue),
+              delta=f"{len(m_overdue)} past date" if len(m_overdue) else None,
+              delta_color="inverse",
+              help="Expected delivery date has passed.")
+    b6.metric("❓ No expected date", len(m_noexp),
+              delta=f"{len(m_noexp)} blind" if len(m_noexp) else None,
+              delta_color="inverse",
+              help="Ordered, but nobody entered an expected delivery date — "
+                   "these can never show up as overdue.")
+
+    st.divider()
+
+    # ============================================================
+    # SECTION C — ACTION QUEUES
+    # ============================================================
+    st.markdown("### 🎯 What needs action today")
+
+    # 1. URGENT
+    with st.expander(f"🚨 Urgent items still open — {len(m_urgent)}",
+                     expanded=bool(len(m_urgent))):
+        u = m_urgent.sort_values('age', ascending=False, na_position='last')
+        dash_show(pd.DataFrame({
+            "Item":     u['item'],
+            "Qty due":  dash_qty(u, 'bal'),
+            "Status":   u['status'],
+            "Job":      u['job'],
+            "Vendor":   u['vendor'].replace('', '—'),
+            "PO No":    u['po_no'].replace('', '—'),
+            "Expected": u['exp_date'].apply(dash_fmt),
+            "Age":      u['age'].apply(lambda a: "—" if pd.isna(a) else f"{int(a)}d"),
+            "Raised by": u['raised_by'],
+        }), "No urgent items outstanding.")
+
+    # 2. OVERDUE
+    with st.expander(f"⏰ Overdue against expected delivery — {len(m_overdue)}",
+                     expanded=bool(len(m_overdue))):
+        o = m_overdue.sort_values('overdue_by', ascending=False)
+        dash_show(pd.DataFrame({
+            "":         o['urgent'].apply(lambda x: "🚨" if x else ""),
+            "PO No":    o['po_no'].replace('', '—'),
+            "Item":     o['item'],
+            "Balance":  dash_qty(o, 'bal'),
+            "Vendor":   o['vendor'].replace('', '—'),
+            "Job":      o['job'],
+            "Expected": o['exp_date'].apply(dash_fmt),
+            "Late by":  o['overdue_by'].apply(lambda d: f"{int(d)}d"),
+        }), "Nothing is past its expected delivery date.")
+
+    # 3. DUE SOON
+    with st.expander(f"📅 Landing in the next {int(DUE_SOON)} days — {len(m_duesoon)}"):
+        s = m_duesoon.sort_values('due_in')
+        dash_show(pd.DataFrame({
+            "":         s['urgent'].apply(lambda x: "🚨" if x else ""),
+            "Expected": s['exp_date'].apply(dash_fmt),
+            "In":       s['due_in'].apply(
+                            lambda d: "today" if int(d) == 0 else f"{int(d)}d"),
+            "PO No":    s['po_no'].replace('', '—'),
+            "Item":     s['item'],
+            "Balance":  dash_qty(s, 'bal'),
+            "Vendor":   s['vendor'].replace('', '—'),
+            "Job":      s['job'],
+        }), "Nothing scheduled to arrive in this window.")
+
+    # 4. PARTIAL RECEIPTS
+    with st.expander(f"🔄 Part-received POs — balance still due — {len(m_part)}"):
+        p = m_part.sort_values('last_recd', na_position='last')
+        dash_show(pd.DataFrame({
+            "PO No":     p['po_no'].replace('', '—'),
+            "Item":      p['item'],
+            "Ordered":   dash_qty(p, 'qty'),
+            "Received":  p['recd'].apply(lambda v: f"{(v or 0):g}"),
+            "Balance":   dash_qty(p, 'bal'),
+            "% done":    dash_pct(p),
+            "Last GRN":  p['last_recd'].apply(dash_fmt),
+            "Vendor":    p['vendor'].replace('', '—'),
+            "Job":       p['job'],
+        }), "No part-received POs pending.")
+
+    # 5. MISSING EXPECTED DELIVERY DATE
+    with st.expander(
+        f"❓ Ordered POs with no expected delivery date — {len(m_noexp)}",
+        expanded=bool(len(m_noexp))
+    ):
+        st.caption(
+            "These are invisible to every overdue alert in the app. Fill the "
+            "date in Purchase Console → Confirm PO, or ask the vendor for a "
+            "commitment date."
+        )
+        ne = m_noexp.sort_values('age', ascending=False, na_position='last')
+        dash_show(pd.DataFrame({
+            "":         ne['urgent'].apply(lambda x: "🚨" if x else ""),
+            "PO No":    ne['po_no'].replace('', '—'),
+            "Item":     ne['item'],
+            "Balance":  dash_qty(ne, 'bal'),
+            "Vendor":   ne['vendor'].replace('', '—'),
+            "Job":      ne['job'],
+            "PO Date":  ne['po_date'].apply(dash_fmt),
+            "Age since indent": ne['age'].apply(
+                            lambda a: "—" if pd.isna(a) else f"{int(a)}d"),
+        }), "Every open PO carries an expected delivery date. 👏")
+
+    # 6. TRIGGERED BUT NO ENQUIRY SENT
+    no_enq = m_trig[m_trig['enq_date'].isna()]
+    with st.expander(f"📭 Indented but no vendor enquiry sent — {len(no_enq)}"):
+        st.caption("The clock is running and nothing has gone out to a vendor yet.")
+        n = no_enq.sort_values('age', ascending=False, na_position='last')
+        dash_show(pd.DataFrame({
+            "":          n['urgent'].apply(lambda x: "🚨" if x else ""),
+            "Indent #":  n['indent_no'].apply(dash_txt),
+            "Item":      n['item'],
+            "Qty":       dash_qty(n, 'qty'),
+            "Group":     n['group'],
+            "Job":       n['job'],
+            "Raised by": n['raised_by'],
+            "Waiting":   n['age'].apply(lambda a: "—" if pd.isna(a) else f"{int(a)}d"),
+        }), "Every triggered item has had an enquiry sent.")
+
+    # 7. STUCK IN EDITING
+    with st.expander(f"⚪ Locked in Editing — invisible to Purchase — {len(m_edit)}",
+                     expanded=bool(len(m_edit))):
+        st.caption("Release these from Indent Application → RESUME or RESET.")
+        e = m_edit.sort_values('age', ascending=False, na_position='last')
+        dash_show(pd.DataFrame({
+            "Indent #":  e['indent_no'].apply(dash_txt),
+            "Item":      e['item'],
+            "Job":       e['job'],
+            "Raised by": e['raised_by'],
+            "Locked":    e['age'].apply(lambda a: "—" if pd.isna(a) else f"{int(a)}d"),
+        }), "No items stuck in Editing.")
+
+    st.divider()
+
+    # ============================================================
+    # SECTION D — WHERE THE LOAD SITS
+    # ============================================================
+    st.markdown("### 🧭 Where the open load sits")
+
+    d1, d2 = st.columns(2)
+
+    with d1:
+        st.markdown("**By material group**")
+        if dfo.empty:
+            st.info("Nothing open.")
+        else:
+            g = dfo.groupby('group').agg(
+                Items   =('id', 'count'),
+                Urgent  =('urgent', 'sum'),
+                Overdue =('overdue_by', 'count'),
+            ).reset_index()
+            g.columns = ['Material Group', 'Open items', '🚨', '⏰ Overdue']
+            g['🚨'] = g['🚨'].astype(int)
+            st.dataframe(g.sort_values('Open items', ascending=False),
+                         use_container_width=True, hide_index=True)
+
+    with d2:
+        st.markdown("**By job / project**")
+        if dfo.empty:
+            st.info("Nothing open.")
+        else:
+            j = dfo.groupby('job').agg(
+                Items   =('id', 'count'),
+                Urgent  =('urgent', 'sum'),
+                Overdue =('overdue_by', 'count'),
+            ).reset_index()
+            j.columns = ['Job', 'Open items', '🚨', '⏰ Overdue']
+            j['🚨'] = j['🚨'].astype(int)
+            st.dataframe(j.sort_values('Open items', ascending=False).head(15),
+                         use_container_width=True, hide_index=True)
+
+    st.markdown("**⏳ Oldest open items**")
+    if dfo.empty:
+        st.success("Nothing open at all.")
+    else:
+        w = dfo.sort_values('age', ascending=False, na_position='last').head(10)
+        st.dataframe(pd.DataFrame({
+            "":        w['urgent'].apply(lambda x: "🚨" if x else ""),
+            "Item":    w['item'],
+            "Status":  w['status'],
+            "Job":     w['job'],
+            "Vendor":  w['vendor'].replace('', '—'),
+            "Raised by": w['raised_by'],
+            "Age":     w['age'].apply(lambda a: "—" if pd.isna(a) else f"{int(a)}d"),
+        }), use_container_width=True, hide_index=True)
+
+    # ── EXPORT ───────────────────────────────────────────────
+    if not dfo.empty:
+        exp_df = pd.DataFrame({
+            "Indent No":  dfo['indent_no'].apply(dash_txt),
+            "Item":       dfo['item'],
+            "Specs":      dfo['specs'],
+            "Group":      dfo['group'],
+            "Job":        dfo['job'],
+            "Raised By":  dfo['raised_by'],
+            "Status":     dfo['status'],
+            "Urgent":     dfo['urgent'].apply(lambda x: "YES" if x else ""),
+            "Units":      dfo['units'],
+            "Ordered Qty": dfo['qty'],
+            "Received Qty": dfo['recd'],
+            "Balance Qty": dfo['bal'],
+            "PO No":      dfo['po_no'],
+            "Vendor":     dfo['vendor'],
+            "PO Date":    dfo['po_date'].apply(dash_fmt),
+            "Expected":   dfo['exp_date'].apply(dash_fmt),
+            "Last GRN":   dfo['last_recd'].apply(dash_fmt),
+            "Age (d)":    dfo['age'],
+            "Late by (d)": dfo['overdue_by'],
+        })
+        st.download_button(
+            "📥 Export open pipeline (CSV)",
+            data=exp_df.to_csv(index=False).encode('utf-8'),
+            file_name=f"BG_Open_Pipeline_{today_ist}.csv",
+            mime="text/csv", key="dash_dl_csv"
+        )
+
+    st.caption(
+        f"Dashboard data refreshes every 3 minutes. Last built: "
+        f"{datetime.now(IST).strftime('%d-%m-%Y %I:%M %p')} IST."
+    )
