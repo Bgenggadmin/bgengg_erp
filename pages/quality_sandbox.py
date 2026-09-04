@@ -729,13 +729,515 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-main_tabs = st.tabs([
+# Dashboard is added as the FIRST tab. We slice the returned list so that
+# every existing `main_tabs[N]` reference further down keeps pointing at
+# exactly the same tab as before — no renumbering needed anywhere.
+_all_tabs = st.tabs([
+    "Dashboard",
     "Process Gate", "Quality Checklist", "QAP",
     "Material Flow Chart", "Nozzle Flow Chart", "Dimensional Report",
     "Hydro Test", "Calibration", "Final Inspection",
     "Guarantee Certificate", "Customer Feedback",
     "Trial Run", "Document Vault", "Master Data Book", "Config",
 ])
+dash_tab  = _all_tabs[0]
+main_tabs = _all_tabs[1:]
+
+# ============================================================
+# 9. DASHBOARD — DATA INDEX
+# ============================================================
+# Every quality document lives in its own table, but they all share
+# three useful columns: job_no, created_at and a "who did it" column.
+# We pull just those columns from each table and stack them into ONE
+# tidy DataFrame. That single frame then answers every dashboard
+# question (how many docs, which jobs, which inspector, when).
+
+DOC_ORDER = [
+    "Quality Checklist", "QAP", "Material Flow Chart", "Nozzle Flow Chart",
+    "Dimensional Report", "Hydro Test", "Calibration", "Final Inspection",
+    "Guarantee Certificate", "Trial Run", "Customer Feedback",
+]
+DOC_SHORT = {
+    "Quality Checklist": "Chk",  "QAP": "QAP",   "Material Flow Chart": "MFC",
+    "Nozzle Flow Chart": "NFC",  "Dimensional Report": "Dim", "Hydro Test": "Hydro",
+    "Calibration": "Cal",        "Final Inspection": "Final",
+    "Guarantee Certificate": "Guar", "Trial Run": "Trial", "Customer Feedback": "Fdbk",
+}
+
+def _to_ist_naive(series):
+    """
+    Supabase returns timestamps as ISO strings with a timezone offset.
+    Convert to timezone-naive IST so we can compare them against plain
+    dates without pandas raising a tz-aware/tz-naive comparison error.
+    """
+    out = pd.to_datetime(series, errors="coerce", utc=True)
+    try:
+        return out.dt.tz_convert(IST).dt.tz_localize(None)
+    except Exception:
+        return out
+
+
+def _bar_table(counts, label, value_label="Count", height=None):
+    """
+    Render a value_counts() Series as a horizontal bar table.
+    We use a ProgressColumn instead of st.bar_chart because long text labels
+    (document names, staff names) read far better on the left of a bar,
+    and this uses only long-stable Streamlit APIs.
+    """
+    if counts is None or len(counts) == 0:
+        st.info("Nothing to show for this period.")
+        return
+    d = counts.reset_index()
+    d.columns = [label, value_label]
+    top = max(int(d[value_label].max()), 1)
+    st.dataframe(
+        d, hide_index=True, use_container_width=True, height=height,
+        column_config={
+            value_label: st.column_config.ProgressColumn(
+                value_label, min_value=0, max_value=top, format="%d"),
+        },
+    )
+
+
+@st.cache_data(ttl=120)
+def get_quality_doc_index():
+    """
+    Returns three DataFrames:
+      df_qdocs  — one row per saved quality document (doc_type, job_no, created_at, person)
+      df_qcal   — calibration gauge records (for the 'calibration overdue' alert)
+      df_qcerts — files uploaded to the Document Vault (MTCs, cal certs, NDT etc.)
+    Each query is wrapped in try/except so a missing table never breaks the page.
+    """
+    frames = []
+
+    # --- tables that map 1:1 to a document type ---------------------
+    simple = [
+        ("Quality Checklist",     "quality_check_list",       "inspected_by"),
+        ("Material Flow Chart",   "material_flow_charts",     "verified_by"),
+        ("Dimensional Report",    "dimensional_reports",      "inspected_by"),
+        ("Hydro Test",            "hydro_test_reports",       "inspected_by"),
+        ("Final Inspection",      "final_inspection_reports", "inspected_by"),
+        ("Guarantee Certificate", "guarantee_certificates",   "certified_by"),
+        ("Trial Run",             "trial_run_reports",        "inspected_by"),
+        ("Customer Feedback",     "customer_feedback",        "recommend_bg"),
+    ]
+    for label, table, person_col in simple:
+        try:
+            res = conn.table(table).select(f"job_no, created_at, {person_col}").execute()
+            d = pd.DataFrame(res.data or [])
+            if d.empty:
+                continue
+            d = d.rename(columns={person_col: "person"})
+            d["doc_type"] = label
+            frames.append(d[["doc_type", "job_no", "created_at", "person"]])
+        except Exception:
+            continue
+
+    # --- QAP and Nozzle Flow Chart share ONE table ------------------
+    # They are told apart by nozzle_mark: QAP rows carry a "BGEI/..." doc number.
+    try:
+        res = conn.table("nozzle_flow_charts") \
+                  .select("job_no, created_at, verified_by, nozzle_mark").execute()
+        d = pd.DataFrame(res.data or [])
+        if not d.empty:
+            is_qap = d["nozzle_mark"].astype(str).str.startswith("BGEI")
+            d["doc_type"] = is_qap.map({True: "QAP", False: "Nozzle Flow Chart"})
+            d = d.rename(columns={"verified_by": "person"})
+            frames.append(d[["doc_type", "job_no", "created_at", "person"]])
+    except Exception:
+        pass
+
+    # --- calibration records (also a document type) -----------------
+    df_qcal = pd.DataFrame()
+    try:
+        res = conn.table("quality_inspection_logs") \
+                  .select("job_no, created_at, inspector_name, gauge_id, gauge_cal_due") \
+                  .eq("gate_name", "Calibration").execute()
+        df_qcal = pd.DataFrame(res.data or [])
+        if not df_qcal.empty:
+            d = df_qcal.rename(columns={"inspector_name": "person"}).copy()
+            d["doc_type"] = "Calibration"
+            frames.append(d[["doc_type", "job_no", "created_at", "person"]])
+    except Exception:
+        pass
+
+    # --- Document Vault uploads -------------------------------------
+    df_qcerts = pd.DataFrame()
+    try:
+        res = conn.table("project_certificates") \
+                  .select("job_no, cert_type, file_name, created_at").execute()
+        df_qcerts = pd.DataFrame(res.data or [])
+    except Exception:
+        pass
+
+    if frames:
+        df_qdocs = pd.concat(frames, ignore_index=True)
+        df_qdocs["job_no"] = df_qdocs["job_no"].astype(str).str.strip().str.upper()
+        df_qdocs["person"] = df_qdocs["person"].fillna("").astype(str).str.strip()
+    else:
+        df_qdocs = pd.DataFrame(columns=["doc_type", "job_no", "created_at", "person"])
+
+    return df_qdocs, df_qcal, df_qcerts
+
+
+# ============================================================
+# TAB: DASHBOARD
+# ============================================================
+with dash_tab:
+    df_qdocs, df_qcal, df_qcerts = get_quality_doc_index()
+    today_ts = pd.Timestamp(get_now_ist().replace(tzinfo=None))
+
+    # ---------- 1. PERIOD FILTER ----------
+    dc1, dc2 = st.columns([3, 1])
+    period = dc1.radio(
+        "Reporting period",
+        ["Last 7 days", "Last 30 days", "Last 90 days", "This financial year", "All time"],
+        index=1, horizontal=True, key="dash_period",
+    )
+    if dc2.button("Refresh data", use_container_width=True, key="dash_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+
+    if period == "Last 7 days":
+        cutoff = today_ts - pd.Timedelta(days=7)
+    elif period == "Last 30 days":
+        cutoff = today_ts - pd.Timedelta(days=30)
+    elif period == "Last 90 days":
+        cutoff = today_ts - pd.Timedelta(days=90)
+    elif period == "This financial year":
+        fy_year = today_ts.year if today_ts.month >= 4 else today_ts.year - 1
+        cutoff = pd.Timestamp(year=fy_year, month=4, day=1)
+    else:
+        cutoff = pd.Timestamp("2000-01-01")
+
+    def _in_period(dt_series):
+        """True/False mask for rows inside the selected period."""
+        if period == "All time":
+            return pd.Series(True, index=dt_series.index)
+        return dt_series.notna() & (dt_series >= cutoff)
+
+    # ---------- 2. PREPARE INSPECTION DATA ----------
+    # Process Gate inspections are stored back onto job_planning rows.
+    insp_cols = ["job_no", "gate_name", "quality_status", "quality_by",
+                 "quality_notes", "quality_updated_at", "quality_photo_url"]
+    if not df_plan.empty and "quality_status" in df_plan.columns:
+        _tmp = df_plan.copy()
+        for c in insp_cols:
+            if c not in _tmp.columns:
+                _tmp[c] = None
+        df_insp = _tmp[
+            _tmp["quality_status"].notna()
+            & (_tmp["quality_status"].astype(str).str.strip().str.lower()
+               .isin(["", "none", "nan"]) == False)
+        ][insp_cols].copy()
+        df_insp["job_no"]  = df_insp["job_no"].astype(str).str.strip().str.upper()
+        df_insp["insp_dt"] = _to_ist_naive(df_insp["quality_updated_at"])
+    else:
+        df_insp = pd.DataFrame(columns=insp_cols + ["insp_dt"])
+
+    if not df_qdocs.empty:
+        df_qdocs["doc_dt"] = _to_ist_naive(df_qdocs["created_at"])
+    else:
+        df_qdocs["doc_dt"] = pd.Series(dtype="datetime64[ns]")
+
+    insp_p = df_insp[_in_period(df_insp["insp_dt"])] if not df_insp.empty else df_insp
+    docs_p = df_qdocs[_in_period(df_qdocs["doc_dt"])] if not df_qdocs.empty else df_qdocs
+
+    # ---------- 3. HEADLINE METRICS ----------
+    status_up = (insp_p["quality_status"].astype(str).str.upper()
+                 if not insp_p.empty else pd.Series(dtype=str))
+    n_pass = int(status_up.str.contains("PASS|ACCEPT|OK", na=False).sum()) if not insp_p.empty else 0
+    n_fail = int(status_up.str.contains("REWORK|REJECT|FAIL", na=False).sum()) if not insp_p.empty else 0
+    n_insp = len(insp_p)
+    pass_rate = round(100 * n_pass / n_insp, 1) if n_insp else 0.0
+
+    jobs_touched = set()
+    if not insp_p.empty:
+        jobs_touched |= set(insp_p["job_no"].dropna().astype(str))
+    if not docs_p.empty:
+        jobs_touched |= set(docs_p["job_no"].dropna().astype(str))
+
+    n_photos = 0
+    if not insp_p.empty:
+        n_photos = int(insp_p["quality_photo_url"].apply(
+            lambda x: len(x) if isinstance(x, list) else 0).sum())
+
+    st.markdown(f"##### Activity — {period.lower()}")
+    m = st.columns(6)
+    m[0].metric("Inspections done",  n_insp)
+    m[1].metric("Jobs attended",     len(jobs_touched))
+    m[2].metric("Documents filled",  len(docs_p))
+    m[3].metric("Pass rate",         f"{pass_rate}%")
+    m[4].metric("Rework / Reject",   n_fail, delta=None if n_fail == 0 else "needs action",
+                delta_color="inverse")
+    m[5].metric("Evidence photos",   n_photos)
+
+    st.divider()
+
+    # ---------- 4. ATTENTION REQUIRED ----------
+    st.markdown("##### Attention required")
+    a1, a2, a3, a4 = st.columns(4)
+
+    # (a) open non-conformances — latest status per job+gate is a fail
+    open_nc = pd.DataFrame()
+    if not df_insp.empty:
+        latest = (df_insp.sort_values("insp_dt")
+                         .drop_duplicates(subset=["job_no", "gate_name"], keep="last"))
+        open_nc = latest[latest["quality_status"].astype(str).str.upper()
+                         .str.contains("REWORK|REJECT|FAIL", na=False)]
+    a1.metric("Open non-conformances", len(open_nc))
+
+    # (b) calibration gauges past due date
+    overdue_cal = pd.DataFrame()
+    if not df_qcal.empty and "gauge_cal_due" in df_qcal.columns:
+        _c = df_qcal.copy()
+        _c["due_dt"] = pd.to_datetime(_c["gauge_cal_due"], errors="coerce")
+        overdue_cal = _c[_c["due_dt"].notna() & (_c["due_dt"] < today_ts)]
+    a2.metric("Calibrations overdue", len(overdue_cal))
+
+    # (c) hydro test passed but final inspection not yet recorded
+    if not df_qdocs.empty:
+        jobs_hydro = set(df_qdocs[df_qdocs["doc_type"] == "Hydro Test"]["job_no"])
+        jobs_final = set(df_qdocs[df_qdocs["doc_type"] == "Final Inspection"]["job_no"])
+        jobs_guar  = set(df_qdocs[df_qdocs["doc_type"] == "Guarantee Certificate"]["job_no"])
+        jobs_fdbk  = set(df_qdocs[df_qdocs["doc_type"] == "Customer Feedback"]["job_no"])
+    else:
+        jobs_hydro = jobs_final = jobs_guar = jobs_fdbk = set()
+    await_final = sorted(jobs_hydro - jobs_final)
+    a3.metric("Hydro done, final pending", len(await_final))
+
+    # (d) despatched (guarantee issued) but customer feedback not collected
+    await_fdbk = sorted(jobs_guar - jobs_fdbk)
+    a4.metric("Feedback not collected", len(await_fdbk))
+
+    if len(open_nc) or len(overdue_cal) or await_final or await_fdbk:
+        with st.expander("See the details behind these alerts"):
+            if not open_nc.empty:
+                st.markdown("**Open non-conformances (latest status is Rework / Reject)**")
+                _nc = open_nc[["job_no", "gate_name", "quality_status", "quality_by", "insp_dt"]].copy()
+                _nc["insp_dt"] = _nc["insp_dt"].dt.strftime("%d-%m-%Y")
+                _nc.columns = ["Job", "Gate", "Status", "Inspector", "Date"]
+                st.dataframe(_nc, hide_index=True, use_container_width=True)
+            if not overdue_cal.empty:
+                st.markdown("**Calibration due dates passed**")
+                _cd = overdue_cal[["job_no", "gauge_id", "gauge_cal_due", "inspector_name"]].copy()
+                _cd.columns = ["Job", "Gauge / Sr No", "Due date", "Calibrated by"]
+                st.dataframe(_cd, hide_index=True, use_container_width=True)
+            if await_final:
+                st.markdown(f"**Hydro test done, final inspection pending:** {', '.join(await_final)}")
+            if await_fdbk:
+                st.markdown(f"**Guarantee issued, customer feedback pending:** {', '.join(await_fdbk)}")
+    else:
+        st.success("Nothing overdue right now.")
+
+    st.divider()
+
+    # ---------- 5. WHAT DOCUMENTS WERE FILLED ----------
+    left, right = st.columns([1, 1])
+
+    with left:
+        st.markdown("##### Documents filled by type")
+        if not docs_p.empty:
+            by_type = (docs_p["doc_type"].value_counts()
+                       .reindex(DOC_ORDER).fillna(0).astype(int))
+            _bar_table(by_type, "Document", "Filled", height=420)
+        else:
+            st.info("No documents saved in this period.")
+
+    with right:
+        st.markdown("##### Inspection outcomes")
+        if n_insp:
+            outcome = pd.Series({
+                "Pass": n_pass,
+                "Rework / Reject": n_fail,
+                "Other / Calibrated": max(n_insp - n_pass - n_fail, 0),
+            })
+            outcome = outcome[outcome > 0]
+            _bar_table(outcome, "Outcome", "Gates", height=145)
+        else:
+            st.info("No inspections recorded in this period.")
+
+        st.markdown("##### Vault uploads")
+        if not df_qcerts.empty:
+            _cv = df_qcerts.copy()
+            _cv["dt"] = _to_ist_naive(_cv["created_at"])
+            _cv = _cv[_in_period(_cv["dt"])]
+            if not _cv.empty:
+                _bar_table(_cv["cert_type"].value_counts(), "Certificate type", "Files", height=210)
+            else:
+                st.caption("No files uploaded to the vault in this period.")
+        else:
+            st.caption("No files uploaded to the vault yet.")
+
+    st.divider()
+
+    # ---------- 6. JOBS ATTENDED — READINESS TABLE ----------
+    st.markdown("##### Jobs attended — quality readiness")
+    st.caption("Every job with any quality activity. 'Docs' counts the 11 quality "
+               "documents; 'Gates' counts Process Gate inspections against planned stages.")
+
+    # Which documents exist for which job (all time — readiness is cumulative)
+    if not df_qdocs.empty:
+        matrix = (df_qdocs.assign(_n=1)
+                          .pivot_table(index="job_no", columns="doc_type",
+                                       values="_n", aggfunc="sum", fill_value=0))
+        matrix = matrix.reindex(columns=DOC_ORDER, fill_value=0)
+    else:
+        matrix = pd.DataFrame(columns=DOC_ORDER)
+
+    all_jobs = sorted(set(matrix.index.astype(str)) |
+                      (set(df_insp["job_no"].astype(str)) if not df_insp.empty else set()))
+
+    rows = []
+    for job in all_jobs:
+        gates = df_plan[df_plan["job_no"].astype(str).str.strip().str.upper() == job] \
+                if not df_plan.empty else pd.DataFrame()
+        total_gates = len(gates)
+        done_gates  = int(gates["quality_status"].notna().sum()) if total_gates else 0
+
+        docs_done = int((matrix.loc[job] > 0).sum()) if job in matrix.index else 0
+
+        job_insp = df_insp[df_insp["job_no"] == job] if not df_insp.empty else pd.DataFrame()
+        job_docs = df_qdocs[df_qdocs["job_no"] == job] if not df_qdocs.empty else pd.DataFrame()
+        stamps = []
+        if not job_insp.empty:
+            stamps.append(job_insp["insp_dt"].max())
+        if not job_docs.empty:
+            stamps.append(job_docs["doc_dt"].max())
+        stamps = [s for s in stamps if pd.notna(s)]
+        last_act = max(stamps) if stamps else pd.NaT
+
+        fails = 0
+        if not job_insp.empty:
+            latest_j = job_insp.sort_values("insp_dt").drop_duplicates(
+                subset=["gate_name"], keep="last")
+            fails = int(latest_j["quality_status"].astype(str).str.upper()
+                        .str.contains("REWORK|REJECT|FAIL", na=False).sum())
+
+        # get_proj indexes df_anchor by column, so guard against an empty frame
+        proj = get_proj(df_anchor, job) if not df_anchor.empty else None
+        rows.append({
+            "Job":        job,
+            "Client":     proj_get(proj, "client_name") if proj is not None else "—",
+            "Equipment":  proj_get(proj, "equipment_type") if proj is not None else "—",
+            "Gates":      f"{done_gates}/{total_gates}" if total_gates else "—",
+            "Docs":       docs_done,
+            "Doc %":      docs_done / len(DOC_ORDER),
+            "Open NC":    fails,
+            "Last activity": last_act,
+        })
+
+    df_ready = pd.DataFrame(rows)
+    if not df_ready.empty:
+        df_ready = df_ready.sort_values("Last activity", ascending=False, na_position="last")
+        only_open = st.checkbox("Show only jobs that are not yet Data-Book complete",
+                                value=False, key="dash_only_open")
+        if only_open:
+            df_ready = df_ready[df_ready["Docs"] < len(DOC_ORDER)]
+
+        st.dataframe(
+            df_ready, hide_index=True, use_container_width=True, height=380,
+            column_config={
+                "Doc %": st.column_config.ProgressColumn(
+                    "Document completion", min_value=0.0, max_value=1.0, format="%.0f%%"),
+                "Docs": st.column_config.NumberColumn(
+                    f"Docs (of {len(DOC_ORDER)})", format="%d"),
+                "Open NC": st.column_config.NumberColumn("Open NC", format="%d"),
+                "Last activity": st.column_config.DatetimeColumn(
+                    "Last activity", format="DD-MM-YYYY"),
+            },
+        )
+    else:
+        st.info("No quality activity recorded yet.")
+
+    st.divider()
+
+    # ---------- 7. DOCUMENT COMPLETENESS MATRIX ----------
+    st.markdown("##### Which documents are filled, job by job")
+    st.caption("Ticked = at least one record saved. "
+               "Chk=Checklist, MFC=Material Flow, NFC=Nozzle Flow, Dim=Dimensional, "
+               "Cal=Calibration, Guar=Guarantee, Fdbk=Customer Feedback.")
+    if not matrix.empty:
+        tick = (matrix > 0)
+        tick = tick.rename(columns=DOC_SHORT)
+        tick.insert(0, "Filled", tick.sum(axis=1))
+        tick = tick.sort_values("Filled", ascending=True).reset_index()
+        tick = tick.rename(columns={"job_no": "Job"})
+        st.dataframe(
+            tick, hide_index=True, use_container_width=True, height=380,
+            column_config={
+                short: st.column_config.CheckboxColumn(short, width="small")
+                for short in DOC_SHORT.values()
+            },
+        )
+    else:
+        st.info("No quality documents saved yet.")
+
+    st.divider()
+
+    # ---------- 8. WHO IS DOING THE WORK ----------
+    w1, w2 = st.columns([1, 1])
+
+    with w1:
+        st.markdown("##### Inspector activity")
+        names = []
+        if not insp_p.empty:
+            names += insp_p["quality_by"].dropna().astype(str).tolist()
+        if not docs_p.empty:
+            names += docs_p["person"].dropna().astype(str).tolist()
+        names = [n.strip() for n in names if n.strip() and n.strip().lower() not in ("nan", "none")]
+        if names:
+            _bar_table(pd.Series(names).value_counts().head(12),
+                       "Staff", "Entries", height=330)
+        else:
+            st.info("No named activity in this period.")
+
+    with w2:
+        st.markdown("##### Workload trend (last 12 months)")
+        trend_frames = []
+        if not df_insp.empty:
+            _i = df_insp.dropna(subset=["insp_dt"]).copy()
+            if not _i.empty:
+                _i["Month"] = _i["insp_dt"].dt.to_period("M").dt.to_timestamp()
+                trend_frames.append(_i.groupby("Month").size().rename("Inspections"))
+        if not df_qdocs.empty:
+            _d = df_qdocs.dropna(subset=["doc_dt"]).copy()
+            if not _d.empty:
+                _d["Month"] = _d["doc_dt"].dt.to_period("M").dt.to_timestamp()
+                trend_frames.append(_d.groupby("Month").size().rename("Documents"))
+        if trend_frames:
+            trend = pd.concat(trend_frames, axis=1, sort=True).fillna(0).sort_index().tail(12)
+            st.line_chart(trend, height=300)
+        else:
+            st.info("Not enough history for a trend yet.")
+
+    # ---------- 9. RECENT ACTIVITY FEED ----------
+    with st.expander("Recent activity feed (last 25 entries)"):
+        feed = []
+        if not df_insp.empty:
+            for _, r in df_insp.iterrows():
+                feed.append({
+                    "When": r["insp_dt"], "Job": r["job_no"],
+                    "What": f"Inspection — {r.get('gate_name', '')}",
+                    "Result": str(r.get("quality_status", "")),
+                    "By": str(r.get("quality_by", "") or ""),
+                })
+        if not df_qdocs.empty:
+            for _, r in df_qdocs.iterrows():
+                feed.append({
+                    "When": r["doc_dt"], "Job": r["job_no"],
+                    "What": f"Document — {r['doc_type']}",
+                    "Result": "Saved",
+                    "By": r["person"],
+                })
+        if feed:
+            df_feed = pd.DataFrame(feed).dropna(subset=["When"])
+            df_feed = df_feed.sort_values("When", ascending=False).head(25)
+            df_feed["When"] = df_feed["When"].dt.strftime("%d-%m-%Y %H:%M")
+            st.dataframe(df_feed, hide_index=True, use_container_width=True)
+        else:
+            st.info("Nothing recorded yet.")
+
 
 # ============================================================
 # TAB 0: PROCESS GATE
