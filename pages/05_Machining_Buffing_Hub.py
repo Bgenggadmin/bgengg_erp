@@ -55,7 +55,7 @@ def get_all_data():
         return [], [], [], [], pd.DataFrame(), []
 
 res_list, op_list, vendor_list, vh_list, df_main, master_jobs = get_all_data()
-tabs = st.tabs(["📝 Production Request", "👨‍💻 Incharge Entry Desk", "📊 Executive Analytics", "🛠️ Masters"])
+tabs = st.tabs(["📝 Production Request", "👨‍💻 Incharge Entry Desk", "🚨 Daily Command", "📊 Executive Analytics", "🛠️ Masters"])
 
 # --- TAB 1: REQUEST ---
 with tabs[0]:
@@ -175,8 +175,302 @@ with tabs[1]:
                     }).eq("id", job['id']).execute()
                     st.rerun()
 
-# --- TAB 3: EXECUTIVE ANALYTICS ---
+# =====================================================================
+# --- TAB 3: DAILY COMMAND CENTRE  (NEW) ---
+# Purpose: one screen the founder/incharge opens every morning.
+# Answers 3 questions fast: What moved yesterday? What is burning?
+# What falls due today/next 3 days?
+# =====================================================================
 with tabs[2]:
+
+    # ---------------- tiny helpers ----------------
+    def _clean(v):
+        """Return a safe display string. Treats None / NaN / the literal
+        text 'nan' (a legacy import artefact in delay_reason) as blank,
+        and neutralises < > so stray characters cannot break our HTML."""
+        if v is None:
+            return ""
+        s = str(v).strip()
+        if s.lower() in ("nan", "none", "nat"):
+            return ""
+        return s.replace("<", "&lt;").replace(">", "&gt;")
+
+    def kpi_tile(col, label, value, colour, sub=""):
+        """Draw one large coloured metric tile inside a given column.
+        NOTE: the HTML is emitted as ONE unbroken line on purpose.
+        Indented multi-line HTML gets treated by Streamlit as a markdown
+        code block and shows up as raw text instead of rendering."""
+        col.markdown(
+            f"<div style='background:{colour};border-radius:14px;padding:16px 8px;"
+            f"text-align:center;color:#fff;box-shadow:0 2px 6px rgba(0,0,0,.18)'>"
+            f"<div style='font-size:34px;font-weight:800;line-height:1'>{value}</div>"
+            f"<div style='font-size:13px;font-weight:700;letter-spacing:.3px;margin-top:4px'>{label}</div>"
+            f"<div style='font-size:11px;opacity:.85;margin-top:2px'>{sub}&nbsp;</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    def where_text(row):
+        """Human readable 'where is this job sitting right now'."""
+        if row.get("status") == "Outsourced":
+            return "🚚 " + (_clean(row.get("vendor_id")) or "Vendor not set")
+        mc = _clean(row.get("machine_id"))
+        op = _clean(row.get("operator_id"))
+        if mc or op:
+            return f"⚙️ {mc or '-'} · 👷 {op or '-'}"
+        return "⏳ Not allotted"
+
+    today = get_today_ist()
+    yday = today - datetime.timedelta(days=1)
+
+    st.subheader(f"🚨 {st.session_state.hub} — Daily Command Centre")
+    st.caption(f"Live as on {today.strftime('%d %b %Y')} (IST)  •  “Yesterday” = {yday.strftime('%d %b %Y')}")
+
+    if df_main.empty:
+        st.info("No production data yet for this hub.")
+    else:
+        d = df_main.copy()
+
+        # ---------- 1. Normalise every date column ----------
+        # required_date / request_date are plain DATE columns in Postgres.
+        d["required_date"] = pd.to_datetime(d["required_date"], errors="coerce").dt.date
+        # created_at is a timestamptz stored in UTC. Convert to IST FIRST,
+        # then take the calendar date - otherwise anything logged after
+        # 5:30 AM IST... (i.e. an evening entry) can land on the wrong day.
+        # format="ISO8601" is essential: Supabase returns timestamps with
+        # VARIABLE microsecond precision ("...:59.30701+00" vs "...:00+00").
+        # Without it pandas locks onto the format of the first row and
+        # silently turns every other row into NaT - rows just vanish.
+        d["created_day"] = (
+            pd.to_datetime(d["created_at"], format="ISO8601", errors="coerce", utc=True)
+            .dt.tz_convert(IST).dt.date
+        )
+
+        # These two only exist AFTER the schema patch. Code works either way.
+        has_fin = "finished_at" in d.columns
+        has_start = "started_at" in d.columns
+        if has_fin:
+            d["finished_day"] = (
+                pd.to_datetime(d["finished_at"], format="ISO8601", errors="coerce", utc=True)
+                .dt.tz_convert(IST).dt.date
+            )
+        if has_start:
+            d["started_day"] = (
+                pd.to_datetime(d["started_at"], format="ISO8601", errors="coerce", utc=True)
+                .dt.tz_convert(IST).dt.date
+            )
+
+        # ---------- 2. Split open vs finished, compute lateness ----------
+        open_df = d[d["status"] != "Finished"].copy()
+
+        def days_late(dt):
+            """Positive = overdue by N days. 0 = due today. Negative = time left."""
+            return (today - dt).days if pd.notna(dt) else None
+
+        open_df["days_late"] = open_df["required_date"].apply(days_late)
+        # age = how long this request has been alive in the system
+        open_df["age_days"] = open_df["created_day"].apply(
+            lambda x: (today - x).days if pd.notna(x) else None
+        )
+
+        overdue = open_df[open_df["days_late"].fillna(-999) > 0].sort_values(
+            "days_late", ascending=False
+        )
+        due_today = open_df[open_df["days_late"] == 0]
+        due_soon = open_df[open_df["days_late"].fillna(-999).between(-3, -1)]
+        no_target = open_df[open_df["required_date"].isna()]
+
+        # ---------- 3. KPI STRIP ----------
+        k = st.columns(6)
+        kpi_tile(k[0], "OVERDUE", len(overdue), "#B71C1C",
+                 f"worst {int(overdue['days_late'].max())}d" if len(overdue) else "clear")
+        kpi_tile(k[1], "DUE TODAY", len(due_today), "#E65100", "must close")
+        kpi_tile(k[2], "DUE IN 3 DAYS", len(due_soon), "#F9A825", "plan now")
+        kpi_tile(k[3], "OPEN JOBS", len(open_df), "#1565C0", "total live")
+
+        if has_fin:
+            fin_y = d[(d["status"] == "Finished") & (d["finished_day"] == yday)]
+            kpi_tile(k[4], "CLOSED YDAY", len(fin_y), "#2E7D32", "completed")
+        else:
+            fin_y = pd.DataFrame()
+            kpi_tile(k[4], "CLOSED YDAY", "—", "#616161", "needs patch")
+
+        new_y = d[d["created_day"] == yday]
+        kpi_tile(k[5], "RAISED YDAY", len(new_y), "#4527A0", "new requests")
+
+        st.divider()
+
+        # ---------- 4. RED ZONE : overdue jobs, worst first ----------
+        st.markdown("#### 🔴 RED ZONE — Overdue Work Orders")
+        if overdue.empty:
+            st.success("✅ Nothing overdue in this hub. All target dates are being met.")
+        else:
+            rows = []
+            for _, r in overdue.iterrows():
+                dl = int(r["days_late"])
+                # Colour band by severity so the eye jumps to the worst ones
+                if dl >= 7:
+                    bg, bar = "#7F0000", "#FF5252"
+                elif dl >= 3:
+                    bg, bar = "#C62828", "#FF8A80"
+                else:
+                    bg, bar = "#EF6C00", "#FFCC80"
+                reason = _clean(r.get("delay_reason"))
+                note = _clean(r.get("intervention_note"))
+                tail = f" · 📝 {reason or note}" if (reason or note) else ""
+                rows.append(
+                    f"<div style='background:{bg};color:#fff;border-left:8px solid {bar};"
+                    f"border-radius:8px;padding:8px 12px;margin-bottom:6px;"
+                    f"display:flex;align-items:center;gap:12px;flex-wrap:wrap'>"
+                    f"<div style='font-size:20px;font-weight:800;min-width:78px'>{dl}d LATE</div>"
+                    f"<div style='flex:1;min-width:240px'>"
+                    f"<b>{_clean(r.get('job_code'))}</b> — {_clean(r.get('part_name'))}"
+                    f"<div style='font-size:12px;opacity:.9'>Unit {_clean(r.get('unit_no'))} · "
+                    f"{_clean(r.get('activity_type'))} · {where_text(r)}{tail}</div></div>"
+                    f"<div style='font-size:12px;text-align:right;min-width:120px'>"
+                    f"Target {r['required_date'].strftime('%d %b')}<br>"
+                    f"Priority {_clean(r.get('priority'))}</div></div>"
+                )
+            st.markdown("".join(rows), unsafe_allow_html=True)
+
+            # Where is the pain concentrated? In-house vs vendor.
+            by_mode = overdue["status"].value_counts()
+            st.caption(
+                "Breakdown: "
+                + " · ".join([f"**{s}** {n}" for s, n in by_mode.items()])
+            )
+
+        st.divider()
+
+        # ---------- 5. TODAY + NEXT 3 DAYS ----------
+        c_a, c_b = st.columns(2)
+        with c_a:
+            st.markdown("##### 🟠 Falling Due TODAY")
+            if due_today.empty:
+                st.caption("Nothing due today.")
+            else:
+                st.dataframe(
+                    due_today[["job_code", "part_name", "unit_no", "activity_type", "status"]],
+                    hide_index=True, use_container_width=True,
+                )
+        with c_b:
+            st.markdown("##### 🟡 Due within 3 Days")
+            if due_soon.empty:
+                st.caption("Nothing due in the next 3 days.")
+            else:
+                nxt = due_soon.copy()
+                nxt["Days Left"] = -nxt["days_late"]
+                st.dataframe(
+                    nxt[["job_code", "part_name", "unit_no", "Days Left", "status"]]
+                    .sort_values("Days Left"),
+                    hide_index=True, use_container_width=True,
+                )
+
+        st.divider()
+
+        # ---------- 6. YESTERDAY'S MOVEMENT ----------
+        st.markdown("#### 🕐 Yesterday's Movement")
+        y1, y2 = st.columns(2)
+
+        with y1:
+            st.markdown("##### 🏁 Closed Yesterday")
+            if not has_fin:
+                st.warning(
+                    "Completion tracking is not switched on yet. The table stores a "
+                    "`status` of 'Finished' but never records **when** it was finished, "
+                    "so yesterday's output cannot be measured. Apply the schema patch "
+                    "(2 columns) to light this panel up."
+                )
+            elif fin_y.empty:
+                st.caption("No jobs were closed yesterday.")
+            else:
+                st.dataframe(
+                    fin_y[["job_code", "part_name", "unit_no", "activity_type", "operator_id"]],
+                    hide_index=True, use_container_width=True,
+                )
+                st.caption(f"👷 Operators involved: {fin_y['operator_id'].dropna().nunique()}")
+
+        with y2:
+            st.markdown("##### 🆕 Raised Yesterday")
+            if new_y.empty:
+                st.caption("No new requests were raised yesterday.")
+            else:
+                st.dataframe(
+                    new_y[["job_code", "part_name", "unit_no", "activity_type", "priority", "status"]],
+                    hide_index=True, use_container_width=True,
+                )
+
+        if has_start:
+            st.markdown("##### 🚀 Put on Machine / Dispatched Yesterday")
+            st_y = d[d.get("started_day") == yday]
+            if st_y.empty:
+                st.caption("Nothing was started yesterday.")
+            else:
+                st.dataframe(
+                    st_y[["job_code", "part_name", "unit_no", "status", "machine_id", "operator_id", "vendor_id"]],
+                    hide_index=True, use_container_width=True,
+                )
+
+        st.divider()
+
+        # ---------- 7. VENDOR WATCH — material lying outside the factory ----------
+        out_open = open_df[open_df["status"] == "Outsourced"]
+        if not out_open.empty:
+            st.markdown("#### 🚚 Vendor Watch — Material Outside the Factory")
+            v = out_open.copy()
+            v["Days Out"] = v["age_days"]
+            v["Late By"] = v["days_late"].apply(lambda x: max(x, 0) if x is not None else 0)
+            vend = (
+                v.groupby("vendor_id")
+                .agg(Jobs=("id", "count"), Overdue=("Late By", lambda s: int((s > 0).sum())),
+                     Worst=("Late By", "max"))
+                .reset_index().sort_values("Overdue", ascending=False)
+            )
+            st.dataframe(
+                vend, hide_index=True, use_container_width=True,
+                column_config={"vendor_id": "Vendor", "Worst": "Worst Delay (days)"},
+            )
+            st.caption("Chase the top row first — that vendor is holding the most delayed material.")
+
+        # ---------- 8. UNIT-WISE PRESSURE + housekeeping ----------
+        st.markdown("#### 🏢 Unit-wise Pressure")
+        u_cols = st.columns(3)
+        for i, u in enumerate([1, 2, 3]):
+            u_open = len(open_df[open_df["unit_no"] == u])
+            u_late = len(overdue[overdue["unit_no"] == u])
+            u_cols[i].metric(f"Unit {u}", f"{u_open} open",
+                             delta=f"{u_late} overdue" if u_late else "clear",
+                             delta_color="inverse" if u_late else "normal")
+
+        stale = open_df[open_df["age_days"].fillna(0) > 14]
+        if not stale.empty or not no_target.empty:
+            with st.expander(f"🧹 Housekeeping — {len(stale)} ageing (>14 days) · {len(no_target)} without target date"):
+                if not stale.empty:
+                    st.markdown("**Open more than 14 days — close them or state why**")
+                    st.dataframe(
+                        stale[["job_code", "part_name", "unit_no", "status", "age_days"]]
+                        .sort_values("age_days", ascending=False),
+                        hide_index=True, use_container_width=True,
+                    )
+                if not no_target.empty:
+                    st.markdown("**No target date set — these are invisible to every delay report**")
+                    st.dataframe(
+                        no_target[["job_code", "part_name", "unit_no", "status"]],
+                        hide_index=True, use_container_width=True,
+                    )
+
+        st.download_button(
+            "📥 Export Today's Action List (overdue + due today)",
+            pd.concat([overdue, due_today])[
+                ["job_code", "part_name", "unit_no", "activity_type", "status",
+                 "priority", "required_date", "days_late", "delay_reason"]
+            ].to_csv(index=False).encode("utf-8"),
+            f"BG_{st.session_state.hub.replace(' ', '_')}_ActionList_{today}.csv",
+            "text/csv",
+        )
+
+# --- TAB 4: EXECUTIVE ANALYTICS ---
+with tabs[3]:
     st.subheader(f"📊 {st.session_state.hub} Executive Dashboard")
     if not df_main.empty:
         df_ana = df_main.copy()
@@ -246,8 +540,8 @@ with tabs[2]:
         st.download_button("📥 Export CSV", df_ana[existing_cols].to_csv(index=False).encode('utf-8'), "BG_ERP_Report.csv", "text/csv")
     else: st.info("No data available.")
 
-# --- TAB 4: MASTERS ---
-with tabs[3]:
+# --- TAB 5: MASTERS ---
+with tabs[4]:
     m_opt = {MASTER_TABLE: "Machine/Station", OP_MASTER: "Operator", VN_MASTER: "Vendor"}
     if not IS_BUFFING: m_opt[VH_MASTER] = "Vehicle"
     sel = st.segmented_control("Registry", options=list(m_opt.keys()), format_func=lambda x: m_opt[x], default=MASTER_TABLE)
