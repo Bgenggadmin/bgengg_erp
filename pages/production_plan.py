@@ -435,6 +435,60 @@ def worker_day_board(logs: pd.DataFrame, day: date) -> pd.DataFrame:
     return grp.sort_values("Output/Hr", ascending=False).reset_index(drop=True)
 
 
+def work_detail_for_day(logs: pd.DataFrame, day: date, max_lines: int = 4) -> dict:
+    """
+    worker -> readable summary of what they actually worked on that day.
+
+    Grouped by job AND gate, because "8 hours on RTP_1522" tells a
+    supervisor much less than "6h welding, 2h buffing" when he is trying
+    to judge the work. Long lists are capped so one busy man cannot
+    stretch the whole row.
+    """
+    if logs.empty or not day:
+        return {}
+
+    d = logs.copy()
+    d["dt"] = pd.to_datetime(d["created_at"], utc=True, errors="coerce")
+    d = d.dropna(subset=["dt"])
+    if d.empty:
+        return {}
+
+    d = d[d["dt"].dt.tz_convert(IST).dt.date == day]
+    if d.empty:
+        return {}
+
+    d["Hours"]  = pd.to_numeric(d["Hours"],  errors="coerce").fillna(0)
+    d["Output"] = pd.to_numeric(d["Output"], errors="coerce").fillna(0)
+
+    grp = (d.groupby(["Worker", "Job_Code", "Activity", "Unit"], dropna=False)
+             .agg(Hours=("Hours", "sum"), Output=("Output", "sum"))
+             .reset_index()
+             .sort_values(["Worker", "Hours"], ascending=[True, False]))
+
+    out = {}
+    for worker, rows in grp.groupby("Worker"):
+        lines = []
+        for _, r in rows.iterrows():
+            # NaN is TRUTHY in Python, so `r["Activity"] or "—"` returns the
+            # NaN and prints as the string "nan". pd.isna is the only safe
+            # test here.
+            job  = "—" if pd.isna(r["Job_Code"]) else str(r["Job_Code"])
+            gate = "—" if pd.isna(r["Activity"]) else str(r["Activity"])
+            bit  = f"**{job}** · {gate} — {r['Hours']:.1f}h"
+            if r["Output"] > 0:
+                unit = "" if pd.isna(r["Unit"]) else f" {r['Unit']}"
+                bit += f", {r['Output']:.0f}{unit}"
+            lines.append(bit)
+
+        extra = len(lines) - max_lines
+        shown = lines[:max_lines]
+        if extra > 0:
+            shown.append(f"_+{extra} more_")
+        out[str(worker)] = "<br>".join(shown)
+
+    return out
+
+
 def rows_for_day(day_rows: pd.DataFrame, day: date) -> pd.DataFrame:
     """Rows from worker_day for one work_date."""
     if day_rows.empty or "work_date" not in day_rows.columns or not day:
@@ -1076,6 +1130,7 @@ def render_morning_roll_call():
 
     logged_hrs = (dict(zip(board["Worker"].astype(str), board["Hours"]))
                   if not board.empty else {})
+    work_detail = work_detail_for_day(df_logs, rate_day)
 
     # Anyone already saved, plus anyone who logged work, was obviously
     # present. Add the rest by hand.
@@ -1119,9 +1174,11 @@ def render_morning_roll_call():
         st.rerun()
 
     with st.form("roll_call_form"):
-        widths = [1.6, 1.1, 0.9, 0.9, 1.1, 1.3, 1.6]
+        # Work Done sits second, right beside the name: the supervisor
+        # reads what the man did before choosing a rating.
+        widths = [1.3, 2.4, 1.0, 0.8, 0.8, 1.0, 1.2, 1.3]
         for col, label in zip(st.columns(widths),
-                              ["Worker", "Attendance", "In", "Out",
+                              ["Worker", "Work Done", "Attendance", "In", "Out",
                                "Rating", "Rated by", "Remarks"]):
             col.markdown(f"**{label}**")
 
@@ -1134,30 +1191,45 @@ def render_morning_roll_call():
             lh = float(logged_hrs.get(w, 0) or 0)
             c[0].caption(f"logged {lh:.1f} hrs" if lh else "no work logged")
 
+            detail = work_detail.get(w)
+            if detail:
+                c[1].markdown(
+                    f"<div style='font-size:0.82rem;line-height:1.5'>{detail}</div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                # Not a blank cell: an empty space reads as "nothing entered",
+                # but this man genuinely had no work booked, which is the
+                # thing worth noticing before rating him.
+                c[1].markdown(
+                    "<div style='font-size:0.82rem;color:#c33'>no work booked</div>",
+                    unsafe_allow_html=True,
+                )
+
             a_prev = (pr.get("attendance_status") if pr is not None else None) or "Present"
-            att = c[1].selectbox("Attendance", ATT_STATUSES,
+            att = c[2].selectbox("Attendance", ATT_STATUSES,
                                  index=ATT_STATUSES.index(a_prev)
                                  if a_prev in ATT_STATUSES else 0,
                                  key=k("att", w), label_visibility="collapsed")
 
             pin_prev  = safe_time(pr.get("punch_in"))  if pr is not None else None
             pout_prev = safe_time(pr.get("punch_out")) if pr is not None else None
-            pin  = c[2].time_input("In",  value=pin_prev  or DEFAULT_PUNCH_IN,
+            pin  = c[3].time_input("In",  value=pin_prev  or DEFAULT_PUNCH_IN,
                                    key=k("in", w), label_visibility="collapsed")
-            pout = c[3].time_input("Out", value=pout_prev or DEFAULT_PUNCH_OUT,
+            pout = c[4].time_input("Out", value=pout_prev or DEFAULT_PUNCH_OUT,
                                    key=k("out", w), label_visibility="collapsed")
 
             rv = pr.get("rating") if pr is not None else None
             r_idx = r_opts.index(int(rv)) if pd.notna(rv) and int(rv) in r_opts else 0
-            rating = c[4].selectbox("Rating", r_opts, index=r_idx,
+            rating = c[5].selectbox("Rating", r_opts, index=r_idx,
                                     key=k("r", w), label_visibility="collapsed")
 
             sv = pr.get("supervisor") if pr is not None else None
             s_idx = sup_opts.index(sv) if (pd.notna(sv) and sv in sup_opts) else 0
-            sup = c[5].selectbox("Rated by", sup_opts, index=s_idx,
+            sup = c[6].selectbox("Rated by", sup_opts, index=s_idx,
                                  key=k("sup", w), label_visibility="collapsed")
 
-            note = c[6].text_input(
+            note = c[7].text_input(
                 "Remarks",
                 value=str((pr.get("remarks") if pr is not None else "") or ""),
                 key=k("n", w), label_visibility="collapsed", placeholder="optional")
