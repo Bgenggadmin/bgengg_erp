@@ -2332,8 +2332,13 @@ with dash_tab:
         if df_disp is None or df_disp.empty:
             st.success(empty_msg)
         else:
+            # Recent Streamlit versions VALIDATE height rather than treating
+            # None as "unset", so passing height=None raises
+            # StreamlitInvalidHeightError. Only send the argument when we
+            # actually have a number.
+            kw = {"height": height} if height else {}
             st.dataframe(df_disp, use_container_width=True,
-                         hide_index=True, height=height)
+                         hide_index=True, **kw)
 
     # ── FETCH ────────────────────────────────────────────────
     open_rows, err_open = dash_load_open()
