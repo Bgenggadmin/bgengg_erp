@@ -4,6 +4,7 @@ import pandas as pd
 from datetime import datetime, date, time, timedelta
 import pytz
 import re
+import html
 
 # ============================================================
 # 1. SETUP & CONSTANTS
@@ -233,6 +234,33 @@ def log_slot_hour(row):
     return ts.hour if ts is not None else None
 
 
+def board_card(title, count, lines, tone="bad", empty_msg="Nobody. Clean."):
+    """A coloured frame that carries the count in the header AND the names underneath.
+
+    The whole point of the board is that people read names, not totals. A number
+    like 'Short shifts: 2' changes nobody's behaviour; two names do."""
+    palette = {
+        "bad":  ("#dc3545", "#fff5f5"),
+        "warn": ("#e08600", "#fffaf0"),
+        "good": ("#1a7f37", "#f2fbf5"),
+    }
+    color, bg = palette.get(tone, palette["bad"])
+    if lines:
+        body = "".join(
+            f"<div style='padding:5px 0; border-bottom:1px solid rgba(0,0,0,0.06);'>{ln}</div>"
+            for ln in lines)
+    else:
+        body = f"<div style='padding:5px 0; color:#6c757d;'>{empty_msg}</div>"
+    return (
+        f"<div style='border-left:6px solid {color}; background:{bg}; border-radius:8px; "
+        f"padding:14px 18px; margin-bottom:14px;'>"
+        f"<div style='font-size:0.78rem; font-weight:700; letter-spacing:0.06em; "
+        f"text-transform:uppercase; color:{color};'>{title} &nbsp;·&nbsp; {count}</div>"
+        f"<div style='margin-top:10px; font-size:1rem; line-height:1.55; color:#212529;'>{body}</div>"
+        f"</div>"
+    )
+
+
 @st.cache_data(ttl=300)
 def get_day_board_data(day_str):
     """Every raw row needed to build one day's board, in five queries.
@@ -398,10 +426,9 @@ def render_daily_board():
         st.info("No staff found in master_staff.")
         return
 
-    # ── Headline numbers ──────────────────────────────────────────────
+    # ── Counts ────────────────────────────────────────────────────────
     present_n = int((df_board["Status"].isin(["🟢 Present", "⚠️ No punch-out"])).sum())
     absent_n  = int((df_board["Status"] == "🔴 Absent").sum())
-    leave_n   = int((df_board["Status"] == "🌴 On Leave").sum())
     late_n    = int((df_board["Late"] == "🔴 Yes").sum())
     nopo_n    = int((df_board["Status"] == "⚠️ No punch-out").sum())
     short_n   = int((df_board["Short shift"] == "🔴 Yes").sum())
@@ -410,94 +437,117 @@ def render_daily_board():
     total_missed = int(df_board["Slots missed"].sum())
     compliance   = (1 - total_missed / total_due) * 100 if total_due else 0
 
-    st.markdown(f"#### {board_day.strftime('%A, %d %b %Y')}")
+    esc = html.escape
 
-    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
-    k1.metric("Present",         present_n)
-    k2.metric("Absent",          absent_n,  delta_color="inverse")
-    k3.metric("On leave",        leave_n)
-    k4.metric("Late arrivals",   late_n,    delta_color="inverse",
-              help=f"Punched in after {LATE_THRESHOLD.strftime('%I:%M %p')}")
-    k5.metric("Missed punch-out", nopo_n,   delta_color="inverse")
-    k6.metric("Short shifts",    short_n,   delta_color="inverse",
-              help=f"Under {FULL_SHIFT_MINS // 60}h {FULL_SHIFT_MINS % 60}m")
-    k7.metric("Log compliance",  f"{compliance:.0f}%",
-              delta=f"{total_missed} gaps" if total_missed else "clean",
-              delta_color="inverse" if total_missed else "normal",
-              help="Hourly logs posted ÷ hourly logs due, across the whole team")
+    # ── One scoreboard number the whole team owns ─────────────────────
+    if compliance >= 95:
+        b_col, b_msg = "#1a7f37", "Excellent. The board is almost clean."
+    elif compliance >= 80:
+        b_col, b_msg = "#e08600", "Close, but hours are still going unlogged."
+    else:
+        b_col, b_msg = "#dc3545", "Too many hours went unlogged today."
 
-    st.divider()
+    st.markdown(
+        f"<div style='background:{b_col}; color:white; border-radius:12px; "
+        f"padding:18px 24px; margin-bottom:18px;'>"
+        f"<span style='font-size:2.6rem; font-weight:800; line-height:1;'>{compliance:.0f}%</span>"
+        f"<span style='font-size:1.05rem; margin-left:16px;'><b>Team log compliance</b> "
+        f"&nbsp;·&nbsp; {board_day.strftime('%A, %d %b %Y')}</span>"
+        f"<div style='margin-top:6px; opacity:0.92;'>{total_missed} of {total_due} due hours "
+        f"missing &nbsp;·&nbsp; {b_msg}</div></div>",
+        unsafe_allow_html=True
+    )
 
-    # ── Hour-by-hour grid ─────────────────────────────────────────────
-    st.markdown("##### 🕘 Hour-by-hour log coverage")
-    st.caption("✅ logged &nbsp;|&nbsp; 🔴 missed &nbsp;|&nbsp; · not expected (outside their shift)")
-    st.dataframe(pd.DataFrame(grid), use_container_width=True, hide_index=True)
+    # ── FRAME 1 — hourly logs missed, by name and by hour ─────────────
+    gap_lines = []
+    for _, r in (df_board[df_board["Slots missed"] > 0]
+                 .sort_values("Slots missed", ascending=False).iterrows()):
+        gap_lines.append(
+            f"<b>{esc(str(r['Employee']))}</b> &nbsp; "
+            f"<span style='color:#b02a37; font-weight:600;'>{esc(str(r['Missing hours']))}</span> &nbsp; "
+            f"<span style='color:#6c757d;'>({int(r['Slots missed'])} of {int(r['Slots due'])} hours)</span>"
+        )
+    st.markdown(
+        board_card("📝 Hourly logs missed", total_missed, gap_lines, "bad",
+                   "Every due hour was logged. Nobody on this list today."),
+        unsafe_allow_html=True
+    )
 
-    st.divider()
+    # ── FRAME 2 — the four attendance exceptions, names on show ───────
+    late_lines = [
+        f"<b>{esc(str(r['Employee']))}</b> &nbsp; "
+        f"<span style='color:#6c757d;'>in at {esc(str(r['In']))}</span>"
+        for _, r in df_board[df_board["Late"] == "🔴 Yes"].iterrows()
+    ]
+    nopo_lines = [
+        f"<b>{esc(str(r['Employee']))}</b> &nbsp; "
+        f"<span style='color:#6c757d;'>in at {esc(str(r['In']))}, never punched out</span>"
+        for _, r in df_board[df_board["Status"] == "⚠️ No punch-out"].iterrows()
+    ]
+    short_lines = []
+    for _, r in df_board[df_board["Short shift"] == "🔴 Yes"].iterrows():
+        gap_m = int(FULL_SHIFT_MINS - r["_shift_mins"])
+        short_lines.append(
+            f"<b>{esc(str(r['Employee']))}</b> &nbsp; "
+            f"<span style='color:#6c757d;'>{esc(str(r['Shift']))} — short by "
+            f"{gap_m // 60}h {gap_m % 60}m</span>"
+        )
+    absent_lines = [
+        f"<b>{esc(str(r['Employee']))}</b>"
+        for _, r in df_board[df_board["Status"] == "🔴 Absent"].iterrows()
+    ]
 
-    # ── Exception lists ───────────────────────────────────────────────
-    st.markdown("##### 🚩 Exceptions")
-    ex1, ex2, ex3, ex4, ex5 = st.tabs([
-        f"⏰ Late ({late_n})",
-        f"🚪 Missed punch-out ({nopo_n})",
-        f"⏳ Short shift ({short_n})",
-        f"🔴 Absent ({absent_n})",
-        f"📝 Log gaps ({total_missed})",
-    ])
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        st.markdown(board_card("⏰ Late arrivals", late_n, late_lines, "warn",
+                               "Everyone on time."), unsafe_allow_html=True)
+    with f2:
+        st.markdown(board_card("🚪 Missed punch-out", nopo_n, nopo_lines, "bad",
+                               "All shifts closed."), unsafe_allow_html=True)
+    with f3:
+        st.markdown(board_card("⏳ Short shifts", short_n, short_lines, "warn",
+                               "All full shifts."), unsafe_allow_html=True)
+    with f4:
+        st.markdown(board_card("🔴 Absent", absent_n, absent_lines, "bad",
+                               "Full attendance."), unsafe_allow_html=True)
 
-    with ex1:
-        d = df_board[df_board["Late"] == "🔴 Yes"][["Employee", "In", "Out", "Shift"]]
-        if not d.empty:
-            st.dataframe(d, use_container_width=True, hide_index=True)
-        else:
-            st.success("Everyone was on time.")
+    # ── FRAME 3 — the list worth being on ─────────────────────────────
+    clean = df_board[
+        (df_board["Status"] == "🟢 Present")
+        & (df_board["Late"] == "No")
+        & (df_board["Short shift"] == "No")
+        & (df_board["Slots missed"] == 0)
+        & (df_board["Slots due"] > 0)
+    ]
+    clean_lines = [
+        f"<b>{esc(str(r['Employee']))}</b> &nbsp; "
+        f"<span style='color:#6c757d;'>{esc(str(r['In']))} – {esc(str(r['Out']))} &nbsp;·&nbsp; "
+        f"all {int(r['Slots due'])} hours logged</span>"
+        for _, r in clean.iterrows()
+    ]
+    st.markdown(
+        board_card("⭐ Perfect day — on time, full shift, every hour logged",
+                   len(clean_lines), clean_lines, "good",
+                   "Nobody made this list today."),
+        unsafe_allow_html=True
+    )
 
-    with ex2:
-        d = df_board[df_board["Status"] == "⚠️ No punch-out"][["Employee", "In", "Logs", "Slots missed"]]
-        if not d.empty:
-            st.dataframe(d, use_container_width=True, hide_index=True)
-        else:
-            st.success("Every shift was closed properly.")
+    # ── Detail, tucked away so the frames above stay the headline ─────
+    with st.expander("🕘 Hour-by-hour grid and full board"):
+        st.caption("✅ logged &nbsp;|&nbsp; 🔴 missed &nbsp;|&nbsp; · outside their shift")
+        st.dataframe(pd.DataFrame(grid), use_container_width=True, hide_index=True)
 
-    with ex3:
-        d = df_board[df_board["Short shift"] == "🔴 Yes"][
-            ["Employee", "In", "Out", "Shift", "_shift_mins"]].copy()
-        if not d.empty:
-            # Show the shortfall, not just the duration — that is the number worth acting on.
-            d["Shortfall"] = (FULL_SHIFT_MINS - d["_shift_mins"]).apply(
-                lambda m: f"−{int(m) // 60}h {int(m) % 60}m")
-            st.dataframe(d.drop(columns=["_shift_mins"]),
-                         use_container_width=True, hide_index=True)
-        else:
-            st.success("No short shifts.")
+        if not df_gaps.empty:
+            st.caption("Which hour gets skipped most")
+            by_hour = df_gaps.groupby("Hour (24h)").size().reset_index(name="Gaps") \
+                             .sort_values("Gaps", ascending=False)
+            st.dataframe(by_hour, use_container_width=True, hide_index=True)
 
-    with ex4:
-        d = df_board[df_board["Status"] == "🔴 Absent"][["Employee", "Status"]]
-        if not d.empty:
-            st.dataframe(d, use_container_width=True, hide_index=True)
-        else:
-            st.success("Full attendance.")
+        st.caption("Full board")
+        st.dataframe(df_board.drop(columns=["_shift_mins"]),
+                     use_container_width=True, hide_index=True)
 
-    with ex5:
-        if df_gaps.empty:
-            st.success("Every due hourly log was posted.")
-        else:
-            g1, g2 = st.columns([1.4, 1])
-            with g1:
-                st.caption("Every missing slot, employee by hour")
-                st.dataframe(df_gaps, use_container_width=True, hide_index=True)
-            with g2:
-                st.caption("Which hour gets skipped most")
-                by_hour = df_gaps.groupby("Hour (24h)").size().reset_index(name="Gaps") \
-                                 .sort_values("Gaps", ascending=False)
-                st.dataframe(by_hour, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # ── Full board + export ───────────────────────────────────────────
-    st.markdown("##### 📊 Full board")
     df_show = df_board.drop(columns=["_shift_mins"])
-    st.dataframe(df_show, use_container_width=True, hide_index=True)
 
     dl1, dl2 = st.columns(2)
     dl1.download_button(
