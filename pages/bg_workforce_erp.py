@@ -3,6 +3,7 @@ from st_supabase_connection import SupabaseConnection
 import pandas as pd
 from datetime import datetime, date, time, timedelta
 import pytz
+import re
 
 # ============================================================
 # 1. SETUP & CONSTANTS
@@ -13,6 +14,13 @@ LOG_SLOTS = [f"{str(h).zfill(2)}:00" for h in range(24)]
 LEAVE_QUOTA = {"Casual Leave": 12}
 OVERHEAD_CODES = {'GENERAL', 'ACCOUNTS', 'PURCHASE', '5S', 'MAINTENANCE',
                   'CLIENT_CALLS', 'ESTIMATIONS', 'QUOTATIONS', 'PROD_PLAN'}
+
+# --- Daily Board settings -----------------------------------
+FULL_SHIFT_MINS        = 510          # 8h 30m — the same bar used at punch-out
+BOARD_START_HR         = 9            # first hour an hourly log is expected
+BOARD_END_HR           = 18           # last hour is BOARD_END_HR - 1 (i.e. 5PM slot)
+BOARD_MIN_PRESENCE_MINS = 30          # must be on site this long in an hour to owe a log
+EXCLUDE_FROM_BOARD     = {"Admin"}    # names in master_staff that aren't real employees
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -179,6 +187,82 @@ def get_admin_performance_data(sr, er):
     return t_att, t_work, t_plan
 
 # ============================================================
+# 3B. DAILY BOARD HELPERS
+# ============================================================
+def to_ist_dt(val):
+    """Any timestamp value -> tz-aware IST Timestamp, or None.
+    Naive values are assumed to already be IST (old rows written without a timezone)."""
+    if val is None:
+        return None
+    try:
+        dt = pd.to_datetime(val)
+        if pd.isna(dt):
+            return None
+        return IST.localize(dt) if dt.tzinfo is None else dt.tz_convert(IST)
+    except Exception:
+        return None
+
+
+def hour_label(h):
+    """9 -> '9AM', 13 -> '1PM', 0 -> '12AM'. Used for column headers and gap lists."""
+    return datetime(2000, 1, 1, h % 24).strftime("%I%p").lstrip("0")
+
+
+def overlap_minutes(a_start, a_end, b_start, b_end):
+    """Minutes that two datetime ranges overlap. Returns 0 if they don't touch.
+    Used to decide whether an employee was actually present during a given clock hour."""
+    if a_start is None or a_end is None:
+        return 0
+    lo, hi = max(a_start, b_start), min(a_end, b_end)
+    return max(0, (hi - lo).total_seconds() / 60)
+
+
+def log_slot_hour(row):
+    """Which clock hour a work_log belongs to.
+
+    Manual logs are stored as '[JOB] @HH:00: text' -> trust the explicit slot.
+    Mandatory-prompt logs are stored as '[JOB] text' with no slot, so we fall back
+    to the hour the row was actually created."""
+    desc = row.get("task_description") or ""
+    m = re.search(r"@(\d{1,2}):", desc)
+    if m:
+        h = int(m.group(1))
+        if 0 <= h <= 23:
+            return h
+    ts = to_ist_dt(row.get("created_at"))
+    return ts.hour if ts is not None else None
+
+
+@st.cache_data(ttl=300)
+def get_day_board_data(day_str):
+    """Every raw row needed to build one day's board, in five queries.
+    Cached for 5 minutes — past days rarely change, and the Refresh button clears it."""
+    nxt = (pd.to_datetime(day_str) + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def _q(fn):
+        # One table failing must not blank the whole board.
+        try:
+            return fn() or []
+        except Exception:
+            return []
+
+    att = _q(lambda: conn.table("attendance_logs").select("*")
+             .eq("work_date", day_str).execute().data)
+    wlg = _q(lambda: conn.table("work_logs").select("*")
+             .eq("work_date", day_str).execute().data)
+    pln = _q(lambda: conn.table("work_plans").select("*")
+             .eq("plan_date", day_str).execute().data)
+    # movement_logs has no work_date column — filter on the timestamp instead.
+    mov = _q(lambda: conn.table("movement_logs").select("*")
+             .gte("exit_time", f"{day_str}T00:00:00+05:30")
+             .lt("exit_time", f"{nxt}T00:00:00+05:30").execute().data)
+    # Approved leave spanning this day -> employee is excused, not absent.
+    lve = _q(lambda: conn.table("leave_requests").select("*")
+             .eq("status", "Approved")
+             .lte("start_date", day_str).gte("end_date", day_str).execute().data)
+    return att, wlg, pln, mov, lve
+
+# ============================================================
 # 4. AUTH GUARD HELPER
 # ============================================================
 def require_auth():
@@ -194,7 +278,8 @@ tabs = st.tabs([
     "📜 My Past Data",
     "📝 Leave Application",
     "📊 My Balance",
-    "🔐 HR Admin Panel"
+    "🔐 HR Admin Panel",
+    "📋 Daily Board"
 ])
 
 # ============================================================
@@ -1506,3 +1591,245 @@ with tabs[4]:
                     )
                 else:
                     st.warning("Please enter a new key.")
+
+
+# ============================================================
+# TAB 5: DAILY BOARD — THE WHOLE TEAM, ONE DAY
+# ============================================================
+with tabs[5]:
+    require_auth()
+
+    st.subheader("📋 Daily Board — the whole team, one day")
+    st.caption("Opens on yesterday. Every logged-in staff member sees the same board.")
+
+    bc1, bc2, bc3, bc4 = st.columns([1.8, 1, 1, 1])
+    board_day = bc1.date_input("Day", value=date.today() - timedelta(days=1), key="board_day")
+    start_hr = int(bc2.number_input("Log window from", 0, 23, BOARD_START_HR, key="board_start_hr"))
+    end_hr   = int(bc3.number_input("Log window to",   1, 24, BOARD_END_HR,   key="board_end_hr"))
+    bc4.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+    if bc4.button("🔄 Refresh", use_container_width=True, key="board_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+
+    if end_hr <= start_hr:
+        st.error("The 'to' hour must be later than the 'from' hour.")
+        st.stop()
+
+    day_str = str(board_day)
+    att_rows, log_rows, plan_rows, move_rows, leave_rows = get_day_board_data(day_str)
+
+    roster = [s for s in get_staff_list() if s not in EXCLUDE_FROM_BOARD]
+    expected_window = list(range(start_hr, end_hr))
+
+    # ── Index the raw rows by employee, once ──────────────────────────
+    att_by_emp = {}
+    for r in att_rows:
+        att_by_emp.setdefault(r.get("employee_name"), r)   # first row per employee wins
+
+    logs_by_emp, plans_by_emp, moves_by_emp = {}, {}, {}
+    for r in log_rows:
+        logs_by_emp.setdefault(r.get("employee_name"), []).append(r)
+    for r in plan_rows:
+        plans_by_emp.setdefault(r.get("employee_name"), []).append(r)
+    for r in move_rows:
+        moves_by_emp.setdefault(r.get("employee_name"), []).append(r)
+
+    on_leave = {r.get("employee_name") for r in leave_rows}
+
+    # ── Build one row per staff member ────────────────────────────────
+    board, grid, gaps = [], [], []
+    day_base = IST.localize(datetime.combine(board_day, time(0, 0)))
+    window_end_dt = day_base + timedelta(hours=end_hr)
+
+    for emp in roster:
+        att   = att_by_emp.get(emp)
+        p_in  = to_ist_dt(att.get("punch_in"))  if att else None
+        p_out = to_ist_dt(att.get("punch_out")) if att else None
+
+        if att is None:
+            status = "🌴 On Leave" if emp in on_leave else "🔴 Absent"
+        elif p_out is None:
+            status = "⚠️ No punch-out"
+        else:
+            status = "🟢 Present"
+
+        late = bool(p_in and p_in.time() > LATE_THRESHOLD)
+        shift_mins = int((p_out - p_in).total_seconds() // 60) if (p_in and p_out) else None
+        short = bool(shift_mins is not None and shift_mins < FULL_SHIFT_MINS)
+
+        # An open shift is treated as running to the end of the log window,
+        # so a missed punch-out still shows its hourly gaps instead of hiding them.
+        shift_start = p_in
+        shift_end   = p_out if p_out else (window_end_dt if p_in else None)
+
+        # Which hours did this person actually post a log for?
+        covered = set()
+        for lr in logs_by_emp.get(emp, []):
+            h = log_slot_hour(lr)
+            if h is not None:
+                covered.add(h)
+
+        # An hour is "due" only if the person was on site for at least
+        # BOARD_MIN_PRESENCE_MINS of it. Nobody is marked down for hours
+        # before they arrived or after they left.
+        due_hours, missed_hours = [], []
+        for h in expected_window:
+            h_start = day_base + timedelta(hours=h)
+            h_end   = h_start + timedelta(hours=1)
+            if overlap_minutes(shift_start, shift_end, h_start, h_end) >= BOARD_MIN_PRESENCE_MINS:
+                due_hours.append(h)
+                if h not in covered:
+                    missed_hours.append(h)
+                    gaps.append({
+                        "Employee": emp,
+                        "Missed hour": hour_label(h),
+                        "Hour (24h)": f"{h:02d}:00",
+                    })
+
+        pl      = plans_by_emp.get(emp, [])
+        p_total = len(pl)
+        p_done  = sum(1 for x in pl if x.get("status") == "Completed")
+        mv      = moves_by_emp.get(emp, [])
+
+        board.append({
+            "Employee":      emp,
+            "Status":        status,
+            "In":            p_in.strftime("%I:%M %p")  if p_in  else "—",
+            "Out":           p_out.strftime("%I:%M %p") if p_out else ("Still open" if p_in else "—"),
+            "Shift":         f"{shift_mins // 60}h {shift_mins % 60}m" if shift_mins is not None else "—",
+            "Late":          "🔴 Yes" if late else ("No" if p_in else "—"),
+            "Short shift":   "🔴 Yes" if short else ("No" if shift_mins is not None else "—"),
+            "Logs":          len(logs_by_emp.get(emp, [])),
+            "Slots due":     len(due_hours),
+            "Slots missed":  len(missed_hours),
+            "Missing hours": ", ".join(hour_label(h) for h in missed_hours) or "—",
+            "Plan done":     f"{p_done}/{p_total}" if p_total else "—",
+            "Movements":     len(mv),
+            "_shift_mins":   shift_mins,   # numeric helper, dropped before display
+        })
+
+        row = {"Employee": emp}
+        for h in expected_window:
+            if h in missed_hours:
+                row[hour_label(h)] = "🔴"
+            elif h in due_hours:
+                row[hour_label(h)] = "✅"
+            else:
+                row[hour_label(h)] = "·"
+        grid.append(row)
+
+    df_board = pd.DataFrame(board)
+    df_gaps  = pd.DataFrame(gaps)
+
+    if df_board.empty:
+        st.info("No staff found in master_staff.")
+        st.stop()
+
+    # ── Headline numbers ──────────────────────────────────────────────
+    present_n = int((df_board["Status"].isin(["🟢 Present", "⚠️ No punch-out"])).sum())
+    absent_n  = int((df_board["Status"] == "🔴 Absent").sum())
+    leave_n   = int((df_board["Status"] == "🌴 On Leave").sum())
+    late_n    = int((df_board["Late"] == "🔴 Yes").sum())
+    nopo_n    = int((df_board["Status"] == "⚠️ No punch-out").sum())
+    short_n   = int((df_board["Short shift"] == "🔴 Yes").sum())
+
+    total_due    = int(df_board["Slots due"].sum())
+    total_missed = int(df_board["Slots missed"].sum())
+    compliance   = (1 - total_missed / total_due) * 100 if total_due else 0
+
+    st.markdown(f"#### {board_day.strftime('%A, %d %b %Y')}")
+
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+    k1.metric("Present",         present_n)
+    k2.metric("Absent",          absent_n,  delta_color="inverse")
+    k3.metric("On leave",        leave_n)
+    k4.metric("Late arrivals",   late_n,    delta_color="inverse",
+              help=f"Punched in after {LATE_THRESHOLD.strftime('%I:%M %p')}")
+    k5.metric("Missed punch-out", nopo_n,   delta_color="inverse")
+    k6.metric("Short shifts",    short_n,   delta_color="inverse",
+              help=f"Under {FULL_SHIFT_MINS // 60}h {FULL_SHIFT_MINS % 60}m")
+    k7.metric("Log compliance",  f"{compliance:.0f}%",
+              delta=f"{total_missed} gaps" if total_missed else "clean",
+              delta_color="inverse" if total_missed else "normal",
+              help="Hourly logs posted ÷ hourly logs due, across the whole team")
+
+    st.divider()
+
+    # ── Hour-by-hour grid ─────────────────────────────────────────────
+    st.markdown("##### 🕘 Hour-by-hour log coverage")
+    st.caption("✅ logged &nbsp;|&nbsp; 🔴 missed &nbsp;|&nbsp; · not expected (outside their shift)")
+    st.dataframe(pd.DataFrame(grid), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Exception lists ───────────────────────────────────────────────
+    st.markdown("##### 🚩 Exceptions")
+    ex1, ex2, ex3, ex4, ex5 = st.tabs([
+        f"⏰ Late ({late_n})",
+        f"🚪 Missed punch-out ({nopo_n})",
+        f"⏳ Short shift ({short_n})",
+        f"🔴 Absent ({absent_n})",
+        f"📝 Log gaps ({total_missed})",
+    ])
+
+    with ex1:
+        d = df_board[df_board["Late"] == "🔴 Yes"][["Employee", "In", "Out", "Shift"]]
+        st.dataframe(d, use_container_width=True, hide_index=True) if not d.empty \
+            else st.success("Everyone was on time.")
+
+    with ex2:
+        d = df_board[df_board["Status"] == "⚠️ No punch-out"][["Employee", "In", "Logs", "Slots missed"]]
+        st.dataframe(d, use_container_width=True, hide_index=True) if not d.empty \
+            else st.success("Every shift was closed properly.")
+
+    with ex3:
+        d = df_board[df_board["Short shift"] == "🔴 Yes"][
+            ["Employee", "In", "Out", "Shift", "_shift_mins"]].copy()
+        if not d.empty:
+            # Show the shortfall, not just the duration — that is the number worth acting on.
+            d["Shortfall"] = (FULL_SHIFT_MINS - d["_shift_mins"]).apply(
+                lambda m: f"−{int(m) // 60}h {int(m) % 60}m")
+            st.dataframe(d.drop(columns=["_shift_mins"]),
+                         use_container_width=True, hide_index=True)
+        else:
+            st.success("No short shifts.")
+
+    with ex4:
+        d = df_board[df_board["Status"] == "🔴 Absent"][["Employee", "Status"]]
+        st.dataframe(d, use_container_width=True, hide_index=True) if not d.empty \
+            else st.success("Full attendance.")
+
+    with ex5:
+        if df_gaps.empty:
+            st.success("Every due hourly log was posted.")
+        else:
+            g1, g2 = st.columns([1.4, 1])
+            with g1:
+                st.caption("Every missing slot, employee by hour")
+                st.dataframe(df_gaps, use_container_width=True, hide_index=True)
+            with g2:
+                st.caption("Which hour gets skipped most")
+                by_hour = df_gaps.groupby("Hour (24h)").size().reset_index(name="Gaps") \
+                                 .sort_values("Gaps", ascending=False)
+                st.dataframe(by_hour, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Full board + export ───────────────────────────────────────────
+    st.markdown("##### 📊 Full board")
+    df_show = df_board.drop(columns=["_shift_mins"])
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+    dl1, dl2 = st.columns(2)
+    dl1.download_button(
+        "📥 Download board (CSV)",
+        data=convert_df(df_show),
+        file_name=f"BG_Daily_Board_{day_str}.csv",
+        mime="text/csv", use_container_width=True,
+    )
+    dl2.download_button(
+        "📥 Download log gaps (CSV)",
+        data=convert_df(df_gaps if not df_gaps.empty else pd.DataFrame(columns=["Employee", "Missed hour"])),
+        file_name=f"BG_Log_Gaps_{day_str}.csv",
+        mime="text/csv", use_container_width=True,
+    )
