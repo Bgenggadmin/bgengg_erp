@@ -752,6 +752,8 @@ main_tabs = _all_tabs[1:]
 # tidy DataFrame. That single frame then answers every dashboard
 # question (how many docs, which jobs, which inspector, when).
 
+import re  # used to strip the timestamp prefix off Process Gate remarks
+
 DOC_ORDER = [
     "Quality Checklist", "QAP", "Material Flow Chart", "Nozzle Flow Chart",
     "Dimensional Report", "Hydro Test", "Calibration", "Final Inspection",
@@ -764,6 +766,7 @@ DOC_SHORT = {
     "Guarantee Certificate": "Guar", "Trial Run": "Trial", "Customer Feedback": "Fdbk",
 }
 
+
 def _to_ist_naive(series):
     """
     Supabase returns timestamps as ISO strings with a timezone offset.
@@ -775,6 +778,26 @@ def _to_ist_naive(series):
         return out.dt.tz_convert(IST).dt.tz_localize(None)
     except Exception:
         return out
+
+
+def _clean_note(txt):
+    """
+    Process Gate saves remarks as "04/09 10:30: <what the inspector typed>".
+    If the inspector typed nothing, the row STILL holds that stamp, so a plain
+    "is it empty?" test would wrongly report that a remark exists.
+    Strip the stamp first, then judge.
+    """
+    s = str(txt or "").strip()
+    if not s or s.lower() in ("none", "nan"):
+        return ""
+    m = re.match(r"^\d{1,2}/\d{1,2}\s+\d{1,2}:\d{2}\s*:\s*", s)
+    return s[m.end():].strip() if m else s
+
+
+def _blank(val):
+    """True when a name / text field is effectively empty."""
+    s = str(val or "").strip()
+    return s == "" or s.lower() in ("none", "nan", "-- select --")
 
 
 def _bar_table(counts, label, value_label="Count", height=None):
@@ -887,7 +910,190 @@ with dash_tab:
     df_qdocs, df_qcal, df_qcerts = get_quality_doc_index()
     today_ts = pd.Timestamp(get_now_ist().replace(tzinfo=None))
 
-    # ---------- 1. PERIOD FILTER ----------
+    # ---------- 1. PREPARE THE TWO CORE FRAMES ----------
+    # Process Gate inspections are stored back onto job_planning rows.
+    insp_cols = ["job_no", "gate_name", "quality_status", "quality_by",
+                 "quality_notes", "quality_updated_at", "quality_photo_url"]
+    if not df_plan.empty and "quality_status" in df_plan.columns:
+        _tmp = df_plan.copy()
+        for c in insp_cols:
+            if c not in _tmp.columns:
+                _tmp[c] = None
+        df_insp = _tmp[
+            _tmp["quality_status"].notna()
+            & (_tmp["quality_status"].astype(str).str.strip().str.lower()
+               .isin(["", "none", "nan"]) == False)
+        ][insp_cols].copy()
+        df_insp["job_no"]  = df_insp["job_no"].astype(str).str.strip().str.upper()
+        df_insp["insp_dt"] = _to_ist_naive(df_insp["quality_updated_at"])
+    else:
+        df_insp = pd.DataFrame(columns=insp_cols + ["insp_dt"])
+
+    if not df_qdocs.empty:
+        df_qdocs["doc_dt"] = _to_ist_naive(df_qdocs["created_at"])
+    else:
+        df_qdocs["doc_dt"] = pd.Series(dtype="datetime64[ns]")
+
+    def _on_date(dt_series, day):
+        """Rows whose timestamp falls on one specific calendar day (IST)."""
+        if dt_series is None or len(dt_series) == 0:
+            return pd.Series(dtype=bool)
+        return dt_series.notna() & (dt_series.dt.date == day)
+
+    # ============================================================
+    # 2. YESTERDAY — DAILY REVIEW BAND
+    #    Always shown at the top. Deliberately NOT affected by the
+    #    period filter below, so it cannot be hidden by accident.
+    # ============================================================
+    y_date = (today_ts - pd.Timedelta(days=1)).date()   # calendar yesterday, IST
+    b_date = (today_ts - pd.Timedelta(days=2)).date()   # day before, for comparison
+    t_date = today_ts.date()
+
+    y_insp = df_insp[_on_date(df_insp["insp_dt"], y_date)]  if not df_insp.empty  else df_insp
+    y_docs = df_qdocs[_on_date(df_qdocs["doc_dt"], y_date)] if not df_qdocs.empty else df_qdocs
+    b_insp = df_insp[_on_date(df_insp["insp_dt"], b_date)]  if not df_insp.empty  else df_insp
+    b_docs = df_qdocs[_on_date(df_qdocs["doc_dt"], b_date)] if not df_qdocs.empty else df_qdocs
+    t_insp = df_insp[_on_date(df_insp["insp_dt"], t_date)]  if not df_insp.empty  else df_insp
+    t_docs = df_qdocs[_on_date(df_qdocs["doc_dt"], t_date)] if not df_qdocs.empty else df_qdocs
+
+    # --- build the "needs correction" list from yesterday's entries ---
+    fixes = []
+    for _, r in y_insp.iterrows():
+        probs  = []
+        photos = r.get("quality_photo_url")
+        n_ph   = len(photos) if isinstance(photos, list) else 0
+        result = str(r.get("quality_status") or "").strip()
+        if _blank(r.get("quality_by")):
+            probs.append("inspector name missing")
+        if n_ph == 0:
+            probs.append("no evidence photo uploaded")
+        if not _clean_note(r.get("quality_notes")):
+            probs.append("no observations written")
+        if result.upper() in ("REWORK", "REJECT"):
+            probs.append(f"{result} — re-inspection not yet recorded")
+        if df_anchor.empty or get_proj(df_anchor, r["job_no"]) is None:
+            probs.append("job no. not found in Anchor projects")
+        if probs:
+            fixes.append({
+                "Job": r["job_no"],
+                "Entry": f"Inspection — {r.get('gate_name', '')}",
+                "Correct in tab": "Process Gate",
+                "What to fix": "; ".join(probs),
+            })
+
+    for _, r in y_docs.iterrows():
+        probs = []
+        if _blank(r.get("person")):
+            probs.append("no inspector / verifier name saved")
+        if df_anchor.empty or get_proj(df_anchor, r["job_no"]) is None:
+            probs.append("job no. not found in Anchor projects")
+        if probs:
+            fixes.append({
+                "Job": r["job_no"],
+                "Entry": f"Document — {r['doc_type']}",
+                "Correct in tab": r["doc_type"],
+                "What to fix": "; ".join(probs),
+            })
+
+    n_y_insp = len(y_insp)
+    n_y_docs = len(y_docs)
+    n_y_all  = n_y_insp + n_y_docs
+    n_fix    = len(fixes)
+
+    # --- the visible band -------------------------------------------
+    y_label = pd.Timestamp(y_date).strftime("%A, %d %b %Y")
+    if n_y_all == 0:
+        band_bg, band_tag = "#8a1c1c", "NO ACTIVITY RECORDED"
+    elif n_fix:
+        band_bg, band_tag = "#9a6400", f"{n_fix} ENTRY(S) NEED CORRECTION"
+    else:
+        band_bg, band_tag = "#14622f", "ALL ENTRIES COMPLETE"
+
+    st.markdown(f"""
+    <div style="background:{band_bg};color:#ffffff;padding:0.7rem 1rem;
+                border-radius:8px;margin-bottom:0.7rem;
+                display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-size:19px;font-weight:700;letter-spacing:0.3px;">
+        YESTERDAY &nbsp;&middot;&nbsp; {y_label}
+      </span>
+      <span style="font-size:13px;font-weight:600;background:rgba(255,255,255,0.18);
+                   padding:3px 10px;border-radius:12px;">{band_tag}</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    y1, y2, y3, y4, y5 = st.columns(5)
+    y1.metric("Inspections", n_y_insp, delta=n_y_insp - len(b_insp))
+    y2.metric("Documents",   n_y_docs, delta=n_y_docs - len(b_docs))
+    y_jobs = (set(y_insp["job_no"]) | set(y_docs["job_no"])) if n_y_all else set()
+    y3.metric("Jobs attended", len(y_jobs))
+    y_photos = int(y_insp["quality_photo_url"].apply(
+        lambda x: len(x) if isinstance(x, list) else 0).sum()) if n_y_insp else 0
+    y4.metric("Photos", y_photos)
+    y5.metric("To correct", n_fix,
+              delta=None if n_fix == 0 else "action needed", delta_color="inverse")
+    st.caption("Deltas compare yesterday against the day before. "
+               f"Today so far: {len(t_insp)} inspection(s), {len(t_docs)} document(s).")
+
+    if n_y_all == 0:
+        stamps = []
+        if not df_insp.empty:
+            stamps.append(df_insp["insp_dt"].max())
+        if not df_qdocs.empty:
+            stamps.append(df_qdocs["doc_dt"].max())
+        stamps = [s for s in stamps if pd.notna(s)]
+        if stamps:
+            st.warning(f"Nothing was logged on {y_label}. "
+                       f"The last entry of any kind was on "
+                       f"{max(stamps).strftime('%A, %d %b %Y at %H:%M')}.")
+        else:
+            st.warning(f"Nothing was logged on {y_label}, and no quality "
+                       "records exist yet at all.")
+    else:
+        yl, yr = st.columns([1, 1])
+
+        with yl:
+            st.markdown("**What was done yesterday**")
+            done = []
+            for _, r in y_insp.iterrows():
+                done.append({
+                    "Time":   r["insp_dt"].strftime("%H:%M"),
+                    "Job":    r["job_no"],
+                    "Entry":  f"Inspection — {r.get('gate_name', '')}",
+                    "Result": str(r.get("quality_status") or ""),
+                    "By":     "" if _blank(r.get("quality_by")) else str(r["quality_by"]),
+                })
+            for _, r in y_docs.iterrows():
+                done.append({
+                    "Time":   r["doc_dt"].strftime("%H:%M"),
+                    "Job":    r["job_no"],
+                    "Entry":  f"Document — {r['doc_type']}",
+                    "Result": "Saved",
+                    "By":     "" if _blank(r.get("person")) else str(r["person"]),
+                })
+            st.dataframe(pd.DataFrame(done).sort_values("Time"),
+                         hide_index=True, use_container_width=True, height=260)
+
+        with yr:
+            if fixes:
+                st.markdown("**Needs correction — open the tab named and re-save**")
+                st.dataframe(
+                    pd.DataFrame(fixes), hide_index=True,
+                    use_container_width=True, height=260,
+                    column_config={
+                        "What to fix": st.column_config.TextColumn(
+                            "What to fix", width="large"),
+                    },
+                )
+            else:
+                st.markdown("**Needs correction**")
+                st.success("Every entry made yesterday is complete — inspector named, "
+                           "photo attached, observations written, job number valid.")
+
+    st.divider()
+
+    # ============================================================
+    # 3. PERIOD FILTER (drives everything BELOW this line only)
+    # ============================================================
     dc1, dc2 = st.columns([3, 1])
     period = dc1.radio(
         "Reporting period",
@@ -916,34 +1122,10 @@ with dash_tab:
             return pd.Series(True, index=dt_series.index)
         return dt_series.notna() & (dt_series >= cutoff)
 
-    # ---------- 2. PREPARE INSPECTION DATA ----------
-    # Process Gate inspections are stored back onto job_planning rows.
-    insp_cols = ["job_no", "gate_name", "quality_status", "quality_by",
-                 "quality_notes", "quality_updated_at", "quality_photo_url"]
-    if not df_plan.empty and "quality_status" in df_plan.columns:
-        _tmp = df_plan.copy()
-        for c in insp_cols:
-            if c not in _tmp.columns:
-                _tmp[c] = None
-        df_insp = _tmp[
-            _tmp["quality_status"].notna()
-            & (_tmp["quality_status"].astype(str).str.strip().str.lower()
-               .isin(["", "none", "nan"]) == False)
-        ][insp_cols].copy()
-        df_insp["job_no"]  = df_insp["job_no"].astype(str).str.strip().str.upper()
-        df_insp["insp_dt"] = _to_ist_naive(df_insp["quality_updated_at"])
-    else:
-        df_insp = pd.DataFrame(columns=insp_cols + ["insp_dt"])
-
-    if not df_qdocs.empty:
-        df_qdocs["doc_dt"] = _to_ist_naive(df_qdocs["created_at"])
-    else:
-        df_qdocs["doc_dt"] = pd.Series(dtype="datetime64[ns]")
-
     insp_p = df_insp[_in_period(df_insp["insp_dt"])] if not df_insp.empty else df_insp
     docs_p = df_qdocs[_in_period(df_qdocs["doc_dt"])] if not df_qdocs.empty else df_qdocs
 
-    # ---------- 3. HEADLINE METRICS ----------
+    # ---------- 4. HEADLINE METRICS ----------
     status_up = (insp_p["quality_status"].astype(str).str.upper()
                  if not insp_p.empty else pd.Series(dtype=str))
     n_pass = int(status_up.str.contains("PASS|ACCEPT|OK", na=False).sum()) if not insp_p.empty else 0
@@ -974,7 +1156,7 @@ with dash_tab:
 
     st.divider()
 
-    # ---------- 4. ATTENTION REQUIRED ----------
+    # ---------- 5. ATTENTION REQUIRED ----------
     st.markdown("##### Attention required")
     a1, a2, a3, a4 = st.columns(4)
 
@@ -1032,7 +1214,7 @@ with dash_tab:
 
     st.divider()
 
-    # ---------- 5. WHAT DOCUMENTS WERE FILLED ----------
+    # ---------- 6. WHAT DOCUMENTS WERE FILLED ----------
     left, right = st.columns([1, 1])
 
     with left:
@@ -1071,7 +1253,7 @@ with dash_tab:
 
     st.divider()
 
-    # ---------- 6. JOBS ATTENDED — READINESS TABLE ----------
+    # ---------- 7. JOBS ATTENDED — READINESS TABLE ----------
     st.markdown("##### Jobs attended — quality readiness")
     st.caption("Every job with any quality activity. 'Docs' counts the 11 quality "
                "documents; 'Gates' counts Process Gate inspections against planned stages.")
@@ -1124,6 +1306,7 @@ with dash_tab:
             "Docs":       docs_done,
             "Doc %":      docs_done / len(DOC_ORDER),
             "Open NC":    fails,
+            "Idle days":  (today_ts - last_act).days if pd.notna(last_act) else None,
             "Last activity": last_act,
         })
 
@@ -1143,6 +1326,7 @@ with dash_tab:
                 "Docs": st.column_config.NumberColumn(
                     f"Docs (of {len(DOC_ORDER)})", format="%d"),
                 "Open NC": st.column_config.NumberColumn("Open NC", format="%d"),
+                "Idle days": st.column_config.NumberColumn("Idle days", format="%d"),
                 "Last activity": st.column_config.DatetimeColumn(
                     "Last activity", format="DD-MM-YYYY"),
             },
@@ -1152,7 +1336,7 @@ with dash_tab:
 
     st.divider()
 
-    # ---------- 7. DOCUMENT COMPLETENESS MATRIX ----------
+    # ---------- 8. DOCUMENT COMPLETENESS MATRIX ----------
     st.markdown("##### Which documents are filled, job by job")
     st.caption("Ticked = at least one record saved. "
                "Chk=Checklist, MFC=Material Flow, NFC=Nozzle Flow, Dim=Dimensional, "
@@ -1175,7 +1359,7 @@ with dash_tab:
 
     st.divider()
 
-    # ---------- 8. WHO IS DOING THE WORK ----------
+    # ---------- 9. WHO IS DOING THE WORK ----------
     w1, w2 = st.columns([1, 1])
 
     with w1:
@@ -1185,7 +1369,7 @@ with dash_tab:
             names += insp_p["quality_by"].dropna().astype(str).tolist()
         if not docs_p.empty:
             names += docs_p["person"].dropna().astype(str).tolist()
-        names = [n.strip() for n in names if n.strip() and n.strip().lower() not in ("nan", "none")]
+        names = [n.strip() for n in names if not _blank(n)]
         if names:
             _bar_table(pd.Series(names).value_counts().head(12),
                        "Staff", "Entries", height=330)
@@ -1211,7 +1395,7 @@ with dash_tab:
         else:
             st.info("Not enough history for a trend yet.")
 
-    # ---------- 9. RECENT ACTIVITY FEED ----------
+    # ---------- 10. RECENT ACTIVITY FEED ----------
     with st.expander("Recent activity feed (last 25 entries)"):
         feed = []
         if not df_insp.empty:
