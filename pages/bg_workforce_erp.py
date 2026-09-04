@@ -21,7 +21,17 @@ FULL_SHIFT_MINS        = 510          # 8h 30m — the same bar used at punch-ou
 BOARD_START_HR         = 9            # first hour an hourly log is expected
 BOARD_END_HR           = 18           # last hour is BOARD_END_HR - 1 (i.e. 5PM slot)
 BOARD_MIN_PRESENCE_MINS = 30          # must be on site this long in an hour to owe a log
-EXCLUDE_FROM_BOARD     = {"Admin"}    # names in master_staff that aren't real employees
+# Who never appears on the board. Two ways to exclude, because master_staff
+# has no role column — only names:
+#   EXCLUDE_FROM_BOARD  -> exact name match, case-insensitive
+#   EXCLUDE_NAME_WORDS  -> hides a name if any WHOLE WORD in it is one of these,
+#                          so "Driver", "Ramesh (Driver)" and "Test User" drop out
+#                          while a genuine name like "Testeswari" is left alone.
+#                          Whole-word, not prefix — a prefix match would eat real names.
+EXCLUDE_FROM_BOARD  = {"admin"}
+EXCLUDE_NAME_WORDS  = {"admin", "driver", "drivers",
+                       "test", "testing", "tester",
+                       "freelance", "freelancer", "freelancers"}
 
 st.set_page_config(page_title="B&G HR | ERP System", layout="wide", page_icon="📅")
 conn = st.connection("supabase", type=SupabaseConnection)
@@ -234,6 +244,21 @@ def log_slot_hour(row):
     return ts.hour if ts is not None else None
 
 
+def on_board(name):
+    """Should this master_staff row show on the Daily Board?
+
+    Filters out non-employees (driver, test accounts, freelancers, Admin).
+    Matches whole words only, so a genuine name that merely contains one of
+    these letter sequences ("Testeswari") is never silently dropped."""
+    n = str(name or "").strip().lower()
+    if not n:
+        return False
+    if n in EXCLUDE_FROM_BOARD:
+        return False
+    words = re.split(r"[^a-z]+", n)          # split on spaces, dots, brackets, digits
+    return not any(w in EXCLUDE_NAME_WORDS for w in words if w)
+
+
 def board_card(title, count, lines, tone="bad", empty_msg="Nobody. Clean."):
     """A coloured frame that carries the count in the header AND the names underneath.
 
@@ -319,7 +344,7 @@ def render_daily_board():
     day_str = str(board_day)
     att_rows, log_rows, plan_rows, move_rows, leave_rows = get_day_board_data(day_str)
 
-    roster = [s for s in get_staff_list() if s not in EXCLUDE_FROM_BOARD]
+    roster = [s for s in get_staff_list() if on_board(s)]
     expected_window = list(range(start_hr, end_hr))
 
     # ── Index the raw rows by employee, once ──────────────────────────
