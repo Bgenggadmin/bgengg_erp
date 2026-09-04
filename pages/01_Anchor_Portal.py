@@ -9,11 +9,6 @@ import urllib.parse
 # CONSTANTS
 # ---------------------------------------------------------------------------
 PIPELINE_STAGES = ["Enquiry", "Estimation", "Quotation Sent", "Won", "Lost"]
-
-# Production lifecycle. Separate from PIPELINE_STAGES: a job stays "Won"
-# in sales terms after it ships. Stored in anchor_projects.prod_stage,
-# the same column the Production Plan app uses.
-PROD_STAGES = ["Running", "Hold", "Dispatched", "Stock"]
 DRAWING_STATUSES = ["Pending", "Drafting", "Approved", "NA"]
 PURCHASE_STATUSES = ["Triggered", "Ordered", "Received"]
 ANCHOR_PERSONS = ["API", "MEE"]   # API first = default opening profile (was Kishore)
@@ -385,6 +380,323 @@ def render_followup_block(row, df_followups: pd.DataFrame, logged_by: str):
                          "notes", "logged_by"]].copy()
             hist.columns = ["Date", "Channel", "Outcome", "Notes", "By"]
             st.dataframe(hist, use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# DASHBOARD  (read-only — writes nothing, derives everything from the
+# projects and follow-ups already loaded at the bottom of this file)
+# ---------------------------------------------------------------------------
+def _date_col(df_in: pd.DataFrame, col: str) -> pd.Series:
+    """Parse a date column into plain Python `date` objects.
+
+    utc=True followed by tz_convert(None) sidesteps the 'mixed timezone'
+    error pandas throws when some rows carry an offset and others do not.
+    enquiry_date and quote_date are DATE columns in Postgres, so there is
+    no clock time to lose here.
+    """
+    if df_in.empty or col not in df_in.columns:
+        return pd.Series([pd.NaT] * len(df_in), index=df_in.index, dtype="object")
+    return (pd.to_datetime(df_in[col], errors="coerce", utc=True)
+              .dt.tz_convert(None).dt.date)
+
+
+def _in_window(dates: pd.Series, start: date, end: date) -> pd.Series:
+    """Boolean mask: date falls inside [start, end]. Blanks are False."""
+    return dates.apply(lambda d: pd.notna(d) and start <= d <= end)
+
+
+def build_followup_queue(df_scope: pd.DataFrame,
+                         df_followups: pd.DataFrame) -> pd.DataFrame:
+    """One row per live quotation, with where it sits on the follow-up ladder.
+
+    Deliberately re-uses followup_clock_start() and followup_due_date() —
+    the same two functions the panel inside the Pipeline tab uses — so the
+    dashboard count and the per-project panel can never drift apart.
+
+    Deliberately does NOT read v_ap_followups_due. That view's CASE buckets
+    evaluate 'No contact details' before 'Decision gate', so a 90-day-old
+    quote with no phone number disappears from the urgent bucket — which is
+    exactly the row that most needs chasing.
+    """
+    if df_scope.empty or "status" not in df_scope.columns:
+        return pd.DataFrame()
+
+    quoted = df_scope[df_scope["status"] == "Quotation Sent"]
+    if quoted.empty:
+        return pd.DataFrame()
+
+    # Index the follow-up log by project once, rather than re-filtering the
+    # whole frame inside the loop.
+    fu_by_project = {}
+    if not df_followups.empty and "project_id" in df_followups.columns:
+        f = df_followups.copy()
+        f["_pid"] = pd.to_numeric(f["project_id"], errors="coerce")
+        f["_fd"] = pd.to_datetime(f["followup_date"], errors="coerce")
+        for pid, grp in f.dropna(subset=["_pid"]).groupby("_pid"):
+            fu_by_project[int(pid)] = grp.sort_values("_fd", ascending=False)
+
+    today = date.today()
+    rows = []
+    for _, r in quoted.iterrows():
+        pid = int(r["id"])
+        mine = fu_by_project.get(pid)
+        attempts = 0 if mine is None else len(mine)
+
+        last_date = None
+        override = None
+        if attempts:
+            top = mine.iloc[0]
+            if pd.notnull(top["_fd"]):
+                last_date = top["_fd"].date()
+            nad = pd.to_datetime(top.get("next_action_date"), errors="coerce")
+            override = nad.date() if pd.notnull(nad) else None
+
+        clock = followup_clock_start(r)
+        due = followup_due_date(clock, attempts, last_date, override)
+        age = (today - clock).days if clock else None
+
+        # Bucket order matters: a quote past the decision gate is a
+        # different problem from one that is merely overdue.
+        if clock is None:
+            bucket = "No clock"
+        elif age >= DECISION_GATE_DAY:
+            bucket = "Decision gate"
+        elif due and due <= today:
+            bucket = "Overdue"
+        else:
+            bucket = "Scheduled"
+
+        rows.append({
+            "id": pid,
+            "bucket": bucket,
+            "client_name": r.get("client_name") or "",
+            "project_description": trunc(r.get("project_description"), 40),
+            "quote_ref": clean_ref(r.get("quote_ref")) or "—",
+            "anchor_person": r.get("anchor_person") or "",
+            "value": float(r.get("estimated_value") or 0),
+            "attempts": attempts,
+            "age_days": age,
+            "due_date": due,
+            "days_over": (today - due).days if due and due <= today else 0,
+            "last_contact": last_date,
+            "has_phone": bool(clean_phone(r.get("contact_phone"))),
+        })
+
+    q = pd.DataFrame(rows)
+    # Keep whole-day counts as integers. Int64 (capital I) is the nullable
+    # integer type — it tolerates the blank age on a quote with no clock
+    # instead of forcing the whole column to float and printing "100.0".
+    for c in ("age_days", "days_over", "attempts"):
+        q[c] = pd.to_numeric(q[c], errors="coerce").astype("Int64")
+    return q
+
+
+def render_dashboard_tab(df_all: pd.DataFrame, df_followups: pd.DataFrame,
+                         anchor_choice: str):
+    """Four numbers that answer 'what happened, and what is waiting on me'."""
+    st.subheader("🏠 Daily Dashboard")
+
+    if df_all.empty:
+        st.info("No projects in the system yet.")
+        return
+
+    c_scope, c_win = st.columns([1, 2])
+    all_anchors = c_scope.checkbox("👁️ All anchor persons", key="dash_owner_view")
+    window = c_win.radio(
+        "Activity window", ["Yesterday", "Last 7 days", "This month"],
+        horizontal=True, key="dash_window",
+        help="On a Monday 'Yesterday' is Sunday and will read zero — "
+             "switch to Last 7 days.",
+    )
+
+    scope = (df_all if all_anchors
+             else df_all[df_all["anchor_person"] == anchor_choice]).copy()
+    if scope.empty:
+        st.info("No projects for this profile.")
+        return
+
+    today = date.today()
+    if window == "Yesterday":
+        start = end = today - timedelta(days=1)
+    elif window == "Last 7 days":
+        start, end = today - timedelta(days=6), today
+    else:
+        start, end = today.replace(day=1), today
+
+    period = (start.strftime("%d %b %Y") if start == end
+              else f"{start.strftime('%d %b')} – {end.strftime('%d %b %Y')}")
+
+    enq_dates = _date_col(scope, "enquiry_date")
+    qte_dates = _date_col(scope, "quote_date")
+
+    new_enq = scope[_in_window(enq_dates, start, end)]
+
+    # quote_date on its own over-counts. The Pipeline form defaults an empty
+    # Quote Date to today and writes it back on every save, so an Enquiry row
+    # that was merely opened and saved picks up a quote_date it never earned.
+    # Requiring the row to have actually reached quotation stage or beyond
+    # filters those phantoms out.
+    quoted_out = scope[_in_window(qte_dates, start, end)
+                       & scope["status"].isin(["Quotation Sent", "Won", "Lost"])]
+
+    # Standing backlog — not tied to the window. Same definition the Live
+    # Action Summary above already uses, so the two never contradict.
+    pending = scope[scope["status"].isin(["Enquiry", "Estimation"])].copy()
+    pending["_age"] = pd.to_numeric(
+        _date_col(pending, "enquiry_date").apply(
+            lambda d: (today - d).days if pd.notna(d) else None
+        ), errors="coerce"
+    ).astype("Int64")
+
+    queue = build_followup_queue(scope, df_followups)
+    if queue.empty:
+        due = no_clock = pd.DataFrame()
+    else:
+        due = queue[queue["bucket"].isin(["Overdue", "Decision gate"])]
+        no_clock = queue[queue["bucket"] == "No clock"]
+
+    # ---- headline numbers -------------------------------------------------
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Enquiries received", len(new_enq))
+    m2.metric("Quotations sent", len(quoted_out))
+    m3.metric("Pending quotations", len(pending))
+    m4.metric("Follow-ups due", len(due))
+
+    pend_value = float(pending["estimated_value"].fillna(0).sum()) if not pending.empty else 0.0
+    due_value = float(due["value"].sum()) if not due.empty else 0.0
+    st.caption(
+        f"Window **{period}** · scope "
+        f"**{'all anchors' if all_anchors else anchor_choice}** · "
+        f"pending backlog ₹{pend_value:,.0f} · chase list ₹{due_value:,.0f}"
+    )
+
+    if not due.empty:
+        no_phone = int((~due["has_phone"]).sum())
+        if no_phone:
+            st.warning(
+                f"☎️ {no_phone} of {len(due)} due follow-ups have no phone "
+                f"number on record — add contact details before the chase "
+                f"list is usable."
+            )
+    if not no_clock.empty:
+        st.error(
+            f"🕳️ {len(no_clock)} quotation(s) have neither a quote date nor "
+            f"an enquiry date, so no follow-up clock is running on them."
+        )
+
+    st.divider()
+
+    # ---- yesterday's activity ---------------------------------------------
+    a1, a2 = st.columns(2)
+    with a1:
+        st.markdown(f"##### 🆕 Enquiries received — {period}")
+        if new_enq.empty:
+            st.caption("Nothing logged in this window.")
+        else:
+            st.dataframe(
+                new_enq[["client_name", "project_description",
+                         "anchor_person", "enquiry_date"]]
+                .rename(columns={"client_name": "Client",
+                                 "project_description": "Description",
+                                 "anchor_person": "Anchor",
+                                 "enquiry_date": "Date"}),
+                hide_index=True, use_container_width=True,
+            )
+    with a2:
+        st.markdown(f"##### 📤 Quotations sent — {period}")
+        if quoted_out.empty:
+            st.caption("Nothing quoted in this window.")
+        else:
+            q_show = quoted_out[["client_name", "quote_ref", "estimated_value",
+                                 "status", "quote_date"]].copy()
+            q_show["quote_ref"] = q_show["quote_ref"].apply(
+                lambda v: clean_ref(v) or "—"
+            )
+            st.dataframe(
+                q_show.rename(columns={"client_name": "Client",
+                                       "quote_ref": "Quote Ref",
+                                       "estimated_value": "Value ₹",
+                                       "status": "Stage",
+                                       "quote_date": "Quote Date"}),
+                hide_index=True, use_container_width=True,
+            )
+
+    st.divider()
+
+    # ---- standing backlog --------------------------------------------------
+    st.markdown(f"##### 📋 Pending quotations ({len(pending)})")
+    st.caption("Enquiry or Estimation stage — quotation not yet out.")
+    if pending.empty:
+        st.success("✅ Nothing waiting to be quoted.")
+    else:
+        p_show = (pending[["client_name", "project_description",
+                           "anchor_person", "status", "_age", "estimated_value"]]
+                  .sort_values("_age", ascending=False, na_position="last")
+                  .rename(columns={"client_name": "Client",
+                                   "project_description": "Description",
+                                   "anchor_person": "Anchor",
+                                   "status": "Stage",
+                                   "_age": "Days Open",
+                                   "estimated_value": "Est. Value ₹"}))
+        st.dataframe(p_show, hide_index=True, use_container_width=True)
+
+    st.divider()
+
+    # ---- the chase list ----------------------------------------------------
+    st.markdown(f"##### 📞 Follow-ups required ({len(due)})")
+    st.caption(
+        f"Ladder: {', '.join(str(d) for d in FOLLOWUP_LADDER)} days after the "
+        f"quote, minimum {MIN_GAP_DAYS} days between calls, decision gate at "
+        f"{DECISION_GATE_DAY} days. Open the Pipeline tab to log the call."
+    )
+    if due.empty:
+        st.success("✅ No follow-up is overdue right now.")
+    else:
+        d_show = due.copy()
+        d_show["Client"] = d_show.apply(
+            lambda r: ("🔔 " if r["bucket"] == "Decision gate" else "⏰ ")
+                      + r["client_name"], axis=1
+        )
+        d_show["Phone"] = d_show["has_phone"].map({True: "✔", False: "✖ missing"})
+        d_show = (d_show[["Client", "quote_ref", "project_description",
+                          "anchor_person", "value", "attempts", "age_days",
+                          "days_over", "last_contact", "Phone", "bucket"]]
+                  .sort_values(["days_over", "age_days"], ascending=False)
+                  .rename(columns={"quote_ref": "Quote Ref",
+                                   "project_description": "Description",
+                                   "anchor_person": "Anchor",
+                                   "value": "Value ₹",
+                                   "attempts": "Tries",
+                                   "age_days": "Quote Age",
+                                   "days_over": "Days Late",
+                                   "last_contact": "Last Contact",
+                                   "bucket": "Why"}))
+        st.dataframe(d_show, hide_index=True, use_container_width=True)
+        st.download_button(
+            "💾 Download chase list (CSV)",
+            data=d_show.to_csv(index=False).encode("utf-8"),
+            file_name=f"BGE_chase_list_{today.strftime('%Y%m%d')}.csv",
+            key="dash_chase_dl",
+        )
+
+    if not queue.empty:
+        with st.expander(f"📆 Scheduled — not due yet "
+                         f"({int((queue['bucket'] == 'Scheduled').sum())})"):
+            sched = queue[queue["bucket"] == "Scheduled"]
+            if sched.empty:
+                st.caption("None.")
+            else:
+                st.dataframe(
+                    sched[["client_name", "quote_ref", "attempts",
+                           "age_days", "due_date"]]
+                    .sort_values("due_date")
+                    .rename(columns={"client_name": "Client",
+                                     "quote_ref": "Quote Ref",
+                                     "attempts": "Tries",
+                                     "age_days": "Quote Age",
+                                     "due_date": "Next Due"}),
+                    hide_index=True, use_container_width=True,
+                )
 
 
 def convert_prospect_to_enquiry(row) -> int | None:
@@ -803,10 +1115,19 @@ if not df_search.empty:
 # ---------------------------------------------------------------------------
 # MAIN TABS  (all use df_anchor — the full unfiltered anchor dataset)
 # ---------------------------------------------------------------------------
-tabs = st.tabs(["📝 New Entry", "📂 Pipeline", "📐 Drawings", "🛒 Purchase Status", "📊 Analytics", "🎯 Prospects (BD)"])
+tab_dash, tab_new, tab_pipe, tab_draw, tab_pur, tab_ana, tab_bd = st.tabs(
+    ["🏠 Dashboard", "📝 New Entry", "📂 Pipeline", "📐 Drawings",
+     "🛒 Purchase Status", "📊 Analytics", "🎯 Prospects (BD)"]
+)
+
+# ── TAB 0: DASHBOARD ────────────────────────────────────────────────────────
+# Uses df (every project) not df_anchor, so the owner-view checkbox inside
+# the dashboard can widen the scope to all anchor persons.
+with tab_dash:
+    render_dashboard_tab(df, df_followups, anchor_choice)
 
 # ── TAB 1: NEW ENTRY ────────────────────────────────────────────────────────
-with tabs[0]:
+with tab_new:
     st.subheader("Register New Project Enquiry")
     with st.form("new_project_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -838,38 +1159,22 @@ with tabs[0]:
                 st.error("Client Name and Project Description are required.")
 
 # ── TAB 2: PIPELINE ─────────────────────────────────────────────────────────
-with tabs[1]:
+with tab_pipe:
     st.subheader("Sales Lifecycle & Project Tracking")
     if df_anchor.empty:
         st.info("No projects found for this anchor person.")
     else:
         view_col, stage_col = st.columns([1, 2])
         bulk_mode = view_col.toggle("⚡ Bulk Update Mode", value=False)
-        # Two different columns behind one filter bar. PIPELINE_STAGES
-        # filter on `status` (the sales pipeline); the production stages
-        # filter on `prod_stage`. A job can be Won AND Dispatched — they
-        # are separate facts, so the filter has to know which column a
-        # given choice belongs to. No label appears in both lists.
-        prod_filter_options = ["Hold", "Dispatched", "Stock"]
-        stage_filter_options = ["All"] + PIPELINE_STAGES + prod_filter_options
+        stage_filter_options = ["All"] + PIPELINE_STAGES
         selected_stage = stage_col.radio(
             "Filter Stage", stage_filter_options, horizontal=True
         )
 
-        if selected_stage == "All":
-            df_pipeline = df_anchor
-        elif selected_stage in PIPELINE_STAGES:
-            df_pipeline = df_anchor[df_anchor["status"] == selected_stage]
-        elif "prod_stage" in df_anchor.columns:
-            df_pipeline = df_anchor[df_anchor["prod_stage"] == selected_stage]
-        else:
-            # prod_stage column not added yet — say so rather than
-            # silently showing everything as if the filter had worked.
-            st.warning(
-                "The prod_stage column does not exist yet. Run prod_stage.sql "
-                "in Supabase to use the production stage filters."
-            )
-            df_pipeline = df_anchor.iloc[0:0]
+        df_pipeline = (
+            df_anchor if selected_stage == "All"
+            else df_anchor[df_anchor["status"] == selected_stage]
+        )
 
         if bulk_mode:
             with st.form("bulk_update_form"):
@@ -936,31 +1241,8 @@ with tabs[1]:
                         ),
                         key=f"rev_del_date_{row['id']}",
                     )
-                    # "Days to Dispatch" only means something while the job is
-                    # still heading towards a dispatch. Once it has shipped or
-                    # gone to stock the countdown is noise — it just grows more
-                    # negative every day and makes a finished job look overdue.
-                    cur_pstage = row.get("prod_stage") or "Running"
                     days_to_go = (u_rev_del - date.today()).days
-
-                    if cur_pstage == "Dispatched":
-                        d3.metric("Dispatch Status", "✅ Dispatched")
-                        raw_marked = row.get("prod_stage_updated_at")
-                        # safe_date() falls back to today() on a null, so check
-                        # the raw value first rather than printing today's date
-                        # as though it were the dispatch date.
-                        if pd.notnull(raw_marked):
-                            d3.caption(
-                                "Marked " + safe_date(raw_marked).strftime("%d-%b-%Y")
-                            )
-                    elif cur_pstage == "Stock":
-                        d3.metric("Dispatch Status", "📦 In Stock")
-                    elif cur_pstage == "Hold":
-                        d3.metric("Dispatch Status", "🔵 On Hold")
-                        d3.caption("Target was " + u_rev_del.strftime("%d-%b-%Y"))
-                    else:
-                        d3.metric("Days to Dispatch", f"{days_to_go} Days",
-                                  delta=days_to_go)
+                    d3.metric("Days to Dispatch", f"{days_to_go} Days", delta=days_to_go)
 
                     st.divider()
 
@@ -993,41 +1275,13 @@ with tabs[1]:
                     render_followup_block(row, df_followups, anchor_choice)
                     st.divider()
 
-                    # Two stages, two columns, two different facts:
-                    #   Sales Stage      -> anchor_projects.status
-                    #   Production Stage -> anchor_projects.prod_stage
-                    # A job is Won AND Dispatched at the same time. Putting
-                    # them in one dropdown would force a choice between them,
-                    # and picking Dispatched would erase the fact it was Won.
-                    sc1, sc2 = st.columns([1, 2])
-
-                    new_status = sc1.selectbox(
-                        "Sales Stage",
+                    new_status = st.selectbox(
+                        "Update Stage",
                         PIPELINE_STAGES,
                         index=PIPELINE_STAGES.index(row["status"])
                         if row["status"] in PIPELINE_STAGES else 0,
                         key=f"st_select_{row['id']}",
                     )
-
-                    # Production stage only exists for work that was actually
-                    # won. An Enquiry cannot be Dispatched, so the control is
-                    # hidden rather than offered and then ignored.
-                    if new_status == "Won":
-                        new_pstage = sc2.radio(
-                            "Production Stage",
-                            PROD_STAGES,
-                            index=PROD_STAGES.index(cur_pstage)
-                            if cur_pstage in PROD_STAGES else 0,
-                            horizontal=True,
-                            key=f"pstage_{row['id']}",
-                            help="Shared with the Production Plan app — set it "
-                                 "here or there, both show the same value.",
-                        )
-                    else:
-                        new_pstage = cur_pstage
-                        sc2.caption(
-                            "Production stage applies once the job is Won."
-                        )
 
                     # Purchase trigger
                     st.markdown("##### 🛒 Item-wise Purchase Trigger")
@@ -1075,9 +1329,6 @@ with tabs[1]:
                             "po_delivery_date": str(u_po_del),
                             "revised_delivery_date": str(u_rev_del),
                         }
-                        if new_pstage != cur_pstage:
-                            payload["prod_stage"] = new_pstage
-                            payload["prod_stage_updated_at"] = datetime.now().isoformat()
                         if new_status != row["status"]:
                             payload["status_updated_at"] = datetime.now().isoformat()
                             if new_status == "Won":
@@ -1098,7 +1349,7 @@ with tabs[1]:
                             st.rerun()
 
 # ── TAB 3: DRAWINGS ─────────────────────────────────────────────────────────
-with tabs[2]:
+with tab_draw:
     st.subheader("Drawing Control")
     won_projects = (
         df_anchor[df_anchor["status"] == "Won"] if not df_anchor.empty else pd.DataFrame()
@@ -1129,7 +1380,7 @@ with tabs[2]:
                     st.rerun()
 
 # ── TAB 4: PURCHASE STATUS ───────────────────────────────────────────────────
-with tabs[3]:
+with tab_pur:
     st.subheader("📦 Item-wise Purchase Feedback")
     if df_anchor.empty:
         st.info("No projects found.")
@@ -1172,7 +1423,7 @@ with tabs[3]:
                                 c4.warning(item["status"])
 
 # ── TAB 5: ANALYTICS ────────────────────────────────────────────────────────
-with tabs[4]:
+with tab_ana:
     st.subheader("📊 Business Intelligence")
     if df_anchor.empty:
         st.info("No data to analyse yet.")
@@ -1232,5 +1483,5 @@ with tabs[4]:
 
 # ── TAB 6: PROSPECTS (BD) ────────────────────────────────────────────────────
 # NOTE: render_prospects_tab is defined far above, so this call is safe.
-with tabs[5]:
+with tab_bd:
     render_prospects_tab(get_prospects(), anchor_choice, today_dt)
