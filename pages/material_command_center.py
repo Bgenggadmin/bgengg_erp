@@ -580,7 +580,7 @@ with main_tabs[1]:
 
     # ── SEARCH & FILTER BAR ──────────────────────────────────
     PC_KEYS = ["pc_search", "pc_range", "pc_f_group", "pc_f_job",
-               "pc_f_status", "pc_f_raiser", "pc_f_urgent"]
+               "pc_f_status", "pc_f_raiser", "pc_f_urgent", "pc_f_delivery"]
 
     with st.container(border=True):
         s1, s2 = st.columns([3, 1])
@@ -596,7 +596,7 @@ with main_tabs[1]:
             index=1, key="pc_range"
         )
 
-        f1, f2, f3, f4, f5 = st.columns(5)
+        f1, f2, f3, f4, f5, f6 = st.columns(6)
         pc_group  = f1.selectbox("Material Group", ["All"] + get_material_groups(), key="pc_f_group")
         pc_job    = f2.selectbox("Job / Project",  ["All"] + get_jobs(),            key="pc_f_job")
         pc_status = f3.selectbox(
@@ -606,6 +606,14 @@ with main_tabs[1]:
         )
         pc_raiser = f4.selectbox("Raised By", ["All"] + get_staff_list(), key="pc_f_raiser")
         pc_urgent = f5.selectbox("Priority", ["All", "🚨 Urgent only", "Normal only"], key="pc_f_urgent")
+        pc_delivery = f6.selectbox(
+            "Delivery date",
+            ["All", "❓ Missing", "✅ Has date"],
+            key="pc_f_delivery",
+            help="Ordered / Partial items only. 'Missing' means no expected "
+                 "delivery date was entered, so nothing can ever flag these "
+                 "as overdue."
+        )
 
         r1, r2 = st.columns([1, 4])
         if r1.button("♻️ Reset filters", key="pc_reset", use_container_width=True):
@@ -620,6 +628,7 @@ with main_tabs[1]:
         if pc_status != "All (pending)": active_bits.append(pc_status)
         if pc_raiser != "All":           active_bits.append(pc_raiser)
         if pc_urgent != "All":           active_bits.append(pc_urgent)
+        if pc_delivery != "All":         active_bits.append(f"Delivery: {pc_delivery}")
         if active_bits:
             r2.caption("Active filters: " + "  •  ".join(active_bits))
 
@@ -641,6 +650,7 @@ with main_tabs[1]:
 
         if pc_group != "All":
             q = q.eq("material_group", pc_group)
+
         if pc_raiser != "All":
             q = q.eq("triggered_by", pc_raiser)
 
@@ -649,7 +659,7 @@ with main_tabs[1]:
         st.error(f"Purchase load error: {e}")
         pending_data = []
 
-    # ── CLIENT-SIDE FILTERS (job match, priority, free text) ──
+    # ── CLIENT-SIDE FILTERS (job match, priority, delivery date, free text) ──
     df_p = pd.DataFrame(pending_data) if pending_data else pd.DataFrame()
 
     if not df_p.empty:
@@ -666,6 +676,33 @@ with main_tabs[1]:
         elif pc_urgent == "Normal only":
             df_p = df_p[df_p['is_urgent'] != True]
 
+        # Expected delivery only exists once a PO is confirmed, so this filter
+        # is scoped to Ordered/Partial. Without that scope "Missing" would
+        # sweep in every Triggered row, which has no date by definition.
+        # Filtered here rather than server-side because some older rows hold
+        # an empty string instead of NULL, and .is_("expected_delivery","null")
+        # would miss those.
+        if pc_delivery != "All" and not df_p.empty:
+            if 'expected_delivery' in df_p.columns:
+                _exp = df_p['expected_delivery']
+            else:
+                _exp = pd.Series([None] * len(df_p), index=df_p.index)
+
+            _blank = _exp.isna() | (
+                _exp.astype(str).str.strip().str.lower()
+                    .isin(["", "none", "nat", "nan", "null"])
+            )
+
+            if 'status' in df_p.columns:
+                _ordered = df_p['status'].isin(['Ordered', 'Partial'])
+            else:
+                _ordered = pd.Series(True, index=df_p.index)
+
+            if pc_delivery == "❓ Missing":
+                df_p = df_p[_ordered & _blank]
+            else:
+                df_p = df_p[_ordered & ~_blank]
+
     if not df_p.empty and pc_query:
         search_cols = ['indent_no', 'item_name', 'specs', 'job_no', 'po_no',
                        'purchase_reply', 'material_group', 'triggered_by',
@@ -681,7 +718,6 @@ with main_tabs[1]:
             if t:
                 mask &= blob.str.contains(t, na=False, regex=False)
         df_p = df_p[mask]
-
     # ── RESULTS ──────────────────────────────────────────────
     if df_p.empty:
         if pending_data:
